@@ -1,0 +1,129 @@
+.room {
+  background: #0e0e18;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-left: 2px solid rgba(212, 175, 55, 0.2);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
+  transition: border-color 0.2s;
+}
+
+.room:hover {
+  border-color: rgba(255, 255, 255, 0.11);
+}
+
+.titleBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.spawnButton {
+  margin-left: auto;
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: color 150ms, border-color 150ms, background 150ms;
+}
+
+.spawnButton:hover {
+  color: #d4af37;
+  border-color: rgba(212, 175, 55, 0.4);
+  background: rgba(212, 175, 55, 0.06);
+}
+
+.roomName {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 600;
+  color: #d4af37;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.desks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.desk {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 18px 18px 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-width: 110px;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.desk:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.deskSelected {
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 0 28px rgba(255, 255, 255, 0.08),
+    0 0 8px rgba(255, 255, 255, 0.06);
+}
+
+.desk::before {
+  display: none;
+}
+
+.dormitory {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  padding-top: 12px;
+  margin-top: 2px;
+}
+
+.dormitoryLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.2);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.dormitoryDesks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.dormitoryDesk {
+  transform: scale(0.55);
+  transform-origin: top left;
+  margin-right: -48px;
+  margin-bottom: -52px;
+}

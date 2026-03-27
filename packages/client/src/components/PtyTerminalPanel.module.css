@@ -1,0 +1,228 @@
+.panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100vh;
+  background: #0e0e18;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 200ms ease;
+  z-index: 101;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #e8e8e8;
+}
+
+.panelOpen {
+  transform: translateX(0);
+}
+
+.resizeHandle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 5px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 150ms;
+}
+
+.resizeHandle:hover,
+.resizeHandle:active {
+  background: rgba(88, 166, 255, 0.25);
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 14px 11px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+  background: #0e0e18;
+  gap: 8px;
+}
+
+.headerLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #58a6ff;
+  line-height: 1;
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.nameEditRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sessionName {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8e8e8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.nameInput {
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(88, 166, 255, 0.4);
+  border-radius: 4px;
+  color: #e8e8e8;
+  padding: 2px 6px;
+  outline: none;
+  min-width: 0;
+  flex: 1;
+  font-family: inherit;
+}
+
+.nameInput:focus {
+  border-color: #58a6ff;
+}
+
+.iconBtn {
+  background: transparent;
+  border: none;
+  color: #555;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  transition: color 150ms, background 150ms;
+  flex-shrink: 0;
+}
+
+.iconBtn:hover {
+  color: #aaa;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.iconBtnActive {
+  color: #58a6ff;
+}
+
+.closeButton {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #e8e8e8;
+  font-size: 18px;
+  line-height: 1;
+  width: 26px;
+  height: 26px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 150ms;
+  flex-shrink: 0;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ── Collapsible details ─────────────────────────────────── */
+
+.details {
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  padding: 10px 18px 12px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.detailsGrid {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 5px 12px;
+  align-items: baseline;
+}
+
+.detailLabel {
+  font-size: 11px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.detailValue {
+  font-size: 12px;
+  color: #bbb;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.stateDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cwd {
+  word-break: break-all;
+  font-size: 11px;
+  color: #777;
+}
+
+.exitedBanner {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #f59e0b;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+/* ── Terminal area ───────────────────────────────────────── */
+
+.terminalArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  overflow: hidden;
+}

@@ -1,0 +1,221 @@
+.worker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  position: relative;
+  user-select: none;
+  outline: none;
+  width: 190px;
+}
+
+.worker:focus-visible .svg {
+  outline: 2px solid rgba(212, 175, 55, 0.5);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.svg {
+  display: block;
+}
+
+/* Working: bounce */
+.working .svg {
+  animation: bounce 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes bounce {
+  from { transform: translateY(0); }
+  to { transform: translateY(-4px); }
+}
+
+.labelRow {
+  margin-top: 8px;
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  max-width: 175px;
+}
+
+.label {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  color: #ccc;
+  overflow: hidden;
+  max-width: 175px;
+  text-align: center;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.35;
+  max-height: 2.7em;
+}
+
+.renameBtn {
+  position: absolute;
+  top: -26px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 26px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(30, 30, 40, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  cursor: pointer;
+  color: rgba(255, 255, 255, 0.7);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  padding: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.renameBtn::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 4px 3px 0;
+  border-style: solid;
+  border-color: rgba(255, 255, 255, 0.15) transparent transparent;
+}
+
+.renameBtn:hover {
+  background: rgba(50, 50, 65, 0.98);
+  color: #fff;
+}
+
+.labelRow:hover .renameBtn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.nameInput {
+  width: 160px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  padding: 3px 7px;
+  text-align: center;
+  outline: none;
+}
+
+.nameInput:focus {
+  border-color: rgba(167, 139, 250, 0.6);
+  background: rgba(167, 139, 250, 0.08);
+}
+
+/* Indicator above head */
+.indicator {
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.indicatorSubagent {
+  top: -14px;
+}
+
+/* Thinking: pulsing dots */
+.indicator_thinking {
+  gap: 2px;
+}
+
+.dots {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a78bfa;
+  animation: pulse-dot 1.2s ease-in-out infinite;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
+}
+
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.2; transform: scale(0.7); box-shadow: 0 0 3px rgba(167, 139, 250, 0.4); }
+  50% { opacity: 1; transform: scale(1.3); box-shadow: 0 0 10px rgba(167, 139, 250, 1); }
+}
+
+/* Waiting: speech bubble */
+.indicator_waiting {}
+
+.bubble {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1.5px solid rgba(245, 158, 11, 0.6);
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f59e0b;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  animation: fade-bubble 2s ease-in-out infinite;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.2);
+}
+
+.bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px 4px 0;
+  border-style: solid;
+  border-color: rgba(245, 158, 11, 0.6) transparent transparent;
+}
+
+@keyframes fade-bubble {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* Subagent waiting: small static dot */
+.subagentWaitDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f97316;
+  opacity: 0.9;
+  display: block;
+  box-shadow: 0 0 6px 2px rgba(249, 115, 22, 0.6), 0 0 12px 4px rgba(249, 115, 22, 0.25);
+}
+
+/* Working: green pulse dot */
+.workingDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.8);
+  animation: pulse-working 1s ease-in-out infinite;
+}
+
+@keyframes pulse-working {
+  0%, 100% { transform: scale(0.85); opacity: 0.7; box-shadow: 0 0 4px rgba(34, 197, 94, 0.5); }
+  50% { transform: scale(1.15); opacity: 1; box-shadow: 0 0 14px rgba(34, 197, 94, 1); }
+}
+

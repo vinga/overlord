@@ -1,0 +1,205 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.warning {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: #d97706;
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: rgba(217, 119, 6, 0.08);
+  border: 1px solid rgba(217, 119, 6, 0.2);
+  border-radius: 5px;
+}
+
+.confirm {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.transcript {
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  padding: 10px;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) #0d1117;
+}
+
+.transcript::-webkit-scrollbar {
+  width: 4px;
+}
+
+.transcript::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+
+.transcript::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.emptyState {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  color: #2d3748;
+  text-align: center;
+  padding: 16px 0;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.messageUser .messageRole {
+  color: #facc15;
+}
+
+.messageAssistant .messageRole {
+  color: #4ade80;
+}
+
+.messageRole {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+}
+
+.messageContent {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  color: #9ca3af;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: #ff7b72;
+  background: rgba(255, 123, 114, 0.08);
+  border: 1px solid rgba(255, 123, 114, 0.2);
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
+.inputRow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.textarea {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #e6edf3;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  resize: none;
+  outline: none;
+  transition: border-color 150ms;
+}
+
+.textarea:focus {
+  border-color: rgba(88, 166, 255, 0.4);
+  box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.1);
+}
+
+.textarea::placeholder {
+  color: #374151;
+}
+
+.textarea:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sendButton {
+  background: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 6px;
+  color: #58a6ff;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background 150ms, border-color 150ms;
+  white-space: nowrap;
+  align-self: flex-end;
+  height: 36px;
+}
+
+.sendButton:hover:not(:disabled) {
+  background: rgba(88, 166, 255, 0.25);
+  border-color: rgba(88, 166, 255, 0.5);
+}
+
+.sendButton:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.imagePreview {
+  position: relative;
+  display: inline-flex;
+  margin-bottom: 6px;
+}
+
+.imagePreview img {
+  max-height: 80px;
+  max-width: 200px;
+  border-radius: 6px;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+}
+
+.removeImage {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #1e1e2e;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #e8e8e8;
+  font-size: 9px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.removeImage:hover {
+  background: rgba(255, 123, 114, 0.2);
+  border-color: rgba(255, 123, 114, 0.4);
+  color: #ff7b72;
+}
