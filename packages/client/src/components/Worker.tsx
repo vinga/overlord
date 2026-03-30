@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { WorkerState } from '../types';
 import styles from './Worker.module.css';
 
@@ -8,8 +8,19 @@ interface WorkerProps {
   state: WorkerState;
   color: string;
   isSubagent?: boolean;
+  minimal?: boolean;
   agentType?: string;
+  activeSubagentCount?: number;
+  completionHint?: 'done' | 'awaiting';
+  completionSummaries?: Array<{ summary: string; completedAt: string }>;
+  userAccepted?: boolean;
+  needsPermission?: boolean;
+  currentTaskLabel?: string;
+  isWorker?: boolean;
+  launchMethod?: 'terminal' | 'ide' | 'overlord-pty';
+  resumedFrom?: string;
   onClick: () => void;
+  onDelete?: () => void;
 }
 
 function lightenHsl(color: string, amount: number): string {
@@ -22,23 +33,41 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export function Worker({ sessionId, name, state, color, isSubagent, agentType, onClick }: WorkerProps) {
+export function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, activeSubagentCount, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, isWorker, launchMethod, resumedFrom, onClick, onDelete }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
-  const highlightColor = lightenHsl(displayColor, 25);
-  const label = isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8));
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuContainerRef = useRef<HTMLDivElement>(null);
 
-  const stateClass = styles[state] ?? '';
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleMouseDown(e: MouseEvent) {
+      if (menuContainerRef.current && !menuContainerRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [menuOpen]);
+  const highlightColor = lightenHsl(displayColor, 25);
+  const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
+
+  const isDone = state === 'waiting' && completionHint === 'done';
+  const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}`;
 
   return (
     <div
       className={`${styles.worker} ${stateClass}`}
+      style={{ '--agent-color': displayColor } as React.CSSProperties}
       onClick={onClick}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
       aria-label={`Worker ${label}`}
     >
-      {(state === 'working' || state === 'thinking' || state === 'waiting') && (
+      {!minimal && needsPermission && !isSubagent && (
+        <div className={styles.permissionBadge}>⚠ approval</div>
+      )}
+      {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting') && (
         <div className={`${styles.indicator} ${styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}>
           {state === 'working' && (
             <span className={styles.workingDot} />
@@ -52,10 +81,20 @@ export function Worker({ sessionId, name, state, color, isSubagent, agentType, o
           )}
           {state === 'waiting' && (
             isSubagent
-              ? <span className={styles.subagentWaitDot} />
-              : <span className={styles.bubble}>waiting</span>
+              ? <span className={styles.subagentDoneCheck}>✓</span>
+              : completionHint === 'done'
+                ? userAccepted
+                  ? <span className={styles.bubbleDone}>done</span>
+                  : <span className={styles.bubbleDonePending}>review</span>
+                : needsPermission
+                  ? <span className={styles.bubblePermission}>needs approval</span>
+                  : <><span className={styles.bubble}>waiting</span>{completionHint === undefined && <span className={styles.classifyingSpinner} title="Checking if done…" />}</>
           )}
         </div>
+      )}
+
+      {(launchMethod === 'overlord-pty' || resumedFrom) && !isSubagent && !minimal && (
+        <div className={styles.overlordBadge} title={launchMethod === 'overlord-pty' ? 'Spawned in Overlord' : 'Resumed session'}>↺</div>
       )}
 
       <svg
@@ -87,7 +126,32 @@ export function Worker({ sessionId, name, state, color, isSubagent, agentType, o
 
       </svg>
 
-      <span className={styles.label}>{label}</span>
+      {!minimal && (
+        <span className={`${styles.label} ${isSubagent ? styles.labelSubagent : ''}`}>{label}</span>
+      )}
+      {!minimal && !isSubagent && currentTaskLabel && (state === 'working' || state === 'thinking') && (
+        <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>
+      )}
+      {!minimal && completionSummaries && completionSummaries.length > 0 && completionHint === 'done' && !isSubagent && (
+        <span className={styles.completionSummary}>{completionSummaries[completionSummaries.length - 1].summary}</span>
+      )}
+      {!isSubagent && onDelete && (
+        <div className={styles.menuContainer} ref={menuContainerRef}>
+          <button
+            className={styles.menuBtn}
+            onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o); }}
+            title="Options"
+          >⋮</button>
+          {menuOpen && (
+            <div className={styles.menuDropdown}>
+              <button
+                className={styles.menuDeleteItem}
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onDelete(); }}
+              >Delete</button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

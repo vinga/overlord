@@ -23,7 +23,7 @@ const STATE_COLORS: Record<WorkerState, string> = {
   working: '#22c55e',
   thinking: '#a78bfa',
   waiting: '#f59e0b',
-  idle: '#374151',
+  closed: '#374151',
 };
 
 function formatDuration(startedAt: number): string {

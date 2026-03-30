@@ -13,11 +13,13 @@ try {
 function resolveClaude(): string {
   try {
     const result = execSync('where claude', { encoding: 'utf8' }).trim().split('\n')[0].trim();
-    console.log('[PtyManager] claude resolved to:', result);
-    return result;
+    const normalized = result.replace(/\\/g, '/');
+    console.log('[PtyManager] claude resolved to:', normalized);
+    return normalized;
   } catch {
     // Fallback to common install location
-    const fallback = `${process.env.USERPROFILE ?? 'C:\\Users\\kamil'}\\.local\\bin\\claude.exe`;
+    const profile = (process.env.USERPROFILE ?? 'C:/Users/kamil').replace(/\\/g, '/');
+    const fallback = `${profile}/.local/bin/claude.exe`;
     console.warn('[PtyManager] `where claude` failed, falling back to:', fallback);
     return fallback;
   }

@@ -3,6 +3,30 @@
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  position: relative;
+}
+
+.delegateBadge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 3;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1px solid rgba(167, 139, 250, 0.4);
+  color: #a78bfa;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 8px rgba(167, 139, 250, 0.25);
+  pointer-events: none;
+  cursor: default;
 }
 
 .mainWorker {
@@ -21,11 +45,9 @@
 }
 
 .subagentWrapper {
-  transform: scale(0.5);
+  transform: scale(0.65);
   transform-origin: top center;
-  /* Negative margin to compensate for scale reducing visual size */
-  /* top: no pull-up (visual starts at top of box); bottom/sides: compensate for empty space left by shrink */
-  margin: 28px -10px -30px;
+  margin: 20px -18px -55px;
 }
 
 .extraBadge {

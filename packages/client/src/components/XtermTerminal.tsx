@@ -67,10 +67,11 @@ export function XtermTerminal({
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
 
-    // Fit after a short tick so the container has measured
-    requestAnimationFrame(() => {
+    // Fit after panel slide-in animation completes (200ms)
+    const fitTimer = setTimeout(() => {
       fitAddon.fit();
-    });
+      onResize(term.cols, term.rows);
+    }, 250);
 
     termRef.current = term;
 
@@ -92,6 +93,7 @@ export function XtermTerminal({
     observer.observe(containerRef.current);
 
     return () => {
+      clearTimeout(fitTimer);
       onDataDispose.dispose();
       unregister();
       observer.disconnect();

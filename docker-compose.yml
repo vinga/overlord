@@ -1,0 +1,28 @@
+services:
+  traefik:
+    image: traefik:v3.0
+    command:
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  overlord:
+    build: .
+    volumes:
+      - ${CLAUDE_DIR}:/root/.claude:ro
+    environment:
+      - NODE_ENV=production
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.overlord.rule=Host(`overlord.localhost`)"
+      - "traefik.http.routers.overlord.entrypoints=web"
+      - "traefik.http.services.overlord.loadbalancer.server.port=3000"
+      - "traefik.http.routers.overlord.service=overlord"
+    depends_on:
+      - traefik

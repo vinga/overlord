@@ -1,6 +1,6 @@
-type WorkerState = 'working' | 'waiting' | 'thinking' | 'idle';
+type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
 
-type ActivityItemKind = 'message' | 'tool';
+type ActivityItemKind = 'message' | 'tool' | 'thinking';
 
 interface ActivityItem {
   kind: ActivityItemKind;
@@ -9,6 +9,9 @@ interface ActivityItem {
   toolName?: string;             // for kind='tool'
   oldString?: string;            // for kind='tool' + toolName='Edit'
   newString?: string;            // for kind='tool' + toolName='Edit'
+  isRedacted?: boolean;          // for kind='thinking'
+  inputJson?: string;            // full tool input as JSON (truncated)
+  durationMs?: number;           // for kind='tool': how long the tool call took
 }
 
 interface Subagent {
@@ -39,6 +42,15 @@ interface Session {
   inputTokens?: number;
   compactCount?: number;
   isCompacting?: boolean;
+  resumedFrom?: string;
+  launchMethod?: 'terminal' | 'ide' | 'overlord-pty';
+  needsPermission?: boolean;
+  permissionPromptText?: string;
+  completionHint?: 'done' | 'awaiting';
+  completionSummaries?: Array<{ summary: string; completedAt: string; accepted?: boolean }>;
+  userAccepted?: boolean;
+  currentTaskLabel?: string;
+  isWorker?: boolean;
 }
 
 interface Room {
@@ -78,11 +90,18 @@ interface TerminalErrorMessage {
   message: string;
 }
 
+interface TerminalLinkedMessage {
+  type: 'terminal:linked';
+  ptySessionId: string;
+  claudeSessionId: string;
+}
+
 type TerminalMessage =
   | TerminalOutputMessage
   | TerminalSpawnedMessage
   | TerminalExitMessage
-  | TerminalErrorMessage;
+  | TerminalErrorMessage
+  | TerminalLinkedMessage;
 
 // Typed snapshot message (server → client)
 interface SnapshotMessage {

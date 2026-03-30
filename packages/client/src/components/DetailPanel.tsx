@@ -1,6 +1,8 @@
-import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import type { Session, WorkerState, ActivityItem } from '../types';
 import { XtermTerminal } from './XtermTerminal';
+import { WorkerAvatar } from './WorkerAvatar';
+import { Worker } from './Worker';
 import styles from './DetailPanel.module.css';
 import { marked } from 'marked';
 
@@ -12,6 +14,7 @@ function renderMarkdown(text: string): string {
 
 interface DetailPanelProps {
   selectedSession: Session | null;
+  selectedSessionId?: string | null;
   selectedSubagentId?: string;
   customName?: string;
   onRename: (sessionId: string, name: string) => void;
@@ -31,6 +34,9 @@ interface DetailPanelProps {
   onSelectSession?: (session: Session) => void;
   customNames?: Record<string, string>;
   onResumeSession?: (sessionId: string, cwd: string) => void;
+  onMarkDone?: (sessionId: string) => void;
+  onAcceptSession?: (sessionId: string) => void;
+  onAcceptTask?: (sessionId: string, completedAt: string) => void;
   panelWidth?: number;
   onPanelWidthChange?: (width: number) => void;
 }
@@ -43,6 +49,11 @@ function getModelContextWindow(model?: string): number {
   return 200_000; // all current Claude models are 200k
 }
 
+function isFilePath(s: string): boolean {
+  return /^([A-Za-z]:[/\\]|\/[^\s])/.test(s);
+}
+
+
 function computeDiff(oldStr: string, newStr: string): Array<{ type: 'removed' | 'added' | 'context', text: string }> {
   const oldLines = oldStr.split('\n');
   const newLines = newStr.split('\n');
@@ -54,10 +65,10 @@ function computeDiff(oldStr: string, newStr: string): Array<{ type: 'removed' | 
 }
 
 const STATE_COLORS: Record<WorkerState, string> = {
-  working: '#22c55e',   // green — actively running
+  working: '#a78bfa',   // purple — actively running
   thinking: '#a78bfa',  // purple — processing
   waiting: '#f59e0b',   // amber — waiting for user input
-  idle: '#374151',      // dark gray — not active
+  closed: '#374151',    // dark gray — not active
 };
 
 function formatDuration(startedAt: number): string {
@@ -91,14 +102,165 @@ function formatRelativeTime(isoTimestamp: string): string {
   }
 }
 
-function StateBadge({ state }: { state: WorkerState }) {
+function useElapsedSeconds(isoTimestamp: string | undefined): number {
+  const [, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (!isoTimestamp) return 0;
+  return Math.floor((Date.now() - new Date(isoTimestamp).getTime()) / 1000);
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+}
+
+function PermissionPrompt({ sessionId, promptText, styles }: {
+  sessionId: string;
+  promptText?: string;
+  styles: Record<string, string>;
+}) {
+  const [responding, setResponding] = React.useState(false);
+  const [error, setError] = React.useState(false);
+
+  const respond = async (text: string) => {
+    setResponding(true);
+    setError(false);
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/inject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (!response.ok) {
+        console.error(`Permission respond failed: ${response.status} ${response.statusText}`);
+        setError(true);
+        setTimeout(() => setError(false), 3000);
+      }
+    } finally {
+      setResponding(false);
+    }
+  };
+
   return (
-    <span
-      className={styles.stateBadge}
-      style={{ background: STATE_COLORS[state], color: '#1a1a2e' }}
-    >
-      {state}
-    </span>
+    <div className={styles.permissionPrompt}>
+      {promptText && (
+        <pre className={styles.permissionPromptText}>{promptText}</pre>
+      )}
+      <div className={styles.permissionPromptActions}>
+        <button
+          className={`${styles.permissionBtn} ${styles.permissionBtnYes}`}
+          onClick={() => void respond('\r')}
+          disabled={responding}
+        >
+          {error ? 'Failed' : 'Yes'}
+        </button>
+        <button
+          className={`${styles.permissionBtn} ${styles.permissionBtnAlways}`}
+          onClick={() => void respond('\x1b[B\r')}
+          disabled={responding}
+        >
+          Yes, allow this session
+        </button>
+        <button
+          className={`${styles.permissionBtn} ${styles.permissionBtnNo}`}
+          onClick={() => void respond('\x1b')}
+          disabled={responding}
+        >
+          No
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TaskHistory({ summaries, styles }: { summaries: Array<{ summary: string; completedAt: string }>; styles: Record<string, string> }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const latest = summaries[summaries.length - 1];
+  const prior = summaries.slice(0, -1).reverse();
+  return (
+    <div className={styles.taskHistory}>
+      <div className={styles.taskHistoryLatest}>
+        <span className={styles.taskHistoryText}>{latest.summary}</span>
+        {prior.length > 0 && (
+          <button className={styles.taskHistoryToggle} onClick={() => setExpanded(e => !e)}>
+            {expanded ? 'hide history' : `+${prior.length} prior`}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className={styles.taskHistoryList}>
+          {prior.map((s, i) => (
+            <div key={i} className={styles.taskHistoryItem}>
+              <span className={styles.taskHistoryItemDot}>·</span>
+              <span className={styles.taskHistoryItemText}>{s.summary}</span>
+              <span className={styles.taskHistoryItemTime}>{new Date(s.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, onMarkDone, onAccept }: { state: WorkerState; activeSubagentCount?: number; completionHint?: 'done' | 'awaiting'; userAccepted?: boolean; onMarkDone?: () => void; onAccept?: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  const isDone = state === 'waiting' && completionHint === 'done';
+  const color = isDone ? (userAccepted ? '#22c55e' : '#f59e0b') : STATE_COLORS[state];
+  const label = isDone ? (userAccepted ? 'done ✓' : 'done · review') : state;
+
+  const hasMenu = (isDone && !userAccepted && !!onAccept) || (!isDone && !!onMarkDone);
+
+  return (
+    <>
+      <div style={{ position: 'relative', display: 'inline-block' }}>
+        <span
+          className={styles.stateBadge}
+          style={{ background: color, color: '#1a1a2e', cursor: hasMenu ? 'pointer' : undefined }}
+          onClick={hasMenu ? () => setMenuOpen(v => !v) : undefined}
+        >
+          {label}
+        </span>
+        {menuOpen && isDone && !userAccepted && onAccept && (
+          <div className={styles.badgeDoneMenu} onMouseDown={e => e.stopPropagation()}>
+            <button
+              className={styles.badgeDoneBtn}
+              onClick={() => { onAccept(); setMenuOpen(false); }}
+            >
+              ✓ Accept
+            </button>
+          </div>
+        )}
+        {menuOpen && !isDone && onMarkDone && (
+          <div className={styles.badgeDoneMenu} onMouseDown={e => e.stopPropagation()}>
+            <button
+              className={styles.badgeDoneBtn}
+              onClick={() => { onMarkDone(); setMenuOpen(false); }}
+            >
+              ✓ Mark as done
+            </button>
+          </div>
+        )}
+      </div>
+      {activeSubagentCount != null && activeSubagentCount > 0 && (
+        <span className={styles.delegateBadge}>↗ {activeSubagentCount}</span>
+      )}
+    </>
   );
 }
 
@@ -113,7 +275,8 @@ function useTick(intervalMs: number | null) {
 
 type FeedSegment =
   | { type: 'message'; item: ActivityItem }
-  | { type: 'toolGroup'; items: ActivityItem[] };
+  | { type: 'toolGroup'; items: ActivityItem[] }
+  | { type: 'thinking'; item: ActivityItem };
 
 function buildSegments(feed: ActivityItem[]): FeedSegment[] {
   const segments: FeedSegment[] = [];
@@ -125,6 +288,8 @@ function buildSegments(feed: ActivityItem[]): FeedSegment[] {
       } else {
         segments.push({ type: 'toolGroup', items: [item] });
       }
+    } else if (item.kind === 'thinking') {
+      segments.push({ type: 'thinking', item });
     } else {
       segments.push({ type: 'message', item });
     }
@@ -149,8 +314,45 @@ function renderSegments(
   setExpandedDiffs: React.Dispatch<React.SetStateAction<Set<string>>>,
   rawSegments: Set<number>,
   setRawSegments: React.Dispatch<React.SetStateAction<Set<number>>>,
+  expandedThinking: Set<number>,
+  setExpandedThinking: React.Dispatch<React.SetStateAction<Set<number>>>,
+  expandedArgs: Set<string>,
+  setExpandedArgs: React.Dispatch<React.SetStateAction<Set<string>>>,
+  ideName?: string,
+  sessionState?: WorkerState,
 ): React.ReactNode[] {
   return segments.map((seg, segIdx) => {
+    if (seg.type === 'thinking') {
+      const isExpanded = expandedThinking.has(segIdx);
+      if (seg.item.isRedacted) {
+        return (
+          <div key={segIdx} className={styles.thinkingBlock}>
+            <span className={styles.thinkingRedacted}>🔒 Thinking redacted</span>
+          </div>
+        );
+      }
+      return (
+        <div key={segIdx} className={styles.thinkingBlock}>
+          <button
+            className={styles.thinkingToggle}
+            onClick={() => setExpandedThinking(prev => {
+              const next = new Set(prev);
+              if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+              return next;
+            })}
+          >
+            <span className={styles.thinkingIcon}>💭</span>
+            <span>{isExpanded ? 'Hide thinking' : 'Show thinking'}</span>
+            <span className={styles.thinkingChevron}>{isExpanded ? '▴' : '▾'}</span>
+          </button>
+          {isExpanded && (
+            <div className={styles.thinkingContent}>
+              {seg.item.content || <em>Empty</em>}
+            </div>
+          )}
+        </div>
+      );
+    }
     if (seg.type === 'message') {
       const notification = seg.item.role === 'user' ? parseTaskNotification(seg.item.content) : null;
       if (notification) {
@@ -166,7 +368,7 @@ function renderSegments(
       return (
         <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]}`}>
           <div className={styles.transcriptBubble}>
-            {seg.item.role === 'assistant' ? (
+            {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
               <>
                 {isRaw ? (
                   <pre className={styles.rawContent}>{seg.item.content}</pre>
@@ -199,12 +401,34 @@ function renderSegments(
     if (seg.items.length === 1) {
       const tool = seg.items[0];
       const diffKey = `${segIdx}-0`;
+      const argsKey = `${segIdx}-0-args`;
       const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
       const isDiffExpanded = expandedDiffs.has(diffKey);
+      const isArgsExpanded = expandedArgs.has(argsKey);
+      const isLastSegment = segIdx === segments.length - 1;
       return (
         <div key={segIdx} className={styles.toolEntry}>
           <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-            <span className={styles.toolName}>⚡ {tool.toolName}</span>
+            {tool.inputJson ? (
+              <button
+                className={styles.toolNameClickable}
+                onClick={() => setExpandedArgs(prev => {
+                  const next = new Set(prev);
+                  if (next.has(argsKey)) next.delete(argsKey); else next.add(argsKey);
+                  return next;
+                })}
+              >
+                ⚡ {tool.toolName}
+              </button>
+            ) : (
+              <span className={styles.toolName}>⚡ {tool.toolName}</span>
+            )}
+            {tool.durationMs !== undefined && tool.durationMs >= 2000 && (
+              <span className={styles.toolDuration}>{(tool.durationMs / 1000).toFixed(1)}s</span>
+            )}
+            {isLastSegment && sessionState === 'working' && tool.durationMs === undefined && (
+              <span className={styles.toolRunningSpinner} />
+            )}
             {hasDiff && (
               <button
                 className={styles.diffToggle}
@@ -218,7 +442,14 @@ function renderSegments(
               </button>
             )}
           </div>
-          {tool.content && <span className={styles.toolDesc}>{tool.content}</span>}
+          {tool.content && (
+            isFilePath(tool.content)
+              ? <button className={styles.toolDescLink} title="Open file" onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{tool.content}</button>
+              : <span className={styles.toolDesc}>{tool.content}</span>
+          )}
+          {isArgsExpanded && tool.inputJson && (
+            <pre className={styles.argsView}>{tool.inputJson}</pre>
+          )}
           {hasDiff && isDiffExpanded && (
             <div className={styles.diffView}>
               {computeDiff(tool.oldString!, tool.newString ?? '').map((line, li) => (
@@ -240,6 +471,7 @@ function renderSegments(
     const summary = toolNames.length <= 3
       ? toolNames.join(', ')
       : toolNames.slice(0, 3).join(', ') + ` +${toolNames.length - 3}`;
+    const isLastSegment = segIdx === segments.length - 1;
     return (
       <div key={segIdx} className={styles.toolGroup}>
         <button
@@ -255,16 +487,34 @@ function renderSegments(
           <span className={styles.toolGroupIcon}>⚡</span>
           <span className={styles.toolGroupSummary}>{summary}</span>
           <span className={styles.toolGroupCount}>{seg.items.length}</span>
+          {isLastSegment && sessionState === 'working' && seg.items.every(t => t.durationMs === undefined) && (
+            <span className={styles.toolRunningSpinner} />
+          )}
           <span className={styles.toolGroupChevron}>{isExpanded ? '▾' : '▸'}</span>
         </button>
         {isExpanded && seg.items.map((tool, ti) => {
           const diffKey = `${segIdx}-${ti}`;
+          const argsKey = `${segIdx}-${ti}-args`;
           const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
           const isDiffExpanded = expandedDiffs.has(diffKey);
+          const isArgsExpanded = expandedArgs.has(argsKey);
           return (
             <div key={ti} className={styles.toolEntry}>
               <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                <span className={styles.toolName}>⚡ {tool.toolName}</span>
+                {tool.inputJson ? (
+                  <button
+                    className={styles.toolNameClickable}
+                    onClick={() => setExpandedArgs(prev => {
+                      const next = new Set(prev);
+                      if (next.has(argsKey)) next.delete(argsKey); else next.add(argsKey);
+                      return next;
+                    })}
+                  >
+                    ⚡ {tool.toolName}
+                  </button>
+                ) : (
+                  <span className={styles.toolName}>⚡ {tool.toolName}</span>
+                )}
                 {hasDiff && (
                   <button
                     className={styles.diffToggle}
@@ -278,7 +528,14 @@ function renderSegments(
                   </button>
                 )}
               </div>
-              {tool.content && <span className={styles.toolDesc}>{tool.content}</span>}
+              {tool.content && (
+            isFilePath(tool.content)
+              ? <button className={styles.toolDescLink} title="Open file" onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{tool.content}</button>
+              : <span className={styles.toolDesc}>{tool.content}</span>
+          )}
+              {isArgsExpanded && tool.inputJson && (
+                <pre className={styles.argsView}>{tool.inputJson}</pre>
+              )}
               {hasDiff && isDiffExpanded && (
                 <div className={styles.diffView}>
                   {computeDiff(tool.oldString!, tool.newString ?? '').map((line, li) => (
@@ -320,6 +577,9 @@ export function DetailPanel({
   onSelectSession,
   customNames,
   onResumeSession,
+  onMarkDone,
+  onAcceptSession,
+  onAcceptTask,
   panelWidth: panelWidthProp,
   onPanelWidthChange,
 }: DetailPanelProps) {
@@ -374,23 +634,23 @@ export function DetailPanel({
     isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
   }
 
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal'>('conversation');
+  const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  const editInputRef = useRef<HTMLInputElement>(null);
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
   const [localSent, setLocalSent] = useState<string[]>([]);
   const [sendInput2, setSendInput2] = useState('');
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
-  const [showDetails, setShowDetails] = useState(false);
-  const [showSubagentDetails, setShowSubagentDetails] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [copyConfirm, setCopyConfirm] = useState(false);
+  const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
   const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
-  const [showSummary, setShowSummary] = useState(false);
-  const [summary, setSummary] = useState<string | null>(null);
-  const [summaryLoading, setSummaryLoading] = useState(false);
-  const [summaryError, setSummaryError] = useState<string | null>(null);
-
+  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
+  const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
   const currentDisplayName =
     customName ??
     selectedSession?.proposedName ??
@@ -401,63 +661,59 @@ export function DetailPanel({
     ? selectedSession?.subagents.find(s => s.agentId === selectedSubagentId)
     : undefined;
 
+  const elapsedSeconds = useElapsedSeconds(selectedSession?.lastActivity);
+
   // Auto-scroll when feed changes, only if already at bottom
   useEffect(() => {
-    if (isAtBottomRef.current && transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
+    if (!isAtBottomRef.current) return;
+    // Double rAF: wait for React render + browser layout/paint before scrolling
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (transcriptRef.current) {
+          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+        }
+      });
+    });
+    return () => cancelAnimationFrame(raf);
   }, [selectedSession?.activityFeed, selectedSubagent?.activityFeed]);
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
     isAtBottomRef.current = true;
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
+    // Double rAF: wait for React render + browser layout/paint before scrolling
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (transcriptRef.current) {
+          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+        }
+      });
+    });
     setIsEditing(false);
     setEditValue('');
     setLocalSent([]);
     setSendInput2('');
-    setShowDetails(false);
-    setShowSubagentDetails(false);
     setConfirmDelete(false);
+    setCopyConfirm(false);
     setExpandedToolGroups(new Set());
     setExpandedDiffs(new Set());
     setRawSegments(new Set());
+    setExpandedThinking(new Set());
     setPastedImage(null);
-    setShowSummary(false);
-    setSummary(null);
-    setSummaryLoading(false);
-    setSummaryError(null);
+    setActiveTab(selectedSession?.sessionId && isPtySession(selectedSession.sessionId) ? 'terminal' : 'conversation');
+    setSubagentActiveTab('conversation');
+    return () => cancelAnimationFrame(raf);
   }, [selectedSession?.sessionId, selectedSubagentId]);
-
-  const fetchSummary = useCallback((sessionId: string) => {
-    setSummary(null);
-    setSummaryLoading(true);
-    setSummaryError(null);
-    fetch('/api/summarize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
-    })
-      .then(r => r.json() as Promise<{ summary?: string; error?: string }>)
-      .then(data => {
-        if (data.error) setSummaryError(data.error);
-        else setSummary(data.summary ?? null);
-      })
-      .catch(err => setSummaryError((err as Error).message))
-      .finally(() => setSummaryLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (!showSummary || !selectedSession) return;
-    fetchSummary(selectedSession.sessionId);
-  }, [showSummary, selectedSession?.sessionId]);
 
   function startEdit() {
     setEditValue(currentDisplayName);
     setIsEditing(true);
   }
+
+  useEffect(() => {
+    if (isEditing) {
+      editInputRef.current?.select();
+    }
+  }, [isEditing]);
 
   function commitEdit() {
     if (selectedSession) {
@@ -492,6 +748,19 @@ export function DetailPanel({
       .map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200) })),
   ];
 
+  const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
+  const isAbandoned = selectedSession != null && selectedSession.state === 'closed' && (Date.now() - new Date(selectedSession.lastActivity).getTime()) > 30 * 60 * 1000;
+  const summaryState = isAbandoned ? 'abandoned' : (selectedSession?.state ?? 'closed');
+  const STATE_ICONS: Record<string, string> = {
+    working: '⚙',
+    thinking: '💭',
+    waiting: '⏳',
+    closed: '✓',
+    abandoned: '⚠',
+  };
+
+  const hasSubagents = (selectedSession?.subagents.length ?? 0) > 0;
+
   return (
     <>
       {/* Panel */}
@@ -520,71 +789,117 @@ export function DetailPanel({
               /* Subagent view */
               <>
                 <div className={styles.panelHeader}>
-                  <h2 className={styles.sessionName}>{selectedSubagent.description || selectedSubagent.agentType}</h2>
-                  <div className={styles.summaryRow}>
-                    <StateBadge state={selectedSubagent.state} />
-                    <span className={styles.summaryMeta}>{formatRelativeTime(selectedSubagent.lastActivity)}</span>
-                    <button
-                      className={styles.detailsToggle}
-                      onClick={() => setShowSubagentDetails(s => !s)}
-                    >
-                      {showSubagentDetails ? '▴ less' : '▾ details'}
-                    </button>
-                  </div>
-                  {showSubagentDetails && (
-                    <div className={styles.detailsExpanded}>
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Agent ID</span>
-                        <span className={styles.fieldValue}>{selectedSubagent.agentId.slice(0, 8)}</span>
-                      </div>
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Type</span>
-                        <span className={styles.fieldValue}>{selectedSubagent.agentType}</span>
-                      </div>
-                      {selectedSubagent.description && (
-                        <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Description</span>
-                          <span className={styles.fieldValue}>{selectedSubagent.description}</span>
-                        </div>
-                      )}
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Last activity</span>
-                        <span className={styles.fieldValue}>{formatRelativeTime(selectedSubagent.lastActivity)}</span>
+                  <div className={styles.headerWithAvatar}>
+                    <WorkerAvatar
+                      sessionId={selectedSubagent.agentId}
+                      color={selectedSession.color}
+                      size={44}
+                    />
+                    <div className={styles.headerMain}>
+                      <h2 className={styles.sessionName}>{selectedSubagent.description || selectedSubagent.agentType}</h2>
+                      <div className={styles.summaryRow}>
+                        <StateBadge state={selectedSubagent.state} />
+                        <span className={styles.summaryMeta}>{formatRelativeTime(selectedSubagent.lastActivity)}</span>
                       </div>
                     </div>
-                  )}
+                  </div>
                 </div>
-                <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
-                  <section className={styles.section}>
-                    {selectedSubagent.activityFeed?.length ? (
-                      <div className={styles.transcript}>
-                        {renderSegments(
-                          buildSegments(selectedSubagent.activityFeed),
-                          expandedToolGroups,
-                          setExpandedToolGroups,
-                          (role) => role === 'user' ? 'parent' : 'claude',
-                          styles as Record<string, string>,
-                          expandedDiffs,
-                          setExpandedDiffs,
-                          rawSegments,
-                          setRawSegments,
+
+                {/* Subagent tab bar */}
+                <div className={styles.tabBar}>
+                  <button
+                    className={`${styles.tab} ${subagentActiveTab === 'conversation' ? styles.tabActive : ''}`}
+                    onClick={() => setSubagentActiveTab('conversation')}
+                  >
+                    Conversation
+                  </button>
+                  <button
+                    className={`${styles.tab} ${subagentActiveTab === 'details' ? styles.tabActive : ''}`}
+                    onClick={() => setSubagentActiveTab('details')}
+                  >
+                    Details
+                  </button>
+                </div>
+
+                {subagentActiveTab === 'conversation' ? (
+                  <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                    <section className={styles.section}>
+                      {selectedSubagent.activityFeed?.length ? (
+                        <div className={styles.transcript}>
+                          {renderSegments(
+                            buildSegments(selectedSubagent.activityFeed),
+                            expandedToolGroups,
+                            setExpandedToolGroups,
+                            (role) => role === 'user' ? 'parent' : 'claude',
+                            styles as Record<string, string>,
+                            expandedDiffs,
+                            setExpandedDiffs,
+                            rawSegments,
+                            setRawSegments,
+                            expandedThinking,
+                            setExpandedThinking,
+                            expandedArgs,
+                            setExpandedArgs,
+                            selectedSession.ideName,
+                            selectedSubagent.state,
+                          )}
+                        </div>
+                      ) : (
+                        <div className={styles.messageBox}>No activity recorded yet.</div>
+                      )}
+                    </section>
+                  </div>
+                ) : (
+                  /* Subagent details tab */
+                  <div className={styles.scrollArea}>
+                    <section className={styles.section}>
+                      <div className={styles.detailsExpanded} style={{ borderTop: 'none', paddingTop: 0, marginTop: 0 }}>
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>State</span>
+                          <span className={styles.fieldValue}><StateBadge state={selectedSubagent.state} /></span>
+                        </div>
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Type</span>
+                          <span className={styles.fieldValue}>{selectedSubagent.agentType}</span>
+                        </div>
+                        {selectedSubagent.description && (
+                          <div className={styles.field}>
+                            <span className={styles.fieldLabel}>Description</span>
+                            <span className={styles.fieldValue}>{selectedSubagent.description}</span>
+                          </div>
                         )}
+                        {selectedSubagent.model && (
+                          <div className={styles.field}>
+                            <span className={styles.fieldLabel}>Model</span>
+                            <span className={styles.fieldValue}>{selectedSubagent.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                          </div>
+                        )}
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Agent ID</span>
+                          <span className={styles.fieldValue}>{selectedSubagent.agentId.slice(0, 8)}</span>
+                        </div>
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Last activity</span>
+                          <span className={styles.fieldValue}>{formatRelativeTime(selectedSubagent.lastActivity)}</span>
+                        </div>
                       </div>
-                    ) : (
-                      <div className={styles.messageBox}>No activity recorded yet.</div>
-                    )}
-                  </section>
-                </div>
+                    </section>
+                  </div>
+                )}
               </>
             ) : (
               /* Session view */
               <>
                 {/* Sticky header */}
                 <div className={styles.panelHeader}>
+                  <div className={styles.headerWithAvatar}>
+                    <WorkerAvatar sessionId={selectedSession.sessionId} color={selectedSession.color} size={44} />
+                  <div className={styles.headerMain}>
                   <div className={styles.nameRow}>
                     {isEditing ? (
                       <>
                         <input
+                          ref={editInputRef}
                           className={styles.nameInput}
                           value={editValue}
                           onChange={(e) => setEditValue(e.target.value)}
@@ -618,37 +933,281 @@ export function DetailPanel({
                   </div>
 
                   <div className={styles.summaryRow}>
-                    <StateBadge state={selectedSession.state} />
+                    <StateBadge
+                      state={selectedSession.state}
+                      activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
+                      completionHint={selectedSession.completionHint}
+                      userAccepted={selectedSession.userAccepted}
+                      onMarkDone={(() => {
+                        const canMarkDone = selectedSession.state !== 'closed' && selectedSession.completionHint !== 'done' && !!onMarkDone;
+                        return canMarkDone ? () => onMarkDone(selectedSession.sessionId) : undefined;
+                      })()}
+                      onAccept={(() => {
+                        const isDone = selectedSession.completionHint === 'done' && !selectedSession.userAccepted;
+                        return isDone && !!onAcceptSession ? () => onAcceptSession(selectedSession.sessionId) : undefined;
+                      })()}
+                    />
                     <span className={styles.summaryMeta}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta}>{selectedSession.model.replace('claude-', '')}</span>}
-                    {onToggleDormitory && (
-                      <button
-                        className={`${styles.dormitoryBtn} ${isInDormitory?.(selectedSession.sessionId) ? styles.dormitoryBtnActive : ''}`}
-                        onClick={() => onToggleDormitory(selectedSession.sessionId)}
-                        title={isInDormitory?.(selectedSession.sessionId) ? 'Bring back from dormitory' : 'Put to dormitory'}
-                      >
-                        {isInDormitory?.(selectedSession.sessionId) ? '↑ Bring back' : '↓ Dormitory'}
-                      </button>
-                    )}
-                    <button
-                      className={`${styles.summaryToggle} ${showSummary ? styles.summaryToggleActive : ''}`}
-                      onClick={() => setShowSummary(s => !s)}
-                      title="Toggle high-level summary"
-                    >
-                      ∑
-                    </button>
-                    <button className={styles.detailsToggle} onClick={() => setShowDetails(s => !s)}>
-                      {showDetails ? '▴ less' : '▾ details'}
-                    </button>
                   </div>
+                  </div>{/* headerMain */}
+                  </div>{/* headerWithAvatar */}
+                </div>
 
-                  {showDetails && (
-                    <div className={styles.detailsExpanded}>
+                {/* Tab bar */}
+                <div className={styles.tabBar}>
+                  <button
+                    className={`${styles.tab} ${activeTab === 'conversation' ? styles.tabActive : ''}`}
+                    onClick={() => setActiveTab('conversation')}
+                  >
+                    Conversation
+                  </button>
+                  <button
+                    className={`${styles.tab} ${activeTab === 'details' ? styles.tabActive : ''}`}
+                    onClick={() => setActiveTab('details')}
+                  >
+                    Details
+                  </button>
+                  {selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0 && (
+                    <button
+                      className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('tasks')}
+                    >
+                      Tasks
+                    </button>
+                  )}
+                  {hasSubagents && (
+                    <button
+                      className={`${styles.tab} ${activeTab === 'subagents' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('subagents')}
+                    >
+                      Subagents
+                    </button>
+                  )}
+                  {isPty && (
+                    <button
+                      className={`${styles.tab} ${activeTab === 'terminal' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('terminal')}
+                    >
+                      Terminal
+                      <span className={styles.tabPtyBadge}>PTY</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Tab: Conversation */}
+                {activeTab === 'conversation' && (
+                  <>
+                    {/* Non-PTY: transcript + state bar + send input */}
+                      <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                        {(mergedFeed.length > 0 || selectedSession.lastMessage) && (
+                          <section className={styles.section}>
+                            {mergedFeed.length > 0 ? (
+                              <div className={styles.transcript}>
+                                {renderSegments(
+                                  buildSegments(mergedFeed),
+                                  expandedToolGroups,
+                                  setExpandedToolGroups,
+                                  (role) => role === 'user' ? 'you' : 'claude',
+                                  styles as Record<string, string>,
+                                  expandedDiffs,
+                                  setExpandedDiffs,
+                                  rawSegments,
+                                  setRawSegments,
+                                  expandedThinking,
+                                  setExpandedThinking,
+                                  expandedArgs,
+                                  setExpandedArgs,
+                                  selectedSession.ideName,
+                                  selectedSession.state,
+                                )}
+                              </div>
+                            ) : (
+                              <div className={styles.messageBox}>{selectedSession.lastMessage}</div>
+                            )}
+                          </section>
+                        )}
+                      </div>
+                      {selectedSession.state !== 'closed' && (() => {
+                        const activeSubagents = selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking');
+                        const isDone = selectedSession.state === 'waiting' && selectedSession.completionHint === 'done';
+                        const needsApproval = selectedSession.needsPermission === true;
+                        const stateLabel = isDone ? 'Task complete'
+                          : needsApproval ? 'Waiting for approval'
+                          : selectedSession.state === 'waiting' && activeSubagents.length > 0 ? 'Delegated · waiting for subagent'
+                          : selectedSession.state === 'waiting' ? 'Waiting for your response'
+                          : selectedSession.state === 'thinking' ? 'Thinking...'
+                          : 'Working...';
+                        const stateClass = isDone ? styles.stateBarDone
+                          : needsApproval ? styles.stateBarPermission
+                          : selectedSession.state === 'waiting' ? styles.stateBarWaiting
+                          : selectedSession.state === 'thinking' ? styles.stateBarThinking
+                          : styles.stateBarActive;
+                        return (
+                          <>
+                            <div className={`${styles.stateBar} ${stateClass}`}>
+                              <span className={styles.stateBarDot} />
+                              <span className={styles.stateBarLabel}>{stateLabel}</span>
+                              {activeSubagents.length > 0 && (
+                                <span className={styles.stateBarDelegate}>
+                                  · {activeSubagents.length} delegated
+                                </span>
+                              )}
+                              <div style={{flex: 1}} />
+                              {(selectedSession.state === 'thinking' || selectedSession.state === 'working') && elapsedSeconds > 2 && (
+                                <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
+                              )}
+                              {isDone && !selectedSession.userAccepted && onAcceptSession && (
+                                <button
+                                  className={styles.acceptBtn}
+                                  onClick={() => onAcceptSession(selectedSession.sessionId)}
+                                  title="Accept this completed session"
+                                >
+                                  Accept
+                                </button>
+                              )}
+                              {isDone && selectedSession.userAccepted && (
+                                <span className={styles.acceptedLabel}>Accepted ✓</span>
+                              )}
+                            </div>
+                            {needsApproval && (
+                              <PermissionPrompt
+                                sessionId={selectedSession.sessionId}
+                                promptText={selectedSession.permissionPromptText}
+                                styles={styles}
+                              />
+                            )}
+                          </>
+                        );
+                      })()}
+                      <div className={styles.sendArea}>
+                        {getError(selectedSession.sessionId) && (
+                          <div className={styles.sendError}>{getError(selectedSession.sessionId)}</div>
+                        )}
+                        {pastedImage && (
+                          <div className={styles.imagePreview}>
+                            <img src={pastedImage.previewUrl} alt="pasted" className={styles.imagePreviewImg} />
+                            <button className={styles.imageRemoveBtn} onClick={() => setPastedImage(null)}>✕</button>
+                          </div>
+                        )}
+                        <div className={styles.sendInputWrapper}>
+                          <textarea
+                            className={styles.sendTextarea}
+                            value={sendInput2}
+                            onChange={e => setSendInput2(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                if (!connected) return;
+                                const text = sendInput2.trim();
+                                if (!text && !pastedImage) {
+                                  // bare Enter — send \r to confirm a prompt (e.g. permission dialog)
+                                  injectText(selectedSession.sessionId, '', false);
+                                  return;
+                                }
+                                const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
+                                injectText(selectedSession.sessionId, full, !!pastedImage);
+                                if (full) setLocalSent(prev => [...prev, full]);
+                                setSendInput2('');
+                                setPastedImage(null);
+                              }
+                            }}
+                            onPaste={async e => {
+                              const imageItem = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'));
+                              if (!imageItem) return;
+                              e.preventDefault();
+                              const blob = imageItem.getAsFile();
+                              if (!blob) return;
+                              const reader = new FileReader();
+                              reader.onload = async () => {
+                                try {
+                                  const base64 = (reader.result as string).split(',')[1];
+                                  const ext = imageItem.type === 'image/png' ? 'png' : 'jpg';
+                                  const res = await fetch('/api/paste-image', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ base64, ext }),
+                                  });
+                                  const data = await res.json() as { path: string; previewUrl: string };
+                                  setPastedImage(data);
+                                } catch (err) {
+                                  console.error('[paste-image] failed:', err);
+                                }
+                              };
+                              reader.readAsDataURL(blob);
+                            }}
+                            placeholder={connected ? 'Message… (Enter to send, paste image)' : 'Not connected'}
+                            disabled={!connected}
+                            rows={2}
+                          />
+                          <button
+                            className={styles.sendButton}
+                            onClick={() => {
+                              const text = sendInput2.trim();
+                              if (!text && !pastedImage) return;
+                              if (!connected) return;
+                              const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
+                              injectText(selectedSession.sessionId, full, !!pastedImage);
+                              setLocalSent(prev => [...prev, full]);
+                              setSendInput2('');
+                              setPastedImage(null);
+                            }}
+                            disabled={!connected || (!sendInput2.trim() && !pastedImage)}
+                            title="Send (Enter)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                              <path d="M7 12V2M7 2L2.5 6.5M7 2L11.5 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                  </>
+                )}
+
+                {/* Tab: Terminal */}
+                {activeTab === 'terminal' && isPty && (
+                  <div className={styles.terminalContent}>
+                    <XtermTerminal
+                      sessionId={selectedSession.sessionId}
+                      onInput={(data) => sendInput(selectedSession.sessionId, data)}
+                      onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
+                      registerOutputHandler={registerOutputHandler}
+                      isExited={isExited}
+                      fillHeight
+                    />
+                  </div>
+                )}
+
+                {/* Tab: Details */}
+                {activeTab === 'details' && (
+                  <div className={styles.scrollArea}>
+                    <section className={styles.section}>
                       <div className={styles.field}>
                         <span className={styles.fieldLabel}>ID</span>
                         <span className={styles.fieldValue} title={selectedSession.sessionId}>
                           {selectedSession.sessionId.slice(0, 8)}
                           <span className={styles.compactInline}> · PID {selectedSession.pid}</span>
+                          <button
+                            className={styles.copyIdButton}
+                            style={copyIdConfirm ? { color: '#22c55e', opacity: 1 } : undefined}
+                            title="Copy full session ID"
+                            onClick={() => {
+                              void navigator.clipboard.writeText(selectedSession.sessionId);
+                              setCopyIdConfirm(true);
+                              setTimeout(() => setCopyIdConfirm(false), 2000);
+                            }}
+                          >
+                            {copyIdConfirm ? (
+                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <path d="M2 6.5L4.5 9L10 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                              </svg>
+                            ) : (
+                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <rect x="4.5" y="1.5" width="6" height="7.5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                                <path d="M7.5 1.5V1a.5.5 0 0 0-.5-.5H2A1 1 0 0 0 1 1.5V9a.5.5 0 0 0 .5.5H3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                              </svg>
+                            )}
+                          </button>
                         </span>
                       </div>
                       <div className={styles.field}>
@@ -667,6 +1226,29 @@ export function DetailPanel({
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>IDE</span>
                           <span className={styles.fieldValue}>{selectedSession.ideName}</span>
+                        </div>
+                      )}
+                      <div className={styles.field}>
+                        <span className={styles.fieldLabel}>Launched from</span>
+                        <span className={selectedSession.launchMethod === 'overlord-pty' ? styles.overlordPill : styles.fieldValue}>
+                          {selectedSession.launchMethod === 'ide'
+                            ? (selectedSession.ideName
+                                ? selectedSession.ideName.replace(/^(.)/, c => c.toUpperCase())
+                                : 'IDE')
+                            : selectedSession.launchMethod === 'overlord-pty'
+                            ? '↺ Overlord (internal)'
+                            : 'Terminal'}
+                        </span>
+                      </div>
+                      {selectedSession.resumedFrom && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Resumed from</span>
+                          <span
+                            className={styles.detailLink}
+                            title={selectedSession.resumedFrom}
+                          >
+                            {customNames?.[selectedSession.resumedFrom] ?? selectedSession.resumedFrom.slice(0, 8)}
+                          </span>
                         </div>
                       )}
                       {selectedSession.model && (
@@ -702,14 +1284,130 @@ export function DetailPanel({
                           </div>
                         );
                       })()}
-                      {selectedSession.subagents.length > 0 && (() => {
-                        const activeSubagents = selectedSession.subagents.filter(s => s.state !== 'idle');
-                        const idleSubagents = selectedSession.subagents.filter(s => s.state === 'idle');
+
+                      {/* Dormitory button */}
+                      {onToggleDormitory && (
+                        <div className={styles.dormitoryRow}>
+                          <button
+                            className={`${styles.dormitoryBtn} ${isInDormitory?.(selectedSession.sessionId) ? styles.dormitoryBtnActive : ''}`}
+                            onClick={() => onToggleDormitory(selectedSession.sessionId)}
+                          >
+                            {isInDormitory?.(selectedSession.sessionId) ? '↑ Bring back from dormitory' : '↓ Put to dormitory'}
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Continuation banner */}
+                      {selectedSession.state === 'closed' && (
+                        <div className={styles.continuationBanner}>
+                          {siblingActiveSessions && siblingActiveSessions.length > 0 ? (
+                            <>
+                              <span className={styles.continuationLabel}>Session continued →</span>
+                              <div className={styles.continuationList}>
+                                {siblingActiveSessions.map(s => (
+                                  <button
+                                    key={s.sessionId}
+                                    className={styles.continuationBtn}
+                                    onClick={() => onSelectSession?.(s)}
+                                    style={{ borderColor: s.color, color: s.color }}
+                                  >
+                                    {customNames?.[s.sessionId] ?? s.proposedName ?? s.sessionId.slice(0, 8)}
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          ) : (
+                            <span className={styles.continuationLabel}>Session closed</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Resume section — only when closed */}
+                      {selectedSession.state === 'closed' && (
+                        <div className={styles.resumeSection}>
+                          <div className={styles.resumeSectionLabel}>Resume</div>
+                          <div className={styles.resumeCommand}>
+                            <code>claude --resume {selectedSession.sessionId}</code>
+                          </div>
+                          <div className={styles.resumeButtons}>
+                            {onResumeSession && (
+                              <button
+                                className={styles.resumeButton}
+                                onClick={() => onResumeSession(selectedSession.sessionId, selectedSession.cwd)}
+                              >
+                                Resume in Overlord
+                              </button>
+                            )}
+                            <button
+                              className={styles.copyResumeButton}
+                              onClick={() => {
+                                navigator.clipboard.writeText(`claude --resume ${selectedSession.sessionId}`);
+                                setCopyConfirm(true);
+                                setTimeout(() => setCopyConfirm(false), 2000);
+                              }}
+                            >
+                              {copyConfirm ? 'Copied!' : 'Copy resume command'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+
+                {/* Tab: Tasks */}
+                {activeTab === 'tasks' && (
+                  <div className={styles.scrollArea}>
+                    <section className={styles.section}>
+                      {(!selectedSession.completionSummaries || selectedSession.completionSummaries.length === 0) && !lastUserMessage ? (
+                        <div className={styles.messageBox}>No tasks yet.</div>
+                      ) : (
+                        <div className={styles.summaryList}>
+                          {lastUserMessage && (
+                            <div className={`${styles.summaryRow_} ${styles.summaryRowActive}`}>
+                              <span className={styles.summaryRowIcon}>{STATE_ICONS[summaryState]}</span>
+                              <span className={styles.summaryRowText}>
+                                {lastUserMessage.length > 120 ? lastUserMessage.slice(0, 120) + '…' : lastUserMessage}
+                              </span>
+                              <span className={styles.summaryRowTime}>now</span>
+                            </div>
+                          )}
+                          {[...(selectedSession.completionSummaries ?? [])].reverse().map((item, i) => (
+                            <div key={i} className={styles.summaryRow_}>
+                              <span className={styles.summaryRowIcon} style={{ color: item.accepted ? '#22c55e' : '#f59e0b' }}>✓</span>
+                              <span className={styles.summaryRowText}>{item.summary}</span>
+                              {!item.accepted && (
+                                <span style={{ fontSize: '11px', color: '#f59e0b', opacity: 0.8, marginRight: 4 }}>· review</span>
+                              )}
+                              <span className={styles.summaryRowTime}>{formatRelativeTime(item.completedAt)}</span>
+                              {!item.accepted && (
+                                <button
+                                  className={styles.summaryRowAcceptBtn}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAcceptTask?.(selectedSession.sessionId, item.completedAt);
+                                  }}
+                                >
+                                  Accept
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+
+                {/* Tab: Subagents */}
+                {activeTab === 'subagents' && hasSubagents && (
+                  <div className={styles.scrollArea}>
+                    <section className={styles.section}>
+                      {(() => {
+                        const activeSubagents = selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking');
+                        const idleSubagents = selectedSession.subagents.filter(s => s.state === 'closed');
                         return (
                           <>
-                            <div className={styles.detailsSubsection}>
-                              Subagents ({selectedSession.subagents.length})
-                            </div>
                             <ul className={styles.subagentList}>
                               {activeSubagents.map((sub) => (
                                 <li key={sub.agentId} className={`${styles.subagentItem} ${sub.agentId === selectedSubagentId ? styles.subagentItemSelected : ''}`} style={{ cursor: 'pointer' }}>
@@ -749,186 +1447,10 @@ export function DetailPanel({
                           </>
                         );
                       })()}
-                    </div>
-                  )}
-
-                  {selectedSession.state === 'idle' && (
-                    <div className={styles.continuationBanner}>
-                      {siblingActiveSessions && siblingActiveSessions.length > 0 ? (
-                        <>
-                          <span className={styles.continuationLabel}>Session continued →</span>
-                          <div className={styles.continuationList}>
-                            {siblingActiveSessions.map(s => (
-                              <button
-                                key={s.sessionId}
-                                className={styles.continuationBtn}
-                                onClick={() => onSelectSession?.(s)}
-                                style={{ borderColor: s.color, color: s.color }}
-                              >
-                                {customNames?.[s.sessionId] ?? s.proposedName ?? s.sessionId.slice(0, 8)}
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      ) : (
-                        <span className={styles.continuationLabel}>Session idle</span>
-                      )}
-                      {onResumeSession && (
-                        <button
-                          className={styles.resumeBtn}
-                          onClick={() => onResumeSession(selectedSession.sessionId, selectedSession.cwd)}
-                        >
-                          ▶ Resume
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                </div>
-
-                {showSummary && (
-                  <div className={styles.summaryCard}>
-                    <div className={styles.summaryCardHeader}>
-                      <span className={styles.summaryCardTitle}>Summary</span>
-                      {!summaryLoading && selectedSession && (
-                        <button
-                          className={styles.summaryCardRefresh}
-                          onClick={() => fetchSummary(selectedSession.sessionId)}
-                          title="Regenerate"
-                        >↻</button>
-                      )}
-                    </div>
-                    {summaryLoading ? (
-                      <div className={styles.summaryCardLoading}>Generating summary…</div>
-                    ) : summaryError ? (
-                      <div className={styles.summaryCardError}>{summaryError}</div>
-                    ) : summary ? (
-                      <div
-                        className={styles.summaryCardContent}
-                        dangerouslySetInnerHTML={{ __html: renderMarkdown(summary) }}
-                      />
-                    ) : null}
-                  </div>
-                )}
-
-                {isPty ? (
-                  /* PTY: terminal fills the content area */
-                  <div className={styles.scrollArea} ref={transcriptRef}>
-                    <section className={styles.section}>
-                      <XtermTerminal
-                        sessionId={selectedSession.sessionId}
-                        onInput={(data) => sendInput(selectedSession.sessionId, data)}
-                        onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
-                        registerOutputHandler={registerOutputHandler}
-                        isExited={isExited}
-                      />
                     </section>
                   </div>
-                ) : (
-                  /* Non-PTY: transcript + pinned send input */
-                  <>
-                    <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
-                      {(mergedFeed.length > 0 || selectedSession.lastMessage) && (
-                        <section className={styles.section}>
-                          {mergedFeed.length > 0 ? (
-                            <div className={styles.transcript}>
-                              {renderSegments(
-                                buildSegments(mergedFeed),
-                                expandedToolGroups,
-                                setExpandedToolGroups,
-                                (role) => role === 'user' ? 'you' : 'claude',
-                                styles as Record<string, string>,
-                                expandedDiffs,
-                                setExpandedDiffs,
-                                rawSegments,
-                                setRawSegments,
-                              )}
-                            </div>
-                          ) : (
-                            <div className={styles.messageBox}>{selectedSession.lastMessage}</div>
-                          )}
-                        </section>
-                      )}
-                    </div>
-                    <div className={styles.sendArea}>
-                      {getError(selectedSession.sessionId) && (
-                        <div className={styles.sendError}>{getError(selectedSession.sessionId)}</div>
-                      )}
-                      {pastedImage && (
-                        <div className={styles.imagePreview}>
-                          <img src={pastedImage.previewUrl} alt="pasted" className={styles.imagePreviewImg} />
-                          <button className={styles.imageRemoveBtn} onClick={() => setPastedImage(null)}>✕</button>
-                        </div>
-                      )}
-                      <div className={styles.sendInputWrapper}>
-                        <textarea
-                          className={styles.sendTextarea}
-                          value={sendInput2}
-                          onChange={e => setSendInput2(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                              e.preventDefault();
-                              const text = sendInput2.trim();
-                              if (!text && !pastedImage) return;
-                              if (!connected) return;
-                              const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-                              injectText(selectedSession.sessionId, full, !!pastedImage);
-                              setLocalSent(prev => [...prev, full]);
-                              setSendInput2('');
-                              setPastedImage(null);
-                            }
-                          }}
-                          onPaste={async e => {
-                            const imageItem = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'));
-                            if (!imageItem) return;
-                            e.preventDefault();
-                            const blob = imageItem.getAsFile();
-                            if (!blob) return;
-                            const reader = new FileReader();
-                            reader.onload = async () => {
-                              try {
-                                const base64 = (reader.result as string).split(',')[1];
-                                const ext = imageItem.type === 'image/png' ? 'png' : 'jpg';
-                                const res = await fetch('/api/paste-image', {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ base64, ext }),
-                                });
-                                const data = await res.json() as { path: string; previewUrl: string };
-                                setPastedImage(data);
-                              } catch (err) {
-                                console.error('[paste-image] failed:', err);
-                              }
-                            };
-                            reader.readAsDataURL(blob);
-                          }}
-                          placeholder={connected ? 'Message… (Enter to send, paste image)' : 'Not connected'}
-                          disabled={!connected}
-                          rows={2}
-                        />
-                        <button
-                          className={styles.sendButton}
-                          onClick={() => {
-                            const text = sendInput2.trim();
-                            if (!text && !pastedImage) return;
-                            if (!connected) return;
-                            const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-                            injectText(selectedSession.sessionId, full, !!pastedImage);
-                            setLocalSent(prev => [...prev, full]);
-                            setSendInput2('');
-                            setPastedImage(null);
-                          }}
-                          disabled={!connected || (!sendInput2.trim() && !pastedImage)}
-                          title="Send (Enter)"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                            <path d="M7 12V2M7 2L2.5 6.5M7 2L11.5 6.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-                  </>
                 )}
+
               </>
             )}
 

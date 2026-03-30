@@ -1,13 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { OfficeSnapshot, TerminalMessage } from '../types';
 
+interface UseOfficeDataOptions {
+  onTerminalMessage?: (msg: TerminalMessage) => void;
+  onSessionReplaced?: (oldId: string, newId: string) => void;
+}
+
 interface UseOfficeDataResult {
   snapshot: OfficeSnapshot | null;
   connected: boolean;
   sendMessage: (msg: object) => void;
 }
 
-export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void): UseOfficeDataResult {
+export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void, options?: UseOfficeDataOptions): UseOfficeDataResult {
   const [snapshot, setSnapshot] = useState<OfficeSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -15,6 +20,8 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
   const mountedRef = useRef(true);
   const onTerminalMessageRef = useRef(onTerminalMessage);
   onTerminalMessageRef.current = onTerminalMessage;
+  const onSessionReplacedRef = useRef(options?.onSessionReplaced);
+  onSessionReplacedRef.current = options?.onSessionReplaced;
 
   const sendMessage = useCallback((msg: object) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -50,6 +57,12 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
             if (onTerminalMessageRef.current) {
               onTerminalMessageRef.current(data as unknown as TerminalMessage);
             }
+          } else if (data.type === 'session:replaced') {
+            // Session replacement (e.g. Claude Code's /clear command)
+            const msg = data as unknown as { type: string; oldSessionId: string; newSessionId: string };
+            if (onSessionReplacedRef.current) {
+              onSessionReplacedRef.current(msg.oldSessionId, msg.newSessionId);
+            }
           } else if (!data.type) {
             // Legacy format: bare OfficeSnapshot without type wrapper
             setSnapshot(data as unknown as OfficeSnapshot);
@@ -66,7 +79,7 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
           if (mountedRef.current) {
             connect();
           }
-        }, 2000);
+        }, 500);
       };
 
       ws.onerror = () => {

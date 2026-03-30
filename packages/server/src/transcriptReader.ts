@@ -54,6 +54,8 @@ export function readTranscriptState(filePath: string): {
   inputTokens?: number;
   compactCount?: number;
   isCompacting?: boolean;
+  needsPermission?: boolean;
+  lastUserIsDone?: boolean;
 } {
   try {
     const stat = fs.statSync(filePath);
@@ -77,6 +79,42 @@ export function readTranscriptState(filePath: string): {
         if (parsed && typeof parsed.type === 'string') {
           lastTypedEvent = parsed as { type: string; [key: string]: unknown };
           break;
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    // Pre-pass: build tool start/end timestamp maps for duration computation
+    const toolStartMs = new Map<string, number>();
+    const toolEndMs = new Map<string, number>();
+    for (const line of last30) {
+      try {
+        const parsed = JSON.parse(line) as {
+          type?: string;
+          timestamp?: string;
+          message?: {
+            content?: Array<{ type?: string; id?: string; tool_use_id?: string }>;
+          };
+        };
+        if (parsed.type === 'assistant' && parsed.timestamp && Array.isArray(parsed.message?.content)) {
+          const ts = Date.parse(parsed.timestamp);
+          if (!isNaN(ts)) {
+            for (const block of parsed.message!.content!) {
+              if (block.type === 'tool_use' && block.id) {
+                toolStartMs.set(block.id, ts);
+              }
+            }
+          }
+        } else if (parsed.type === 'user' && parsed.timestamp && Array.isArray(parsed.message?.content)) {
+          const ts = Date.parse(parsed.timestamp);
+          if (!isNaN(ts)) {
+            for (const block of parsed.message!.content!) {
+              if (block.type === 'tool_result' && block.tool_use_id) {
+                toolEndMs.set(block.tool_use_id, ts);
+              }
+            }
+          }
         }
       } catch {
         // skip malformed lines
@@ -155,12 +193,45 @@ export function readTranscriptState(filePath: string): {
                 if (block.type === 'tool_use' && block.name) {
                   const desc = describeInput(block.input);
                   const item: ActivityItem = { kind: 'tool', toolName: block.name as string, content: desc };
-                  if (block.name === 'Edit' && block.input && typeof block.input === 'object') {
+                  if (block.input && typeof block.input === 'object') {
                     const inp = block.input as Record<string, unknown>;
-                    if (typeof inp.old_string === 'string') item.oldString = inp.old_string.slice(0, MAX_CONTENT_LENGTH);
-                    if (typeof inp.new_string === 'string') item.newString = inp.new_string.slice(0, MAX_CONTENT_LENGTH);
+                    if (block.name === 'Edit') {
+                      if (typeof inp.old_string === 'string') item.oldString = inp.old_string.slice(0, MAX_CONTENT_LENGTH);
+                      if (typeof inp.new_string === 'string') item.newString = inp.new_string.slice(0, MAX_CONTENT_LENGTH);
+                    }
+                    // Store trimmed input JSON (truncate large string values)
+                    const trimmed: Record<string, unknown> = {};
+                    for (const [k, v] of Object.entries(inp)) {
+                      if (typeof v === 'string' && v.length > 500) {
+                        trimmed[k] = v.slice(0, 500) + '…';
+                      } else {
+                        trimmed[k] = v;
+                      }
+                    }
+                    item.inputJson = JSON.stringify(trimmed, null, 2);
+                  }
+                  // Compute duration from pre-pass maps
+                  const blockId = (block as Record<string, unknown>).id as string | undefined;
+                  if (blockId) {
+                    const start = toolStartMs.get(blockId);
+                    const end = toolEndMs.get(blockId);
+                    if (start && end && end > start) item.durationMs = end - start;
                   }
                   activityFeed.unshift(item);
+                }
+              }
+
+              // Extract thinking blocks — skip redacted and empty ones
+              for (let j = 0; j < contentBlocks.length; j++) {
+                const block = contentBlocks[j];
+                if (block.type === 'thinking') {
+                  const thinkingText = typeof (block as Record<string, unknown>).thinking === 'string' ? (block as Record<string, unknown>).thinking as string : '';
+                  if (thinkingText.trim().length > 0) {
+                    activityFeed.unshift({
+                      kind: 'thinking',
+                      content: thinkingText.slice(0, MAX_CONTENT_LENGTH),
+                    });
+                  }
                 }
               }
             }
@@ -204,8 +275,40 @@ export function readTranscriptState(filePath: string): {
 
     const lastActivity = new Date(fileModifiedMs).toISOString();
 
+    // Detect "DONE" command: scan back for the most recent user message that is NOT a tool_result
+    let lastUserIsDone = false;
+    for (let i = last30.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(last30[i]) as {
+          type?: string;
+          message?: { content?: unknown };
+        };
+        if (parsed.type !== 'user') continue;
+        const rawContent = parsed.message?.content;
+        const contentArr = Array.isArray(rawContent) ? rawContent as Array<{ type?: string; text?: string }> : null;
+        // Skip if this is purely tool_results (system-provided, not human)
+        const isToolResult = contentArr !== null && contentArr.length > 0 && contentArr[0]?.type === 'tool_result';
+        if (isToolResult) continue;
+        // Extract text
+        let text: string | undefined;
+        if (typeof rawContent === 'string') {
+          text = rawContent;
+        } else if (contentArr) {
+          const textBlock = contentArr.find((b) => b.type === 'text');
+          text = textBlock?.text;
+        }
+        if (text !== undefined) {
+          lastUserIsDone = text.trim().toLowerCase() === 'done';
+        }
+        break;
+      } catch {
+        // skip malformed lines
+      }
+    }
+
     // Determine state
     let state: WorkerState;
+    let needsPermission: boolean | undefined;
     if (lastTypedEvent?.type === 'assistant') {
       // Check if the assistant message ended with tool_use (still executing tools)
       // vs pure text (finished turn, waiting for human)
@@ -214,7 +317,6 @@ export function readTranscriptState(filePath: string): {
       const endsWithToolUse = contentArr.length > 0 && contentArr[contentArr.length - 1]?.type === 'tool_use';
 
       if (endsWithToolUse) {
-        // Claude issued tool calls — waiting for tool execution results
         state = ageSec < 8 ? 'working' : 'thinking';
       } else {
         // Claude sent a text response — waiting for user input
@@ -234,15 +336,9 @@ export function readTranscriptState(filePath: string): {
       } else {
         state = 'thinking'; // actively processing
       }
-    } else if (ageSec < 8) {
-      state = 'working';
     } else {
+      // No events in transcript yet — session just started, waiting for first prompt
       state = 'waiting';
-    }
-
-    // For transcripts that haven't been modified in a while, the work is done
-    if ((state === 'waiting' || state === 'thinking') && ageSec > 600) {
-      state = 'idle';
     }
 
     return {
@@ -254,10 +350,12 @@ export function readTranscriptState(filePath: string): {
       inputTokens,
       compactCount: compactCount > 0 ? compactCount : undefined,
       isCompacting: isCompacting || undefined,
+      needsPermission: needsPermission || undefined,
+      lastUserIsDone: lastUserIsDone || undefined,
     };
   } catch {
     return {
-      state: 'idle',
+      state: 'closed',
       lastActivity: new Date().toISOString(),
     };
   }
@@ -396,7 +494,7 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
         }
 
         const transcriptFile = path.join(subagentsDir, `${agentId}.jsonl`);
-        let state: WorkerState = 'idle';
+        let state: WorkerState = 'closed';
         let lastActivity = new Date().toISOString();
         let activityFeed: import('./types.js').ActivityItem[] | undefined;
         let model: string | undefined;
@@ -426,5 +524,11 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
     // ignore directory read errors
   }
 
-  return subagents;
+  const TEN_MINUTES_MS = 10 * 60 * 1000;
+  const now = Date.now();
+  return subagents.filter((s) => {
+    if (s.state === 'working' || s.state === 'thinking') return true;
+    const age = now - new Date(s.lastActivity).getTime();
+    return age < TEN_MINUTES_MS;
+  });
 }

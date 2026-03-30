@@ -1,6 +1,6 @@
-export type WorkerState = 'working' | 'waiting' | 'thinking' | 'idle';
+export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 
-export type ActivityItemKind = 'message' | 'tool';
+export type ActivityItemKind = 'message' | 'tool' | 'thinking';
 
 export interface ActivityItem {
   kind: ActivityItemKind;
@@ -9,6 +9,9 @@ export interface ActivityItem {
   toolName?: string;             // for kind='tool'
   oldString?: string;            // for Edit tool calls
   newString?: string;            // for Edit tool calls
+  isRedacted?: boolean;
+  inputJson?: string;            // full tool input as JSON (truncated)
+  durationMs?: number;           // for kind='tool': how long the tool call took
 }
 
 export interface Subagent {
@@ -37,8 +40,20 @@ export interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   ideName?: string;
+  launchMethod: 'terminal' | 'ide' | 'overlord-pty';
   color: string;
   subagents: Subagent[];
+  resumedFrom?: string;
+  needsPermission?: boolean;
+  permissionPromptText?: string;
+  permissionApprovedAt?: number;  // timestamp ms — suppress re-detection for 30s
+  completionHint?: 'done' | 'awaiting';
+  completionHintByUser?: boolean;
+  manuallyDone?: boolean;
+  completionSummaries?: Array<{ summary: string; completedAt: string }>;
+  userAccepted?: boolean;
+  currentTaskLabel?: string;
+  isWorker?: boolean;
 }
 
 export interface Room {

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { OfficeSnapshot, Session } from '../types';
 import { Room } from './Room';
+import { OverlordLogo } from './OverlordLogo';
 import styles from './Office.module.css';
 
 interface OfficeProps {
@@ -12,6 +13,11 @@ interface OfficeProps {
   dormitorySessions: Set<string>;
   selectedSessionId?: string | null;
   rightOffset?: number;
+  onRoomClick?: (roomId: string) => void;
+  spawnCwd?: string | null;
+  onSpawnNameChange?: (name: string) => void;
+  onSpawnCommit?: (name: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
 }
 
 function formatUpdatedAt(updatedAt: string): string {
@@ -23,7 +29,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, dormitorySessions, selectedSessionId, rightOffset = 0 }: OfficeProps) {
+export function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, dormitorySessions, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, onDeleteSession }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
 
   const visibleRooms = rooms
@@ -38,6 +44,9 @@ export function Office({ snapshot, connected, onSelectSession, customNames, onSp
 
   return (
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
+      <header className={styles.header}>
+        <OverlordLogo />
+      </header>
       <div className={styles.content}>
         {!hasRooms ? (
           <div className={styles.empty}>
@@ -55,6 +64,11 @@ export function Office({ snapshot, connected, onSelectSession, customNames, onSp
                 customNames={customNames}
                 onSpawnSession={onSpawnSession}
                 selectedSessionId={selectedSessionId}
+                onRoomClick={onRoomClick}
+                isSpawning={spawnCwd === room.cwd}
+                onSpawnNameChange={onSpawnNameChange}
+                onSpawnCommit={onSpawnCommit}
+                onDeleteSession={onDeleteSession}
               />
             ))}
           </div>

@@ -130,7 +130,7 @@ When writing a spec, use this structure:
 
 - Never start implementing before the spec is approved.
 - If a new requirement surfaces during implementation, stop and update the spec first.
-- Keep specs as files in `specs/` directory (create it when the first spec is written).
+- Keep specs as files in `specs/` directory. Additional feature specs are already present there — check before writing new ones.
 
 ## Browser Verification
 
@@ -138,6 +138,41 @@ After any client-side code change, verify rendering and behavior in the browser 
 1. Use `mcp__chrome-devtools__*` tools to inspect the running app at `http://localhost:5173`
 2. Check for console errors, layout issues, and that the changed behavior works as expected
 3. If issues are found, fix them before considering the task done
+
+## Independence & Self-Testing
+
+Be maximally independent. Never ask the user to test or verify something you can test yourself.
+
+**Always self-verify before reporting done:**
+- **UI changes** — use Chrome DevTools MCP (`mcp__chrome-devtools__*`) to take screenshots, check console errors, and verify behavior at `http://localhost:5173`
+- **Backend changes** — write ad-hoc test scripts (small Node.js or curl commands via Bash) to hit the server endpoints directly and confirm they work
+- **Logic changes** — reason through edge cases or write a quick inline test
+
+Only ask the user to test when the verification genuinely requires human judgment (e.g. "does this feel right?") or physical interaction the tools can't replicate.
+
+**If the frontend (port 5173) or backend (port 3000) is not running, start it proactively with `npm run dev` — do not ask the user.** This is part of being maximally independent.
+
+### Restarting the server on Windows
+
+Kill live owner only (ignore `TimeWait` with `OwningProcess=0` — they resolve on their own):
+
+```powershell
+powershell -Command "
+\$conns = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | Where-Object { \$_.OwningProcess -gt 0 }
+foreach (\$c in \$conns) { Stop-Process -Id \$c.OwningProcess -Force -ErrorAction SilentlyContinue }
+Write-Host 'done'
+"
+```
+
+Then start the server:
+```bash
+cd C:/projekty/overlord && npm run dev --workspace=packages/server
+```
+
+**Starting the client (if npm not found in background shell):**
+```bash
+cd C:/projekty/overlord/packages/client && C:/projekty/overlord/node_modules/.bin/vite.cmd
+```
 
 ## Agent Usage
 
@@ -164,6 +199,28 @@ Agent teams are fully independent Claude Code sessions working in parallel, with
 ### Rule of thumb
 
 > Subagents for delegation. Teams for collaboration.
+
+### MANDATORY: No inline code changes
+
+**Every code change, no matter how small, MUST be delegated to a subagent.** This is non-negotiable.
+
+- A one-line CSS tweak → subagent
+- Renaming a variable → subagent
+- Adding a tooltip → subagent
+
+Never edit files directly in the main conversation. The main conversation is for coordination, planning, and communication only. If you find yourself reaching for Edit, Write, or Read on a source file — stop and spawn a subagent instead.
+
+## Task Shortcuts
+
+When the user sends a message that is exactly `DONE` (case-insensitive), immediately:
+1. Call `ToolSearch` with `select:TaskList,TaskUpdate` to load both tools in one step (minimizes latency — do this before anything else)
+2. Call `TaskList` to find the most recent task with status `in_progress`
+3. Call `TaskUpdate` to mark it `completed`
+4. Confirm to the user which task was closed
+
+If no in-progress task exists, respond: "No active task found."
+
+Do this before any other action in the response.
 
 ## Getting Started
 

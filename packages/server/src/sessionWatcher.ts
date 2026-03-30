@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chokidar, { FSWatcher } from 'chokidar';
+import { HAIKU_WORKER_CWD } from './claudeQuery.js';
 
 export interface RawSession {
   pid: number;
@@ -15,6 +16,7 @@ export interface RawSession {
 export class SessionWatcher extends EventEmitter {
   private watcher: FSWatcher | null = null;
   private sessionsDir: string;
+  private sessionIdByPath = new Map<string, string>();
 
   constructor() {
     super();
@@ -31,6 +33,7 @@ export class SessionWatcher extends EventEmitter {
           const filePath = path.join(this.sessionsDir, file);
           const data = this.readSession(filePath);
           if (data) {
+            this.sessionIdByPath.set(filePath, data.sessionId);
             this.emit('added', data);
           }
         }
@@ -48,6 +51,7 @@ export class SessionWatcher extends EventEmitter {
       if (!filePath.endsWith('.json')) return;
       const data = this.readSession(filePath);
       if (data) {
+        this.sessionIdByPath.set(filePath, data.sessionId);
         this.emit('added', data);
       }
     });
@@ -56,14 +60,18 @@ export class SessionWatcher extends EventEmitter {
       if (!filePath.endsWith('.json')) return;
       const data = this.readSession(filePath);
       if (data) {
+        this.sessionIdByPath.set(filePath, data.sessionId);
         this.emit('changed', data);
       }
     });
 
     this.watcher.on('unlink', (filePath: string) => {
       if (!filePath.endsWith('.json')) return;
-      const basename = path.basename(filePath, '.json');
-      this.emit('removed', basename);
+      const sessionId = this.sessionIdByPath.get(filePath);
+      this.sessionIdByPath.delete(filePath);
+      if (sessionId) {
+        this.emit('removed', sessionId);
+      }
     });
   }
 
@@ -78,6 +86,9 @@ export class SessionWatcher extends EventEmitter {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content) as RawSession;
+      if (data.cwd && path.normalize(data.cwd) === path.normalize(HAIKU_WORKER_CWD)) {
+        return { ...data, kind: 'haiku-worker' };
+      }
       return data;
     } catch {
       return null;

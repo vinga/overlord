@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { Session } from '../types';
 import { Worker } from './Worker';
 import styles from './WorkerGroup.module.css';
@@ -7,18 +7,42 @@ interface WorkerGroupProps {
   session: Session;
   onSelectSession: (session: Session, subagentId?: string) => void;
   customName?: string;
+  launchMethod?: 'terminal' | 'ide' | 'overlord-pty';
+  onDeleteSession?: (sessionId: string) => void;
 }
 
 const MAX_VISIBLE_SUBAGENTS = 4;
 
-export function WorkerGroup({ session, onSelectSession, customName }: WorkerGroupProps) {
-  const activeSubagents = session.subagents.filter(s => s.state !== 'idle');
-  const visibleSubagents = activeSubagents.slice(0, MAX_VISIBLE_SUBAGENTS);
+export function WorkerGroup({ session, onSelectSession, customName, launchMethod, onDeleteSession }: WorkerGroupProps) {
+  const [expanded, setExpanded] = useState(false);
+  const activeSubagents = session.subagents.filter(s => s.state !== 'closed');
+  const runningSubagents = activeSubagents.filter(s => s.state === 'working' || s.state === 'thinking');
+  const allRecentSubagents = session.userAccepted ? [] : session.subagents.filter(s =>
+    s.state === 'working' || s.state === 'thinking' ||
+    ((s.state === 'waiting' || s.state === 'closed') && Date.now() - new Date(s.lastActivity).getTime() < 4 * 60 * 1000)
+  );
+  const visibleSubagents = expanded ? allRecentSubagents : allRecentSubagents.slice(0, MAX_VISIBLE_SUBAGENTS);
   const displayName = customName ?? session.proposedName ?? session.slug ?? session.sessionId.slice(0, 8);
-  const extraCount = activeSubagents.length - MAX_VISIBLE_SUBAGENTS;
+  const extraCount = allRecentSubagents.length - MAX_VISIBLE_SUBAGENTS;
 
   return (
     <div className={styles.group}>
+      {session.userAccepted && session.subagents.length > 0 && (
+        <div
+          className={styles.delegateBadge}
+          title={`${session.subagents.length} subagent${session.subagents.length > 1 ? 's' : ''} used`}
+        >
+          {session.subagents.length}
+        </div>
+      )}
+      {!session.userAccepted && runningSubagents.length > 0 && (
+        <div
+          className={styles.delegateBadge}
+          title={`${runningSubagents.length} subagent${runningSubagents.length > 1 ? 's' : ''} actively working on delegated tasks`}
+        >
+          {runningSubagents.length}
+        </div>
+      )}
       {/* Main worker */}
       <div className={styles.mainWorker}>
         <Worker
@@ -26,7 +50,17 @@ export function WorkerGroup({ session, onSelectSession, customName }: WorkerGrou
           name={displayName}
           state={session.state}
           color={session.color}
+          activeSubagentCount={runningSubagents.length}
+          completionHint={session.completionHint}
+          completionSummaries={session.completionSummaries}
+          userAccepted={session.userAccepted}
+          needsPermission={session.needsPermission}
+          currentTaskLabel={session.currentTaskLabel}
+          isWorker={session.isWorker}
+          launchMethod={launchMethod ?? session.launchMethod}
+          resumedFrom={session.resumedFrom}
           onClick={() => onSelectSession(session)}
+          onDelete={onDeleteSession ? () => onDeleteSession(session.sessionId) : undefined}
         />
       </div>
 
@@ -49,8 +83,11 @@ export function WorkerGroup({ session, onSelectSession, customName }: WorkerGrou
               />
             </div>
           ))}
-          {extraCount > 0 && (
-            <div className={styles.extraBadge}>+{extraCount}</div>
+          {!expanded && extraCount > 0 && (
+            <button className={styles.extraBadge} onClick={() => setExpanded(true)}>+{extraCount}</button>
+          )}
+          {expanded && (
+            <button className={styles.extraBadge} onClick={() => setExpanded(false)}>−</button>
           )}
         </div>
       )}

@@ -6,6 +6,11 @@ export class ProcessChecker {
 
   start(callback: (pids: Set<number>) => void, intervalMs = 5000): void {
     const run = () => {
+      if (process.platform !== 'win32') {
+        // No-op on non-Windows: all sessions will rely on transcript-based state
+        callback(new Set());
+        return;
+      }
       exec('tasklist /fo csv /nh', (err, stdout) => {
         if (err) return;
         const pids = new Set<number>();
