@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import type { OfficeSnapshot, Session } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
@@ -10,14 +10,20 @@ interface OfficeProps {
   onSelectSession: (session: Session, subagentId?: string) => void;
   customNames: Record<string, string>;
   onSpawnSession?: (cwd: string) => void;
-  dormitorySessions: Set<string>;
+  onNewTerminalSession?: (cwd: string) => void;
+
   selectedSessionId?: string | null;
   rightOffset?: number;
   onRoomClick?: (roomId: string) => void;
   spawnCwd?: string | null;
   onSpawnNameChange?: (name: string) => void;
   onSpawnCommit?: (name: string) => void;
+  terminalSpawnCwd?: string | null;
+  onTerminalSpawnCommit?: (name: string) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onRenameSession?: (sessionId: string, name: string) => void;
+  onCloneSession?: (sessionId: string) => void;
+  isPtySession?: (sessionId: string) => boolean;
 }
 
 function formatUpdatedAt(updatedAt: string): string {
@@ -29,16 +35,13 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, dormitorySessions, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, onDeleteSession }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
 
-  const visibleRooms = rooms
-    .map(room => ({
-      ...room,
-      activeSessions: room.sessions.filter(s => !dormitorySessions.has(s.sessionId)),
-      dormitorySessions: room.sessions.filter(s => dormitorySessions.has(s.sessionId)),
-    }))
-    .filter(room => room.sessions.length > 0);
+  const visibleRooms = useMemo(() =>
+    rooms.filter(room => room.sessions.length > 0),
+    [rooms]
+  );
 
   const hasRooms = visibleRooms.length > 0;
 
@@ -58,17 +61,22 @@ export function Office({ snapshot, connected, onSelectSession, customNames, onSp
             {visibleRooms.map((room) => (
               <Room
                 key={room.id}
-                room={{ ...room, sessions: room.activeSessions }}
-                dormitorySessions={room.dormitorySessions}
+                room={room}
                 onSelectSession={onSelectSession}
                 customNames={customNames}
                 onSpawnSession={onSpawnSession}
+                onNewTerminalSession={onNewTerminalSession}
                 selectedSessionId={selectedSessionId}
                 onRoomClick={onRoomClick}
                 isSpawning={spawnCwd === room.cwd}
                 onSpawnNameChange={onSpawnNameChange}
                 onSpawnCommit={onSpawnCommit}
+                terminalSpawnCwd={terminalSpawnCwd}
+                onTerminalSpawnCommit={onTerminalSpawnCommit}
                 onDeleteSession={onDeleteSession}
+                onRenameSession={onRenameSession}
+                onCloneSession={onCloneSession}
+                isPtySession={isPtySession}
               />
             ))}
           </div>
@@ -88,4 +96,4 @@ export function Office({ snapshot, connected, onSelectSession, customNames, onSp
       </div>
     </div>
   );
-}
+});

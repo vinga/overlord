@@ -32,7 +32,7 @@ export function XtermTerminal({
       theme: {
         background: '#0d1117',
         foreground: '#e6edf3',
-        cursor: '#58a6ff',
+        cursor: 'transparent',
         cursorAccent: '#0d1117',
         selectionBackground: 'rgba(88, 166, 255, 0.25)',
         black: '#0d1117',
@@ -55,7 +55,8 @@ export function XtermTerminal({
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace',
       fontSize: 13,
       lineHeight: 1.4,
-      cursorBlink: true,
+      cursorBlink: false,
+      cursorStyle: 'block',
       scrollback: 5000,
       allowTransparency: false,
     });

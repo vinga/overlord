@@ -178,6 +178,9 @@ cd C:/projekty/overlord/packages/client && C:/projekty/overlord/node_modules/.bi
 
 Use subagents and agent teams as often as possible. Prefer delegating over doing work inline in the main conversation.
 
+### Tool usage
+Whn executing tools, prefer parallel mode if it is possible to make tool calls independent from each other
+
 ### Subagents
 
 Spawn subagents (via the Agent tool) for focused, self-contained tasks. They run within the session and report results back.

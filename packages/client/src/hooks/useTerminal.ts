@@ -1,6 +1,13 @@
 import { useRef, useCallback, useState } from 'react';
 import type { TerminalMessage } from '../types';
 
+function decodeBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
 export interface UseTerminalResult {
   handleTerminalMessage: (msg: TerminalMessage) => void;
   spawnSession: (cwd: string, cols?: number, rows?: number) => void;
@@ -12,6 +19,8 @@ export interface UseTerminalResult {
   isPtySession: (sessionId: string) => boolean;
   getError: (sessionId: string) => string | undefined;
   killSession: (sessionId: string) => void;
+  openInTerminal: (sessionId: string, cwd: string) => void;
+  openNewTerminal: (cwd: string, name?: string) => void;
   ptySessionIds: Set<string>;
   exitedSessions: Set<string>;
 }
@@ -32,15 +41,41 @@ export function useTerminal(
   const onSpawnedRef = useRef(onSpawned);
   onSpawnedRef.current = onSpawned;
 
+  function migrateId(oldId: string, newId: string) {
+    // migrate outputBuffer
+    const buf = outputBuffer.current.get(oldId);
+    if (buf && buf.length > 0) {
+      outputBuffer.current.delete(oldId);
+      const existing = outputBuffer.current.get(newId) ?? [];
+      outputBuffer.current.set(newId, [...buf, ...existing]);
+    }
+    // migrate outputHandlers
+    const handler = outputHandlers.current.get(oldId);
+    if (handler) {
+      outputHandlers.current.delete(oldId);
+      outputHandlers.current.set(newId, handler);
+    }
+    // migrate exitHandlers
+    const exitHandler = exitHandlers.current.get(oldId);
+    if (exitHandler) {
+      exitHandlers.current.delete(oldId);
+      exitHandlers.current.set(newId, exitHandler);
+    }
+    // migrate ptySessionIds set
+    setPtySessionIds(prev => {
+      const next = new Set(prev);
+      next.delete(oldId);
+      next.add(newId);
+      return next;
+    });
+  }
+
   const handleTerminalMessage = useCallback((msg: TerminalMessage) => {
     if (msg.type === 'terminal:output') {
       const handler = outputHandlers.current.get(msg.sessionId);
       if (handler) {
         try {
-          const binary = atob(msg.data);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          handler(bytes);
+          handler(decodeBase64(msg.data));
         } catch {
           // fallback: encode raw string as UTF-8 bytes
           handler(new TextEncoder().encode(msg.data));
@@ -48,9 +83,7 @@ export function useTerminal(
       } else {
         // Buffer output until a handler registers (e.g. during panel transition)
         try {
-          const binary = atob(msg.data);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const bytes = decodeBase64(msg.data);
           const buf = outputBuffer.current.get(msg.sessionId) ?? [];
           buf.push(bytes);
           if (buf.length > 2000) buf.splice(0, buf.length - 2000); // cap buffer size
@@ -84,21 +117,12 @@ export function useTerminal(
         next.set(msg.sessionId, msg.message);
         return next;
       });
+    } else if (msg.type === 'terminal:session-replaced') {
+      const { oldSessionId, newSessionId } = msg;
+      migrateId(oldSessionId, newSessionId);
     } else if (msg.type === 'terminal:linked') {
       const { ptySessionId, claudeSessionId } = msg as { type: string; ptySessionId: string; claudeSessionId: string };
-      // Move buffered output from pty-xxx to claudeSessionId
-      const ptyBuf = outputBuffer.current.get(ptySessionId);
-      if (ptyBuf && ptyBuf.length > 0) {
-        outputBuffer.current.delete(ptySessionId);
-        const existing = outputBuffer.current.get(claudeSessionId) ?? [];
-        outputBuffer.current.set(claudeSessionId, [...ptyBuf, ...existing]);
-      }
-      setPtySessionIds((prev) => {
-        const next = new Set(prev);
-        next.delete(ptySessionId);   // remove the temp pty-xxx ID
-        next.add(claudeSessionId);   // add the real Claude session ID
-        return next;
-      });
+      migrateId(ptySessionId, claudeSessionId);
       if (onSpawnedRef.current) onSpawnedRef.current(claudeSessionId);  // update activePtySessionId in App.tsx
     }
   }, []);
@@ -182,6 +206,21 @@ export function useTerminal(
     [sendMessage]
   );
 
+  const openInTerminal = useCallback(
+    (sessionId: string, cwd: string) => {
+      console.log('[openInTerminal] sending', sessionId, cwd);
+      sendMessage({ type: 'terminal:open-external', sessionId, cwd });
+    },
+    [sendMessage]
+  );
+
+  const openNewTerminal = useCallback(
+    (cwd: string, name?: string) => {
+      sendMessage({ type: 'terminal:open-new', cwd, name });
+    },
+    [sendMessage]
+  );
+
   return {
     handleTerminalMessage,
     spawnSession,
@@ -193,6 +232,8 @@ export function useTerminal(
     isPtySession,
     getError,
     killSession,
+    openInTerminal,
+    openNewTerminal,
     ptySessionIds,
     exitedSessions,
   };

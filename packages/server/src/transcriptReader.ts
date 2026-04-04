@@ -3,6 +3,28 @@ import * as path from 'path';
 import * as os from 'os';
 import type { WorkerState, Subagent, ActivityItem } from './types.js';
 
+interface TranscriptCache {
+  mtimeMs: number;
+  result: ReturnType<typeof readTranscriptState>;
+}
+const transcriptCache = new Map<string, TranscriptCache>();
+
+interface SubagentsDirCache {
+  mtimeMs: number;
+  agentIds: string[];
+}
+const subagentsDirCache = new Map<string, SubagentsDirCache>();
+
+const proposedNameCache = new Map<string, string>();
+
+export function clearTranscriptCache(filePath: string): void {
+  transcriptCache.delete(filePath);
+}
+
+export function clearProposedNameCache(sessionId: string): void {
+  proposedNameCache.delete(sessionId);
+}
+
 export function cwdToSlug(cwd: string): string {
   // Replace \, :, / with -
   const slug = cwd.replace(/[\\:/]/g, '-');
@@ -45,6 +67,114 @@ function describeInput(input: unknown): string {
   return String(val).slice(0, 100);
 }
 
+function buildToolDurations(lines: string[]): Map<string, number> {
+  const toolStartMs = new Map<string, number>();
+  const toolEndMs = new Map<string, number>();
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as {
+        type?: string;
+        timestamp?: string;
+        message?: {
+          content?: Array<{ type?: string; id?: string; tool_use_id?: string }>;
+        };
+      };
+      if (parsed.type === 'assistant' && parsed.timestamp && Array.isArray(parsed.message?.content)) {
+        const ts = Date.parse(parsed.timestamp);
+        if (!isNaN(ts)) {
+          for (const block of parsed.message!.content!) {
+            if (block.type === 'tool_use' && block.id) {
+              toolStartMs.set(block.id, ts);
+            }
+          }
+        }
+      } else if (parsed.type === 'user' && parsed.timestamp && Array.isArray(parsed.message?.content)) {
+        const ts = Date.parse(parsed.timestamp);
+        if (!isNaN(ts)) {
+          for (const block of parsed.message!.content!) {
+            if (block.type === 'tool_result' && block.tool_use_id) {
+              toolEndMs.set(block.tool_use_id, ts);
+            }
+          }
+        }
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  const durationMs = new Map<string, number>();
+  for (const [id, start] of toolStartMs) {
+    const end = toolEndMs.get(id);
+    if (end !== undefined && end > start) {
+      durationMs.set(id, end - start);
+    }
+  }
+  return durationMs;
+}
+
+function detectCompaction(lines: string[]): { compactCount: number; isCompacting: boolean } {
+  const now = Date.now();
+  let compactCount = 0;
+  let lastCompactTimestamp: number | undefined;
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as {
+        type?: string;
+        subtype?: string;
+        timestamp?: string;
+      };
+      if (parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
+        compactCount++;
+        if (parsed.timestamp) {
+          const ts = new Date(parsed.timestamp).getTime();
+          if (!isNaN(ts)) {
+            if (lastCompactTimestamp === undefined || ts > lastCompactTimestamp) {
+              lastCompactTimestamp = ts;
+            }
+          }
+        }
+      }
+    } catch {
+      // skip
+    }
+  }
+  const isCompacting =
+    lastCompactTimestamp !== undefined && now - lastCompactTimestamp < 5000;
+  return { compactCount, isCompacting };
+}
+
+function detectLastUserIsDone(last30: string[]): boolean {
+  for (let i = last30.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(last30[i]) as {
+        type?: string;
+        message?: { content?: unknown };
+      };
+      if (parsed.type !== 'user') continue;
+      const rawContent = parsed.message?.content;
+      const contentArr = Array.isArray(rawContent) ? rawContent as Array<{ type?: string; text?: string }> : null;
+      // Skip if this is purely tool_results (system-provided, not human)
+      const isToolResult = contentArr !== null && contentArr.length > 0 && contentArr[0]?.type === 'tool_result';
+      if (isToolResult) continue;
+      // Extract text
+      let text: string | undefined;
+      if (typeof rawContent === 'string') {
+        text = rawContent;
+      } else if (contentArr) {
+        const textBlock = contentArr.find((b) => b.type === 'text');
+        text = textBlock?.text;
+      }
+      if (text !== undefined) {
+        return text.trim().toLowerCase() === 'done';
+      }
+      break;
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return false;
+}
+
 export function readTranscriptState(filePath: string): {
   state: WorkerState;
   lastActivity: string;
@@ -60,6 +190,13 @@ export function readTranscriptState(filePath: string): {
   try {
     const stat = fs.statSync(filePath);
     const fileModifiedMs = stat.mtimeMs;
+
+    // Return cached result if file hasn't changed
+    const cached = transcriptCache.get(filePath);
+    if (cached && cached.mtimeMs === fileModifiedMs) {
+      return cached.result;
+    }
+
     const now = Date.now();
     const ageSec = (now - fileModifiedMs) / 1000;
 
@@ -85,41 +222,8 @@ export function readTranscriptState(filePath: string): {
       }
     }
 
-    // Pre-pass: build tool start/end timestamp maps for duration computation
-    const toolStartMs = new Map<string, number>();
-    const toolEndMs = new Map<string, number>();
-    for (const line of last30) {
-      try {
-        const parsed = JSON.parse(line) as {
-          type?: string;
-          timestamp?: string;
-          message?: {
-            content?: Array<{ type?: string; id?: string; tool_use_id?: string }>;
-          };
-        };
-        if (parsed.type === 'assistant' && parsed.timestamp && Array.isArray(parsed.message?.content)) {
-          const ts = Date.parse(parsed.timestamp);
-          if (!isNaN(ts)) {
-            for (const block of parsed.message!.content!) {
-              if (block.type === 'tool_use' && block.id) {
-                toolStartMs.set(block.id, ts);
-              }
-            }
-          }
-        } else if (parsed.type === 'user' && parsed.timestamp && Array.isArray(parsed.message?.content)) {
-          const ts = Date.parse(parsed.timestamp);
-          if (!isNaN(ts)) {
-            for (const block of parsed.message!.content!) {
-              if (block.type === 'tool_result' && block.tool_use_id) {
-                toolEndMs.set(block.tool_use_id, ts);
-              }
-            }
-          }
-        }
-      } catch {
-        // skip malformed lines
-      }
-    }
+    // Pre-pass: build tool_use_id → duration map
+    const toolDurations = buildToolDurations(last30);
 
     // Build unified activityFeed (messages + tools in chronological order) and extract lastMessage
     let lastMessage: string | undefined;
@@ -210,12 +314,11 @@ export function readTranscriptState(filePath: string): {
                     }
                     item.inputJson = JSON.stringify(trimmed, null, 2);
                   }
-                  // Compute duration from pre-pass maps
+                  // Compute duration from pre-pass map
                   const blockId = (block as Record<string, unknown>).id as string | undefined;
                   if (blockId) {
-                    const start = toolStartMs.get(blockId);
-                    const end = toolEndMs.get(blockId);
-                    if (start && end && end > start) item.durationMs = end - start;
+                    const dur = toolDurations.get(blockId);
+                    if (dur !== undefined) item.durationMs = dur;
                   }
                   activityFeed.unshift(item);
                 }
@@ -246,65 +349,12 @@ export function readTranscriptState(filePath: string): {
     }
 
     // Scan all lines for compact_boundary events
-    let compactCount = 0;
-    let lastCompactTimestamp: number | undefined;
-    for (const line of lines) {
-      try {
-        const parsed = JSON.parse(line) as {
-          type?: string;
-          subtype?: string;
-          timestamp?: string;
-        };
-        if (parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
-          compactCount++;
-          if (parsed.timestamp) {
-            const ts = new Date(parsed.timestamp).getTime();
-            if (!isNaN(ts)) {
-              if (lastCompactTimestamp === undefined || ts > lastCompactTimestamp) {
-                lastCompactTimestamp = ts;
-              }
-            }
-          }
-        }
-      } catch {
-        // skip
-      }
-    }
-    const isCompacting =
-      lastCompactTimestamp !== undefined && now - lastCompactTimestamp < 5000;
+    const { compactCount, isCompacting } = detectCompaction(lines);
 
     const lastActivity = new Date(fileModifiedMs).toISOString();
 
     // Detect "DONE" command: scan back for the most recent user message that is NOT a tool_result
-    let lastUserIsDone = false;
-    for (let i = last30.length - 1; i >= 0; i--) {
-      try {
-        const parsed = JSON.parse(last30[i]) as {
-          type?: string;
-          message?: { content?: unknown };
-        };
-        if (parsed.type !== 'user') continue;
-        const rawContent = parsed.message?.content;
-        const contentArr = Array.isArray(rawContent) ? rawContent as Array<{ type?: string; text?: string }> : null;
-        // Skip if this is purely tool_results (system-provided, not human)
-        const isToolResult = contentArr !== null && contentArr.length > 0 && contentArr[0]?.type === 'tool_result';
-        if (isToolResult) continue;
-        // Extract text
-        let text: string | undefined;
-        if (typeof rawContent === 'string') {
-          text = rawContent;
-        } else if (contentArr) {
-          const textBlock = contentArr.find((b) => b.type === 'text');
-          text = textBlock?.text;
-        }
-        if (text !== undefined) {
-          lastUserIsDone = text.trim().toLowerCase() === 'done';
-        }
-        break;
-      } catch {
-        // skip malformed lines
-      }
-    }
+    const lastUserIsDone = detectLastUserIsDone(last30);
 
     // Determine state
     let state: WorkerState;
@@ -341,7 +391,7 @@ export function readTranscriptState(filePath: string): {
       state = 'waiting';
     }
 
-    return {
+    const result = {
       state,
       lastActivity,
       lastMessage,
@@ -353,6 +403,8 @@ export function readTranscriptState(filePath: string): {
       needsPermission: needsPermission || undefined,
       lastUserIsDone: lastUserIsDone || undefined,
     };
+    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, result });
+    return result;
   } catch {
     return {
       state: 'closed',
@@ -382,6 +434,9 @@ export function readSlug(filePath: string): string | undefined {
 }
 
 export function readProposedName(sessionId: string, transcriptPath: string): string | undefined {
+  const cached = proposedNameCache.get(sessionId);
+  if (cached !== undefined) return cached;
+
   // Strategy 1: first meaningful task subject from ~/.claude/tasks/{sessionId}/
   const tasksDir = path.join(os.homedir(), '.claude', 'tasks', sessionId);
   try {
@@ -397,7 +452,9 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
           };
           if (task.subject && task.status !== 'deleted') {
             // Truncate to 50 chars
-            return task.subject.slice(0, 50);
+            const result = task.subject.slice(0, 50);
+            proposedNameCache.set(sessionId, result);
+            return result;
           }
         } catch {
           // skip
@@ -433,7 +490,9 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
             // Clean up and truncate
             const cleaned = text.replace(/\s+/g, ' ').trim();
             if (cleaned.length > 5) {
-              return cleaned.slice(0, 50);
+              const result = cleaned.slice(0, 50);
+              proposedNameCache.set(sessionId, result);
+              return result;
             }
           }
         }
@@ -466,16 +525,21 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
       return subagents;
     }
 
-    const entries = fs.readdirSync(subagentsDir);
-
-    // Collect all unique agentIds (from .meta.json and/or .jsonl files)
-    const agentIds = new Set<string>();
-    for (const entry of entries) {
-      if (entry.endsWith('.meta.json')) {
-        agentIds.add(entry.replace(/\.meta\.json$/, ''));
-      } else if (entry.endsWith('.jsonl')) {
-        agentIds.add(entry.replace(/\.jsonl$/, ''));
+    const dirStat = fs.statSync(subagentsDir);
+    const dirMtime = dirStat.mtimeMs;
+    let agentIds: string[];
+    const dirCached = subagentsDirCache.get(subagentsDir);
+    if (dirCached && dirCached.mtimeMs === dirMtime) {
+      agentIds = dirCached.agentIds;
+    } else {
+      const entries = fs.readdirSync(subagentsDir);
+      const idSet = new Set<string>();
+      for (const entry of entries) {
+        if (entry.endsWith('.meta.json')) idSet.add(entry.replace(/\.meta\.json$/, ''));
+        else if (entry.endsWith('.jsonl')) idSet.add(entry.replace(/\.jsonl$/, ''));
       }
+      agentIds = [...idSet];
+      subagentsDirCache.set(subagentsDir, { mtimeMs: dirMtime, agentIds });
     }
 
     for (const agentId of agentIds) {

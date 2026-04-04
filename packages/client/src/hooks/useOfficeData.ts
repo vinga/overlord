@@ -63,9 +63,10 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
             if (onSessionReplacedRef.current) {
               onSessionReplacedRef.current(msg.oldSessionId, msg.newSessionId);
             }
-          } else if (!data.type) {
-            // Legacy format: bare OfficeSnapshot without type wrapper
-            setSnapshot(data as unknown as OfficeSnapshot);
+            // Also notify terminal handler to migrate PTY state
+            if (onTerminalMessageRef.current) {
+              onTerminalMessageRef.current({ type: 'terminal:session-replaced', oldSessionId: msg.oldSessionId, newSessionId: msg.newSessionId });
+            }
           }
         } catch {
           // ignore malformed messages

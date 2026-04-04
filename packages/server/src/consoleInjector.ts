@@ -88,13 +88,13 @@ function ensureDaemon(): Promise<void> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export async function injectText(pid: number, text: string, extraEnter = false): Promise<void> {
+export async function injectText(pid: number, text: string, extraEnter = false, raw = false): Promise<void> {
   await ensureDaemon();
 
   return new Promise<void>((resolve, reject) => {
     const wrapped = (_val?: string | null) => resolve();
     pending.push({ resolve: wrapped, reject, type: 'inject' });
-    const cmd = JSON.stringify({ pid, text, extraEnter }) + '\n';
+    const cmd = JSON.stringify({ pid, text, extraEnter, raw }) + '\n';
     proc!.stdin.write(cmd);
   });
 }

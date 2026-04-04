@@ -1,6 +1,7 @@
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { randomUUID } from 'node:crypto';
 import * as os from 'os';
 import * as fs from 'fs';
 import { exec, execSync, spawn } from 'child_process';
@@ -16,10 +17,13 @@ import { startPermissionChecker } from './permissionChecker.js';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
 import { appendTaskSummary } from './taskStorage.js';
 import { runClaudeQuery } from './claudeQuery.js';
+import { initLogger, log, getBuffer } from './logger.js';
 import type { OfficeSnapshot } from './types.js';
 
 // Per-session debounce timers for active task label generation
 const activeTaskTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// Per-session debounce timers for chokidar transcript events
+const transcriptDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const activeLabelGenerations = new Set<string>();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -44,10 +48,67 @@ const wsSessionMap = new Map<WebSocket, Set<string>>();
 // Track pending PTY sessions by PID so we can link them to real Claude sessions
 const pendingPtyByPid = new Map<number, { ptySessionId: string; ws: WebSocket }>();
 
+// Track PTY sessions waiting to be linked by resumeSessionId (for ConPTY PID mismatch on Windows)
+const pendingPtyByResumeId = new Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>();
+
 // Map pty-xxx sessionId → real claudeSessionId after linking
 const ptyToClaudeId = new Map<string, string>();
 // Reverse: claudeSessionId → pty-xxx sessionId (for input/resize routing)
 const claudeToPtyId = new Map<string, string>();
+
+// Track recently removed sessions for CWD-based /clear detection (new PID case)
+const recentlyRemovedByCwd = new Map<string, { sessionId: string; removedAt: number }>();
+
+// Flag to skip clear detection during startup (loadKnownSessions + initial file scan)
+let startupComplete = false;
+
+// Track cloned session IDs so transcript watcher doesn't treat them as /clear replacements
+const clonedTranscriptIds = new Set<string>();
+
+// Helper: open a terminal window (tries Windows Terminal, falls back to cmd.exe)
+async function openTerminalWindow(cwd: string, command: string, title?: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    // "start" is a cmd.exe built-in — must run via shell:true
+    // /D sets working directory; first quoted arg is the window title
+    const windowTitle = (title ?? 'Claude').replace(/"/g, '');
+    const fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K "title ${windowTitle} && ${command}"`;
+    console.log('[open-terminal] running:', fullCmd);
+    const child = spawn(fullCmd, [], { shell: true, stdio: 'ignore' });
+    child.on('error', (err) => {
+      console.log('[open-terminal] error:', err.message);
+      reject(err);
+    });
+    child.on('close', (code) => {
+      if (code === 0) {
+        console.log('[open-terminal] success');
+        resolve();
+      } else {
+        reject(new Error(`start exited with code ${code}`));
+      }
+    });
+  });
+}
+
+// Migrate PTY routing maps when a session UUID changes (e.g. /clear)
+// Tries by session ID first, then falls back to finding any PTY entry sharing the same PID.
+function migratePtyMaps(oldSessionId: string, newSessionId: string, pid?: number): void {
+  let oldPtyId = claudeToPtyId.get(oldSessionId);
+  // Fallback: if oldSessionId isn't in the map, find any entry whose PTY has the same PID.
+  // This handles /clear after resume — the PTY is linked to the resume's UUID, not the original.
+  if (!oldPtyId && pid && pid > 0) {
+    for (const [claudeId, ptyId] of claudeToPtyId) {
+      if (ptyManager.getPid(ptyId) === pid || stateManager.getSession(claudeId)?.pid === pid) {
+        oldPtyId = ptyId;
+        claudeToPtyId.delete(claudeId);
+        break;
+      }
+    }
+  }
+  if (oldPtyId) {
+    claudeToPtyId.set(newSessionId, oldPtyId);
+    ptyToClaudeId.set(oldPtyId, newSessionId);
+  }
+}
 
 // Helper: send a typed message to a specific client
 function sendToClient(ws: WebSocket, msg: object): void {
@@ -58,12 +119,7 @@ function sendToClient(ws: WebSocket, msg: object): void {
 
 // Broadcast snapshot to all connected WS clients (wrapped with type field)
 function broadcast(snapshot: OfficeSnapshot): void {
-  const payload = JSON.stringify({ type: 'snapshot', ...snapshot });
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
+  broadcastRaw({ type: 'snapshot', ...snapshot });
 }
 
 // Broadcast an arbitrary typed message to all connected WS clients
@@ -76,10 +132,15 @@ function broadcastRaw(msg: object): void {
   }
 }
 
+// Wire up logger so it can broadcast log entries to all clients
+initLogger((entry) => broadcastRaw({ type: 'log:entry', entry }));
+
 // Setup state manager
 const stateManager = new StateManager(() => {
   broadcast(stateManager.getSnapshot());
 });
+
+let autoResumeTriggered = false;
 
 // Start permission checker (Windows-only; no-op on other platforms)
 startPermissionChecker(stateManager);
@@ -87,41 +148,206 @@ startPermissionChecker(stateManager);
 // Setup session watcher
 const sessionWatcher = new SessionWatcher();
 sessionWatcher.on('added', (raw) => {
+  // Skip interim session: claude --resume creates a temp UUID first, then settles to target ID.
+  // If there's a pending PTY resume for this CWD and this is NOT the target ID, skip it —
+  // but only if the interim has no transcript (safety: don't discard sessions with real data).
+  const pendingResumeTarget = stateManager.getPendingResumeTarget(raw.cwd);
+  if (pendingResumeTarget && raw.sessionId !== pendingResumeTarget && pendingPtyByResumeId.has(pendingResumeTarget)) {
+    const interimTranscript = findTranscriptPathAnywhere(raw.sessionId);
+    if (!interimTranscript) {
+      console.log(`[session:skip-interim] ${raw.sessionId.slice(0, 8)} is interim for resume target ${pendingResumeTarget.slice(0, 8)}, skipping (no transcript)`);
+      return;
+    }
+  }
   const { isNewWaiting, lastMessage } = stateManager.addOrUpdate(raw);
   if (isNewWaiting && lastMessage && raw.kind !== 'haiku-worker') void classifyCompletion(raw.sessionId, lastMessage);
+  // Log session creation
+  const createdName = raw.proposedName ?? raw.sessionId.slice(0, 8);
+  log('session:created', 'Session created', { sessionId: raw.sessionId, sessionName: createdName, extra: 'PID ' + raw.pid });
   // Link PTY session to real Claude session by PID
+  let linkedToPty = false;
   if (raw.pid && pendingPtyByPid.has(raw.pid)) {
     const entry = pendingPtyByPid.get(raw.pid)!;
     pendingPtyByPid.delete(raw.pid);
-    // Add claudeSessionId to wsSessionMap so output/exit are routed correctly
-    const wsSessions = wsSessionMap.get(entry.ws);
-    if (wsSessions) wsSessions.add(raw.sessionId);
-    // Also add ptyToClaudeId mapping for output rerouting
+    linkedToPty = true;
+    // Set up ID mapping so output is rerouted from pty-xxx to real claudeSessionId
     ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
     claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
-    sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    if (entry.ws) {
+      // Normal spawn: link to the owning WS client
+      const wsSessions = wsSessionMap.get(entry.ws);
+      if (wsSessions) wsSessions.add(raw.sessionId);
+      sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    } else {
+      // Auto-resume: broadcast linked event to all clients, migrate all wsSessionMap entries
+      for (const sessions of wsSessionMap.values()) {
+        sessions.add(raw.sessionId);
+      }
+      broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    }
     stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+    // Update the session's PID to the PTY process PID so ProcessChecker doesn't mark it closed
+    const ptyPid = ptyManager.getPid(entry.ptySessionId);
+    if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+    const ptySessionName = stateManager.getSession(raw.sessionId)?.proposedName ?? raw.proposedName ?? raw.sessionId.slice(0, 8);
+    log('pty:started', 'PTY session started', { sessionId: raw.sessionId, sessionName: ptySessionName });
+  } else if (raw.pid && !pendingPtyByPid.has(raw.pid) && stateManager.hasPendingResume(raw.cwd)) {
+    // PID not in pendingPtyByPid yet — PTY may not have emitted pid-ready; retry after 500ms
+    const retryPid = raw.pid;
+    const retrySessionId = raw.sessionId;
+    const retryCwd = raw.cwd;
+    setTimeout(() => {
+      if (pendingPtyByPid.has(retryPid)) {
+        const entry = pendingPtyByPid.get(retryPid)!;
+        pendingPtyByPid.delete(retryPid);
+        ptyToClaudeId.set(entry.ptySessionId, retrySessionId);
+        claudeToPtyId.set(retrySessionId, entry.ptySessionId);
+        if (entry.ws) {
+          const wsSessions = wsSessionMap.get(entry.ws);
+          if (wsSessions) wsSessions.add(retrySessionId);
+          sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: retrySessionId });
+        } else {
+          for (const sessions of wsSessionMap.values()) {
+            sessions.add(retrySessionId);
+          }
+          broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: retrySessionId });
+        }
+        stateManager.setLaunchMethod(retrySessionId, 'overlord-pty');
+        const retryPtyPid = ptyManager.getPid(entry.ptySessionId);
+        if (retryPtyPid) stateManager.setPid(retrySessionId, retryPtyPid);
+        log('pty:started', 'PTY linked after retry', { sessionId: retrySessionId, sessionName: retrySessionId.slice(0, 8) });
+      }
+    }, 500);
   }
-  // Detect session replacement: same PID as an existing closed session (e.g. Claude Code's /clear)
-  if (raw.pid && raw.pid > 0 && !pendingPtyByPid.has(raw.pid)) {
+  // Fallback linking: match by sessionId directly in pendingPtyByResumeId (ConPTY resume flow)
+  if (!linkedToPty && pendingPtyByResumeId.has(raw.sessionId)) {
+    const entry = pendingPtyByResumeId.get(raw.sessionId)!;
+    pendingPtyByResumeId.delete(raw.sessionId);
+    linkedToPty = true;
+    ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
+    claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
+    if (entry.ws) {
+      const wsSessions = wsSessionMap.get(entry.ws);
+      if (wsSessions) wsSessions.add(raw.sessionId);
+      sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    } else {
+      for (const sessions of wsSessionMap.values()) {
+        sessions.add(raw.sessionId);
+      }
+      broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    }
+    stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+    const ptyPid = ptyManager.getPid(entry.ptySessionId);
+    if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+    log('pty:started', 'PTY linked via resumeId', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
+  }
+  // Detect session replacement: same PID, different UUID (e.g. Claude Code's /clear)
+  // Skip if this session was just linked to a PTY — it's a resume, not a /clear.
+  // Skip during startup — known sessions from the initial scan are not /clear replacements.
+  let replacedByPid = false;
+  if (startupComplete && !linkedToPty && raw.pid && raw.pid > 0 && !pendingPtyByPid.has(raw.pid)) {
     const oldSession = stateManager.findSessionByPid(raw.pid, raw.sessionId);
-    if (oldSession && oldSession.state === 'closed') {
+    if (oldSession) {
+      stateManager.markClosed(oldSession.sessionId);
+      stateManager.transferName(oldSession.sessionId, raw.sessionId);
+      migratePtyMaps(oldSession.sessionId, raw.sessionId, raw.pid);
       broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
+      const clearName1 = raw.proposedName ?? raw.sessionId.slice(0, 8);
+      log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName1, extra: oldSession.sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
+      replacedByPid = true;
+    }
+  }
+  // Fallback: CWD-based replacement detection for /clear (creates new PID)
+  if (startupComplete && !linkedToPty && !replacedByPid && !pendingPtyByPid.has(raw.pid)) {
+    const recent = recentlyRemovedByCwd.get(raw.cwd);
+    const isCaveatSession = lastMessage?.startsWith('<local-command-caveat') ?? false;
+    if (recent && recent.sessionId !== raw.sessionId && (Date.now() - recent.removedAt < 30000 || isCaveatSession)) {
+      recentlyRemovedByCwd.delete(raw.cwd);
+      stateManager.markClosed(recent.sessionId);
+      stateManager.transferName(recent.sessionId, raw.sessionId);
+      migratePtyMaps(recent.sessionId, raw.sessionId, raw.pid);
+      broadcastRaw({ type: 'session:replaced', oldSessionId: recent.sessionId, newSessionId: raw.sessionId });
+      const clearName2 = raw.proposedName ?? raw.sessionId.slice(0, 8);
+      log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName2, extra: recent.sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
     }
   }
 });
-sessionWatcher.on('changed', (raw) => stateManager.addOrUpdate(raw));
+sessionWatcher.on('changed', (raw) => {
+  // Detect in-place session replacement (e.g. Claude Code's /clear for non-PTY sessions)
+  // The session file updates in-place with a new sessionId — same PID, different UUID
+  if (raw.pid && raw.pid > 0) {
+    const oldSession = stateManager.findSessionByPid(raw.pid, raw.sessionId);
+    if (oldSession && oldSession.sessionId !== raw.sessionId) {
+      // If the old session was an interim resume phantom (resumedFrom === new sessionId), remove entirely
+      if (oldSession.resumedFrom === raw.sessionId) {
+        stateManager.remove(oldSession.sessionId);
+      } else {
+        stateManager.markClosed(oldSession.sessionId);
+      }
+      stateManager.addOrUpdate(raw);
+      stateManager.transferName(oldSession.sessionId, raw.sessionId);
+      migratePtyMaps(oldSession.sessionId, raw.sessionId);
+      broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
+      return; // already called addOrUpdate above
+    }
+  }
+  stateManager.addOrUpdate(raw);
+  // Check for pending PTY resume link (ConPTY: session file settles to target ID)
+  if (pendingPtyByResumeId.has(raw.sessionId)) {
+    const entry = pendingPtyByResumeId.get(raw.sessionId)!;
+    pendingPtyByResumeId.delete(raw.sessionId);
+    ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
+    claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
+    if (entry.ws) {
+      const wsSessions = wsSessionMap.get(entry.ws);
+      if (wsSessions) wsSessions.add(raw.sessionId);
+      sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    } else {
+      for (const sessions of wsSessionMap.values()) {
+        sessions.add(raw.sessionId);
+      }
+      broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+    }
+    stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+    const ptyPid = ptyManager.getPid(entry.ptySessionId);
+    if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+    log('pty:started', 'PTY linked via resumeId (changed)', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
+  }
+});
 sessionWatcher.on('removed', (sessionId: string) => {
   const session = stateManager.getSession(sessionId);
-  if (session?.isWorker) stateManager.remove(sessionId);
-  else stateManager.markClosed(sessionId);
+  const removedName = stateManager.getSession(sessionId)?.proposedName ?? sessionId.slice(0, 8);
+  log('session:removed', 'Session removed', { sessionId, sessionName: removedName, extra: 'PID ' + (session?.pid ?? '?') });
+  if (session?.isWorker) {
+    stateManager.remove(sessionId);
+  } else {
+    stateManager.markClosed(sessionId);
+    // Track for CWD-based replacement detection (/clear creates new PID)
+    if (session) {
+      const now = Date.now();
+      // Prune stale entries (older than 30s) to keep the map bounded
+      for (const [cwd, entry] of recentlyRemovedByCwd) {
+        if (now - entry.removedAt > 30000) recentlyRemovedByCwd.delete(cwd);
+      }
+      recentlyRemovedByCwd.set(session.cwd, { sessionId, removedAt: now });
+    }
+  }
 });
 sessionWatcher.start();
+startupComplete = true;
 
 // Load closed sessions from transcripts on startup
 stateManager.loadClosedSessionsFromTranscripts().catch(err => {
   console.warn('[startup] failed to load closed sessions from transcripts:', err);
 });
+
+async function autoResumePtySessions(): Promise<void> {
+  // Auto-resume disabled — sessions are no longer automatically resumed at startup.
+  // The function is kept as a no-op so callers don't need to be updated.
+  console.log('[auto-resume] disabled — skipping');
+  return;
+}
+// auto-resume is now triggered on first client WebSocket connection (see wss.on('connection'))
 
 // Setup process checker
 const processChecker = new ProcessChecker();
@@ -131,36 +357,169 @@ processChecker.start((pids) => {
 
 // Watch project transcripts for real-time updates
 const projectsDir = join(os.homedir(), '.claude', 'projects');
-function handleTranscriptFile(filePath: string): void {
-  if (!filePath.endsWith('.jsonl')) return;
-  const parts = filePath.split(/[\\/]/);
-  // Subagent path: .../{slug}/{sessionId}/subagents/{agentId}.jsonl
-  // Main path:     .../{slug}/{sessionId}.jsonl
+
+function parseTranscriptPath(filePath: string): { sessionId: string; isSubagent: boolean } | null {
+  if (!filePath.endsWith('.jsonl')) return null;
+  const parts = filePath.replace(/\\/g, '/').split('/');
   const subagentsIdx = parts.indexOf('subagents');
-  if (subagentsIdx !== -1) {
-    const sessionId = parts[subagentsIdx - 1];
-    if (sessionId) stateManager.refreshTranscript(sessionId);
-  } else {
-    const basename = parts.pop() ?? '';
-    const sessionId = basename.replace(/\.jsonl$/, '');
-    if (sessionId) stateManager.refreshTranscript(sessionId);
-  }
+  const isSubagent = subagentsIdx !== -1;
+  // For subagents, sessionId is the parent session (one level above 'subagents')
+  // For main files, sessionId is derived from the basename
+  const sessionId = isSubagent
+    ? (parts[subagentsIdx - 1] ?? '')
+    : (parts[parts.length - 1] ?? '').replace(/\.jsonl$/, '');
+  if (!sessionId) return null;
+  return { sessionId, isSubagent };
 }
+
+function handleTranscriptFile(filePath: string): void {
+  const parsed = parseTranscriptPath(filePath);
+  if (!parsed) return;
+  const { sessionId } = parsed;
+  const existing = transcriptDebounceTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+  transcriptDebounceTimers.set(sessionId, setTimeout(() => {
+    transcriptDebounceTimers.delete(sessionId);
+    stateManager.refreshTranscript(sessionId);
+  }, 150));
+}
+// Handle new .jsonl files appearing — detect /clear session replacement
+function handleTranscriptAdded(filePath: string): void {
+  const parsed = parseTranscriptPath(filePath);
+  if (!parsed) return;
+
+  if (parsed.isSubagent) {
+    handleTranscriptFile(filePath);
+    return;
+  }
+
+  const newSessionId = parsed.sessionId;
+  if (!newSessionId) return;
+
+  // Skip cloned transcripts — they are not /clear replacements
+  if (clonedTranscriptIds.has(newSessionId)) {
+    clonedTranscriptIds.delete(newSessionId);
+    handleTranscriptFile(filePath);
+    return;
+  }
+
+  // If already known, nothing to do — normal refresh will handle it
+  if (stateManager.getSession(newSessionId)) {
+    handleTranscriptFile(filePath);
+    return;
+  }
+
+  // Unknown session: read cwd from the transcript to detect /clear replacement
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n');
+    let cwd: string | undefined;
+    for (const line of lines.slice(0, 15)) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>;
+        if (entry.cwd && typeof entry.cwd === 'string') { cwd = entry.cwd; break; }
+      } catch { /* skip malformed */ }
+    }
+
+    if (!cwd) {
+      // No cwd found yet — let normal flow handle it
+      handleTranscriptFile(filePath);
+      return;
+    }
+
+    // Find the most recently active non-closed session in the same CWD — that's the cleared one.
+    const normalizedCwd = cwd.replace(/\\/g, '/').toLowerCase();
+    let bestSession: { sessionId: string; pid: number; isWorker?: boolean } | null = null;
+    let bestActivity = -Infinity;
+
+    for (const sid of stateManager.getAllSessionIds()) {
+      if (sid === newSessionId) continue;
+      const s = stateManager.getSession(sid);
+      if (!s || s.state === 'closed') continue;
+      if (s.cwd.replace(/\\/g, '/').toLowerCase() !== normalizedCwd) continue;
+      const t = new Date(s.lastActivity).getTime();
+      if (t > bestActivity) {
+        bestActivity = t;
+        bestSession = { sessionId: sid, pid: s.pid, isWorker: s.isWorker };
+      }
+    }
+
+    if (bestSession !== null) {
+      stateManager.markClosed(bestSession.sessionId);
+      stateManager.addOrUpdate({
+        sessionId: newSessionId,
+        pid: bestSession.pid,
+        cwd,
+        startedAt: Date.now(),
+        kind: bestSession.isWorker ? 'haiku-worker' : undefined,
+      });
+      stateManager.transferName(bestSession.sessionId, newSessionId);
+      migratePtyMaps(bestSession.sessionId, newSessionId);
+      broadcastRaw({ type: 'session:replaced', oldSessionId: bestSession.sessionId, newSessionId });
+      const clearName3 = stateManager.getSession(newSessionId)?.proposedName ?? newSessionId.slice(0, 8);
+      log('clear:detected', 'Clear detected', { sessionId: newSessionId, sessionName: clearName3, extra: bestSession.sessionId.slice(0, 8) + ' → ' + newSessionId.slice(0, 8) });
+      console.log(`[transcript:add] /clear detected: ${bestSession.sessionId} → ${newSessionId} (cwd: ${cwd})`);
+    } else {
+      // No matching session found — register as new standalone session
+      stateManager.addOrUpdate({
+        sessionId: newSessionId,
+        pid: 0,
+        cwd,
+        startedAt: Date.now(),
+      });
+      console.log(`[transcript:add] new standalone session: ${newSessionId} (cwd: ${cwd})`);
+    }
+  } catch {
+    // If we can't read the file yet, fall through to the normal handler
+  }
+
+  // Always let the normal refresh flow run so the new session gets registered
+  handleTranscriptFile(filePath);
+}
+
 chokidar
   .watch(projectsDir, {
     depth: 4,
     ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 30 },
   })
-  .on('add', handleTranscriptFile)
+  .on('add', handleTranscriptAdded)
   .on('change', handleTranscriptFile);
 
+// Scan for orphaned .jsonl transcript files that existed before the watcher started
+// (e.g. created by /clear while the server was down, or missed due to ignoreInitial: true).
+//
 // Periodic state refresh — re-evaluate all session states every 3s
 // (smallest state threshold is 3s, so polling must be at least that frequent)
 setInterval(() => {
   for (const sessionId of stateManager.getAllSessionIds()) {
     const session = stateManager.getSession(sessionId);
     if (session?.state === 'closed') continue;
-    const { becameWaiting, lastMessage, becameWorking, leftWorking } = stateManager.refreshTranscript(sessionId);
+    const { becameWaiting, lastMessage, becameWorking, leftWorking, transcriptStale } = stateManager.refreshTranscript(sessionId);
+    // Stale transcript detection: re-read session file to check for /clear
+    if (transcriptStale) {
+      const sess2 = stateManager.getSession(sessionId);
+      if (sess2 && sess2.pid > 0) {
+        const sessionFilePath = join(os.homedir(), '.claude', 'sessions', `${sess2.pid}.json`);
+        try {
+          if (fs.existsSync(sessionFilePath)) {
+            const raw = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8')) as { pid: number; sessionId: string; cwd: string; startedAt: number };
+            if (raw.sessionId !== sessionId) {
+              const clearName = sess2.proposedName ?? sessionId.slice(0, 8);
+              stateManager.markClosed(sessionId);
+              stateManager.addOrUpdate(raw);
+              stateManager.transferName(sessionId, raw.sessionId);
+              migratePtyMaps(sessionId, raw.sessionId, sess2.pid);
+              broadcastRaw({ type: 'session:replaced', oldSessionId: sessionId, newSessionId: raw.sessionId });
+              log('clear:detected', 'Stale transcript clear detected', { sessionId: raw.sessionId, sessionName: clearName, extra: sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
+            }
+          }
+        } catch {
+          // ignore read errors
+        }
+      }
+    }
     const sess = stateManager.getSession(sessionId);
     if (becameWaiting && lastMessage && !sess?.isWorker) {
       void classifyCompletion(sessionId, lastMessage);
@@ -181,6 +540,22 @@ setInterval(() => {
     }
   }
 }, 3_000);
+
+// Periodic cleanup of leaked PTY entries (every 60s)
+setInterval(() => {
+  for (const [pid, entry] of pendingPtyByPid) {
+    if (!ptyManager.has(entry.ptySessionId)) {
+      pendingPtyByPid.delete(pid);
+    }
+  }
+  // Clean up stale pendingPtyByResumeId entries (older than 60s or PTY no longer alive)
+  const now = Date.now();
+  for (const [resumeId, entry] of pendingPtyByResumeId) {
+    if (now - entry.timestamp > 60_000 || !ptyManager.has(entry.ptySessionId)) {
+      pendingPtyByResumeId.delete(resumeId);
+    }
+  }
+}, 60_000);
 
 async function generateActiveLabel(sessionId: string): Promise<void> {
   activeTaskTimers.delete(sessionId);
@@ -366,16 +741,32 @@ ptyManager.on('exit', (sessionId: string, code: number) => {
       break;
     }
   }
+  // Clean up any pending resume entry for this PTY session
+  for (const [resumeId, entry] of pendingPtyByResumeId) {
+    if (entry.ptySessionId === sessionId) {
+      pendingPtyByResumeId.delete(resumeId);
+      break;
+    }
+  }
+  // Resolve the claude session ID before cleaning maps (client tracks by claude ID, not pty ID)
+  const claudeId = ptyToClaudeId.get(sessionId);
+  const effectiveId = claudeId ?? sessionId;
   ptyToClaudeId.delete(sessionId);
   // Clean up reverse map
-  for (const [claudeId, ptyId] of claudeToPtyId) {
-    if (ptyId === sessionId) { claudeToPtyId.delete(claudeId); break; }
+  if (claudeId) {
+    claudeToPtyId.delete(claudeId);
+  } else {
+    for (const [cId, pId] of claudeToPtyId) {
+      if (pId === sessionId) { claudeToPtyId.delete(cId); break; }
+    }
   }
-  const msg = { type: 'terminal:exit', sessionId, code };
+  // Send exit with the claude session ID so the client can remove it from ptySessionIds
+  const msg = { type: 'terminal:exit', sessionId: effectiveId, code };
   for (const [ws, sessions] of wsSessionMap) {
-    if (sessions.has(sessionId)) {
+    if (sessions.has(sessionId) || sessions.has(effectiveId)) {
       sendToClient(ws, msg);
       sessions.delete(sessionId);
+      sessions.delete(effectiveId);
       break;
     }
   }
@@ -391,8 +782,26 @@ ptyManager.on('error', (sessionId: string, message: string) => {
   }
 });
 
+// Global PID-ready handler: populate pendingPtyByPid for ALL PTY spawns (new + resume + auto-resume)
+ptyManager.on('pid-ready', (ptySessionId: string, pid: number) => {
+  if (!pid) return;
+  // Find which ws owns this PTY session
+  let ownerWs: WebSocket | null = null;
+  for (const [ws, sessions] of wsSessionMap) {
+    if (sessions.has(ptySessionId)) {
+      ownerWs = ws;
+      break;
+    }
+  }
+  // Use null ws sentinel for auto-resume (broadcast to all clients)
+  pendingPtyByPid.set(pid, { ptySessionId, ws: (ownerWs ?? null) as unknown as WebSocket });
+});
+
 // Shared helper: kill a Claude session by PID and remove its session file + state
-function deleteSession(sessionId: string, pid?: number): void {
+function deleteSession(sessionId: string, pid?: number, reason?: string): void {
+  const caller = reason ?? new Error().stack?.split('\n')[2]?.trim() ?? 'unknown';
+  log('session:killed', `Session deleted (${caller})`, { sessionId, sessionName: sessionId.slice(0, 8), extra: pid ? `PID ${pid}` : 'no PID' });
+  console.log(`[deleteSession] sessionId=${sessionId} pid=${pid} reason=${caller}`);
   // 1. Kill the process tree so it can't recreate the session file
   if (pid) {
     try {
@@ -468,11 +877,26 @@ function deleteSession(sessionId: string, pid?: number): void {
 
 // On WebSocket connection, send current snapshot immediately and set up message routing
 wss.on('connection', (ws) => {
+  // Trigger auto-resume on the first client connection
+  if (!autoResumeTriggered) {
+    autoResumeTriggered = true;
+    autoResumePtySessions().catch(err => console.warn('[auto-resume] error:', err));
+  }
+
   // Register this client in the session map
   wsSessionMap.set(ws, new Set());
 
   const snapshot = stateManager.getSnapshot();
   ws.send(JSON.stringify({ type: 'snapshot', ...snapshot }));
+  ws.send(JSON.stringify({ type: 'log:history', entries: getBuffer() }));
+  // Replay active PTY session links so the terminal tab shows on fresh connects / reloads
+  const wsSessions = wsSessionMap.get(ws)!;
+  for (const [claudeSessionId, ptySessionId] of claudeToPtyId) {
+    if (!ptyManager.has(ptySessionId)) continue; // skip dead PTYs
+    wsSessions.add(claudeSessionId);
+    wsSessions.add(ptySessionId);
+    sendToClient(ws, { type: 'terminal:linked', ptySessionId, claudeSessionId });
+  }
 
   ws.on('message', (raw) => {
     let msg: Record<string, unknown>;
@@ -491,6 +915,8 @@ wss.on('connection', (ws) => {
       // Generate a unique sessionId for this PTY session
       const sessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+      stateManager.trackPendingPtySpawn(cwd);
+
       const sessions = wsSessionMap.get(ws);
       if (sessions) sessions.add(sessionId);
 
@@ -498,8 +924,8 @@ wss.on('connection', (ws) => {
       // Spawn after notifying client of sessionId (pid will be 0 until we have it)
       try {
         ptyManager.spawn(sessionId, cwd, cols, rows);
-        const pid = ptyManager.getPid(sessionId);
-        if (pid) pendingPtyByPid.set(pid, { ptySessionId: sessionId, ws });
+        log('pty:started', 'PTY session started', { sessionId, sessionName: sessionId.slice(0, 8) });
+        // pid-ready event handler populates pendingPtyByPid asynchronously
       } catch (err) {
         sendToClient(ws, {
           type: 'terminal:error',
@@ -518,15 +944,21 @@ wss.on('connection', (ws) => {
       const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       stateManager.trackPendingResume(cwd, resumeSessionId);
+      const rootSessionId = stateManager.getRootSessionId(resumeSessionId);
+      const resumedName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
+      log('session:resumed', 'Session resumed', { sessionId: resumeSessionId, sessionName: resumedName });
 
       const sessions = wsSessionMap.get(ws);
       if (sessions) sessions.add(ptySessionId);
 
       sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
       try {
-        ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', resumeSessionId]);
-        const pid = ptyManager.getPid(ptySessionId);
-        if (pid) pendingPtyByPid.set(pid, { ptySessionId: ptySessionId, ws });
+        ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', rootSessionId]);
+        const resumePtyName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
+        log('pty:started', 'PTY session started', { sessionId: ptySessionId, sessionName: resumePtyName });
+
+        // Track by resume session ID for ConPTY PID mismatch linking
+        pendingPtyByResumeId.set(resumeSessionId, { ptySessionId, ws, timestamp: Date.now() });
       } catch (err) {
         sendToClient(ws, {
           type: 'terminal:error',
@@ -537,10 +969,63 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (type === 'terminal:open-external') {
+      const sessionId = String(msg.sessionId ?? '');
+      const cwd = String(msg.cwd ?? process.cwd());
+      const session = stateManager.getSession(sessionId);
+      const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
+      console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
+      openTerminalWindow(cwd, `claude --resume ${sessionId}`, `Claude: ${sessionName}`)
+        .then(() => sendToClient(ws, { type: 'terminal:external-opened', sessionId }))
+        .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open terminal: ${(err as Error).message}` }));
+      return;
+    }
+
+    if (type === 'terminal:open-new') {
+      const cwd = String(msg.cwd ?? process.cwd());
+      const name = msg.name ? String(msg.name) : undefined;
+      const cwdName = name || cwd.split(/[\\/]/).pop() || 'New';
+      console.log(`[open-new] cwd=${cwd} name=${cwdName}`);
+      openTerminalWindow(cwd, 'claude', `Claude: ${cwdName}`)
+        .then(() => sendToClient(ws, { type: 'terminal:new-opened' }))
+        .catch((err) => sendToClient(ws, { type: 'terminal:error', message: `Failed to open terminal: ${(err as Error).message}` }));
+      return;
+    }
+
     if (type === 'terminal:input') {
       const sessionId = String(msg.sessionId ?? '');
       const data = String(msg.data ?? '');
-      ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
+      stateManager.clearHintOnInput(sessionId);
+      const wrote = ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
+      if (!wrote) {
+        // No PTY session — fall back to ConPTY injection
+        const snapshot = stateManager.getSnapshot();
+        let pid: number | undefined;
+        outer: for (const room of snapshot.rooms) {
+          for (const session of room.sessions) {
+            if (session.sessionId === sessionId) {
+              pid = session.pid;
+              break outer;
+            }
+          }
+        }
+        if (pid === undefined) {
+          sendToClient(ws, {
+            type: 'terminal:error',
+            sessionId,
+            message: `No PTY and no PID found for session ${sessionId}`,
+          });
+          return;
+        }
+        injectText(pid, data, false, true)
+          .catch((err: Error) => {
+            sendToClient(ws, {
+              type: 'terminal:error',
+              sessionId,
+              message: err.message,
+            });
+          });
+      }
       return;
     }
 
@@ -548,6 +1033,7 @@ wss.on('connection', (ws) => {
       const sessionId = String(msg.sessionId ?? '');
       const text = String(msg.text ?? '');
       const extraEnter = Boolean(msg.extraEnter);
+      stateManager.clearHintOnInput(sessionId);
 
       // Find the PID from stateManager sessions
       const snapshot = stateManager.getSnapshot();
@@ -597,6 +1083,16 @@ wss.on('connection', (ws) => {
       // Get the PID before killing so we can find the Claude session record
       const ptyPid = ptyManager.getPid(resolvedId);
       ptyManager.kill(resolvedId);
+      // Clean up PTY ↔ Claude ID maps (kill() bypasses the onExit handler)
+      const linkedClaude = ptyToClaudeId.get(resolvedId);
+      if (linkedClaude) {
+        claudeToPtyId.delete(linkedClaude);
+      }
+      ptyToClaudeId.delete(resolvedId);
+      // Also clean the forward entry if sessionId was the Claude ID
+      if (claudeToPtyId.has(sessionId)) {
+        claudeToPtyId.delete(sessionId);
+      }
       const sessions = wsSessionMap.get(ws);
       if (sessions) sessions.delete(sessionId);
 
@@ -606,7 +1102,7 @@ wss.on('connection', (ws) => {
         for (const room of snap.rooms) {
           for (const session of room.sessions) {
             if (session.pid === ptyPid) {
-              deleteSession(session.sessionId, ptyPid);
+              deleteSession(session.sessionId, ptyPid, 'terminal:kill');
               break;
             }
           }
@@ -627,7 +1123,77 @@ wss.on('connection', (ws) => {
         }
       }
 
-      deleteSession(sessionId, targetPid);
+      deleteSession(sessionId, targetPid, 'session:delete (UI)');
+      return;
+    }
+
+    if (type === 'session:clone') {
+      const sessionId = String(msg.sessionId ?? '');
+      const transcriptPath = findTranscriptPathAnywhere(sessionId);
+      if (!transcriptPath) {
+        ws.send(JSON.stringify({ type: 'session:clone:error', error: 'Transcript not found' }));
+        return;
+      }
+
+      // Determine clone name first
+      const snap = stateManager.getSnapshot();
+      let originalName = '';
+      let originalCwd = '';
+      for (const room of snap.rooms) {
+        for (const session of room.sessions) {
+          if (session.sessionId === sessionId) {
+            originalName = session.proposedName ?? '';
+            originalCwd = session.cwd;
+            break;
+          }
+        }
+        if (originalName) break;
+      }
+
+      let cloneName: string;
+      if (!originalName) {
+        cloneName = 'Clone (1)';
+      } else {
+        const pattern = new RegExp(`^${originalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\((\\d+)\\)$`);
+        let maxN = 0;
+        for (const room of snap.rooms) {
+          for (const session of room.sessions) {
+            const match = (session.proposedName ?? '').match(pattern);
+            if (match) {
+              maxN = Math.max(maxN, parseInt(match[1], 10));
+            }
+          }
+        }
+        cloneName = `${originalName} (${maxN + 1})`;
+      }
+
+      // Copy transcript and prepend a user message with the clone name
+      // so readProposedName picks up the new name from the transcript
+      const newSessionId = randomUUID();
+      try {
+        const buf = fs.readFileSync(transcriptPath, 'utf-8');
+        const nameEntry = JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: cloneName },
+          timestamp: new Date().toISOString(),
+          cwd: originalCwd || undefined,
+        });
+        fs.writeFileSync(join(dirname(transcriptPath), newSessionId + '.jsonl'), nameEntry + '\n' + buf);
+      } catch (err: any) {
+        ws.send(JSON.stringify({ type: 'session:clone:error', error: `File copy failed: ${err.message}` }));
+        return;
+      }
+      // Mark as cloned so the transcript watcher doesn't treat it as a /clear replacement
+      clonedTranscriptIds.add(newSessionId);
+
+      // Register clone in stateManager so it appears in the UI immediately
+      stateManager.addOrUpdate({ sessionId: newSessionId, pid: 0, cwd: originalCwd || stateManager.getSession(sessionId)?.cwd || process.cwd(), startedAt: Date.now() });
+      const clonedSession = stateManager.getSession(newSessionId);
+      if (clonedSession) clonedSession.proposedName = cloneName;
+      stateManager.markClosed(newSessionId);
+
+      ws.send(JSON.stringify({ type: 'session:cloned', newSessionId, name: cloneName }));
+      log('info', `Cloned session → ${newSessionId}`, { sessionId, sessionName: cloneName });
       return;
     }
   });
@@ -648,7 +1214,14 @@ wss.on('connection', (ws) => {
 app.get('/api/debug/state', (_req, res) => {
   const snapshot = stateManager.getSnapshot();
   const sessions = snapshot.rooms.flatMap(r => r.sessions);
-  res.json({ sessionCount: sessions.length, sessions: sessions.map(s => ({ sessionId: s.sessionId, name: s.proposedName ?? '', cwd: s.cwd, state: s.state, isWorker: s.isWorker })) });
+  res.json({
+    sessionCount: sessions.length,
+    sessions: sessions.map(s => ({ sessionId: s.sessionId, name: s.proposedName ?? '', cwd: s.cwd, state: s.state, isWorker: s.isWorker, pid: s.pid, launchMethod: s.launchMethod })),
+    ptyToClaudeId: Object.fromEntries(ptyToClaudeId),
+    claudeToPtyId: Object.fromEntries(claudeToPtyId),
+    pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
+    pendingPtyByResumeId: Object.fromEntries([...pendingPtyByResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
+  });
 });
 
 // Respond to permission prompt for an external session
@@ -676,6 +1249,21 @@ app.post('/api/sessions/:sessionId/inject', express.json(), (req, res) => {
       res.status(500).json({ error: String(err) });
     }
   })();
+});
+
+// Kill the process for a session
+app.post('/api/sessions/:sessionId/kill-process', (req, res) => {
+  const { sessionId } = req.params;
+  const session = stateManager.getSession(sessionId);
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+  try {
+    execSync(`taskkill /F /T /PID ${session.pid}`, { stdio: 'ignore' });
+    const killedName = session.proposedName ?? sessionId.slice(0, 8);
+    log('session:killed', 'Process killed', { sessionId, sessionName: killedName, extra: 'PID ' + session.pid });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Kill failed' });
+  }
 });
 
 // Manually mark a session as done
@@ -838,3 +1426,4 @@ function shutdown() {
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+

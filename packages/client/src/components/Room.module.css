@@ -98,46 +98,73 @@
   display: none;
 }
 
-.dormitory {
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  padding-top: 12px;
-  margin-top: 2px;
-}
 
-.dormitoryLabel {
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.2);
-  text-transform: uppercase;
-  margin-bottom: 8px;
-}
-
-.dormitoryDesks {
+.deskInfo {
+  position: absolute;
+  top: 4px;
+  left: 8px;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-direction: column;
   align-items: flex-start;
-}
-
-.dormitoryDesk {
-  transform: scale(0.55);
-  transform-origin: top left;
-  margin-right: -48px;
-  margin-bottom: -52px;
+  gap: 0;
+  z-index: 5;
 }
 
 .deskTimeLabel {
-  position: absolute;
-  top: 6px;
-  left: 10px;
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.25);
   pointer-events: none;
   letter-spacing: 0.03em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.deskInfoLine {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(180, 180, 200, 0.55);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.deskInfoLinePty {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: #d4af37;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.deskPtyRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.deskPtyLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: #d4af37;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.deskPtyBadge {
+  background: rgba(88, 166, 255, 0.15);
+  border: 1px solid rgba(88, 166, 255, 0.25);
+  border-radius: 3px;
+  color: #58a6ff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 4px;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .continuationBadge {

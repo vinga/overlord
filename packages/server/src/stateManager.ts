@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { Session, Room, OfficeSnapshot, WorkerState } from './types.js';
+import { log } from './logger.js';
 import {
   findTranscriptPath,
   findTranscriptPathAnywhere,
@@ -9,6 +10,7 @@ import {
   readSubagents,
   readSlug,
   readProposedName,
+  clearProposedNameCache,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
 import { readTaskSummaries, acceptTaskSummary, saveCompletionHint, loadCompletionHint, clearCompletionHint } from './taskStorage.js';
@@ -24,17 +26,34 @@ function normalizePath(p: string): string {
 
 export class StateManager {
   private sessions: Map<string, Session> = new Map();
-  private onChange: () => void;
+  private onChangeCallback: () => void;
+  private onChangePending = false;
   private pendingResumes = new Map<string, { resumeSessionId: string; timestamp: number }>();
+  private pendingPtySpawns: Map<string, number> = new Map(); // cwd → timestamp
   private acceptedSessions: Set<string> = new Set();
   private readonly acceptedFile = path.join(os.homedir(), '.claude', 'overlord-accepted.json');
+  private readonly pendingResumesFile = path.join(os.homedir(), '.claude', 'overlord', 'pending-resumes.json');
   private deletedSessionIds: Set<string> = new Set();
   private readonly deletedFile = path.join(os.homedir(), '.claude', 'overlord', 'deleted-sessions.json');
+  private knownSessionsFile: string;
+  private ideNameCache = new Map<string, { mtimeMs: number; name: string | undefined }>();
 
   constructor(onChange: () => void) {
-    this.onChange = onChange;
+    this.onChangeCallback = onChange;
+    this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.loadAccepted();
     this.loadDeleted();
+    this.loadKnownSessions();
+    this.loadPendingResumes();
+  }
+
+  private onChange(): void {
+    if (this.onChangePending) return;
+    this.onChangePending = true;
+    setImmediate(() => {
+      this.onChangePending = false;
+      this.onChangeCallback();
+    });
   }
 
   private loadAccepted(): void {
@@ -61,6 +80,90 @@ export class StateManager {
     } catch { /* ignore */ }
   }
 
+  private loadPendingResumes(): void {
+    try {
+      if (!fs.existsSync(this.pendingResumesFile)) return;
+      const data = JSON.parse(fs.readFileSync(this.pendingResumesFile, 'utf8'));
+      if (!Array.isArray(data)) return;
+      for (const entry of data) {
+        if (entry.cwd && entry.resumeSessionId && entry.timestamp) {
+          this.pendingResumes.set(normalizePath(entry.cwd), {
+            resumeSessionId: entry.resumeSessionId,
+            timestamp: entry.timestamp,
+          });
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  private savePendingResumes(): void {
+    try {
+      fs.mkdirSync(path.dirname(this.pendingResumesFile), { recursive: true });
+      const data = [...this.pendingResumes.entries()].map(([cwd, entry]) => ({
+        cwd,
+        resumeSessionId: entry.resumeSessionId,
+        timestamp: entry.timestamp,
+      }));
+      fs.writeFileSync(this.pendingResumesFile, JSON.stringify(data));
+    } catch { /* ignore */ }
+  }
+
+  private loadKnownSessions(): void {
+    try {
+      if (!fs.existsSync(this.knownSessionsFile)) return;
+      const data = JSON.parse(fs.readFileSync(this.knownSessionsFile, 'utf8'));
+      if (!Array.isArray(data)) return;
+
+      let dirty = false;
+      const cleaned: typeof data = [];
+      for (const entry of data) {
+        if (!entry.sessionId || !entry.cwd) continue;
+        if (this.deletedSessionIds.has(entry.sessionId) || entry.cwd.includes('haiku-worker')) {
+          dirty = true;
+          continue; // remove from file
+        }
+        cleaned.push(entry);
+        // Pre-populate as closed; SessionWatcher will update active ones
+        const color = this.sessionColor(entry.sessionId);
+        this.sessions.set(entry.sessionId, {
+          sessionId: entry.sessionId,
+          cwd: entry.cwd,
+          pid: entry.pid ?? 0,
+          startedAt: entry.startedAt ?? Date.now(),
+          state: 'closed',
+          lastActivity: new Date(entry.startedAt ?? Date.now()).toISOString(),
+          launchMethod: entry.launchMethod ?? 'terminal',
+          color,
+          subagents: [],
+          proposedName: entry.proposedName,
+          resumedFrom: entry.resumedFrom,
+        });
+      }
+      if (dirty) {
+        fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
+        fs.writeFileSync(this.knownSessionsFile, JSON.stringify(cleaned, null, 2));
+      }
+    } catch { /* ignore */ }
+  }
+
+  private saveKnownSessions(): void {
+    try {
+      fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
+      const entries = [...this.sessions.values()]
+        .filter(s => !s.isWorker)
+        .map(s => ({
+          sessionId: s.sessionId,
+          cwd: s.cwd,
+          launchMethod: s.launchMethod,
+          startedAt: s.startedAt,
+          pid: s.pid,
+          proposedName: s.proposedName,
+          resumedFrom: s.resumedFrom,
+        }));
+      fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
+    } catch { /* ignore */ }
+  }
+
   markDeleted(sessionId: string): void {
     this.deletedSessionIds.add(sessionId);
     try {
@@ -68,6 +171,10 @@ export class StateManager {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
     } catch { /* ignore */ }
+    clearProposedNameCache(sessionId);
+    this.sessions.delete(sessionId);
+    this.saveKnownSessions();
+    this.onChange();
   }
 
   acceptTask(sessionId: string, completedAt: string): boolean {
@@ -91,7 +198,23 @@ export class StateManager {
   }
 
   trackPendingResume(cwd: string, resumeSessionId: string): void {
-    this.pendingResumes.set(cwd, { resumeSessionId, timestamp: Date.now() });
+    this.pendingResumes.set(normalizePath(cwd), { resumeSessionId, timestamp: Date.now() });
+    this.savePendingResumes();
+  }
+
+  hasPendingResume(cwd: string): boolean {
+    const entry = this.pendingResumes.get(normalizePath(cwd));
+    return entry != null && Date.now() - entry.timestamp < 60000;
+  }
+
+  getPendingResumeTarget(cwd: string): string | undefined {
+    const entry = this.pendingResumes.get(normalizePath(cwd));
+    if (entry && Date.now() - entry.timestamp < 60000) return entry.resumeSessionId;
+    return undefined;
+  }
+
+  trackPendingPtySpawn(cwd: string): void {
+    this.pendingPtySpawns.set(normalizePath(cwd), Date.now());
   }
 
   addOrUpdate(raw: RawSession): { isNewWaiting: boolean; lastMessage?: string } {
@@ -115,7 +238,22 @@ export class StateManager {
     let isCompacting: boolean | undefined;
     let needsPermission: boolean | undefined;
 
-    const transcriptPath = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+    // Check for a pending resume: if this session was just resumed from another, link them.
+    // Resolved early so the transcript fallback below can use it.
+    let resumedFrom: string | undefined;
+    if (existingSession?.resumedFrom) {
+      // Preserve already-linked resumedFrom on subsequent updates
+      resumedFrom = existingSession.resumedFrom;
+    } else {
+      const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
+      if (pendingEntry && Date.now() - pendingEntry.timestamp < 60000) {
+        resumedFrom = pendingEntry.resumeSessionId;
+        this.pendingResumes.delete(normalizePath(cwd));
+        this.savePendingResumes();
+      }
+    }
+
+    let transcriptPath = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
     if (transcriptPath) {
       const result = readTranscriptState(transcriptPath);
       state = result.state;
@@ -128,35 +266,49 @@ export class StateManager {
       isCompacting = result.isCompacting;
       needsPermission = result.needsPermission;
       slug = readSlug(transcriptPath);
+    } else if (resumedFrom) {
+      // claude --resume appends to the original transcript rather than creating a new one.
+      // Fall back to reading the original session's transcript so the resumed session shows the
+      // correct state instead of defaulting to "waiting".
+      const fallbackPath = findTranscriptPath(cwd, resumedFrom) ?? findTranscriptPathAnywhere(resumedFrom);
+      if (fallbackPath) {
+        const result = readTranscriptState(fallbackPath);
+        state = result.state;
+        lastActivity = result.lastActivity;
+        lastMessage = result.lastMessage;
+        activityFeed = result.activityFeed;
+        model = result.model;
+        inputTokens = result.inputTokens;
+        compactCount = result.compactCount;
+        isCompacting = result.isCompacting;
+        needsPermission = result.needsPermission;
+        slug = readSlug(fallbackPath);
+        // Use the fallback path for proposedName resolution below
+        transcriptPath = fallbackPath;
+      }
     }
-    const proposedName = (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
-      ?? existingSession?.proposedName;
+    const proposedName = existingSession?.proposedName
+      ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
+      ?? (resumedFrom ? this.sessions.get(resumedFrom)?.proposedName : undefined);
 
     const subagents = readSubagents(cwd, sessionId);
     const color = this.sessionColor(sessionId);
     const ideName = this.readIdeName(cwd);
-
-    // Check for a pending resume: if this session was just resumed from another, link them.
-    let resumedFrom: string | undefined;
-    if (existingSession?.resumedFrom) {
-      // Preserve already-linked resumedFrom on subsequent updates
-      resumedFrom = existingSession.resumedFrom;
-    } else {
-      const pendingEntry = this.pendingResumes.get(cwd);
-      if (pendingEntry && Date.now() - pendingEntry.timestamp < 5000) {
-        resumedFrom = pendingEntry.resumeSessionId;
-        this.pendingResumes.delete(cwd);
-      }
-    }
 
     const isNew = !this.sessions.has(sessionId);
 
     // Determine launch method only on first creation; preserve it on subsequent updates.
     let launchMethod: Session['launchMethod'];
     if (isNew) {
-      const pendingEntry = this.pendingResumes.get(cwd);
-      if (pendingEntry && Date.now() - pendingEntry.timestamp < 5000) {
+      const pendingSpawnTs = this.pendingPtySpawns.get(normalizePath(cwd));
+      const isPendingPtySpawn = pendingSpawnTs != null && Date.now() - pendingSpawnTs < 5000;
+      if (isPendingPtySpawn) {
         launchMethod = 'overlord-pty';
+        this.pendingPtySpawns.delete(normalizePath(cwd));
+      } else if (resumedFrom) {
+        // Resumed via /clear or other detection — inherit the old session's launchMethod
+        const origSession = this.sessions.get(resumedFrom);
+        launchMethod = origSession?.launchMethod ?? 'terminal';
       } else if (ideName) {
         launchMethod = 'ide';
       } else {
@@ -208,6 +360,9 @@ export class StateManager {
     };
 
     this.sessions.set(sessionId, session);
+    if (isNew) {
+      this.saveKnownSessions();
+    }
     this.onChange();
     return { isNewWaiting: isNew && state === 'waiting', lastMessage };
   }
@@ -215,6 +370,8 @@ export class StateManager {
   remove(sessionId: string): void {
     if (this.sessions.has(sessionId)) {
       this.sessions.delete(sessionId);
+      clearProposedNameCache(sessionId);
+      this.saveKnownSessions();
       this.onChange();
     }
   }
@@ -235,12 +392,29 @@ export class StateManager {
     }
   }
 
-  refreshTranscript(sessionId: string): { becameWaiting: boolean; lastMessage?: string; becameWorking: boolean; leftWorking: boolean } {
+  transferName(oldSessionId: string, newSessionId: string): void {
+    const oldSession = this.sessions.get(oldSessionId);
+    const newSession = this.sessions.get(newSessionId);
+    if (!oldSession || !newSession) return;
+    if (!newSession.proposedName && oldSession.proposedName) {
+      newSession.proposedName = oldSession.proposedName;
+    }
+  }
+
+  setPid(sessionId: string, pid: number): void {
     const session = this.sessions.get(sessionId);
-    if (!session || session.state === 'closed') return { becameWaiting: false, becameWorking: false, leftWorking: false };
+    if (session && session.pid !== pid) {
+      session.pid = pid;
+      this.onChange();
+    }
+  }
+
+  refreshTranscript(sessionId: string): { becameWaiting: boolean; lastMessage?: string; becameWorking: boolean; leftWorking: boolean; transcriptStale: boolean } {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.state === 'closed') return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     const transcriptPath = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
-    if (!transcriptPath) return { becameWaiting: false, becameWorking: false, leftWorking: false };
+    if (!transcriptPath) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     const prevState = session.state;
     const result = readTranscriptState(transcriptPath);
@@ -274,6 +448,15 @@ export class StateManager {
       // Clear active task label when leaving working/thinking
       if ((prevState === 'working' || prevState === 'thinking') && result.state !== 'working' && result.state !== 'thinking') {
         session.currentTaskLabel = undefined;
+      }
+      // Log state transition
+      if (prevState !== result.state) {
+        const name = session.proposedName ?? sessionId.slice(0, 8);
+        log('session:state', '', {
+          sessionId,
+          sessionName: name,
+          extra: `${prevState} → ${result.state}`,
+        });
       }
       session.state = result.state;
       session.lastActivity = result.lastActivity;
@@ -327,10 +510,26 @@ export class StateManager {
       this.onChange();
     }
 
+    // Stale transcript detection: track consecutive unchanged lastActivity for active sessions
+    let transcriptStale = false;
+    if (session.state === 'working' || session.state === 'thinking') {
+      if (!changed || session.lastActivity === result.lastActivity) {
+        session.staleCount = (session.staleCount ?? 0) + 1;
+        if (session.staleCount >= 3) {
+          transcriptStale = true;
+          session.staleCount = 0; // reset so it triggers once, not repeatedly
+        }
+      } else {
+        session.staleCount = 0;
+      }
+    } else {
+      session.staleCount = 0;
+    }
+
     const becameWaiting = prevState !== 'waiting' && result.state === 'waiting';
     const becameWorking = (prevState !== 'working' && prevState !== 'thinking') && (result.state === 'working' || result.state === 'thinking');
     const leftWorking = (prevState === 'working' || prevState === 'thinking') && (result.state !== 'working' && result.state !== 'thinking');
-    return { becameWaiting, lastMessage: becameWaiting ? result.lastMessage : undefined, becameWorking, leftWorking };
+    return { becameWaiting, lastMessage: becameWaiting ? result.lastMessage : undefined, becameWorking, leftWorking, transcriptStale };
   }
 
   markDoneByUser(sessionId: string): boolean {
@@ -345,6 +544,26 @@ export class StateManager {
     this.saveAccepted();
     this.onChange();
     return true;
+  }
+
+  clearHintOnInput(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    let changed = false;
+    if (session.completionHint) {
+      session.completionHint = undefined;
+      session.completionHintByUser = false;
+      session.userAccepted = undefined;
+      this.acceptedSessions.delete(sessionId);
+      this.saveAccepted();
+      clearCompletionHint(sessionId);
+      changed = true;
+    }
+    if (session.state === 'waiting') {
+      session.state = 'working';
+      changed = true;
+    }
+    if (changed) this.onChange();
   }
 
   setCompletionHint(sessionId: string, hint: 'done' | 'awaiting', forMessage: string): void {
@@ -417,6 +636,21 @@ export class StateManager {
         // rather than the actual node process.
         const lastActivityAge = Date.now() - new Date(session.lastActivity).getTime();
         if (lastActivityAge > 30_000) {
+          // Extra guard for IDE sessions: check transcript file mtime
+          // The wrapper PID may be gone but Claude's node process is still running
+          if (session.launchMethod === 'ide' || session.ideName) {
+            const transcriptPath = findTranscriptPath(session.cwd, session.sessionId)
+              ?? findTranscriptPathAnywhere(session.sessionId);
+            if (transcriptPath) {
+              try {
+                const stat = fs.statSync(transcriptPath);
+                const transcriptAge = Date.now() - stat.mtimeMs;
+                if (transcriptAge < 60_000) {
+                  continue; // transcript recently written — session likely still alive
+                }
+              } catch { /* file gone, proceed with closing */ }
+            }
+          }
           session.state = 'closed';
           anyChanged = true;
         }
@@ -425,6 +659,36 @@ export class StateManager {
     if (anyChanged) {
       this.onChange();
     }
+  }
+
+  removePtySession(_sessionId: string): void {
+    // No-op: sessions stay tracked in known-sessions.json as closed;
+    // markDeleted() handles explicit removal when user deletes a session.
+  }
+
+  getPtySessionIds(): string[] {
+    return [...this.sessions.values()]
+      .filter(s => s.launchMethod === 'overlord-pty')
+      .map(s => s.sessionId);
+  }
+
+  getRootSessionId(sessionId: string): string {
+    let current = sessionId;
+    const visited = new Set<string>();
+    while (true) {
+      if (visited.has(current)) break; // cycle guard
+      visited.add(current);
+      const session = this.sessions.get(current);
+      if (!session?.resumedFrom) break;
+      current = session.resumedFrom;
+    }
+    return current;
+  }
+
+  getPtySessionsToResume(): Array<{ sessionId: string; cwd: string }> {
+    return [...this.sessions.values()]
+      .filter(s => s.launchMethod === 'overlord-pty' && s.state === 'closed')
+      .map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
   }
 
   getSnapshot(): OfficeSnapshot {
@@ -510,6 +774,16 @@ export class StateManager {
         // Skip sessions already in state (active sessions)
         if (this.sessions.has(sessionId)) continue;
 
+        // Skip sessions that are predecessors of already-known resumed sessions
+        let isResumedPredecessor = false;
+        for (const existing of this.sessions.values()) {
+          if (existing.resumedFrom === sessionId) {
+            isResumedPredecessor = true;
+            break;
+          }
+        }
+        if (isResumedPredecessor) continue;
+
         // Skip sessions that were explicitly deleted by the user
         if (this.deletedSessionIds.has(sessionId)) continue;
 
@@ -542,11 +816,24 @@ export class StateManager {
           const subagents = readSubagents(cwd, sessionId);
           const color = this.sessionColor(sessionId);
 
+          // Recover startedAt from first transcript entry
+          let startedAt = 0;
+          for (const line of lines.slice(0, 5)) {
+            if (!line.trim()) continue;
+            try {
+              const entry = JSON.parse(line);
+              if (entry.timestamp) {
+                startedAt = new Date(entry.timestamp).getTime();
+                break;
+              }
+            } catch { continue; }
+          }
+
           const session: Session = {
             sessionId,
             pid: 0,
             cwd,
-            startedAt: 0,
+            startedAt,
             state: 'closed',
             lastActivity: transcriptState.lastActivity,
             lastMessage: transcriptState.lastMessage,
@@ -557,7 +844,7 @@ export class StateManager {
             isCompacting: false,
             proposedName,
             ideName: undefined,
-            launchMethod: 'terminal',
+            launchMethod: this.readIdeName(cwd) ? 'ide' : 'terminal',
             color,
             subagents,
             needsPermission: false,
@@ -578,8 +865,17 @@ export class StateManager {
 
   private readIdeName(cwd: string): string | undefined {
     const ideDir = path.join(os.homedir(), '.claude', 'ide');
+    let dirMtime = 0;
     try {
-      if (!fs.existsSync(ideDir)) return undefined;
+      dirMtime = fs.statSync(ideDir).mtimeMs;
+    } catch {
+      return undefined;
+    }
+    const cached = this.ideNameCache.get(ideDir);
+    if (cached && cached.mtimeMs === dirMtime) return cached.name;
+
+    let result: string | undefined;
+    try {
       const files = fs.readdirSync(ideDir);
       const normalizedCwd = normalizePath(cwd);
       for (const file of files) {
@@ -591,7 +887,10 @@ export class StateManager {
             const match = data.workspaceFolders.some(
               (folder) => normalizePath(folder) === normalizedCwd
             );
-            if (match) return data.ideName;
+            if (match) {
+              result = data.ideName;
+              break;
+            }
           }
         } catch {
           // skip
@@ -600,6 +899,7 @@ export class StateManager {
     } catch {
       // ignore
     }
-    return undefined;
+    this.ideNameCache.set(ideDir, { mtimeMs: dirMtime, name: result });
+    return result;
   }
 }

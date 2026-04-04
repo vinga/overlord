@@ -219,21 +219,6 @@
   50% { opacity: 1; }
 }
 
-.classifyingSpinner {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid rgba(245, 158, 11, 0.25);
-  border-top-color: rgba(245, 158, 11, 0.8);
-  border-radius: 50%;
-  animation: spin-classify 0.75s linear infinite;
-  flex-shrink: 0;
-  margin-left: 5px;
-}
-
-@keyframes spin-classify {
-  to { transform: rotate(360deg); }
-}
 
 /* Done bubble — green, shown when completionHint === 'done' */
 .bubbleDone {
@@ -385,82 +370,3 @@
   word-wrap: break-word;
 }
 
-.overlordBadge {
-  position: absolute;
-  bottom: -4px;
-  right: -6px;
-  width: 22px;
-  height: 22px;
-  background: #1a1a2e;
-  border: 1px solid #d4af37;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 13px;
-  color: #d4af37;
-  line-height: 1;
-  cursor: default;
-  z-index: 10;
-}
-
-.menuContainer {
-  position: absolute;
-  top: 6px;
-  right: -8px;
-  z-index: 10;
-}
-
-.menuBtn {
-  background: rgba(30, 30, 40, 0.85);
-  border: 1px solid rgba(255,255,255,0.12);
-  color: rgba(255,255,255,0.4);
-  border-radius: 4px;
-  width: 22px;
-  height: 22px;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  opacity: 0.5;
-  transition: background 0.15s, color 0.15s, opacity 0.15s;
-}
-
-.menuBtn:hover {
-  background: rgba(50, 50, 65, 0.95);
-  color: #fff;
-  opacity: 1;
-}
-
-.menuDropdown {
-  position: absolute;
-  top: 26px;
-  right: 0;
-  background: #1e1e2e;
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-  min-width: 110px;
-  overflow: hidden;
-  z-index: 100;
-}
-
-.menuDeleteItem {
-  display: block;
-  width: 100%;
-  padding: 8px 14px;
-  background: none;
-  border: none;
-  color: #ff6b6b;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.12s;
-}
-
-.menuDeleteItem:hover {
-  background: rgba(255, 107, 107, 0.12);
-}

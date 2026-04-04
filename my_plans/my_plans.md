@@ -1,0 +1,1 @@
+- sessoin templates (autonomous agent, yes-no-asking agent)

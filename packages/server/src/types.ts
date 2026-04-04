@@ -40,7 +40,7 @@ export interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   ideName?: string;
-  launchMethod: 'terminal' | 'ide' | 'overlord-pty';
+  launchMethod: 'terminal' | 'ide' | 'overlord-pty' | 'overlord-resume';
   color: string;
   subagents: Subagent[];
   resumedFrom?: string;
@@ -54,6 +54,7 @@ export interface Session {
   userAccepted?: boolean;
   currentTaskLabel?: string;
   isWorker?: boolean;
+  staleCount?: number;
 }
 
 export interface Room {

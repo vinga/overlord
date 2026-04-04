@@ -22,6 +22,10 @@
   height: 100%;
 }
 
+.terminal :global(.xterm-cursor-layer) {
+  display: none !important;
+}
+
 .terminal :global(.xterm-viewport) {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) #0d1117;

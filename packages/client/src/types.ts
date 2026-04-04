@@ -43,7 +43,7 @@ interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   resumedFrom?: string;
-  launchMethod?: 'terminal' | 'ide' | 'overlord-pty';
+  launchMethod?: 'terminal' | 'ide' | 'overlord-pty' | 'overlord-resume';
   needsPermission?: boolean;
   permissionPromptText?: string;
   completionHint?: 'done' | 'awaiting';
@@ -96,12 +96,19 @@ interface TerminalLinkedMessage {
   claudeSessionId: string;
 }
 
+interface TerminalSessionReplacedMessage {
+  type: 'terminal:session-replaced';
+  oldSessionId: string;
+  newSessionId: string;
+}
+
 type TerminalMessage =
   | TerminalOutputMessage
   | TerminalSpawnedMessage
   | TerminalExitMessage
   | TerminalErrorMessage
-  | TerminalLinkedMessage;
+  | TerminalLinkedMessage
+  | TerminalSessionReplacedMessage;
 
 // Typed snapshot message (server → client)
 interface SnapshotMessage {
@@ -137,6 +144,38 @@ interface TerminalResizeRequest {
   rows: number;
 }
 
+// Log event types (server → client)
+type LogEventType =
+  | 'session:created'
+  | 'session:removed'
+  | 'session:replaced'
+  | 'session:state'
+  | 'session:resumed'
+  | 'session:killed'
+  | 'pty:started'
+  | 'clear:detected'
+  | 'info';
+
+interface LogEntry {
+  id: number;
+  timestamp: string; // ISO
+  event: LogEventType;
+  sessionId?: string;
+  sessionName?: string;
+  detail: string;
+  extra?: string;
+}
+
+interface LogHistoryMessage {
+  type: 'log:history';
+  entries: LogEntry[];
+}
+
+interface LogEntryMessage {
+  type: 'log:entry';
+  entry: LogEntry;
+}
+
 export type {
   WorkerState,
   ActivityItemKind,
@@ -151,4 +190,8 @@ export type {
   TerminalInputRequest,
   TerminalInjectRequest,
   TerminalResizeRequest,
+  LogEventType,
+  LogEntry,
+  LogHistoryMessage,
+  LogEntryMessage,
 };

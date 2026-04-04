@@ -1,4 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { useTick } from '../hooks/useTick';
 import type { Session, WorkerState, ActivityItem } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
@@ -8,8 +9,35 @@ import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
 
+const MARKDOWN_CACHE_MAX = 500;
+const markdownCache = new Map<string, string>();
 function renderMarkdown(text: string): string {
-  return marked.parse(text) as string;
+  const cached = markdownCache.get(text);
+  if (cached !== undefined) return cached;
+  const result = marked.parse(text) as string;
+  if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
+    markdownCache.delete(markdownCache.keys().next().value!);
+  }
+  markdownCache.set(text, result);
+  return result;
+}
+
+interface PtyHandlers {
+  sendInput: (sessionId: string, data: string) => void;
+  injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
+  resizePty: (sessionId: string, cols: number, rows: number) => void;
+  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => (() => void);
+  exitedSessions: Set<string>;
+  getError: (sessionId: string) => string | undefined;
+}
+
+interface SessionActions {
+  onDeleteSession?: (sessionId: string) => void;
+  onResumeSession?: (sessionId: string, cwd: string) => void;
+  onOpenInTerminal?: (sessionId: string, cwd: string) => void;
+  onMarkDone?: (sessionId: string) => void;
+  onAcceptSession?: (sessionId: string) => void;
+  onAcceptTask?: (sessionId: string, completedAt: string) => void;
 }
 
 interface DetailPanelProps {
@@ -21,32 +49,14 @@ interface DetailPanelProps {
   onClose: () => void;
   connected: boolean;
   isPtySession: (sessionId: string) => boolean;
-  sendInput: (sessionId: string, data: string) => void;
-  injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
-  resizePty: (sessionId: string, cols: number, rows: number) => void;
-  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => () => void;
-  exitedSessions: Set<string>;
-  getError: (sessionId: string) => string | undefined;
-  isInDormitory?: (sessionId: string) => boolean;
-  onToggleDormitory?: (sessionId: string) => void;
-  onDeleteSession?: (sessionId: string) => void;
+  pty: PtyHandlers;
+  actions: SessionActions;
+
   siblingActiveSessions?: Session[];
   onSelectSession?: (session: Session) => void;
   customNames?: Record<string, string>;
-  onResumeSession?: (sessionId: string, cwd: string) => void;
-  onMarkDone?: (sessionId: string) => void;
-  onAcceptSession?: (sessionId: string) => void;
-  onAcceptTask?: (sessionId: string, completedAt: string) => void;
-  panelWidth?: number;
+  panelWidth: number;
   onPanelWidthChange?: (width: number) => void;
-}
-
-function getModelContextWindow(model?: string): number {
-  if (!model) return 200_000;
-  if (model.includes('haiku')) return 200_000;
-  if (model.includes('opus')) return 200_000;
-  if (model.includes('sonnet')) return 200_000;
-  return 200_000; // all current Claude models are 200k
 }
 
 function isFilePath(s: string): boolean {
@@ -264,14 +274,6 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
   );
 }
 
-function useTick(intervalMs: number | null) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (intervalMs === null) return;
-    const id = setInterval(() => setTick((t) => t + 1), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-}
 
 type FeedSegment =
   | { type: 'message'; item: ActivityItem }
@@ -304,257 +306,278 @@ function parseTaskNotification(content: string): { summary: string; status: stri
   return { summary, status };
 }
 
-function renderSegments(
-  segments: FeedSegment[],
-  expandedToolGroups: Set<number>,
-  setExpandedToolGroups: React.Dispatch<React.SetStateAction<Set<number>>>,
-  roleLabel: (role: string) => string,
-  styles: Record<string, string>,
-  expandedDiffs: Set<string>,
-  setExpandedDiffs: React.Dispatch<React.SetStateAction<Set<string>>>,
-  rawSegments: Set<number>,
-  setRawSegments: React.Dispatch<React.SetStateAction<Set<number>>>,
-  expandedThinking: Set<number>,
-  setExpandedThinking: React.Dispatch<React.SetStateAction<Set<number>>>,
-  expandedArgs: Set<string>,
-  setExpandedArgs: React.Dispatch<React.SetStateAction<Set<string>>>,
-  ideName?: string,
-  sessionState?: WorkerState,
-): React.ReactNode[] {
-  return segments.map((seg, segIdx) => {
-    if (seg.type === 'thinking') {
-      const isExpanded = expandedThinking.has(segIdx);
-      if (seg.item.isRedacted) {
-        return (
-          <div key={segIdx} className={styles.thinkingBlock}>
-            <span className={styles.thinkingRedacted}>🔒 Thinking redacted</span>
-          </div>
-        );
-      }
-      return (
-        <div key={segIdx} className={styles.thinkingBlock}>
+interface ToolEntryProps {
+  tool: { toolName?: string; content?: string; inputJson?: string; durationMs?: number; oldString?: string; newString?: string };
+  diffKey: string;
+  argsKey: string;
+  expandedDiffs: Set<string>;
+  setExpandedDiffs: React.Dispatch<React.SetStateAction<Set<string>>>;
+  expandedArgs: Set<string>;
+  setExpandedArgs: React.Dispatch<React.SetStateAction<Set<string>>>;
+  ideName?: string;
+  showRunning?: boolean;
+  showDuration?: boolean;
+  sessionState?: string;
+  styles: Record<string, string>;
+}
+
+function ToolEntry({
+  tool,
+  diffKey,
+  argsKey,
+  expandedDiffs,
+  setExpandedDiffs,
+  expandedArgs,
+  setExpandedArgs,
+  ideName,
+  showRunning,
+  showDuration,
+  sessionState,
+  styles,
+}: ToolEntryProps) {
+  const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
+  const isDiffExpanded = expandedDiffs.has(diffKey);
+  const isArgsExpanded = expandedArgs.has(argsKey);
+  return (
+    <div className={styles.toolEntry}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+        {tool.inputJson ? (
           <button
-            className={styles.thinkingToggle}
-            onClick={() => setExpandedThinking(prev => {
+            className={styles.toolNameClickable}
+            onClick={() => setExpandedArgs(prev => {
               const next = new Set(prev);
-              if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+              if (next.has(argsKey)) next.delete(argsKey); else next.add(argsKey);
               return next;
             })}
           >
-            <span className={styles.thinkingIcon}>💭</span>
-            <span>{isExpanded ? 'Hide thinking' : 'Show thinking'}</span>
-            <span className={styles.thinkingChevron}>{isExpanded ? '▴' : '▾'}</span>
+            ⚡ {tool.toolName}
           </button>
-          {isExpanded && (
-            <div className={styles.thinkingContent}>
-              {seg.item.content || <em>Empty</em>}
-            </div>
-          )}
-        </div>
-      );
-    }
-    if (seg.type === 'message') {
-      const notification = seg.item.role === 'user' ? parseTaskNotification(seg.item.content) : null;
-      if (notification) {
-        const icon = notification.status === 'completed' ? '✓' : notification.status === 'error' ? '✗' : '●';
-        return (
-          <div key={segIdx} className={styles.systemNotification}>
-            <span className={styles.systemNotificationIcon}>{icon}</span>
-            <span className={styles.systemNotificationText}>{notification.summary}</span>
-          </div>
-        );
-      }
-      const isRaw = rawSegments.has(segIdx);
-      return (
-        <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]}`}>
-          <div className={styles.transcriptBubble}>
-            {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
-              <>
-                {isRaw ? (
-                  <pre className={styles.rawContent}>{seg.item.content}</pre>
-                ) : (
-                  <div
-                    className={styles.markdownContent}
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(seg.item.content) }}
-                  />
-                )}
-                <button
-                  className={styles.rawToggle}
-                  onClick={() => setRawSegments(prev => {
-                    const next = new Set(prev);
-                    if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
-                    return next;
-                  })}
-                  title={isRaw ? 'Show formatted' : 'Show raw text'}
-                >
-                  {isRaw ? 'md' : 'raw'}
-                </button>
-              </>
-            ) : (
-              <span className={styles.transcriptContent}>{seg.item.content}</span>
-            )}
-          </div>
-        </div>
-      );
-    }
-    // Single-tool group — show inline, no toggle
-    if (seg.items.length === 1) {
-      const tool = seg.items[0];
-      const diffKey = `${segIdx}-0`;
-      const argsKey = `${segIdx}-0-args`;
-      const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
-      const isDiffExpanded = expandedDiffs.has(diffKey);
-      const isArgsExpanded = expandedArgs.has(argsKey);
-      const isLastSegment = segIdx === segments.length - 1;
-      return (
-        <div key={segIdx} className={styles.toolEntry}>
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-            {tool.inputJson ? (
-              <button
-                className={styles.toolNameClickable}
-                onClick={() => setExpandedArgs(prev => {
-                  const next = new Set(prev);
-                  if (next.has(argsKey)) next.delete(argsKey); else next.add(argsKey);
-                  return next;
-                })}
-              >
-                ⚡ {tool.toolName}
-              </button>
-            ) : (
-              <span className={styles.toolName}>⚡ {tool.toolName}</span>
-            )}
-            {tool.durationMs !== undefined && tool.durationMs >= 2000 && (
-              <span className={styles.toolDuration}>{(tool.durationMs / 1000).toFixed(1)}s</span>
-            )}
-            {isLastSegment && sessionState === 'working' && tool.durationMs === undefined && (
-              <span className={styles.toolRunningSpinner} />
-            )}
-            {hasDiff && (
-              <button
-                className={styles.diffToggle}
-                onClick={() => setExpandedDiffs(prev => {
-                  const next = new Set(prev);
-                  if (next.has(diffKey)) next.delete(diffKey); else next.add(diffKey);
-                  return next;
-                })}
-              >
-                diff
-              </button>
-            )}
-          </div>
-          {tool.content && (
-            isFilePath(tool.content)
-              ? <button className={styles.toolDescLink} title="Open file" onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{tool.content}</button>
-              : <span className={styles.toolDesc}>{tool.content}</span>
-          )}
-          {isArgsExpanded && tool.inputJson && (
-            <pre className={styles.argsView}>{tool.inputJson}</pre>
-          )}
-          {hasDiff && isDiffExpanded && (
-            <div className={styles.diffView}>
-              {computeDiff(tool.oldString!, tool.newString ?? '').map((line, li) => (
-                <div
-                  key={li}
-                  className={`${styles.diffLine} ${line.type === 'removed' ? styles.diffRemoved : styles.diffAdded}`}
-                >
-                  {line.text}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
-    // Multi-tool group — collapsible, expanded only if in the set
-    const isExpanded = expandedToolGroups.has(segIdx);
-    const toolNames = seg.items.map(t => t.toolName ?? '').filter(Boolean);
-    const summary = toolNames.length <= 3
-      ? toolNames.join(', ')
-      : toolNames.slice(0, 3).join(', ') + ` +${toolNames.length - 3}`;
-    const isLastSegment = segIdx === segments.length - 1;
-    return (
-      <div key={segIdx} className={styles.toolGroup}>
-        <button
-          className={styles.toolGroupHeader}
-          onClick={() => {
-            setExpandedToolGroups(prev => {
+        ) : (
+          <span className={styles.toolName}>⚡ {tool.toolName}</span>
+        )}
+        {showDuration && tool.durationMs !== undefined && tool.durationMs >= 2000 && (
+          <span className={styles.toolDuration}>{(tool.durationMs / 1000).toFixed(1)}s</span>
+        )}
+        {showRunning && sessionState === 'working' && tool.durationMs === undefined && (
+          <span className={styles.toolRunningSpinner} />
+        )}
+        {hasDiff && (
+          <button
+            className={styles.diffToggle}
+            onClick={() => setExpandedDiffs(prev => {
               const next = new Set(prev);
-              if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+              if (next.has(diffKey)) next.delete(diffKey); else next.add(diffKey);
               return next;
-            });
-          }}
-        >
-          <span className={styles.toolGroupIcon}>⚡</span>
-          <span className={styles.toolGroupSummary}>{summary}</span>
-          <span className={styles.toolGroupCount}>{seg.items.length}</span>
-          {isLastSegment && sessionState === 'working' && seg.items.every(t => t.durationMs === undefined) && (
-            <span className={styles.toolRunningSpinner} />
-          )}
-          <span className={styles.toolGroupChevron}>{isExpanded ? '▾' : '▸'}</span>
-        </button>
-        {isExpanded && seg.items.map((tool, ti) => {
-          const diffKey = `${segIdx}-${ti}`;
-          const argsKey = `${segIdx}-${ti}-args`;
-          const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
-          const isDiffExpanded = expandedDiffs.has(diffKey);
-          const isArgsExpanded = expandedArgs.has(argsKey);
-          return (
-            <div key={ti} className={styles.toolEntry}>
-              <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                {tool.inputJson ? (
-                  <button
-                    className={styles.toolNameClickable}
-                    onClick={() => setExpandedArgs(prev => {
-                      const next = new Set(prev);
-                      if (next.has(argsKey)) next.delete(argsKey); else next.add(argsKey);
-                      return next;
-                    })}
-                  >
-                    ⚡ {tool.toolName}
-                  </button>
-                ) : (
-                  <span className={styles.toolName}>⚡ {tool.toolName}</span>
-                )}
-                {hasDiff && (
-                  <button
-                    className={styles.diffToggle}
-                    onClick={() => setExpandedDiffs(prev => {
-                      const next = new Set(prev);
-                      if (next.has(diffKey)) next.delete(diffKey); else next.add(diffKey);
-                      return next;
-                    })}
-                  >
-                    diff
-                  </button>
-                )}
+            })}
+          >
+            diff
+          </button>
+        )}
+      </div>
+      {tool.content && (
+        isFilePath(tool.content)
+          ? <button className={styles.toolDescLink} title="Open file" onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{tool.content}</button>
+          : <span className={styles.toolDesc}>{tool.content}</span>
+      )}
+      {isArgsExpanded && tool.inputJson && (
+        <pre className={styles.argsView}>{tool.inputJson}</pre>
+      )}
+      {hasDiff && isDiffExpanded && (
+        <div className={styles.diffView}>
+          {computeDiff(tool.oldString!, tool.newString ?? '').map((line, li) => (
+            <div
+              key={li}
+              className={`${styles.diffLine} ${line.type === 'removed' ? styles.diffRemoved : styles.diffAdded}`}
+            >
+              {line.text}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface FeedSegmentsProps {
+  feed: ActivityItem[];
+  roleLabel: (role: string) => string;
+  ideName?: string;
+  sessionState?: WorkerState;
+  styles: Record<string, string>;
+}
+
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles }: FeedSegmentsProps) {
+  const segments = useMemo(() => buildSegments(feed), [feed]);
+  const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
+  const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
+  const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
+  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
+  const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
+
+  return (
+    <>
+      {segments.map((seg, segIdx) => {
+        if (seg.type === 'thinking') {
+          const isExpanded = expandedThinking.has(segIdx);
+          if (seg.item.isRedacted) {
+            return (
+              <div key={segIdx} className={styles.thinkingBlock}>
+                <span className={styles.thinkingRedacted}>🔒 Thinking redacted</span>
               </div>
-              {tool.content && (
-            isFilePath(tool.content)
-              ? <button className={styles.toolDescLink} title="Open file" onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{tool.content}</button>
-              : <span className={styles.toolDesc}>{tool.content}</span>
-          )}
-              {isArgsExpanded && tool.inputJson && (
-                <pre className={styles.argsView}>{tool.inputJson}</pre>
-              )}
-              {hasDiff && isDiffExpanded && (
-                <div className={styles.diffView}>
-                  {computeDiff(tool.oldString!, tool.newString ?? '').map((line, li) => (
-                    <div
-                      key={li}
-                      className={`${styles.diffLine} ${line.type === 'removed' ? styles.diffRemoved : styles.diffAdded}`}
-                    >
-                      {line.text}
-                    </div>
-                  ))}
+            );
+          }
+          return (
+            <div key={segIdx} className={styles.thinkingBlock}>
+              <button
+                className={styles.thinkingToggle}
+                onClick={() => setExpandedThinking(prev => {
+                  const next = new Set(prev);
+                  if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+                  return next;
+                })}
+              >
+                <span className={styles.thinkingIcon}>💭</span>
+                <span>{isExpanded ? 'Hide thinking' : 'Show thinking'}</span>
+                <span className={styles.thinkingChevron}>{isExpanded ? '▴' : '▾'}</span>
+              </button>
+              {isExpanded && (
+                <div className={styles.thinkingContent}>
+                  {seg.item.content || <em>Empty</em>}
                 </div>
               )}
             </div>
           );
-        })}
-      </div>
-    );
-  });
+        }
+        if (seg.type === 'message') {
+          const notification = seg.item.role === 'user' ? parseTaskNotification(seg.item.content) : null;
+          if (notification) {
+            const icon = notification.status === 'completed' ? '✓' : notification.status === 'error' ? '✗' : '●';
+            return (
+              <div key={segIdx} className={styles.systemNotification}>
+                <span className={styles.systemNotificationIcon}>{icon}</span>
+                <span className={styles.systemNotificationText}>{notification.summary}</span>
+              </div>
+            );
+          }
+          const isRaw = rawSegments.has(segIdx);
+          return (
+            <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]}`}>
+              <div className={styles.transcriptBubble}>
+                {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
+                  <>
+                    {isRaw ? (
+                      <pre className={styles.rawContent}>{seg.item.content}</pre>
+                    ) : (
+                      <div
+                        className={styles.markdownContent}
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(seg.item.content) }}
+                      />
+                    )}
+                    <button
+                      className={styles.rawToggle}
+                      onClick={() => setRawSegments(prev => {
+                        const next = new Set(prev);
+                        if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+                        return next;
+                      })}
+                      title={isRaw ? 'Show formatted' : 'Show raw text'}
+                    >
+                      {isRaw ? 'md' : 'raw'}
+                    </button>
+                  </>
+                ) : (
+                  <span className={styles.transcriptContent}>{seg.item.content}</span>
+                )}
+              </div>
+            </div>
+          );
+        }
+        // Single-tool group — show inline, no toggle
+        if (seg.items.length === 1) {
+          const tool = seg.items[0];
+          const diffKey = `${segIdx}-0`;
+          const argsKey = `${segIdx}-0-args`;
+          const isLastSegment = segIdx === segments.length - 1;
+          return (
+            <ToolEntry
+              key={segIdx}
+              tool={tool}
+              diffKey={diffKey}
+              argsKey={argsKey}
+              expandedDiffs={expandedDiffs}
+              setExpandedDiffs={setExpandedDiffs}
+              expandedArgs={expandedArgs}
+              setExpandedArgs={setExpandedArgs}
+              ideName={ideName}
+              showRunning={isLastSegment}
+              showDuration={true}
+              sessionState={sessionState}
+              styles={styles}
+            />
+          );
+        }
+        // Multi-tool group — collapsible, expanded only if in the set
+        const isExpanded = expandedToolGroups.has(segIdx);
+        const toolNames = seg.items.map(t => t.toolName ?? '').filter(Boolean);
+        const summary = toolNames.length <= 3
+          ? toolNames.join(', ')
+          : toolNames.slice(0, 3).join(', ') + ` +${toolNames.length - 3}`;
+        const isLastSegment = segIdx === segments.length - 1;
+        return (
+          <div key={segIdx} className={styles.toolGroup}>
+            <button
+              className={styles.toolGroupHeader}
+              onClick={() => {
+                setExpandedToolGroups(prev => {
+                  const next = new Set(prev);
+                  if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+                  return next;
+                });
+              }}
+            >
+              <span className={styles.toolGroupIcon}>⚡</span>
+              <span className={styles.toolGroupSummary}>{summary}</span>
+              <span className={styles.toolGroupCount}>{seg.items.length}</span>
+              {isLastSegment && sessionState === 'working' && seg.items.every(t => t.durationMs === undefined) && (
+                <span className={styles.toolRunningSpinner} />
+              )}
+              <span className={styles.toolGroupChevron}>{isExpanded ? '▾' : '▸'}</span>
+            </button>
+            {isExpanded && seg.items.map((tool, ti) => {
+              const diffKey = `${segIdx}-${ti}`;
+              const argsKey = `${segIdx}-${ti}-args`;
+              return (
+                <ToolEntry
+                  key={ti}
+                  tool={tool}
+                  diffKey={diffKey}
+                  argsKey={argsKey}
+                  expandedDiffs={expandedDiffs}
+                  setExpandedDiffs={setExpandedDiffs}
+                  expandedArgs={expandedArgs}
+                  setExpandedArgs={setExpandedArgs}
+                  ideName={ideName}
+                  showRunning={false}
+                  showDuration={false}
+                  sessionState={sessionState}
+                  styles={styles}
+                />
+              );
+            })}
+          </div>
+        );
+      })}
+    </>
+  );
 }
+
+const STATE_ICONS: Record<string, string> = {
+  working: '⚙',
+  thinking: '💭',
+  waiting: '⏳',
+  closed: '✓',
+  abandoned: '⚠',
+};
 
 export function DetailPanel({
   selectedSession,
@@ -564,25 +587,17 @@ export function DetailPanel({
   onClose,
   connected,
   isPtySession,
-  sendInput,
-  injectText,
-  resizePty,
-  registerOutputHandler,
-  exitedSessions,
-  getError,
-  isInDormitory,
-  onToggleDormitory,
-  onDeleteSession,
+  pty,
+  actions,
+
   siblingActiveSessions,
   onSelectSession,
   customNames,
-  onResumeSession,
-  onMarkDone,
-  onAcceptSession,
-  onAcceptTask,
-  panelWidth: panelWidthProp,
+  panelWidth,
   onPanelWidthChange,
 }: DetailPanelProps) {
+  const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
+  const { onDeleteSession, onResumeSession, onOpenInTerminal, onMarkDone, onAcceptSession, onAcceptTask } = actions;
   const isOpen = selectedSession !== null;
 
   // Re-render every second to update duration / relative times — only when panel is open
@@ -591,27 +606,24 @@ export function DetailPanel({
   const transcriptRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
 
-  const [panelWidthLocal, setPanelWidthLocal] = useState<number>(() => {
-    const saved = localStorage.getItem('overlord:panelWidth');
-    return saved ? Math.max(320, Math.min(900, parseInt(saved, 10))) : 680;
-  });
-  const panelWidth = panelWidthProp ?? panelWidthLocal;
   function setPanelWidth(next: number) {
-    setPanelWidthLocal(next);
     onPanelWidthChange?.(next);
   }
   const dragStartX = useRef<number | null>(null);
-  const dragStartWidth = useRef<number>(680);
+  const dragStartWidth = useRef<number>(panelWidth);
+  const currentDragWidth = useRef<number>(panelWidth);
 
   function onResizeMouseDown(e: React.MouseEvent) {
     e.preventDefault();
     dragStartX.current = e.clientX;
     dragStartWidth.current = panelWidth;
+    currentDragWidth.current = panelWidth;
 
     function onMouseMove(ev: MouseEvent) {
       if (dragStartX.current === null) return;
       const delta = dragStartX.current - ev.clientX;
       const next = Math.max(320, Math.min(900, dragStartWidth.current + delta));
+      currentDragWidth.current = next;
       setPanelWidth(next);
     }
 
@@ -619,8 +631,8 @@ export function DetailPanel({
       dragStartX.current = null;
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
-      localStorage.setItem('overlord:panelWidth', String(panelWidth));
-      onPanelWidthChange?.(panelWidth);
+      localStorage.setItem('overlord:panelWidth', String(currentDragWidth.current));
+      onPanelWidthChange?.(currentDragWidth.current);
     }
 
     document.addEventListener('mousemove', onMouseMove);
@@ -646,11 +658,9 @@ export function DetailPanel({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copyConfirm, setCopyConfirm] = useState(false);
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
-  const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
-  const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
-  const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
-  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
-  const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
+  const [killing, setKilling] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [openingTerminal, setOpeningTerminal] = useState(false);
   const currentDisplayName =
     customName ??
     selectedSession?.proposedName ??
@@ -670,12 +680,12 @@ export function DetailPanel({
     const raf = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (transcriptRef.current) {
-          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+          transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
         }
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [selectedSession?.activityFeed, selectedSubagent?.activityFeed]);
+  }, [selectedSession?.activityFeed, selectedSubagent?.activityFeed, activeTab]);
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
@@ -684,7 +694,7 @@ export function DetailPanel({
     const raf = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (transcriptRef.current) {
-          transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+          transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
         }
       });
     });
@@ -694,12 +704,10 @@ export function DetailPanel({
     setSendInput2('');
     setConfirmDelete(false);
     setCopyConfirm(false);
-    setExpandedToolGroups(new Set());
-    setExpandedDiffs(new Set());
-    setRawSegments(new Set());
-    setExpandedThinking(new Set());
     setPastedImage(null);
-    setActiveTab(selectedSession?.sessionId && isPtySession(selectedSession.sessionId) ? 'terminal' : 'conversation');
+    setKilling(false);
+    setResuming(false);
+    setActiveTab('conversation');
     setSubagentActiveTab('conversation');
     return () => cancelAnimationFrame(raf);
   }, [selectedSession?.sessionId, selectedSubagentId]);
@@ -727,6 +735,17 @@ export function DetailPanel({
     if (e.key === 'Escape') setIsEditing(false);
   }
 
+  function handleSend() {
+    if (!selectedSession) return;
+    const text = sendInput2.trim();
+    if (!text && !pastedImage) return;
+    const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
+    injectText(selectedSession.sessionId, full, !!pastedImage);
+    if (full) setLocalSent(prev => [...prev, full]);
+    setSendInput2('');
+    setPastedImage(null);
+  }
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && isOpen) onClose();
@@ -737,6 +756,8 @@ export function DetailPanel({
 
   const isPty = selectedSession ? isPtySession(selectedSession.sessionId) : false;
   const isExited = selectedSession ? exitedSessions.has(selectedSession.sessionId) : false;
+  const sessionError = selectedSession ? getError(selectedSession.sessionId) : undefined;
+
 
   // Build merged activityFeed: real feed + optimistic locally-sent messages
   const realFeed = selectedSession?.activityFeed ?? [];
@@ -751,15 +772,24 @@ export function DetailPanel({
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
   const isAbandoned = selectedSession != null && selectedSession.state === 'closed' && (Date.now() - new Date(selectedSession.lastActivity).getTime()) > 30 * 60 * 1000;
   const summaryState = isAbandoned ? 'abandoned' : (selectedSession?.state ?? 'closed');
-  const STATE_ICONS: Record<string, string> = {
-    working: '⚙',
-    thinking: '💭',
-    waiting: '⏳',
-    closed: '✓',
-    abandoned: '⚠',
-  };
-
   const hasSubagents = (selectedSession?.subagents.length ?? 0) > 0;
+
+  const stateBarActiveSubagents = selectedSession
+    ? selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking')
+    : [];
+  const stateBarIsDone = selectedSession?.state === 'waiting' && selectedSession?.completionHint === 'done';
+  const stateBarNeedsApproval = selectedSession?.needsPermission === true;
+  const stateBarLabel = stateBarIsDone ? 'Task complete'
+    : stateBarNeedsApproval ? 'Waiting for approval'
+    : selectedSession?.state === 'waiting' && stateBarActiveSubagents.length > 0 ? 'Delegated · waiting for subagent'
+    : selectedSession?.state === 'waiting' ? 'Waiting for your response'
+    : selectedSession?.state === 'thinking' ? 'Thinking...'
+    : 'Working...';
+  const stateBarClass = stateBarIsDone ? styles.stateBarDone
+    : stateBarNeedsApproval ? styles.stateBarPermission
+    : selectedSession?.state === 'waiting' ? styles.stateBarWaiting
+    : selectedSession?.state === 'thinking' ? styles.stateBarThinking
+    : styles.stateBarActive;
 
   return (
     <>
@@ -826,23 +856,13 @@ export function DetailPanel({
                     <section className={styles.section}>
                       {selectedSubagent.activityFeed?.length ? (
                         <div className={styles.transcript}>
-                          {renderSegments(
-                            buildSegments(selectedSubagent.activityFeed),
-                            expandedToolGroups,
-                            setExpandedToolGroups,
-                            (role) => role === 'user' ? 'parent' : 'claude',
-                            styles as Record<string, string>,
-                            expandedDiffs,
-                            setExpandedDiffs,
-                            rawSegments,
-                            setRawSegments,
-                            expandedThinking,
-                            setExpandedThinking,
-                            expandedArgs,
-                            setExpandedArgs,
-                            selectedSession.ideName,
-                            selectedSubagent.state,
-                          )}
+                          <FeedSegments
+                            feed={selectedSubagent.activityFeed}
+                            roleLabel={(role) => role === 'user' ? 'parent' : 'claude'}
+                            styles={styles as Record<string, string>}
+                            ideName={selectedSession.ideName}
+                            sessionState={selectedSubagent.state}
+                          />
                         </div>
                       ) : (
                         <div className={styles.messageBox}>No activity recorded yet.</div>
@@ -919,15 +939,17 @@ export function DetailPanel({
                       </>
                     ) : (
                       <>
-                        <h2 className={styles.sessionName} onDoubleClick={startEdit} style={{ cursor: 'default' }}>{currentDisplayName}</h2>
-                        <button className={styles.nameBtn} onClick={startEdit} title="Rename">✎</button>
-                        {onDeleteSession && (
-                          <button className={styles.deleteIconBtn} onClick={() => setConfirmDelete(true)} title="Delete session">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
-                            </svg>
-                          </button>
-                        )}
+                        <h2 className={styles.sessionName} style={{ cursor: 'default' }}>{currentDisplayName}</h2>
+                        <button
+                          className={styles.nameBtn}
+                          onClick={() => navigator.clipboard.writeText(selectedSession.sessionId)}
+                          title={`Copy session ID: ${selectedSession.sessionId}`}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/>
+                            <path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/>
+                          </svg>
+                        </button>
                       </>
                     )}
                   </div>
@@ -947,8 +969,11 @@ export function DetailPanel({
                         return isDone && !!onAcceptSession ? () => onAcceptSession(selectedSession.sessionId) : undefined;
                       })()}
                     />
-                    <span className={styles.summaryMeta}>{formatRelativeTime(selectedSession.lastActivity)}</span>
-                    {selectedSession.model && <span className={styles.summaryMeta}>{selectedSession.model.replace('claude-', '')}</span>}
+                    {selectedSession.startedAt > 0 && (
+                      <span className={styles.summaryMeta}>{formatStartedAt(selectedSession.startedAt)}</span>
+                    )}
+                    <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
+                    {selectedSession.model && <span className={styles.summaryMeta}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
                   </div>
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
@@ -1004,23 +1029,13 @@ export function DetailPanel({
                           <section className={styles.section}>
                             {mergedFeed.length > 0 ? (
                               <div className={styles.transcript}>
-                                {renderSegments(
-                                  buildSegments(mergedFeed),
-                                  expandedToolGroups,
-                                  setExpandedToolGroups,
-                                  (role) => role === 'user' ? 'you' : 'claude',
-                                  styles as Record<string, string>,
-                                  expandedDiffs,
-                                  setExpandedDiffs,
-                                  rawSegments,
-                                  setRawSegments,
-                                  expandedThinking,
-                                  setExpandedThinking,
-                                  expandedArgs,
-                                  setExpandedArgs,
-                                  selectedSession.ideName,
-                                  selectedSession.state,
-                                )}
+                                <FeedSegments
+                                  feed={mergedFeed}
+                                  roleLabel={(role) => role === 'user' ? 'you' : 'claude'}
+                                  styles={styles as Record<string, string>}
+                                  ideName={selectedSession.ideName}
+                                  sessionState={selectedSession.state}
+                                />
                               </div>
                             ) : (
                               <div className={styles.messageBox}>{selectedSession.lastMessage}</div>
@@ -1028,61 +1043,45 @@ export function DetailPanel({
                           </section>
                         )}
                       </div>
-                      {selectedSession.state !== 'closed' && (() => {
-                        const activeSubagents = selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking');
-                        const isDone = selectedSession.state === 'waiting' && selectedSession.completionHint === 'done';
-                        const needsApproval = selectedSession.needsPermission === true;
-                        const stateLabel = isDone ? 'Task complete'
-                          : needsApproval ? 'Waiting for approval'
-                          : selectedSession.state === 'waiting' && activeSubagents.length > 0 ? 'Delegated · waiting for subagent'
-                          : selectedSession.state === 'waiting' ? 'Waiting for your response'
-                          : selectedSession.state === 'thinking' ? 'Thinking...'
-                          : 'Working...';
-                        const stateClass = isDone ? styles.stateBarDone
-                          : needsApproval ? styles.stateBarPermission
-                          : selectedSession.state === 'waiting' ? styles.stateBarWaiting
-                          : selectedSession.state === 'thinking' ? styles.stateBarThinking
-                          : styles.stateBarActive;
-                        return (
-                          <>
-                            <div className={`${styles.stateBar} ${stateClass}`}>
-                              <span className={styles.stateBarDot} />
-                              <span className={styles.stateBarLabel}>{stateLabel}</span>
-                              {activeSubagents.length > 0 && (
-                                <span className={styles.stateBarDelegate}>
-                                  · {activeSubagents.length} delegated
-                                </span>
-                              )}
-                              <div style={{flex: 1}} />
-                              {(selectedSession.state === 'thinking' || selectedSession.state === 'working') && elapsedSeconds > 2 && (
-                                <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
-                              )}
-                              {isDone && !selectedSession.userAccepted && onAcceptSession && (
-                                <button
-                                  className={styles.acceptBtn}
-                                  onClick={() => onAcceptSession(selectedSession.sessionId)}
-                                  title="Accept this completed session"
-                                >
-                                  Accept
-                                </button>
-                              )}
-                              {isDone && selectedSession.userAccepted && (
-                                <span className={styles.acceptedLabel}>Accepted ✓</span>
-                              )}
-                            </div>
-                            {needsApproval && (
-                              <PermissionPrompt
-                                sessionId={selectedSession.sessionId}
-                                promptText={selectedSession.permissionPromptText}
-                                styles={styles}
-                              />
+                      {selectedSession && selectedSession.state !== 'closed' && (
+                        <>
+                          <div className={`${styles.stateBar} ${stateBarClass}`}>
+                            <span className={styles.stateBarDot} />
+                            <span className={styles.stateBarLabel}>{stateBarLabel}</span>
+                            {stateBarActiveSubagents.length > 0 && (
+                              <span className={styles.stateBarDelegate}>
+                                · {stateBarActiveSubagents.length} delegated
+                              </span>
                             )}
-                          </>
-                        );
-                      })()}
+                            <div style={{flex: 1}} />
+                            {(selectedSession.state === 'thinking' || selectedSession.state === 'working') && elapsedSeconds > 2 && (
+                              <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
+                            )}
+                            {stateBarIsDone && !selectedSession.userAccepted && onAcceptSession && (
+                              <button
+                                className={styles.acceptBtn}
+                                onClick={() => onAcceptSession(selectedSession.sessionId)}
+                                title="Accept this completed session"
+                              >
+                                Accept
+                              </button>
+                            )}
+                            {stateBarIsDone && selectedSession.userAccepted && (
+                              <span className={styles.acceptedLabel}>Accepted ✓</span>
+                            )}
+                          </div>
+                          {stateBarNeedsApproval && (
+                            <PermissionPrompt
+                              sessionId={selectedSession.sessionId}
+                              promptText={selectedSession.permissionPromptText}
+                              styles={styles}
+                            />
+                          )}
+                        </>
+                      )}
                       <div className={styles.sendArea}>
-                        {getError(selectedSession.sessionId) && (
-                          <div className={styles.sendError}>{getError(selectedSession.sessionId)}</div>
+                        {sessionError && (
+                          <div className={styles.sendError}>{sessionError}</div>
                         )}
                         {pastedImage && (
                           <div className={styles.imagePreview}>
@@ -1105,11 +1104,7 @@ export function DetailPanel({
                                   injectText(selectedSession.sessionId, '', false);
                                   return;
                                 }
-                                const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-                                injectText(selectedSession.sessionId, full, !!pastedImage);
-                                if (full) setLocalSent(prev => [...prev, full]);
-                                setSendInput2('');
-                                setPastedImage(null);
+                                handleSend();
                               }
                             }}
                             onPaste={async e => {
@@ -1143,14 +1138,8 @@ export function DetailPanel({
                           <button
                             className={styles.sendButton}
                             onClick={() => {
-                              const text = sendInput2.trim();
-                              if (!text && !pastedImage) return;
                               if (!connected) return;
-                              const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-                              injectText(selectedSession.sessionId, full, !!pastedImage);
-                              setLocalSent(prev => [...prev, full]);
-                              setSendInput2('');
-                              setPastedImage(null);
+                              handleSend();
                             }}
                             disabled={!connected || (!sendInput2.trim() && !pastedImage)}
                             title="Send (Enter)"
@@ -1208,6 +1197,21 @@ export function DetailPanel({
                               </svg>
                             )}
                           </button>
+                          {selectedSession.state !== 'closed' && (
+                            <button
+                              className={styles.killPidButton}
+                              title={`Kill process (PID ${selectedSession.pid})`}
+                              disabled={killing}
+                              onClick={() => {
+                                setKilling(true);
+                                fetch(`/api/sessions/${selectedSession.sessionId}/kill-process`, { method: 'POST' })
+                                  .catch(console.error)
+                                  .finally(() => setKilling(false));
+                              }}
+                            >
+                              {killing ? '…' : '✕'}
+                            </button>
+                          )}
                         </span>
                       </div>
                       <div className={styles.field}>
@@ -1258,7 +1262,7 @@ export function DetailPanel({
                         </div>
                       )}
                       {selectedSession.inputTokens !== undefined && (() => {
-                        const contextWindow = getModelContextWindow(selectedSession.model);
+                        const contextWindow = 200_000;
                         const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
                         const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
                         const totalK = (contextWindow / 1000).toFixed(0);
@@ -1284,18 +1288,6 @@ export function DetailPanel({
                           </div>
                         );
                       })()}
-
-                      {/* Dormitory button */}
-                      {onToggleDormitory && (
-                        <div className={styles.dormitoryRow}>
-                          <button
-                            className={`${styles.dormitoryBtn} ${isInDormitory?.(selectedSession.sessionId) ? styles.dormitoryBtnActive : ''}`}
-                            onClick={() => onToggleDormitory(selectedSession.sessionId)}
-                          >
-                            {isInDormitory?.(selectedSession.sessionId) ? '↑ Bring back from dormitory' : '↓ Put to dormitory'}
-                          </button>
-                        </div>
-                      )}
 
                       {/* Continuation banner */}
                       {selectedSession.state === 'closed' && (
@@ -1328,26 +1320,52 @@ export function DetailPanel({
                           <div className={styles.resumeSectionLabel}>Resume</div>
                           <div className={styles.resumeCommand}>
                             <code>claude --resume {selectedSession.sessionId}</code>
-                          </div>
-                          <div className={styles.resumeButtons}>
-                            {onResumeSession && (
-                              <button
-                                className={styles.resumeButton}
-                                onClick={() => onResumeSession(selectedSession.sessionId, selectedSession.cwd)}
-                              >
-                                Resume in Overlord
-                              </button>
-                            )}
                             <button
-                              className={styles.copyResumeButton}
+                              className={styles.resumeCopyIcon}
                               onClick={() => {
                                 navigator.clipboard.writeText(`claude --resume ${selectedSession.sessionId}`);
                                 setCopyConfirm(true);
                                 setTimeout(() => setCopyConfirm(false), 2000);
                               }}
+                              title="Copy"
                             >
-                              {copyConfirm ? 'Copied!' : 'Copy resume command'}
+                              {copyConfirm ? (
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12"/>
+                                </svg>
+                              ) : (
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                </svg>
+                              )}
                             </button>
+                          </div>
+                          <div className={styles.resumeButtons}>
+                            {onResumeSession && (
+                              <button
+                                className={`${styles.resumeButton} ${resuming ? styles.resumeButtonPending : ''}`}
+                                disabled={resuming}
+                                onClick={() => {
+                                  setResuming(true);
+                                  onResumeSession(selectedSession.sessionId, selectedSession.cwd);
+                                }}
+                              >
+                                {resuming ? 'Starting…' : 'Resume in Overlord'}
+                              </button>
+                            )}
+                            {onOpenInTerminal && (
+                              <button
+                                className={`${styles.resumeButton} ${openingTerminal ? styles.resumeButtonPending : ''}`}
+                                disabled={openingTerminal}
+                                onClick={() => {
+                                  setOpeningTerminal(true);
+                                  onOpenInTerminal(selectedSession.sessionId, selectedSession.cwd);
+                                  setTimeout(() => setOpeningTerminal(false), 2000);
+                                }}
+                              >
+                                {openingTerminal ? 'Opening…' : 'Open in Terminal'}
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
