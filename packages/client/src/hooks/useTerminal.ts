@@ -10,7 +10,7 @@ function decodeBase64(b64: string): Uint8Array {
 
 export interface UseTerminalResult {
   handleTerminalMessage: (msg: TerminalMessage) => void;
-  spawnSession: (cwd: string, cols?: number, rows?: number) => void;
+  spawnSession: (cwd: string, cols?: number, rows?: number, name?: string) => void;
   resumeSession: (resumeSessionId: string, cwd: string, cols?: number, rows?: number) => void;
   sendInput: (sessionId: string, data: string) => void;
   injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
@@ -121,15 +121,25 @@ export function useTerminal(
       const { oldSessionId, newSessionId } = msg;
       migrateId(oldSessionId, newSessionId);
     } else if (msg.type === 'terminal:linked') {
-      const { ptySessionId, claudeSessionId } = msg as { type: string; ptySessionId: string; claudeSessionId: string };
+      const { ptySessionId, claudeSessionId, replay } = msg as { type: string; ptySessionId: string; claudeSessionId: string; replay?: boolean };
       migrateId(ptySessionId, claudeSessionId);
-      if (onSpawnedRef.current) onSpawnedRef.current(claudeSessionId);  // update activePtySessionId in App.tsx
+      if (!replay) {
+        // Clear buffered output and reset the xterm terminal to discard
+        // startup crash noise from `claude --resume` (JS stack trace before TUI recovery)
+        outputBuffer.current.delete(claudeSessionId);
+        const handler = outputHandlers.current.get(claudeSessionId);
+        if (handler) {
+          // ESC[2J = clear entire screen, ESC[H = move cursor to home position
+          handler(new TextEncoder().encode('\x1b[2J\x1b[H'));
+        }
+        if (onSpawnedRef.current) onSpawnedRef.current(claudeSessionId);  // update activePtySessionId in App.tsx
+      }
     }
   }, []);
 
   const spawnSession = useCallback(
-    (cwd: string, cols = 80, rows = 24) => {
-      sendMessage({ type: 'terminal:spawn', cwd, cols, rows });
+    (cwd: string, cols = 80, rows = 24, name?: string) => {
+      sendMessage({ type: 'terminal:spawn', cwd, cols, rows, name });
     },
     [sendMessage]
   );

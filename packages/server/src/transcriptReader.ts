@@ -5,9 +5,26 @@ import type { WorkerState, Subagent, ActivityItem } from './types.js';
 
 interface TranscriptCache {
   mtimeMs: number;
+  fileSize: number;
+  fileModifiedMs: number; // raw mtime for age calculation
+  lastCheckedAt: number; // wall-clock time of last stat() call
+  /** Which state-determination branch to use when re-evaluating from time alone */
+  stateHint: 'tool_use' | 'assistant_text' | 'tool_result' | 'user_input' | 'none';
   result: ReturnType<typeof readTranscriptState>;
+  dirty: boolean; // set by markDirty() when chokidar fires
 }
 const transcriptCache = new Map<string, TranscriptCache>();
+
+// Minimum interval between stat() calls on the same file (ms).
+const MIN_STAT_INTERVAL_MS = 1000;
+
+// Cache compaction counts so we don't need to re-read entire files
+interface CompactCache {
+  fileSize: number; // last known file size we scanned up to
+  compactCount: number;
+  lastCompactTimestamp?: number;
+}
+const compactCountCache = new Map<string, CompactCache>();
 
 interface SubagentsDirCache {
   mtimeMs: number;
@@ -19,6 +36,32 @@ const proposedNameCache = new Map<string, string>();
 
 export function clearTranscriptCache(filePath: string): void {
   transcriptCache.delete(filePath);
+  compactCountCache.delete(filePath);
+}
+
+/**
+ * Mark a transcript file as dirty — called by chokidar when the file changes.
+ * The next readTranscriptState() call will re-read the file instead of
+ * just re-evaluating time-based state from cache.
+ */
+export function markTranscriptDirty(filePath: string): void {
+  const cached = transcriptCache.get(filePath);
+  if (cached) cached.dirty = true;
+}
+
+/**
+ * Re-evaluate the time-dependent state from a cached stateHint without any file I/O.
+ * Returns null if the state hasn't changed (caller can skip broadcasting).
+ */
+function reEvalStateFromCache(cached: TranscriptCache): WorkerState {
+  const ageSec = (Date.now() - cached.fileModifiedMs) / 1000;
+  switch (cached.stateHint) {
+    case 'tool_use':     return ageSec < 8 ? 'working' : 'thinking';
+    case 'assistant_text': return ageSec < 3 ? 'working' : 'waiting';
+    case 'tool_result':  return ageSec < 8 ? 'working' : 'thinking';
+    case 'user_input':   return ageSec < 8 ? 'working' : 'thinking';
+    case 'none':         return 'waiting';
+  }
 }
 
 export function clearProposedNameCache(sessionId: string): void {
@@ -58,6 +101,83 @@ export function findTranscriptPathAnywhere(sessionId: string): string | null {
     }
   } catch { /* ignore */ }
   return null;
+}
+
+/**
+ * Read only the tail of a file (last ~TAIL_BYTES bytes).
+ * Returns the lines from the tail portion, dropping the first (potentially partial) line.
+ * This avoids reading entire multi-MB transcript files into memory every 3 seconds.
+ */
+const TAIL_BYTES = 512 * 1024; // 512KB — plenty for 500 lines of JSON
+
+function readFileTail(filePath: string, fileSize: number): string[] {
+  if (fileSize <= TAIL_BYTES) {
+    // Small file — just read it all
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return content.split('\n').filter((l) => l.trim().length > 0);
+  }
+  // Large file — read only the tail
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(TAIL_BYTES);
+    const bytesRead = fs.readSync(fd, buf, 0, TAIL_BYTES, fileSize - TAIL_BYTES);
+    const raw = buf.toString('utf-8', 0, bytesRead);
+    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    // Drop first line — it's likely a partial line from mid-read
+    if (lines.length > 1) lines.shift();
+    return lines;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Incrementally scan for compact_boundary events.
+ * Only reads new content since the last scan, caching the count.
+ */
+function detectCompactionIncremental(filePath: string, fileSize: number): { compactCount: number; isCompacting: boolean } {
+  const cached = compactCountCache.get(filePath);
+  const now = Date.now();
+
+  let compactCount = cached?.compactCount ?? 0;
+  let lastCompactTimestamp = cached?.lastCompactTimestamp;
+  const scanFrom = cached?.fileSize ?? 0;
+
+  if (scanFrom < fileSize) {
+    // Read only the new portion of the file
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const chunkSize = fileSize - scanFrom;
+      const buf = Buffer.alloc(chunkSize);
+      fs.readSync(fd, buf, 0, chunkSize, scanFrom);
+      const raw = buf.toString('utf-8');
+      // Quick string check before JSON parsing — much faster for large chunks
+      if (raw.includes('compact_boundary')) {
+        for (const line of raw.split('\n')) {
+          if (!line.includes('compact_boundary')) continue;
+          try {
+            const parsed = JSON.parse(line) as { type?: string; subtype?: string; timestamp?: string };
+            if (parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
+              compactCount++;
+              if (parsed.timestamp) {
+                const ts = new Date(parsed.timestamp).getTime();
+                if (!isNaN(ts) && (lastCompactTimestamp === undefined || ts > lastCompactTimestamp)) {
+                  lastCompactTimestamp = ts;
+                }
+              }
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  compactCountCache.set(filePath, { fileSize, compactCount, lastCompactTimestamp });
+
+  const isCompacting = lastCompactTimestamp !== undefined && now - lastCompactTimestamp < 5000;
+  return { compactCount, isCompacting };
 }
 
 function describeInput(input: unknown): string {
@@ -112,37 +232,6 @@ function buildToolDurations(lines: string[]): Map<string, number> {
   return durationMs;
 }
 
-function detectCompaction(lines: string[]): { compactCount: number; isCompacting: boolean } {
-  const now = Date.now();
-  let compactCount = 0;
-  let lastCompactTimestamp: number | undefined;
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line) as {
-        type?: string;
-        subtype?: string;
-        timestamp?: string;
-      };
-      if (parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
-        compactCount++;
-        if (parsed.timestamp) {
-          const ts = new Date(parsed.timestamp).getTime();
-          if (!isNaN(ts)) {
-            if (lastCompactTimestamp === undefined || ts > lastCompactTimestamp) {
-              lastCompactTimestamp = ts;
-            }
-          }
-        }
-      }
-    } catch {
-      // skip
-    }
-  }
-  const isCompacting =
-    lastCompactTimestamp !== undefined && now - lastCompactTimestamp < 5000;
-  return { compactCount, isCompacting };
-}
-
 function detectLastUserIsDone(last30: string[]): boolean {
   for (let i = last30.length - 1; i >= 0; i--) {
     try {
@@ -188,25 +277,41 @@ export function readTranscriptState(filePath: string): {
   lastUserIsDone?: boolean;
 } {
   try {
-    const stat = fs.statSync(filePath);
-    const fileModifiedMs = stat.mtimeMs;
-
-    // Return cached result if file hasn't changed
+    const now = Date.now();
     const cached = transcriptCache.get(filePath);
-    if (cached && cached.mtimeMs === fileModifiedMs) {
+
+    // Fast path: file not dirty and we checked recently → just re-evaluate time-based state
+    if (cached && !cached.dirty && (now - cached.lastCheckedAt) < MIN_STAT_INTERVAL_MS) {
+      const newState = reEvalStateFromCache(cached);
+      if (newState !== cached.result.state) {
+        cached.result = { ...cached.result, state: newState };
+      }
       return cached.result;
     }
 
-    const now = Date.now();
+    // Medium path: stat the file to check mtime/size
+    const stat = fs.statSync(filePath);
+    const fileModifiedMs = stat.mtimeMs;
+
+    // File unchanged (same mtime AND size, not dirty) → re-evaluate time-based state only
+    if (cached && !cached.dirty && cached.mtimeMs === fileModifiedMs && cached.fileSize === stat.size) {
+      cached.lastCheckedAt = now;
+      cached.fileModifiedMs = fileModifiedMs;
+      const newState = reEvalStateFromCache(cached);
+      if (newState !== cached.result.state) {
+        cached.result = { ...cached.result, state: newState };
+      }
+      return cached.result;
+    }
+
     const ageSec = (now - fileModifiedMs) / 1000;
 
     const MAX_FEED_MESSAGES = 100;
     const MAX_CONTENT_LENGTH = 10000;
 
-    // Read all lines for compact scanning
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.split('\n').filter((l) => l.trim().length > 0);
-    const last30 = lines.slice(-(MAX_FEED_MESSAGES * 5));
+    // Read only the tail of the file — avoids reading entire multi-MB transcripts
+    const tailLines = readFileTail(filePath, stat.size);
+    const last30 = tailLines.slice(-(MAX_FEED_MESSAGES * 5));
 
     // Find last event with type field
     let lastTypedEvent: { type: string; [key: string]: unknown } | null = null;
@@ -248,7 +353,7 @@ export function readTranscriptState(filePath: string): {
 
           // Extract model and inputTokens from the last assistant event (first one we find scanning backwards)
           if (parsed.type === 'assistant' && model === undefined) {
-            if (parsed.message?.model) {
+            if (parsed.message?.model && parsed.message.model !== '<synthetic>') {
               model = parsed.message.model;
             }
             if (parsed.message?.usage) {
@@ -348,46 +453,44 @@ export function readTranscriptState(filePath: string): {
       }
     }
 
-    // Scan all lines for compact_boundary events
-    const { compactCount, isCompacting } = detectCompaction(lines);
+    // Incrementally scan for compact_boundary events (avoids re-reading entire file)
+    const { compactCount, isCompacting } = detectCompactionIncremental(filePath, stat.size);
 
     const lastActivity = new Date(fileModifiedMs).toISOString();
 
     // Detect "DONE" command: scan back for the most recent user message that is NOT a tool_result
     const lastUserIsDone = detectLastUserIsDone(last30);
 
-    // Determine state
+    // Determine state + stateHint (hint is used for time-only re-evaluation without I/O)
     let state: WorkerState;
+    let stateHint: TranscriptCache['stateHint'] = 'none';
     let needsPermission: boolean | undefined;
     if (lastTypedEvent?.type === 'assistant') {
-      // Check if the assistant message ended with tool_use (still executing tools)
-      // vs pure text (finished turn, waiting for human)
       const lastContent = lastTypedEvent.message as { content?: unknown } | undefined;
       const contentArr = Array.isArray(lastContent?.content) ? lastContent!.content as Array<{ type?: string }> : [];
       const endsWithToolUse = contentArr.length > 0 && contentArr[contentArr.length - 1]?.type === 'tool_use';
 
       if (endsWithToolUse) {
+        stateHint = 'tool_use';
         state = ageSec < 8 ? 'working' : 'thinking';
       } else {
-        // Claude sent a text response — waiting for user input
+        stateHint = 'assistant_text';
         state = ageSec < 3 ? 'working' : 'waiting';
       }
     } else if (lastTypedEvent?.type === 'user') {
-      // Check if this is a tool_result (system providing tool output) vs human message
       const userContent = lastTypedEvent.message as { content?: unknown } | undefined;
       const userContentArr = Array.isArray(userContent?.content) ? userContent!.content as Array<{ type?: string }> : [];
       const isToolResult = userContentArr.length > 0 && userContentArr[0]?.type === 'tool_result';
 
       if (isToolResult) {
-        // Tool result came back — Claude is processing it
+        stateHint = 'tool_result';
         state = ageSec < 8 ? 'working' : 'thinking';
-      } else if (ageSec < 8) {
-        state = 'working'; // just received human input
       } else {
-        state = 'thinking'; // actively processing
+        stateHint = 'user_input';
+        state = ageSec < 8 ? 'working' : 'thinking';
       }
     } else {
-      // No events in transcript yet — session just started, waiting for first prompt
+      stateHint = 'none';
       state = 'waiting';
     }
 
@@ -403,7 +506,7 @@ export function readTranscriptState(filePath: string): {
       needsPermission: needsPermission || undefined,
       lastUserIsDone: lastUserIsDone || undefined,
     };
-    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, result });
+    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;
   } catch {
     return {
@@ -465,9 +568,19 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
     // ignore
   }
 
-  // Strategy 2: first user message from transcript
+  // Strategy 2: first user message from transcript (only read first 64KB — the first message is near the top)
   try {
-    const content = fs.readFileSync(transcriptPath, 'utf-8');
+    const fd = fs.openSync(transcriptPath, 'r');
+    let content: string;
+    try {
+      const stat = fs.fstatSync(fd);
+      const readSize = Math.min(stat.size, 64 * 1024);
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, 0);
+      content = buf.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
     const lines = content.split('\n').filter((l) => l.trim().length > 0);
     for (const line of lines) {
       try {

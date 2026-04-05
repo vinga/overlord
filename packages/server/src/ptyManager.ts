@@ -40,7 +40,7 @@ export class PtyManager extends EventEmitter {
       this.emit('error', sessionId, 'node-pty is not available on this system');
       return;
     }
-    const MAX_RETRIES = 2;
+    const MAX_RETRIES = 4;
     const spawnedAt = Date.now();
     const ptyProcess = pty.spawn(CLAUDE_BIN, args, {
       name: 'xterm-color',
@@ -55,10 +55,10 @@ export class PtyManager extends EventEmitter {
     ptyProcess.onExit(({ exitCode }) => {
       this.sessions.delete(sessionId);
       const aliveMs = Date.now() - spawnedAt;
-      // If PTY died within 2s, likely a ConPTY AttachConsole race — retry
-      if (aliveMs < 2000 && _retryCount < MAX_RETRIES) {
+      // If PTY died within 3s, likely a ConPTY AttachConsole race — retry
+      if (aliveMs < 3000 && _retryCount < MAX_RETRIES) {
         console.warn(`[PtyManager] PTY ${sessionId.slice(0, 12)} exited after ${aliveMs}ms (code ${exitCode}), retrying (${_retryCount + 1}/${MAX_RETRIES})...`);
-        setTimeout(() => this.spawn(sessionId, cwd, cols, rows, args, _retryCount + 1), 300);
+        setTimeout(() => this.spawn(sessionId, cwd, cols, rows, args, _retryCount + 1), 500 * (_retryCount + 1));
         return;
       }
       this.emit('exit', sessionId, exitCode ?? 0);

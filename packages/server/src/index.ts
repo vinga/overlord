@@ -1,7 +1,6 @@
 import { createServer } from 'http';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { randomUUID } from 'node:crypto';
 import * as os from 'os';
 import * as fs from 'fs';
 import { exec, execSync, spawn } from 'child_process';
@@ -14,7 +13,7 @@ import { ProcessChecker } from './processChecker.js';
 import { PtyManager } from './ptyManager.js';
 import { injectText, approvePermission } from './consoleInjector.js';
 import { startPermissionChecker } from './permissionChecker.js';
-import { findTranscriptPathAnywhere } from './transcriptReader.js';
+import { findTranscriptPathAnywhere, markTranscriptDirty } from './transcriptReader.js';
 import { appendTaskSummary } from './taskStorage.js';
 import { runClaudeQuery } from './claudeQuery.js';
 import { initLogger, log, getBuffer } from './logger.js';
@@ -56,14 +55,54 @@ const ptyToClaudeId = new Map<string, string>();
 // Reverse: claudeSessionId → pty-xxx sessionId (for input/resize routing)
 const claudeToPtyId = new Map<string, string>();
 
+// Ring buffer for PTY output — replayed on new WS connections so the terminal isn't blank
+const ptyOutputBuffer = new Map<string, Buffer[]>();
+const PTY_BUFFER_MAX_CHUNKS = 500;
+
 // Track recently removed sessions for CWD-based /clear detection (new PID case)
 const recentlyRemovedByCwd = new Map<string, { sessionId: string; removedAt: number }>();
 
 // Flag to skip clear detection during startup (loadKnownSessions + initial file scan)
 let startupComplete = false;
 
-// Track cloned session IDs so transcript watcher doesn't treat them as /clear replacements
-const clonedTranscriptIds = new Set<string>();
+// Map ptySessionId → clone name, applied after PTY is linked to a real Claude session
+// Track pending clone info (name + original session) by ptySessionId.
+// When the forked session links via PID, we apply the name and set resumedFrom
+// so the transcript fallback in stateManager shows the parent's conversation.
+const pendingCloneInfo = new Map<string, { name: string; originalSessionId: string }>();
+
+function applyPendingCloneInfo(ptySessionId: string, claudeSessionId: string): void {
+  const info = pendingCloneInfo.get(ptySessionId);
+  if (info) {
+    pendingCloneInfo.delete(ptySessionId);
+    const session = stateManager.getSession(claudeSessionId);
+    if (session) {
+      session.proposedName = info.name;
+      session.resumedFrom = info.originalSessionId;
+      // Trigger transcript refresh so the resumedFrom fallback populates the activity feed
+      stateManager.refreshTranscript(claudeSessionId);
+    }
+    log('info', `Applied clone info: name="${info.name}", resumedFrom=${info.originalSessionId.slice(0, 8)} → ${claudeSessionId.slice(0, 8)}`);
+  }
+}
+
+// Helper: check if any PTY resume is currently in progress (pendingPtyByResumeId not yet consumed)
+function hasActiveResumeInProgress(): boolean {
+  return pendingPtyByResumeId.size > 0;
+}
+
+// Helper: close or remove a replaced session during /clear detection.
+// If the old session has no own transcript, it's an empty shell — remove entirely.
+// If it has a transcript, keep it as closed (it has conversation history worth preserving).
+function closeOrRemoveReplaced(oldSessionId: string): void {
+  const hasTranscript = !!findTranscriptPathAnywhere(oldSessionId);
+  if (hasTranscript) {
+    stateManager.markClosed(oldSessionId);
+  } else {
+    stateManager.remove(oldSessionId);
+    log('session:removed', 'Removed empty replaced session', { sessionId: oldSessionId, sessionName: oldSessionId.slice(0, 8) });
+  }
+}
 
 // Helper: open a terminal window (tries Windows Terminal, falls back to cmd.exe)
 async function openTerminalWindow(cwd: string, command: string, title?: string): Promise<void> {
@@ -71,7 +110,7 @@ async function openTerminalWindow(cwd: string, command: string, title?: string):
     // "start" is a cmd.exe built-in — must run via shell:true
     // /D sets working directory; first quoted arg is the window title
     const windowTitle = (title ?? 'Claude').replace(/"/g, '');
-    const fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K "title ${windowTitle} && ${command}"`;
+    const fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K ${command}`;
     console.log('[open-terminal] running:', fullCmd);
     const child = spawn(fullCmd, [], { shell: true, stdio: 'ignore' });
     child.on('error', (err) => {
@@ -107,6 +146,9 @@ function migratePtyMaps(oldSessionId: string, newSessionId: string, pid?: number
   if (oldPtyId) {
     claudeToPtyId.set(newSessionId, oldPtyId);
     ptyToClaudeId.set(oldPtyId, newSessionId);
+    stateManager.setLaunchMethod(newSessionId, 'overlord-pty');
+    // Notify clients to migrate their PTY output handlers
+    broadcastRaw({ type: 'terminal:session-replaced', oldSessionId, newSessionId });
   }
 }
 
@@ -163,16 +205,51 @@ sessionWatcher.on('added', (raw) => {
   if (isNewWaiting && lastMessage && raw.kind !== 'haiku-worker') void classifyCompletion(raw.sessionId, lastMessage);
   // Log session creation
   const createdName = raw.proposedName ?? raw.sessionId.slice(0, 8);
-  log('session:created', 'Session created', { sessionId: raw.sessionId, sessionName: createdName, extra: 'PID ' + raw.pid });
-  // Link PTY session to real Claude session by PID
+  log('session:created', 'Session created', { sessionId: raw.sessionId, sessionName: createdName, extra: `PID ${raw.pid} name=${raw.name ?? 'NONE'}` });
+  // Link PTY by embedded marker in session name (works for spawn, resume, and clone)
   let linkedToPty = false;
-  if (raw.pid && pendingPtyByPid.has(raw.pid)) {
+  if (raw.name && raw.name.includes('___OVR:')) {
+    const marker = raw.name.split('___OVR:')[1];
+    const ptyAlive = ptyManager.has(marker);
+    console.log(`[marker-check] added: marker=${marker} ptyAlive=${ptyAlive}`);
+    if (marker && ptyAlive) {
+      linkedToPty = true;
+      ptyToClaudeId.set(marker, raw.sessionId);
+      claudeToPtyId.set(raw.sessionId, marker);
+      // Find the WS that owns this PTY
+      let ownerWs: WebSocket | null = null;
+      for (const [ws, sessions] of wsSessionMap) {
+        if (sessions.has(marker)) {
+          ownerWs = ws;
+          break;
+        }
+      }
+      if (ownerWs) {
+        const wsSessions = wsSessionMap.get(ownerWs);
+        if (wsSessions) wsSessions.add(raw.sessionId);
+        sendToClient(ownerWs, { type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
+      } else {
+        for (const sessions of wsSessionMap.values()) {
+          sessions.add(raw.sessionId);
+        }
+        broadcastRaw({ type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
+      }
+      stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+      const ptyPid = ptyManager.getPid(marker);
+      if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+      applyPendingCloneInfo(marker, raw.sessionId);
+      log('pty:started', 'PTY clone linked via name marker', { sessionId: raw.sessionId });
+    }
+  }
+  // Link PTY session to real Claude session by PID
+  if (!linkedToPty && raw.pid && pendingPtyByPid.has(raw.pid)) {
     const entry = pendingPtyByPid.get(raw.pid)!;
     pendingPtyByPid.delete(raw.pid);
     linkedToPty = true;
     // Set up ID mapping so output is rerouted from pty-xxx to real claudeSessionId
     ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
     claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
+    stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
     if (entry.ws) {
       // Normal spawn: link to the owning WS client
       const wsSessions = wsSessionMap.get(entry.ws);
@@ -189,6 +266,7 @@ sessionWatcher.on('added', (raw) => {
     // Update the session's PID to the PTY process PID so ProcessChecker doesn't mark it closed
     const ptyPid = ptyManager.getPid(entry.ptySessionId);
     if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+    applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
     const ptySessionName = stateManager.getSession(raw.sessionId)?.proposedName ?? raw.proposedName ?? raw.sessionId.slice(0, 8);
     log('pty:started', 'PTY session started', { sessionId: raw.sessionId, sessionName: ptySessionName });
   } else if (raw.pid && !pendingPtyByPid.has(raw.pid) && stateManager.hasPendingResume(raw.cwd)) {
@@ -215,6 +293,7 @@ sessionWatcher.on('added', (raw) => {
         stateManager.setLaunchMethod(retrySessionId, 'overlord-pty');
         const retryPtyPid = ptyManager.getPid(entry.ptySessionId);
         if (retryPtyPid) stateManager.setPid(retrySessionId, retryPtyPid);
+        applyPendingCloneInfo(entry.ptySessionId, retrySessionId);
         log('pty:started', 'PTY linked after retry', { sessionId: retrySessionId, sessionName: retrySessionId.slice(0, 8) });
       }
     }, 500);
@@ -226,6 +305,8 @@ sessionWatcher.on('added', (raw) => {
     linkedToPty = true;
     ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
     claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
+    // Clear startup noise from the PTY buffer before linking
+    ptyOutputBuffer.delete(entry.ptySessionId);
     if (entry.ws) {
       const wsSessions = wsSessionMap.get(entry.ws);
       if (wsSessions) wsSessions.add(raw.sessionId);
@@ -239,16 +320,17 @@ sessionWatcher.on('added', (raw) => {
     stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
     const ptyPid = ptyManager.getPid(entry.ptySessionId);
     if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+    applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
     log('pty:started', 'PTY linked via resumeId', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
   }
   // Detect session replacement: same PID, different UUID (e.g. Claude Code's /clear)
   // Skip if this session was just linked to a PTY — it's a resume, not a /clear.
   // Skip during startup — known sessions from the initial scan are not /clear replacements.
   let replacedByPid = false;
-  if (startupComplete && !linkedToPty && raw.pid && raw.pid > 0 && !pendingPtyByPid.has(raw.pid)) {
+  if (startupComplete && !linkedToPty && raw.pid && raw.pid > 0 && !pendingPtyByPid.has(raw.pid) && !hasActiveResumeInProgress()) {
     const oldSession = stateManager.findSessionByPid(raw.pid, raw.sessionId);
     if (oldSession) {
-      stateManager.markClosed(oldSession.sessionId);
+      closeOrRemoveReplaced(oldSession.sessionId);
       stateManager.transferName(oldSession.sessionId, raw.sessionId);
       migratePtyMaps(oldSession.sessionId, raw.sessionId, raw.pid);
       broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
@@ -258,12 +340,12 @@ sessionWatcher.on('added', (raw) => {
     }
   }
   // Fallback: CWD-based replacement detection for /clear (creates new PID)
-  if (startupComplete && !linkedToPty && !replacedByPid && !pendingPtyByPid.has(raw.pid)) {
+  if (startupComplete && !linkedToPty && !replacedByPid && !pendingPtyByPid.has(raw.pid) && !stateManager.hasPendingResume(raw.cwd) && !hasActiveResumeInProgress()) {
     const recent = recentlyRemovedByCwd.get(raw.cwd);
     const isCaveatSession = lastMessage?.startsWith('<local-command-caveat') ?? false;
     if (recent && recent.sessionId !== raw.sessionId && (Date.now() - recent.removedAt < 30000 || isCaveatSession)) {
       recentlyRemovedByCwd.delete(raw.cwd);
-      stateManager.markClosed(recent.sessionId);
+      closeOrRemoveReplaced(recent.sessionId);
       stateManager.transferName(recent.sessionId, raw.sessionId);
       migratePtyMaps(recent.sessionId, raw.sessionId, raw.pid);
       broadcastRaw({ type: 'session:replaced', oldSessionId: recent.sessionId, newSessionId: raw.sessionId });
@@ -282,7 +364,7 @@ sessionWatcher.on('changed', (raw) => {
       if (oldSession.resumedFrom === raw.sessionId) {
         stateManager.remove(oldSession.sessionId);
       } else {
-        stateManager.markClosed(oldSession.sessionId);
+        closeOrRemoveReplaced(oldSession.sessionId);
       }
       stateManager.addOrUpdate(raw);
       stateManager.transferName(oldSession.sessionId, raw.sessionId);
@@ -292,12 +374,46 @@ sessionWatcher.on('changed', (raw) => {
     }
   }
   stateManager.addOrUpdate(raw);
+  // Link PTY by embedded marker in session name (changed handler)
+  if (raw.name && raw.name.includes('___OVR:') && !claudeToPtyId.has(raw.sessionId)) {
+    const marker = raw.name.split('___OVR:')[1];
+    const ptyAlive = ptyManager.has(marker);
+    console.log(`[marker-check] changed: sid=${raw.sessionId.slice(0,8)} marker=${marker} ptyAlive=${ptyAlive} alreadyLinked=${claudeToPtyId.has(raw.sessionId)}`);
+    if (marker && ptyAlive) {
+      ptyToClaudeId.set(marker, raw.sessionId);
+      claudeToPtyId.set(raw.sessionId, marker);
+      let ownerWs: WebSocket | null = null;
+      for (const [ws, sessions] of wsSessionMap) {
+        if (sessions.has(marker)) {
+          ownerWs = ws;
+          break;
+        }
+      }
+      if (ownerWs) {
+        const wsSessions = wsSessionMap.get(ownerWs);
+        if (wsSessions) wsSessions.add(raw.sessionId);
+        sendToClient(ownerWs, { type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
+      } else {
+        for (const sessions of wsSessionMap.values()) {
+          sessions.add(raw.sessionId);
+        }
+        broadcastRaw({ type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
+      }
+      stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+      const ptyPid = ptyManager.getPid(marker);
+      if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+      applyPendingCloneInfo(marker, raw.sessionId);
+      log('pty:started', 'PTY clone linked via name marker (changed)', { sessionId: raw.sessionId });
+    }
+  }
   // Check for pending PTY resume link (ConPTY: session file settles to target ID)
   if (pendingPtyByResumeId.has(raw.sessionId)) {
     const entry = pendingPtyByResumeId.get(raw.sessionId)!;
     pendingPtyByResumeId.delete(raw.sessionId);
     ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
     claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
+    // Clear startup noise from the PTY buffer before linking
+    ptyOutputBuffer.delete(entry.ptySessionId);
     if (entry.ws) {
       const wsSessions = wsSessionMap.get(entry.ws);
       if (wsSessions) wsSessions.add(raw.sessionId);
@@ -311,6 +427,7 @@ sessionWatcher.on('changed', (raw) => {
     stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
     const ptyPid = ptyManager.getPid(entry.ptySessionId);
     if (ptyPid) stateManager.setPid(raw.sessionId, ptyPid);
+    applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
     log('pty:started', 'PTY linked via resumeId (changed)', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
   }
 });
@@ -318,6 +435,13 @@ sessionWatcher.on('removed', (sessionId: string) => {
   const session = stateManager.getSession(sessionId);
   const removedName = stateManager.getSession(sessionId)?.proposedName ?? sessionId.slice(0, 8);
   log('session:removed', 'Session removed', { sessionId, sessionName: removedName, extra: 'PID ' + (session?.pid ?? '?') });
+  // Clean up PTY maps for removed sessions
+  const ptyId = claudeToPtyId.get(sessionId);
+  if (ptyId) {
+    claudeToPtyId.delete(sessionId);
+    ptyToClaudeId.delete(ptyId);
+    console.log(`[removed] cleaned up PTY maps for ${sessionId} → pty=${ptyId}`);
+  }
   if (session?.isWorker) {
     stateManager.remove(sessionId);
   } else {
@@ -375,6 +499,8 @@ function parseTranscriptPath(filePath: string): { sessionId: string; isSubagent:
 function handleTranscriptFile(filePath: string): void {
   const parsed = parseTranscriptPath(filePath);
   if (!parsed) return;
+  // Mark dirty immediately so the next poll knows to re-read the file
+  markTranscriptDirty(filePath);
   const { sessionId } = parsed;
   const existing = transcriptDebounceTimers.get(sessionId);
   if (existing) clearTimeout(existing);
@@ -395,13 +521,6 @@ function handleTranscriptAdded(filePath: string): void {
 
   const newSessionId = parsed.sessionId;
   if (!newSessionId) return;
-
-  // Skip cloned transcripts — they are not /clear replacements
-  if (clonedTranscriptIds.has(newSessionId)) {
-    clonedTranscriptIds.delete(newSessionId);
-    handleTranscriptFile(filePath);
-    return;
-  }
 
   // If already known, nothing to do — normal refresh will handle it
   if (stateManager.getSession(newSessionId)) {
@@ -445,8 +564,15 @@ function handleTranscriptAdded(filePath: string): void {
       }
     }
 
+    // Skip /clear detection if a PTY resume is in progress — interim sessions are not /clear replacements
+    if (hasActiveResumeInProgress()) {
+      console.log(`[transcript:add] skipping /clear detection for ${newSessionId.slice(0, 8)} — PTY resume in progress`);
+      handleTranscriptFile(filePath);
+      return;
+    }
+
     if (bestSession !== null) {
-      stateManager.markClosed(bestSession.sessionId);
+      closeOrRemoveReplaced(bestSession.sessionId);
       stateManager.addOrUpdate({
         sessionId: newSessionId,
         pid: bestSession.pid,
@@ -507,7 +633,7 @@ setInterval(() => {
             const raw = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8')) as { pid: number; sessionId: string; cwd: string; startedAt: number };
             if (raw.sessionId !== sessionId) {
               const clearName = sess2.proposedName ?? sessionId.slice(0, 8);
-              stateManager.markClosed(sessionId);
+              closeOrRemoveReplaced(sessionId);
               stateManager.addOrUpdate(raw);
               stateManager.transferName(sessionId, raw.sessionId);
               migratePtyMaps(sessionId, raw.sessionId, sess2.pid);
@@ -721,16 +847,18 @@ async function generateCompletionSummary(sessionId: string, forMessage: string):
   }
 }
 
-// Wire PtyManager events → send to the owning WebSocket client
+// Wire PtyManager events → broadcast to ALL connected clients
+// so any tab can view the PTY terminal
 ptyManager.on('output', (sessionId: string, data: string) => {
+  // Buffer output for replay on reconnect
+  let buf = ptyOutputBuffer.get(sessionId);
+  if (!buf) { buf = []; ptyOutputBuffer.set(sessionId, buf); }
+  buf.push(Buffer.from(data));
+  if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
+
   const effectiveId = ptyToClaudeId.get(sessionId) ?? sessionId;
   const encoded = Buffer.from(data).toString('base64');
-  const msg = { type: 'terminal:output', sessionId: effectiveId, data: encoded };
-  for (const [ws, sessions] of wsSessionMap) {
-    if (sessions.has(sessionId) || sessions.has(effectiveId)) {
-      sendToClient(ws, msg);
-    }
-  }
+  broadcastRaw({ type: 'terminal:output', sessionId: effectiveId, data: encoded });
 });
 
 ptyManager.on('exit', (sessionId: string, code: number) => {
@@ -760,15 +888,14 @@ ptyManager.on('exit', (sessionId: string, code: number) => {
       if (pId === sessionId) { claudeToPtyId.delete(cId); break; }
     }
   }
-  // Send exit with the claude session ID so the client can remove it from ptySessionIds
-  const msg = { type: 'terminal:exit', sessionId: effectiveId, code };
-  for (const [ws, sessions] of wsSessionMap) {
-    if (sessions.has(sessionId) || sessions.has(effectiveId)) {
-      sendToClient(ws, msg);
-      sessions.delete(sessionId);
-      sessions.delete(effectiveId);
-      break;
-    }
+  // Clean up PTY output buffer
+  ptyOutputBuffer.delete(sessionId);
+  // Broadcast exit to all clients so any tab can update its state
+  broadcastRaw({ type: 'terminal:exit', sessionId: effectiveId, code });
+  // Clean up wsSessionMap entries
+  for (const [, sessions] of wsSessionMap) {
+    sessions.delete(sessionId);
+    sessions.delete(effectiveId);
   }
 });
 
@@ -870,7 +997,16 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
   stateManager.markDeleted(sessionId);
   console.log(`[deleteSession] marked ${sessionId} as deleted in blocklist`);
 
-  // 6. Always explicitly remove from state (don't rely on chokidar firing)
+  // 6. Clean up PTY maps so stale entries don't replay on WS reconnect
+  const ptyId = claudeToPtyId.get(sessionId);
+  if (ptyId) {
+    claudeToPtyId.delete(sessionId);
+    ptyToClaudeId.delete(ptyId);
+    ptyManager.kill(ptyId);
+    console.log(`[deleteSession] cleaned up PTY maps for pty=${ptyId}`);
+  }
+
+  // 7. Always explicitly remove from state (don't rely on chokidar firing)
   stateManager.remove(sessionId);
   console.log(`[deleteSession] removed ${sessionId} from state`);
 }
@@ -895,7 +1031,13 @@ wss.on('connection', (ws) => {
     if (!ptyManager.has(ptySessionId)) continue; // skip dead PTYs
     wsSessions.add(claudeSessionId);
     wsSessions.add(ptySessionId);
-    sendToClient(ws, { type: 'terminal:linked', ptySessionId, claudeSessionId });
+    sendToClient(ws, { type: 'terminal:linked', ptySessionId, claudeSessionId, replay: true });
+    // Replay buffered PTY output so the terminal isn't blank on reconnect
+    const buf = ptyOutputBuffer.get(ptySessionId);
+    if (buf && buf.length > 0) {
+      const encoded = Buffer.concat(buf).toString('base64');
+      sendToClient(ws, { type: 'terminal:output', sessionId: claudeSessionId, data: encoded });
+    }
   }
 
   ws.on('message', (raw) => {
@@ -912,6 +1054,7 @@ wss.on('connection', (ws) => {
       const cwd = String(msg.cwd ?? process.cwd());
       const cols = Number(msg.cols ?? 80);
       const rows = Number(msg.rows ?? 24);
+      const name = msg.name ? String(msg.name) : undefined;
       // Generate a unique sessionId for this PTY session
       const sessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -920,11 +1063,15 @@ wss.on('connection', (ws) => {
       const sessions = wsSessionMap.get(ws);
       if (sessions) sessions.add(sessionId);
 
-      sendToClient(ws, { type: 'terminal:spawned', sessionId, pid: 0 });
+      broadcastRaw({ type: 'terminal:spawned', sessionId, pid: 0 });
       // Spawn after notifying client of sessionId (pid will be 0 until we have it)
       try {
-        ptyManager.spawn(sessionId, cwd, cols, rows);
-        log('pty:started', 'PTY session started', { sessionId, sessionName: sessionId.slice(0, 8) });
+        // Embed ptySessionId as hidden marker in session name for reliable PTY linking
+        // (ConPTY on Windows may give a wrapper PID that doesn't match claude.exe PID)
+        // If the user provided a name, prepend it before the marker.
+        const sessionName = name ? `${name}___OVR:${sessionId}` : `___OVR:${sessionId}`;
+        ptyManager.spawn(sessionId, cwd, cols, rows, ['--name', sessionName]);
+        log('pty:started', 'PTY session started', { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
         // pid-ready event handler populates pendingPtyByPid asynchronously
       } catch (err) {
         sendToClient(ws, {
@@ -944,7 +1091,9 @@ wss.on('connection', (ws) => {
       const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       stateManager.trackPendingResume(cwd, resumeSessionId);
-      const rootSessionId = stateManager.getRootSessionId(resumeSessionId);
+      // Use the session's own ID for --resume, NOT getRootSessionId().
+      // getRootSessionId traces resumedFrom chain back to the original, which may
+      // still be running — resuming an already-running session crashes the CLI.
       const resumedName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
       log('session:resumed', 'Session resumed', { sessionId: resumeSessionId, sessionName: resumedName });
 
@@ -953,7 +1102,9 @@ wss.on('connection', (ws) => {
 
       sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
       try {
-        ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', rootSessionId]);
+        // Resume the session via --resume flag.
+        // Embed ptySessionId as hidden marker for reliable PTY linking on ConPTY.
+        ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', resumeSessionId, '--name', `___OVR:${ptySessionId}`]);
         const resumePtyName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
         log('pty:started', 'PTY session started', { sessionId: ptySessionId, sessionName: resumePtyName });
 
@@ -975,7 +1126,9 @@ wss.on('connection', (ws) => {
       const session = stateManager.getSession(sessionId);
       const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
       console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
-      openTerminalWindow(cwd, `claude --resume ${sessionId}`, `Claude: ${sessionName}`)
+      stateManager.setLaunchMethod(sessionId, 'terminal');
+      const safeName = sessionName.replace(/"/g, '');
+      openTerminalWindow(cwd, `claude --resume ${sessionId} --name "${safeName}"`, `Claude: ${sessionName}`)
         .then(() => sendToClient(ws, { type: 'terminal:external-opened', sessionId }))
         .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open terminal: ${(err as Error).message}` }));
       return;
@@ -985,8 +1138,9 @@ wss.on('connection', (ws) => {
       const cwd = String(msg.cwd ?? process.cwd());
       const name = msg.name ? String(msg.name) : undefined;
       const cwdName = name || cwd.split(/[\\/]/).pop() || 'New';
+      const safeCwdName = cwdName.replace(/"/g, '');
       console.log(`[open-new] cwd=${cwd} name=${cwdName}`);
-      openTerminalWindow(cwd, 'claude', `Claude: ${cwdName}`)
+      openTerminalWindow(cwd, `claude --name "${safeCwdName}"`, `Claude: ${cwdName}`)
         .then(() => sendToClient(ws, { type: 'terminal:new-opened' }))
         .catch((err) => sendToClient(ws, { type: 'terminal:error', message: `Failed to open terminal: ${(err as Error).message}` }));
       return;
@@ -1129,13 +1283,10 @@ wss.on('connection', (ws) => {
 
     if (type === 'session:clone') {
       const sessionId = String(msg.sessionId ?? '');
-      const transcriptPath = findTranscriptPathAnywhere(sessionId);
-      if (!transcriptPath) {
-        ws.send(JSON.stringify({ type: 'session:clone:error', error: 'Transcript not found' }));
-        return;
-      }
+      const cols = Number(msg.cols ?? 80);
+      const rows = Number(msg.rows ?? 24);
 
-      // Determine clone name first
+      // Determine clone name
       const snap = stateManager.getSnapshot();
       let originalName = '';
       let originalCwd = '';
@@ -1149,6 +1300,8 @@ wss.on('connection', (ws) => {
         }
         if (originalName) break;
       }
+
+      const cwd = originalCwd || stateManager.getSession(sessionId)?.cwd || process.cwd();
 
       let cloneName: string;
       if (!originalName) {
@@ -1167,47 +1320,88 @@ wss.on('connection', (ws) => {
         cloneName = `${originalName} (${maxN + 1})`;
       }
 
-      // Copy transcript and prepend a user message with the clone name
-      // so readProposedName picks up the new name from the transcript
-      const newSessionId = randomUUID();
+      // Clone via --fork-session: the CLI reads the original transcript for
+      // conversation history and creates a new session ID for future writes.
+      // Overlord shows the parent's conversation via the resumedFrom fallback
+      // in stateManager (no transcript copying needed).
+
+      const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      stateManager.trackPendingPtySpawn(cwd);
+
+      const sessions = wsSessionMap.get(ws);
+      if (sessions) sessions.add(ptySessionId);
+
+      sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
+
+      // Store clone info (name + original session) so it gets applied after
+      // the PTY links to the new forked session via PID matching.
+      // This sets both proposedName and resumedFrom directly on the session,
+      // bypassing the unreliable cwd-scoped pendingResumes mechanism.
+      pendingCloneInfo.set(ptySessionId, { name: cloneName, originalSessionId: sessionId });
+
       try {
-        const buf = fs.readFileSync(transcriptPath, 'utf-8');
-        const nameEntry = JSON.stringify({
-          type: 'user',
-          message: { role: 'user', content: cloneName },
-          timestamp: new Date().toISOString(),
-          cwd: originalCwd || undefined,
+        ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
+        log('pty:started', 'PTY clone started (fork-session)', {
+          sessionId: ptySessionId,
+          sessionName: cloneName,
         });
-        fs.writeFileSync(join(dirname(transcriptPath), newSessionId + '.jsonl'), nameEntry + '\n' + buf);
-      } catch (err: any) {
-        ws.send(JSON.stringify({ type: 'session:clone:error', error: `File copy failed: ${err.message}` }));
+      } catch (err) {
+        pendingCloneInfo.delete(ptySessionId);
+        sendToClient(ws, {
+          type: 'terminal:error',
+          sessionId: ptySessionId,
+          message: `Clone failed: ${(err as Error).message}`,
+        });
         return;
       }
-      // Mark as cloned so the transcript watcher doesn't treat it as a /clear replacement
-      clonedTranscriptIds.add(newSessionId);
 
-      // Register clone in stateManager so it appears in the UI immediately
-      stateManager.addOrUpdate({ sessionId: newSessionId, pid: 0, cwd: originalCwd || stateManager.getSession(sessionId)?.cwd || process.cwd(), startedAt: Date.now() });
-      const clonedSession = stateManager.getSession(newSessionId);
-      if (clonedSession) clonedSession.proposedName = cloneName;
-      stateManager.markClosed(newSessionId);
-
-      ws.send(JSON.stringify({ type: 'session:cloned', newSessionId, name: cloneName }));
-      log('info', `Cloned session → ${newSessionId}`, { sessionId, sessionName: cloneName });
+      ws.send(JSON.stringify({ type: 'session:cloned', ptySessionId, name: cloneName }));
+      log('info', `Cloned session → pty=${ptySessionId}`, { sessionId, sessionName: cloneName });
       return;
     }
   });
 
   ws.on('close', () => {
-    // Kill all PTY sessions owned by this client
-    const sessions = wsSessionMap.get(ws);
-    if (sessions) {
-      for (const sessionId of sessions) {
-        ptyManager.kill(sessionId);
-      }
-    }
+    // Don't kill PTY sessions on WS close — they should survive tab refreshes
+    // and be reconnectable from other tabs. Only clean up the session map.
     wsSessionMap.delete(ws);
   });
+});
+
+// Debug endpoint: spawn a test session
+app.post('/api/debug/spawn', express.json(), (req, res) => {
+  const cwd = String(req.body?.cwd ?? process.cwd());
+  const name = req.body?.name ? String(req.body.name) : undefined;
+  const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  stateManager.trackPendingPtySpawn(cwd);
+  const args = ['--name', `${name ? name + '___OVR:' : '___OVR:'}${ptySessionId}`];
+  try {
+    ptyManager.spawn(ptySessionId, cwd, 80, 24, args);
+    log('pty:started', 'PTY test spawn', { sessionId: ptySessionId });
+    res.json({ ok: true, ptySessionId });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Debug endpoint: clone a session
+app.post('/api/debug/clone', express.json(), (req, res) => {
+  const sessionId = String(req.body?.sessionId ?? '');
+  const session = stateManager.getSession(sessionId);
+  if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+  const cloneName = String(req.body?.name ?? `Clone (test)`);
+  const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  stateManager.trackPendingPtySpawn(session.cwd);
+  pendingCloneInfo.set(ptySessionId, { name: cloneName, originalSessionId: sessionId });
+  try {
+    ptyManager.spawn(ptySessionId, session.cwd, 80, 24, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
+    log('pty:started', 'PTY test clone', { sessionId: ptySessionId, sessionName: cloneName });
+    res.json({ ok: true, ptySessionId, cloneName });
+  } catch (err) {
+    pendingCloneInfo.delete(ptySessionId);
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // Debug endpoint: dump current state snapshot
@@ -1294,6 +1488,26 @@ app.post('/api/sessions/:sessionId/accept-task', express.json(), (req, res) => {
   const ok = stateManager.acceptTask(sessionId, completedAt);
   if (!ok) { res.status(404).json({ error: 'session or task not found' }); return; }
   res.json({ ok: true });
+});
+
+// Screen buffer endpoint: reads the console screen buffer of a session's process
+app.get('/api/sessions/:sessionId/screen', async (req, res) => {
+  const session = stateManager.getSession(req.params.sessionId);
+  if (!session) {
+    res.status(404).json({ error: 'Session not found' });
+    return;
+  }
+  if (session.state === 'closed') {
+    res.status(400).json({ error: 'Session is closed' });
+    return;
+  }
+  try {
+    const { readScreen } = await import('./consoleInjector.js');
+    const text = await readScreen(session.pid);
+    res.json({ text: text ?? '', pid: session.pid, sessionId: req.params.sessionId });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 // Summarize endpoint: reads transcript, calls claude haiku to produce a bullet-point summary

@@ -60,8 +60,10 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
   // Hysteresis: only clear needsPermission after 3 consecutive misses
   const missCount = new Map<string, number>();
 
-  const interval = setInterval(async () => {
-    if (!readScreen) return;
+  let stopped = false;
+
+  const runCycle = async () => {
+    if (stopped || !readScreen) return;
     const ids = stateManager.getAllSessionIds();
 
     // Remove stale entries from missCount for sessions no longer tracked
@@ -70,6 +72,7 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
     }
 
     for (const id of ids) {
+      if (stopped) break;
       const session = stateManager.getSession(id);
       if (!session) continue;
       // Only check sessions that might be stuck
@@ -90,7 +93,13 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
         // ignore
       }
     }
-  }, 3000);
 
-  return () => clearInterval(interval);
+    // Schedule next cycle after completion (no overlap)
+    if (!stopped) setTimeout(runCycle, 3000);
+  };
+
+  // Start first cycle after initial delay
+  const timer = setTimeout(runCycle, 3000);
+
+  return () => { stopped = true; clearTimeout(timer); };
 }

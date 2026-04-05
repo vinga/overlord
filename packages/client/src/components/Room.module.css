@@ -137,35 +137,41 @@
   white-space: nowrap;
 }
 
-.deskPtyRow {
+.deskLaunchRow {
   display: flex;
   align-items: center;
   gap: 4px;
+  pointer-events: none;
+  user-select: none;
 }
 
-.deskPtyLabel {
+.deskLaunchBadge {
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  color: #d4af37;
+  letter-spacing: 0.05em;
+  padding: 1px 5px;
+  border-radius: 3px;
   line-height: 1.4;
   white-space: nowrap;
   pointer-events: none;
 }
 
-.deskPtyBadge {
-  background: rgba(88, 166, 255, 0.15);
-  border: 1px solid rgba(88, 166, 255, 0.25);
-  border-radius: 3px;
-  color: #58a6ff;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  padding: 1px 4px;
-  line-height: 1.4;
-  white-space: nowrap;
-  pointer-events: none;
+.deskLaunchBadge[data-method="pty"] {
+  background: rgba(212, 175, 55, 0.12);
+  color: rgba(212, 175, 55, 0.8);
 }
+
+.deskLaunchBadge[data-method="ide"] {
+  background: rgba(168, 139, 250, 0.12);
+  color: rgba(168, 139, 250, 0.7);
+}
+
+.deskLaunchBadge[data-method="terminal"] {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.35);
+}
+
 
 .continuationBadge {
   position: absolute;

@@ -46,6 +46,18 @@
   text-transform: uppercase;
 }
 
+.tabPtyBadgeEnded {
+  background: rgba(102, 102, 102, 0.15);
+  border: 1px solid rgba(102, 102, 102, 0.25);
+  border-radius: 3px;
+  color: #666;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 4px;
+  text-transform: uppercase;
+}
+
 .backdrop {
   position: fixed;
   inset: 0;
@@ -242,6 +254,36 @@
   border-radius: 4px;
   padding: 1px 7px;
   font-size: 11px;
+}
+
+.overlordPillEnded {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(102, 102, 102, 0.10);
+  border: 1px solid rgba(102, 102, 102, 0.25);
+  color: #888;
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.statusDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.statusDotActive {
+  background: #22c55e;
+  box-shadow: 0 0 4px rgba(34, 197, 94, 0.5);
+}
+
+.statusDotEnded {
+  background: #666;
 }
 
 .cwd {
@@ -483,6 +525,32 @@
   color: #c4c8d0;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-bottom-right-radius: 5px;
+}
+
+.pendingMessage {
+  opacity: 0.6;
+}
+
+.pendingMessage .transcriptBubble {
+  border-style: dashed;
+}
+
+.pendingBadge {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(212, 175, 55, 0.7);
+  letter-spacing: 0.04em;
+  padding-bottom: 2px;
+}
+
+.pendingBadgeConsole {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(167, 139, 250, 0.6);
+  letter-spacing: 0.04em;
+  padding-bottom: 2px;
 }
 
 .role_assistant .transcriptBubble {
@@ -1463,6 +1531,91 @@
   cursor: not-allowed;
 }
 
+.sendAreaClosed {
+  position: relative;
+}
+
+.sendTextareaClosed {
+  border-color: rgba(255, 123, 114, 0.45) !important;
+  box-shadow: 0 0 0 1px rgba(255, 123, 114, 0.1), inset 0 0 12px rgba(255, 123, 114, 0.03);
+}
+
+.sendTextareaClosed::placeholder {
+  color: rgba(255, 123, 114, 0.6);
+}
+
+.convoResumeOverlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+  animation: convoResumeFadeIn 150ms ease-out;
+}
+
+@keyframes convoResumeFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.convoResumePrompt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(22, 27, 34, 0.95);
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  width: 100%;
+}
+
+.convoResumeText {
+  color: #b1bac4;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  flex: 1;
+}
+
+.convoResumeActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.convoResumeButtonPrimary,
+.convoResumeButtonSecondary {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 120ms ease;
+  border: 1px solid transparent;
+}
+
+.convoResumeButtonPrimary {
+  background: rgba(212, 175, 55, 0.15);
+  color: #d4af37;
+  border-color: rgba(212, 175, 55, 0.3);
+}
+
+.convoResumeButtonPrimary:hover {
+  background: rgba(212, 175, 55, 0.25);
+}
+
+.convoResumeButtonSecondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: #6e7681;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.convoResumeButtonSecondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .sendButton {
   position: absolute;
   right: 8px;
@@ -1854,4 +2007,103 @@
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+}
+
+.terminalEndedNotice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 13px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.terminalEndedIcon {
+  font-size: 28px;
+  opacity: 0.3;
+}
+
+.terminalEndedHint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.2);
+  max-width: 260px;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.reattachBtn {
+  margin-top: 8px;
+  padding: 6px 16px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1a2e;
+  background: #d4af37;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  letter-spacing: 0.02em;
+}
+
+.reattachBtn:hover {
+  background: #e6c44a;
+  transform: translateY(-1px);
+}
+
+/* Interrupt bar */
+.interruptBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+.interruptLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  flex: 1;
+}
+
+.interruptBtn {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a1a2e;
+  background: #d4af37;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+  letter-spacing: 0.02em;
+}
+
+.interruptBtn:hover {
+  background: #e6c44a;
+}
+
+.forceStopBtn {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  color: #ef4444;
+  background: none;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.forceStopBtn:hover {
+  border-color: #ef4444;
+  color: #f87171;
 }

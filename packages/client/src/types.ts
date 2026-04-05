@@ -12,6 +12,7 @@ interface ActivityItem {
   isRedacted?: boolean;          // for kind='thinking'
   inputJson?: string;            // full tool input as JSON (truncated)
   durationMs?: number;           // for kind='tool': how long the tool call took
+  pending?: boolean;             // optimistic locally-sent message, not yet processed
 }
 
 interface Subagent {
@@ -123,6 +124,7 @@ interface TerminalSpawnRequest {
   cwd: string;
   cols: number;
   rows: number;
+  name?: string;
 }
 
 interface TerminalInputRequest {
@@ -195,3 +197,36 @@ export type {
   LogHistoryMessage,
   LogEntryMessage,
 };
+
+// ── Launch method helpers ──────────────────────────────────
+
+type LaunchCategory = 'pty' | 'ide' | 'terminal';
+
+interface LaunchInfo {
+  category: LaunchCategory;
+  /** Display name shown in the badge pill */
+  name: string;
+}
+
+function getLaunchInfo(
+  session: { launchMethod?: Session['launchMethod']; ideName?: string },
+  isPtyActive?: boolean,
+): LaunchInfo {
+  if (
+    isPtyActive ||
+    session.launchMethod === 'overlord-pty' ||
+    session.launchMethod === 'overlord-resume'
+  ) {
+    return { category: 'pty', name: 'Overlord' };
+  }
+  if (session.launchMethod === 'ide' || session.ideName) {
+    const rawName = session.ideName ?? 'IDE';
+    // Shorten "IntelliJ IDEA" → "IntelliJ", "PyCharm Professional" → "PyCharm", etc.
+    const shortName = rawName.replace(/\s+(IDEA|Community|Ultimate|Professional|Enterprise|Educational|CE)\b.*/, '').trim();
+    return { category: 'ide', name: shortName };
+  }
+  return { category: 'terminal', name: 'Terminal' };
+}
+
+export { getLaunchInfo };
+export type { LaunchCategory, LaunchInfo };

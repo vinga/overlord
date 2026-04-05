@@ -29,10 +29,11 @@ interface WaitingIndicatorProps {
 
 function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermission, styles }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
+  if (userAccepted) {
+    return <span className={styles.bubbleDone}>done</span>;
+  }
   if (completionHint === 'done') {
-    return userAccepted
-      ? <span className={styles.bubbleDone}>done</span>
-      : <span className={styles.bubbleDonePending}>review</span>;
+    return <span className={styles.bubbleDonePending}>review</span>;
   }
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
   return <span className={styles.bubble}>waiting</span>;

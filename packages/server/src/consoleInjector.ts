@@ -14,7 +14,7 @@ const SCRIPT = path.join(__dirname, '..', 'inject.ps1');
 let proc: ChildProcessWithoutNullStreams | null = null;
 let ready = false;
 
-// Pending requests: resolve/reject keyed by insertion order
+// Pending requests: resolve/reject keyed by insertion order (FIFO)
 const pending: Array<{ resolve: (val?: string | null) => void; reject: (e: Error) => void; type: 'inject' | 'read' }> = [];
 
 function startDaemon(): void {
@@ -52,7 +52,6 @@ function startDaemon(): void {
   proc.on('close', () => {
     ready = false;
     proc = null;
-    // Reject any pending requests
     for (const req of pending.splice(0)) {
       req.reject(new Error('Injector process exited unexpectedly'));
     }
@@ -66,7 +65,6 @@ function startDaemon(): void {
     }
   });
 
-  // Capture stderr for debugging but don't act on it
   proc.stderr.on('data', (d: Buffer) => {
     console.warn('[injector stderr]', d.toString().trim());
   });
@@ -76,7 +74,6 @@ function ensureDaemon(): Promise<void> {
   if (proc && ready) return Promise.resolve();
   if (!proc) startDaemon();
 
-  // Wait until ready signal arrives
   return new Promise((resolve, reject) => {
     const check = setInterval(() => {
       if (ready) { clearInterval(check); resolve(); }
@@ -86,7 +83,7 @@ function ensureDaemon(): Promise<void> {
   });
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Public API: Injection (high priority, goes directly to daemon) ───────────
 
 export async function injectText(pid: number, text: string, extraEnter = false, raw = false): Promise<void> {
   await ensureDaemon();
@@ -103,7 +100,7 @@ export async function approvePermission(pid: number, text: string): Promise<void
   if (process.platform !== 'win32') return;
   await ensureDaemon();
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => resolve(), 5000); // timeout = silently succeed
+    const timer = setTimeout(() => resolve(), 5000);
     const wrapped = (_val?: string | null) => { clearTimeout(timer); resolve(); };
     const wrappedReject = (e: Error) => { clearTimeout(timer); reject(e); };
     pending.push({ resolve: wrapped, reject: wrappedReject, type: 'inject' });
@@ -112,30 +109,81 @@ export async function approvePermission(pid: number, text: string): Promise<void
   });
 }
 
-export async function readScreen(pid: number): Promise<string | null> {
-  if (process.platform !== 'win32') return null;
+// ── Screen reading: serialized with cache ────────────────────────────────────
 
-  await ensureDaemon();
+// Cache per-PID results to avoid redundant reads
+const screenCache = new Map<number, { text: string | null; timestamp: number }>();
+const SCREEN_CACHE_TTL = 5000;
 
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      // Remove from pending on timeout
-      const idx = pending.findIndex(p => p.resolve === resolveWrapper);
-      if (idx !== -1) pending.splice(idx, 1);
-      resolve(null);
-    }, 3_000);
+// Serialized read queue — only one read in the daemon at a time
+let readBusy = false;
+const readQueue: Array<{ pid: number; resolve: (text: string | null) => void }> = [];
 
-    const resolveWrapper = (val?: string | null) => {
-      clearTimeout(timer);
-      resolve(val ?? null);
-    };
-    const rejectWrapper = (e: Error) => {
-      clearTimeout(timer);
-      reject(e);
-    };
+export function readScreen(pid: number): Promise<string | null> {
+  if (process.platform !== 'win32') return Promise.resolve(null);
 
-    pending.push({ resolve: resolveWrapper, reject: rejectWrapper, type: 'read' });
-    const cmd = JSON.stringify({ action: 'read', pid, lines: 25 }) + '\n';
-    proc!.stdin.write(cmd);
+  // Return cached result if fresh enough
+  const cached = screenCache.get(pid);
+  if (cached && Date.now() - cached.timestamp < SCREEN_CACHE_TTL) {
+    return Promise.resolve(cached.text);
+  }
+
+  // Check if this PID is already queued — piggyback
+  const existing = readQueue.find(r => r.pid === pid);
+  if (existing) {
+    return new Promise<string | null>((resolve) => {
+      const origResolve = existing.resolve;
+      existing.resolve = (text) => { origResolve(text); resolve(text); };
+    });
+  }
+
+  return new Promise<string | null>((resolve) => {
+    readQueue.push({ pid, resolve });
+    drainReadQueue();
   });
+}
+
+function drainReadQueue(): void {
+  if (readBusy || readQueue.length === 0) return;
+
+  // Start daemon if needed
+  if (!proc || !ready) {
+    ensureDaemon().then(() => drainReadQueue()).catch(() => {
+      // Daemon failed — resolve all queued reads with null
+      for (const r of readQueue.splice(0)) r.resolve(null);
+    });
+    return;
+  }
+
+  readBusy = true;
+  const { pid, resolve } = readQueue.shift()!;
+
+  const timer = setTimeout(() => {
+    // Timeout: resolve null, but leave pending entry for daemon's eventual response
+    readBusy = false;
+    resolve(null);
+    screenCache.set(pid, { text: null, timestamp: Date.now() });
+    drainReadQueue();
+  }, 5_000);
+
+  const resolveWrapper = (val?: string | null) => {
+    clearTimeout(timer);
+    const text = val ?? null;
+    screenCache.set(pid, { text, timestamp: Date.now() });
+    readBusy = false;
+    resolve(text);
+    drainReadQueue();
+  };
+
+  const rejectWrapper = (_e: Error) => {
+    clearTimeout(timer);
+    screenCache.set(pid, { text: null, timestamp: Date.now() });
+    readBusy = false;
+    resolve(null);
+    drainReadQueue();
+  };
+
+  pending.push({ resolve: resolveWrapper, reject: rejectWrapper, type: 'read' });
+  const cmd = JSON.stringify({ action: 'read', pid, lines: 25 }) + '\n';
+  proc!.stdin.write(cmd);
 }

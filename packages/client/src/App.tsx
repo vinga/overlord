@@ -19,7 +19,6 @@ export function App() {
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
-  const [spawnLinkedId, setSpawnLinkedId] = useState<string | null>(null);
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
   const { customNames, rename } = useCustomNames();
 
@@ -51,27 +50,13 @@ export function App() {
 
   // Auto-select PTY sessions in DetailPanel when they are spawned/resumed
   // When terminal:linked fires, activePtySessionId switches from 'pty-xxx' to real claudeSessionId.
-  // Auto-select it in DetailPanel and clear activePtySessionId to prevent re-triggering.
-  // Keep spawnCwd/pendingSpawnName visible so the user can still type a name; dismiss on Enter/Escape or after 20s.
   useEffect(() => {
     if (!activePtySessionId || activePtySessionId.startsWith('pty-')) return;
     const linkedId = activePtySessionId;
-    setSpawnLinkedId(linkedId);
-    // Don't open DetailPanel yet — wait for user to commit name
     setActivePtySessionId(null);
-    // Auto-dismiss after 20s regardless
-    const t = setTimeout(() => {
-      setPendingSpawnName(prev => {
-        if (prev.trim()) rename(linkedId, prev.trim());
-        return '';
-      });
-      setSpawnCwd(null);
-      setSpawnLinkedId(null);
-      setSelectedSessionId(linkedId);   // open DetailPanel after timeout
-      setSelectedSubagentId(undefined);
-      setSelectedRoomId(null);
-    }, 20_000);
-    return () => clearTimeout(t);
+    setSelectedSessionId(linkedId);
+    setSelectedSubagentId(undefined);
+    setSelectedRoomId(null);
   }, [activePtySessionId]);
 
   // Derive the live session from the current snapshot so activityFeed stays fresh
@@ -109,22 +94,17 @@ export function App() {
   }
 
   function handleSpawnSession(cwd: string) {
+    // Show the name input first — spawn happens on commit
     setSpawnCwd(cwd);
     setPendingSpawnName('');
-    terminal.spawnSession(cwd);
   }
 
   function handleSpawnCommit(name: string) {
-    if (name.trim() && spawnLinkedId) {
-      rename(spawnLinkedId, name.trim());
-    }
-    if (spawnLinkedId) {
-      setSelectedSessionId(spawnLinkedId);
-      setSelectedSubagentId(undefined);
-      setSelectedRoomId(null);
+    if (spawnCwd) {
+      // Spawn with the name baked into --name flag via server
+      terminal.spawnSession(spawnCwd, 80, 24, name.trim() || undefined);
     }
     setSpawnCwd(null);
-    setSpawnLinkedId(null);
     setPendingSpawnName('');
   }
 
@@ -144,7 +124,7 @@ export function App() {
   }
 
   function handleCloneSession(sessionId: string) {
-    sendMessage({ type: 'session:clone', sessionId });
+    sendMessage({ type: 'session:clone', sessionId, cols: 120, rows: 30 });
   }
 
   function handleAcceptSession(sessionId: string) {

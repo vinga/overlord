@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { Room as RoomType, Session } from '../types';
+import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
 import styles from './Room.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
@@ -372,18 +373,20 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
               <span className={styles.dragHandle} aria-hidden="true">⠿</span>
               <div className={styles.deskInfo}>
                 <div className={styles.deskTimeLabel}>{lastActivityLabel(session.lastActivity)}</div>
-                {isPtySession?.(session.sessionId) && (
-                  <div className={styles.deskPtyRow}>
-                    <span className={styles.deskPtyBadge}>PTY</span>
-                    <span className={styles.deskPtyLabel}>Session</span>
-                  </div>
-                )}
+                {(() => {
+                  const launch = getLaunchInfo(session, isPtySession?.(session.sessionId));
+                  return (
+                    <div className={styles.deskLaunchRow}>
+                      <span className={styles.deskLaunchBadge} data-method={launch.category}>{launch.name}</span>
+                    </div>
+                  );
+                })()}
               </div>
               {onDeleteSession && (
                 <DeskMenu
                   onDelete={() => onDeleteSession(session.sessionId)}
                   onRename={onRenameSession ? (name) => onRenameSession(session.sessionId, name) : undefined}
-                  onClone={onCloneSession ? () => onCloneSession(session.sessionId) : undefined}
+                  onClone={onCloneSession && session.activityFeed && session.activityFeed.length > 0 ? () => onCloneSession(session.sessionId) : undefined}
                   currentName={customNames[session.sessionId] ?? session.proposedName ?? session.sessionId.slice(0, 8)}
                 />
               )}

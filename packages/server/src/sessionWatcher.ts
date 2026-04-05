@@ -11,6 +11,7 @@ export interface RawSession {
   cwd: string;
   startedAt: number;
   kind?: string;
+  name?: string;
 }
 
 export class SessionWatcher extends EventEmitter {

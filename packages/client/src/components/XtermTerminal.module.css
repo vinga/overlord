@@ -56,3 +56,81 @@
   letter-spacing: 0.04em;
   flex-shrink: 0;
 }
+
+.wrapperExited {
+  border-color: rgba(255, 123, 114, 0.45);
+  box-shadow: 0 0 0 1px rgba(255, 123, 114, 0.1), inset 0 0 20px rgba(255, 123, 114, 0.03);
+}
+
+.resumeOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 17, 23, 0.75);
+  backdrop-filter: blur(2px);
+  z-index: 10;
+  animation: overlayFadeIn 150ms ease-out;
+}
+
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.resumePrompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 32px;
+  background: rgba(22, 27, 34, 0.95);
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.resumePromptText {
+  color: #b1bac4;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.resumePromptActions {
+  display: flex;
+  gap: 8px;
+}
+
+.resumePromptButton {
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 120ms ease;
+  border: 1px solid transparent;
+}
+
+.resumePromptButtonPrimary {
+  background: rgba(212, 175, 55, 0.15);
+  color: #d4af37;
+  border-color: rgba(212, 175, 55, 0.3);
+}
+
+.resumePromptButtonPrimary:hover {
+  background: rgba(212, 175, 55, 0.25);
+}
+
+.resumePromptButtonSecondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: #6e7681;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.resumePromptButtonSecondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}

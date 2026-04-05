@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 import type { Session, Room, OfficeSnapshot, WorkerState } from './types.js';
 import { log } from './logger.js';
 import {
@@ -36,7 +37,8 @@ export class StateManager {
   private deletedSessionIds: Set<string> = new Set();
   private readonly deletedFile = path.join(os.homedir(), '.claude', 'overlord', 'deleted-sessions.json');
   private knownSessionsFile: string;
-  private ideNameCache = new Map<string, { mtimeMs: number; name: string | undefined }>();
+  private ideNameCache = new Map<string, { mtimeMs: number; result: { name: string; idePid: number } | undefined }>();
+  private parentPidCache = new Map<number, number | null>(); // sessionPid → parentPid
 
   constructor(onChange: () => void) {
     this.onChangeCallback = onChange;
@@ -137,6 +139,8 @@ export class StateManager {
           subagents: [],
           proposedName: entry.proposedName,
           resumedFrom: entry.resumedFrom,
+          completionSummaries: entry.completionSummaries,
+          userAccepted: entry.userAccepted,
         });
       }
       if (dirty) {
@@ -159,6 +163,8 @@ export class StateManager {
           pid: s.pid,
           proposedName: s.proposedName,
           resumedFrom: s.resumedFrom,
+          completionSummaries: s.completionSummaries,
+          userAccepted: s.userAccepted,
         }));
       fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
     } catch { /* ignore */ }
@@ -287,13 +293,18 @@ export class StateManager {
         transcriptPath = fallbackPath;
       }
     }
-    const proposedName = existingSession?.proposedName
+    const rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
+    const proposedName = (rawName || undefined)
+      ?? existingSession?.proposedName
       ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
       ?? (resumedFrom ? this.sessions.get(resumedFrom)?.proposedName : undefined);
 
     const subagents = readSubagents(cwd, sessionId);
     const color = this.sessionColor(sessionId);
-    const ideName = this.readIdeName(cwd);
+    const ideInfo = this.readIdeInfo(cwd);
+    // Only tag as IDE if the session process is actually a child of the IDE process
+    const isIdeSession = ideInfo != null && raw.pid > 0 && this.isChildOfIde(raw.pid, ideInfo.idePid);
+    const ideName = isIdeSession ? ideInfo.name : undefined;
 
     const isNew = !this.sessions.has(sessionId);
 
@@ -309,13 +320,22 @@ export class StateManager {
         // Resumed via /clear or other detection — inherit the old session's launchMethod
         const origSession = this.sessions.get(resumedFrom);
         launchMethod = origSession?.launchMethod ?? 'terminal';
-      } else if (ideName) {
+      } else if (isIdeSession) {
         launchMethod = 'ide';
       } else {
         launchMethod = 'terminal';
       }
     } else {
-      launchMethod = existingSession!.launchMethod;
+      const hasPendingPty = this.pendingPtySpawns.has(normalizePath(cwd)) || this.hasPendingResume(cwd);
+      const pidChanged = raw.pid > 0 && existingSession!.pid > 0 && raw.pid !== existingSession!.pid;
+      const wasClosedNowActive = existingSession!.state === 'closed' && state !== 'closed';
+      // Re-evaluate launchMethod if the PID changed (session was resumed in a new process)
+      // or if a closed PTY session became active again without a pending PTY spawn.
+      if (!hasPendingPty && (pidChanged || wasClosedNowActive) && existingSession!.launchMethod === 'overlord-pty') {
+        launchMethod = isIdeSession ? 'ide' : 'terminal';
+      } else {
+        launchMethod = existingSession!.launchMethod;
+      }
     }
 
     // Load persisted summaries on first encounter; preserve in-memory on updates.
@@ -413,7 +433,11 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (!session || session.state === 'closed') return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
-    const transcriptPath = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+    let transcriptPath = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+    // Forked sessions (clones) may not have their own transcript yet — fall back to parent's
+    if (!transcriptPath && session.resumedFrom) {
+      transcriptPath = findTranscriptPath(session.cwd, session.resumedFrom) ?? findTranscriptPathAnywhere(session.resumedFrom);
+    }
     if (!transcriptPath) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     const prevState = session.state;
@@ -636,20 +660,19 @@ export class StateManager {
         // rather than the actual node process.
         const lastActivityAge = Date.now() - new Date(session.lastActivity).getTime();
         if (lastActivityAge > 30_000) {
-          // Extra guard for IDE sessions: check transcript file mtime
-          // The wrapper PID may be gone but Claude's node process is still running
-          if (session.launchMethod === 'ide' || session.ideName) {
-            const transcriptPath = findTranscriptPath(session.cwd, session.sessionId)
-              ?? findTranscriptPathAnywhere(session.sessionId);
-            if (transcriptPath) {
-              try {
-                const stat = fs.statSync(transcriptPath);
-                const transcriptAge = Date.now() - stat.mtimeMs;
-                if (transcriptAge < 60_000) {
-                  continue; // transcript recently written — session likely still alive
-                }
-              } catch { /* file gone, proceed with closing */ }
-            }
+          // Guard for ALL sessions: check transcript file mtime before closing.
+          // The PID in the session file may belong to a shell/wrapper rather than
+          // the actual node process, so verify the transcript isn't being written to.
+          const transcriptPath = findTranscriptPath(session.cwd, session.sessionId)
+            ?? findTranscriptPathAnywhere(session.sessionId);
+          if (transcriptPath) {
+            try {
+              const stat = fs.statSync(transcriptPath);
+              const transcriptAge = Date.now() - stat.mtimeMs;
+              if (transcriptAge < 120_000) {
+                continue; // transcript recently written — session likely still alive
+              }
+            } catch { /* file gone, proceed with closing */ }
           }
           session.state = 'closed';
           anyChanged = true;
@@ -844,7 +867,7 @@ export class StateManager {
             isCompacting: false,
             proposedName,
             ideName: undefined,
-            launchMethod: this.readIdeName(cwd) ? 'ide' : 'terminal',
+            launchMethod: 'terminal', // historical recovery — can't verify IDE parentage
             color,
             subagents,
             needsPermission: false,
@@ -863,7 +886,7 @@ export class StateManager {
     }
   }
 
-  private readIdeName(cwd: string): string | undefined {
+  private readIdeInfo(cwd: string): { name: string; idePid: number } | undefined {
     const ideDir = path.join(os.homedir(), '.claude', 'ide');
     let dirMtime = 0;
     try {
@@ -872,9 +895,9 @@ export class StateManager {
       return undefined;
     }
     const cached = this.ideNameCache.get(ideDir);
-    if (cached && cached.mtimeMs === dirMtime) return cached.name;
+    if (cached && cached.mtimeMs === dirMtime) return cached.result;
 
-    let result: string | undefined;
+    let result: { name: string; idePid: number } | undefined;
     try {
       const files = fs.readdirSync(ideDir);
       const normalizedCwd = normalizePath(cwd);
@@ -882,13 +905,13 @@ export class StateManager {
         if (!file.endsWith('.lock')) continue;
         try {
           const content = fs.readFileSync(path.join(ideDir, file), 'utf-8');
-          const data = JSON.parse(content) as { workspaceFolders?: string[]; ideName?: string };
-          if (data.ideName && Array.isArray(data.workspaceFolders)) {
+          const data = JSON.parse(content) as { workspaceFolders?: string[]; ideName?: string; pid?: number };
+          if (data.ideName && Array.isArray(data.workspaceFolders) && data.pid) {
             const match = data.workspaceFolders.some(
               (folder) => normalizePath(folder) === normalizedCwd
             );
             if (match) {
-              result = data.ideName;
+              result = { name: data.ideName, idePid: data.pid };
               break;
             }
           }
@@ -899,7 +922,35 @@ export class StateManager {
     } catch {
       // ignore
     }
-    this.ideNameCache.set(ideDir, { mtimeMs: dirMtime, name: result });
+    this.ideNameCache.set(ideDir, { mtimeMs: dirMtime, result });
     return result;
+  }
+
+  /** Check if sessionPid is a child of idePid by walking the parent chain */
+  private isChildOfIde(sessionPid: number, idePid: number): boolean {
+    let current = sessionPid;
+    // Walk up to 5 levels of parent processes
+    for (let i = 0; i < 5; i++) {
+      let parentPid: number | null;
+      if (this.parentPidCache.has(current)) {
+        parentPid = this.parentPidCache.get(current)!;
+      } else {
+        try {
+          const out = execSync(
+            `powershell -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${current}').ParentProcessId"`,
+            { encoding: 'utf-8', timeout: 3000 }
+          ).trim();
+          parentPid = out ? parseInt(out, 10) : null;
+          if (parentPid != null && isNaN(parentPid)) parentPid = null;
+        } catch {
+          parentPid = null;
+        }
+        this.parentPidCache.set(current, parentPid);
+      }
+      if (parentPid == null || parentPid === 0) return false;
+      if (parentPid === idePid) return true;
+      current = parentPid;
+    }
+    return false;
   }
 }

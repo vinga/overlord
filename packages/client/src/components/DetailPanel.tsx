@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useTick } from '../hooks/useTick';
 import type { Session, WorkerState, ActivityItem } from '../types';
+import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { Worker } from './Worker';
+import { ConsolePreview } from './ConsolePreview';
 import styles from './DetailPanel.module.css';
 import { marked } from 'marked';
 
@@ -404,9 +406,10 @@ interface FeedSegmentsProps {
   ideName?: string;
   sessionState?: WorkerState;
   styles: Record<string, string>;
+  isPty?: boolean;
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
@@ -461,7 +464,8 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles }: FeedSe
           }
           const isRaw = rawSegments.has(segIdx);
           return (
-            <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]}`}>
+            <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
+              {seg.item.pending && <span className={isPty ? styles.pendingBadge : styles.pendingBadgeConsole}>{isPty ? 'queued' : 'injecting'}</span>}
               <div className={styles.transcriptBubble}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
                   <>
@@ -654,6 +658,7 @@ export function DetailPanel({
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
   const [localSent, setLocalSent] = useState<string[]>([]);
   const [sendInput2, setSendInput2] = useState('');
+  const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [copyConfirm, setCopyConfirm] = useState(false);
@@ -759,14 +764,24 @@ export function DetailPanel({
   const sessionError = selectedSession ? getError(selectedSession.sessionId) : undefined;
 
 
+  // Clear pending messages when Claude starts processing (state transitions to working/thinking)
+  const prevStateRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const currState = selectedSession?.state;
+    const prevState = prevStateRef.current;
+    prevStateRef.current = currState;
+    if (prevState === 'waiting' && (currState === 'working' || currState === 'thinking')) {
+      setLocalSent([]);
+    }
+  }, [selectedSession?.state]);
+
   // Build merged activityFeed: real feed + optimistic locally-sent messages
   const realFeed = selectedSession?.activityFeed ?? [];
   const knownUserContents = new Set(realFeed.filter(i => i.role === 'user').map(i => i.content.slice(0, 200)));
-  const mergedFeed = [
+  const pendingMessages = localSent.filter(t => !knownUserContents.has(t.slice(0, 200)));
+  const mergedFeed: ActivityItem[] = [
     ...realFeed,
-    ...localSent
-      .filter(t => !knownUserContents.has(t.slice(0, 200)))
-      .map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200) })),
+    ...pendingMessages.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200), pending: true })),
   ];
 
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
@@ -1009,13 +1024,20 @@ export function DetailPanel({
                       Subagents
                     </button>
                   )}
-                  {isPty && (
+                  {(isPty || selectedSession.launchMethod === 'overlord-pty') && (
                     <button
                       className={`${styles.tab} ${activeTab === 'terminal' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('terminal')}
                     >
                       Terminal
-                      <span className={styles.tabPtyBadge}>PTY</span>
+                      {isPty ? (
+                        <span className={styles.tabPtyBadge}>PTY</span>
+                      ) : (
+                        <>
+                          <span className={styles.tabPtyBadgeEnded}>PTY</span>
+                          <span style={{ fontSize: '10px', color: '#666' }}>(ended)</span>
+                        </>
+                      )}
                     </button>
                   )}
                 </div>
@@ -1035,6 +1057,7 @@ export function DetailPanel({
                                   styles={styles as Record<string, string>}
                                   ideName={selectedSession.ideName}
                                   sessionState={selectedSession.state}
+                                  isPty={isPty}
                                 />
                               </div>
                             ) : (
@@ -1043,6 +1066,12 @@ export function DetailPanel({
                           </section>
                         )}
                       </div>
+                      <ConsolePreview
+                        sessionId={selectedSession.sessionId}
+                        sessionState={selectedSession.state}
+                        isPty={isPty}
+                        launchMethod={selectedSession.launchMethod}
+                      />
                       {selectedSession && selectedSession.state !== 'closed' && (
                         <>
                           <div className={`${styles.stateBar} ${stateBarClass}`}>
@@ -1079,9 +1108,69 @@ export function DetailPanel({
                           )}
                         </>
                       )}
-                      <div className={styles.sendArea}>
+                      {(selectedSession.state === 'working' || selectedSession.state === 'thinking') && (
+                        <div className={styles.interruptBar}>
+                          <span className={styles.interruptLabel}>Session is {selectedSession.state}…</span>
+                          <button
+                            className={styles.interruptBtn}
+                            onClick={async () => {
+                              try {
+                                await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ text: '\x1b' }),
+                                });
+                              } catch (err) {
+                                console.error('Interrupt failed:', err);
+                              }
+                            }}
+                          >
+                            ■ Interrupt
+                          </button>
+                          <button
+                            className={styles.forceStopBtn}
+                            onClick={async () => {
+                              try {
+                                await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                                  method: 'POST',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ text: '\x03' }),
+                                });
+                              } catch (err) {
+                                console.error('Force stop failed:', err);
+                              }
+                            }}
+                          >
+                            Force Stop
+                          </button>
+                        </div>
+                      )}
+                      <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''}`}>
                         {sessionError && (
                           <div className={styles.sendError}>{sessionError}</div>
+                        )}
+                        {showConvoResumePrompt && onResumeSession && selectedSession.state === 'closed' && (
+                          <div className={styles.convoResumeOverlay}>
+                            <div className={styles.convoResumePrompt}>
+                              <span className={styles.convoResumeText}>
+                                This session has exited. Resume it?
+                              </span>
+                              <div className={styles.convoResumeActions}>
+                                <button
+                                  className={styles.convoResumeButtonPrimary}
+                                  onClick={() => { setShowConvoResumePrompt(false); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }}
+                                >
+                                  Resume Session
+                                </button>
+                                <button
+                                  className={styles.convoResumeButtonSecondary}
+                                  onClick={() => setShowConvoResumePrompt(false)}
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </div>
+                          </div>
                         )}
                         {pastedImage && (
                           <div className={styles.imagePreview}>
@@ -1091,10 +1180,15 @@ export function DetailPanel({
                         )}
                         <div className={styles.sendInputWrapper}>
                           <textarea
-                            className={styles.sendTextarea}
+                            className={`${styles.sendTextarea} ${selectedSession.state === 'closed' ? styles.sendTextareaClosed : ''}`}
                             value={sendInput2}
                             onChange={e => setSendInput2(e.target.value)}
                             onKeyDown={e => {
+                              if (selectedSession.state === 'closed') {
+                                e.preventDefault();
+                                if (onResumeSession) setShowConvoResumePrompt(true);
+                                return;
+                              }
                               if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 if (!connected) return;
@@ -1107,7 +1201,17 @@ export function DetailPanel({
                                 handleSend();
                               }
                             }}
+                            onFocus={() => {
+                              if (selectedSession.state === 'closed' && onResumeSession) {
+                                setShowConvoResumePrompt(true);
+                              }
+                            }}
                             onPaste={async e => {
+                              if (selectedSession.state === 'closed') {
+                                e.preventDefault();
+                                if (onResumeSession) setShowConvoResumePrompt(true);
+                                return;
+                              }
                               const imageItem = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'));
                               if (!imageItem) return;
                               e.preventDefault();
@@ -1131,13 +1235,17 @@ export function DetailPanel({
                               };
                               reader.readAsDataURL(blob);
                             }}
-                            placeholder={connected ? 'Message… (Enter to send, paste image)' : 'Not connected'}
+                            placeholder={selectedSession.state === 'closed' ? 'Session exited — click to resume' : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected')}
                             disabled={!connected}
                             rows={2}
                           />
                           <button
                             className={styles.sendButton}
                             onClick={() => {
+                              if (selectedSession.state === 'closed') {
+                                if (onResumeSession) setShowConvoResumePrompt(true);
+                                return;
+                              }
                               if (!connected) return;
                               handleSend();
                             }}
@@ -1154,17 +1262,38 @@ export function DetailPanel({
                 )}
 
                 {/* Tab: Terminal */}
-                {activeTab === 'terminal' && isPty && (
-                  <div className={styles.terminalContent}>
-                    <XtermTerminal
-                      sessionId={selectedSession.sessionId}
-                      onInput={(data) => sendInput(selectedSession.sessionId, data)}
-                      onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
-                      registerOutputHandler={registerOutputHandler}
-                      isExited={isExited}
-                      fillHeight
-                    />
-                  </div>
+                {activeTab === 'terminal' && (isPty || selectedSession.launchMethod === 'overlord-pty') && (
+                  isPty ? (
+                    <div className={styles.terminalContent}>
+                      <XtermTerminal
+                        sessionId={selectedSession.sessionId}
+                        onInput={(data) => sendInput(selectedSession.sessionId, data)}
+                        onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
+                        registerOutputHandler={registerOutputHandler}
+                        isExited={isExited || selectedSession.state === 'closed'}
+                        onResume={
+                          onResumeSession
+                            ? () => onResumeSession(selectedSession.sessionId, selectedSession.cwd)
+                            : undefined
+                        }
+                        fillHeight
+                      />
+                    </div>
+                  ) : (
+                    <div className={styles.terminalEndedNotice}>
+                      <span className={styles.terminalEndedIcon}>⊘</span>
+                      <span>PTY session has ended</span>
+                      <span className={styles.terminalEndedHint}>This session was launched from Overlord but the terminal connection is no longer active.</span>
+                      {onResumeSession && (
+                        <button
+                          className={styles.reattachBtn}
+                          onClick={() => onResumeSession(selectedSession.sessionId, selectedSession.cwd)}
+                        >
+                          Resume in new PTY
+                        </button>
+                      )}
+                    </div>
+                  )
                 )}
 
                 {/* Tab: Details */}
@@ -1226,24 +1355,22 @@ export function DetailPanel({
                         <span className={styles.fieldLabel}>Started</span>
                         <span className={styles.fieldValue}>{formatStartedAt(selectedSession.startedAt)}</span>
                       </div>
-                      {selectedSession.ideName && (
-                        <div className={styles.field}>
-                          <span className={styles.fieldLabel}>IDE</span>
-                          <span className={styles.fieldValue}>{selectedSession.ideName}</span>
-                        </div>
-                      )}
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Launched from</span>
-                        <span className={selectedSession.launchMethod === 'overlord-pty' ? styles.overlordPill : styles.fieldValue}>
-                          {selectedSession.launchMethod === 'ide'
-                            ? (selectedSession.ideName
-                                ? selectedSession.ideName.replace(/^(.)/, c => c.toUpperCase())
-                                : 'IDE')
-                            : selectedSession.launchMethod === 'overlord-pty'
-                            ? '↺ Overlord (internal)'
-                            : 'Terminal'}
-                        </span>
-                      </div>
+                      {(() => {
+                        const launch = getLaunchInfo(selectedSession, isPty);
+                        return (
+                          <div className={styles.field}>
+                            <span className={styles.fieldLabel}>Launched from</span>
+                            {launch.category === 'pty' ? (
+                              <span className={isPty ? styles.overlordPill : styles.overlordPillEnded}>
+                                <span className={`${styles.statusDot} ${isPty ? styles.statusDotActive : styles.statusDotEnded}`} />
+                                Overlord {isPty ? '(active)' : '(ended)'}
+                              </span>
+                            ) : (
+                              <span className={styles.fieldValue}>{launch.name}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {selectedSession.resumedFrom && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Resumed from</span>
@@ -1314,16 +1441,16 @@ export function DetailPanel({
                         </div>
                       )}
 
-                      {/* Resume section — only when closed */}
-                      {selectedSession.state === 'closed' && (
+                      {/* Resume / Connect section */}
+                      {(
                         <div className={styles.resumeSection}>
-                          <div className={styles.resumeSectionLabel}>Resume</div>
+                          <div className={styles.resumeSectionLabel}>{selectedSession.state === 'closed' ? 'Resume' : 'Connect'}</div>
                           <div className={styles.resumeCommand}>
-                            <code>claude --resume {selectedSession.sessionId}</code>
+                            <code>claude --resume {selectedSession.sessionId} --name &quot;{currentDisplayName}&quot;</code>
                             <button
                               className={styles.resumeCopyIcon}
                               onClick={() => {
-                                navigator.clipboard.writeText(`claude --resume ${selectedSession.sessionId}`);
+                                navigator.clipboard.writeText(`claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}"`);
                                 setCopyConfirm(true);
                                 setTimeout(() => setCopyConfirm(false), 2000);
                               }}
@@ -1350,7 +1477,7 @@ export function DetailPanel({
                                   onResumeSession(selectedSession.sessionId, selectedSession.cwd);
                                 }}
                               >
-                                {resuming ? 'Starting…' : 'Resume in Overlord'}
+                                {resuming ? 'Starting…' : selectedSession.state === 'closed' ? 'Resume in Overlord' : 'Attach in Overlord'}
                               </button>
                             )}
                             {onOpenInTerminal && (
@@ -1363,7 +1490,7 @@ export function DetailPanel({
                                   setTimeout(() => setOpeningTerminal(false), 2000);
                                 }}
                               >
-                                {openingTerminal ? 'Opening…' : 'Open in Terminal'}
+                                {openingTerminal ? 'Opening…' : selectedSession.state === 'closed' ? 'Open in Terminal' : 'Attach in Terminal'}
                               </button>
                             )}
                           </div>

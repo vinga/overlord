@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -11,6 +11,7 @@ interface XtermTerminalProps {
   onResize: (cols: number, rows: number) => void;
   registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => () => void;
   isExited?: boolean;
+  onResume?: () => void;
   fillHeight?: boolean;
 }
 
@@ -20,10 +21,18 @@ export function XtermTerminal({
   onResize,
   registerOutputHandler,
   isExited,
+  onResume,
   fillHeight,
 }: XtermTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
+  const [showResumePrompt, setShowResumePrompt] = useState(false);
+  const isExitedRef = useRef(isExited);
+  const onResumeRef = useRef(onResume);
+
+  useEffect(() => { isExitedRef.current = isExited; }, [isExited]);
+  useEffect(() => { onResumeRef.current = onResume; }, [onResume]);
+  useEffect(() => { if (!isExited) setShowResumePrompt(false); }, [isExited]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -78,7 +87,11 @@ export function XtermTerminal({
 
     // Forward keyboard input to server
     const onDataDispose = term.onData((data) => {
-      if (!isExited) onInput(data);
+      if (!isExitedRef.current) {
+        onInput(data);
+      } else if (onResumeRef.current) {
+        setShowResumePrompt(true);
+      }
     });
 
     // Register handler for incoming PTY output
@@ -106,9 +119,35 @@ export function XtermTerminal({
   }, [sessionId]);
 
   return (
-    <div className={styles.wrapper} style={fillHeight ? { flex: 1, minHeight: 0, height: 'auto' } : undefined}>
+    <div
+      className={`${styles.wrapper} ${isExited ? styles.wrapperExited : ''}`}
+      style={fillHeight ? { flex: 1, minHeight: 0, height: 'auto' } : undefined}
+    >
       {isExited && (
         <div className={styles.exitedBanner}>Session exited</div>
+      )}
+      {showResumePrompt && onResume && (
+        <div className={styles.resumeOverlay}>
+          <div className={styles.resumePrompt}>
+            <span className={styles.resumePromptText}>
+              This session has exited. Resume it?
+            </span>
+            <div className={styles.resumePromptActions}>
+              <button
+                className={`${styles.resumePromptButton} ${styles.resumePromptButtonPrimary}`}
+                onClick={() => { setShowResumePrompt(false); onResume(); }}
+              >
+                Resume Session
+              </button>
+              <button
+                className={`${styles.resumePromptButton} ${styles.resumePromptButtonSecondary}`}
+                onClick={() => setShowResumePrompt(false)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <div ref={containerRef} className={styles.terminal} />
     </div>

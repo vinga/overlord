@@ -58,14 +58,48 @@ packages/
 - Last event `type:"assistant"` → `waiting`
 - PID dead → `idle`
 
-**Client components:**
-- `Office` → CSS Grid of `Room` components
-- `Room` → one workspace, contains `WorkerGroup` per session
-- `WorkerGroup` → main session worker + subagent workers (70% scale, grouped nearby)
-- `Worker` → SVG pixel-art character, animated by state
-- `DetailPanel` → right-side slide-in panel, opens on worker click
+**Client component tree:**
+```
+App.tsx (270 lines) — state orchestrator, view switching (office/logs)
+├── LogsPage.tsx (210 lines) — real-time event log with color-coded badges
+└── Office.tsx (99 lines) — CSS Grid of rooms, header with OverlordLogo
+    ├── OverlordLogo.tsx (90 lines) — SVG crown + wordmark
+    ├── Room.tsx (397 lines) — workspace card, draggable sessions, spawn menus
+    │   └── WorkerGroup.tsx (73 lines) — main session + arc of subagents
+    │       └── Worker.tsx (135 lines) — SVG avatar, state indicators, badges
+    ├── DetailPanel.tsx (1,571 lines) — right sidebar: activity feed, markdown,
+    │   │   diffs, permission prompts, subagent list, terminal embed
+    │   ├── WorkerAvatar.tsx (48 lines) — reusable SVG avatar
+    │   └── XtermTerminal.tsx (155 lines) — xterm.js terminal emulator
+    ├── TaskListPanel.tsx (291 lines) — room-level agents/tasks tabs
+    ├── InjectionInput.tsx (161 lines) — message input with image paste
+    └── PtyTerminalPanel.tsx (242 lines) — standalone PTY terminal panel
+```
+
+**Client hooks** (`packages/client/src/hooks/`):
+- `useOfficeData` (106 lines) — WebSocket → snapshot + terminal messages, auto-reconnect
+- `useTerminal` (250 lines) — PTY lifecycle: spawn, resume, input, resize, kill
+- `useCustomNames` (43 lines) — session names in localStorage
+- `useRoomOrder` (42 lines) — drag order persistence in localStorage
+- `useTick` (11 lines) — periodic re-render for elapsed time displays
+
+**Client types** (`packages/client/src/types.ts`, 199 lines):
+- `Session` — sessionId, state, color, subagents, activityFeed, completionSummaries
+- `ActivityItem` — kind (`message|tool|thinking`), role, content, tool info, duration
+- `Room` — sessions grouped by workspace cwd
+- `OfficeSnapshot` — complete state with all rooms
+- Terminal message types (spawn, input, inject, resize, output, linked, replaced)
+- `LogEntry` — event type, sessionId, message, timestamp
+
+**Conversation/chat UI** lives in `DetailPanel.tsx`:
+- Activity feed renders `session.activityFeed` (messages, tool calls, thinking blocks)
+- `PermissionPrompt` internal component shows yes/always/no when `session.needsPermission`
+- `InjectionInput.tsx` provides the message textarea
+- Permission asks are only visible in DetailPanel when that session is selected
 
 **Subagents** read from `~/.claude/projects/{slug}/{sessionId}/subagents/agent-{id}.meta.json` + `.jsonl`
+
+**CSS Modules** (10 files, ~3,975 lines total) — one per component, largest is `DetailPanel.module.css` (2,046 lines)
 
 ## Repository Structure
 
@@ -80,10 +114,28 @@ overlord/
 │   │   ├── processChecker.ts
 │   │   └── stateManager.ts
 │   └── client/src/
-│       ├── App.tsx
-│       ├── hooks/useOfficeData.ts
-│       └── components/       # Office, Room, WorkerGroup, Worker, DetailPanel
-└── specs/claude-office-monitor.md
+│       ├── App.tsx            # Root: view switching, state orchestration
+│       ├── types.ts           # All shared types
+│       ├── hooks/
+│       │   ├── useOfficeData.ts   # WebSocket connection
+│       │   ├── useTerminal.ts     # PTY session management
+│       │   ├── useCustomNames.ts  # Session naming
+│       │   ├── useRoomOrder.ts    # Drag order persistence
+│       │   └── useTick.ts         # Periodic re-render
+│       └── components/
+│           ├── Office.tsx         # Main grid layout
+│           ├── Room.tsx           # Workspace card with drag-to-reorder
+│           ├── WorkerGroup.tsx    # Session + subagent arc
+│           ├── Worker.tsx         # SVG avatar card
+│           ├── DetailPanel.tsx    # Activity feed, chat, terminal (largest)
+│           ├── TaskListPanel.tsx  # Room-level agents/tasks panel
+│           ├── InjectionInput.tsx # Message input with image paste
+│           ├── PtyTerminalPanel.tsx # Standalone PTY panel
+│           ├── XtermTerminal.tsx  # xterm.js embed
+│           ├── WorkerAvatar.tsx   # Reusable SVG avatar
+│           ├── OverlordLogo.tsx   # Header logo
+│           └── LogsPage.tsx       # Event log view
+└── specs/
 ```
 
 ## Development Approach: Spec Driven Development
@@ -131,6 +183,17 @@ When writing a spec, use this structure:
 - Never start implementing before the spec is approved.
 - If a new requirement surfaces during implementation, stop and update the spec first.
 - Keep specs as files in `specs/` directory. Additional feature specs are already present there — check before writing new ones.
+
+### Think Before Coding
+
+Before implementing any solution, **stop and think through the design space**:
+
+1. **Trace the data flow end-to-end** — what does each approach assume? What existing behavior will break?
+2. **Consider at least 2-3 alternatives** — compare tradeoffs before picking one.
+3. **Understand the tools** — if using a CLI flag or API, verify what it actually does (e.g., does it create files? Where does it write?).
+4. **One well-thought-out approach beats three hasty iterations** — don't implement, discover it's broken, pivot, repeat.
+
+If you catch yourself about to start a second approach after the first failed, pause and think about _why_ it failed. The root cause often points to the right solution.
 
 ## Browser Verification
 
@@ -203,15 +266,6 @@ Agent teams are fully independent Claude Code sessions working in parallel, with
 
 > Subagents for delegation. Teams for collaboration.
 
-### MANDATORY: No inline code changes
-
-**Every code change, no matter how small, MUST be delegated to a subagent.** This is non-negotiable.
-
-- A one-line CSS tweak → subagent
-- Renaming a variable → subagent
-- Adding a tooltip → subagent
-
-Never edit files directly in the main conversation. The main conversation is for coordination, planning, and communication only. If you find yourself reaching for Edit, Write, or Read on a source file — stop and spawn a subagent instead.
 
 ## Task Shortcuts
 
