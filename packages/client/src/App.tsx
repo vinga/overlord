@@ -20,7 +20,9 @@ export function App() {
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
-  const { customNames, rename } = useCustomNames();
+  const { customNames, autoNames, rename, ensureAutoName } = useCustomNames();
+  // Merge auto-proposed names with user custom names (custom names take priority)
+  const displayNames = useMemo(() => ({ ...autoNames, ...customNames }), [autoNames, customNames]);
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = localStorage.getItem('overlord:panelWidth');
@@ -47,6 +49,12 @@ export function App() {
 
   // Keep ref in sync with the latest handler (runs synchronously during render)
   terminalHandlerRef.current = terminal.handleTerminalMessage;
+
+  // Auto-generate proposed names for new sessions
+  useEffect(() => {
+    if (!snapshot) return;
+    snapshot.rooms.flatMap(r => r.sessions).forEach(s => ensureAutoName(s));
+  }, [snapshot, ensureAutoName]);
 
   // Auto-select PTY sessions in DetailPanel when they are spawned/resumed
   // When terminal:linked fires, activePtySessionId switches from 'pty-xxx' to real claudeSessionId.
@@ -177,7 +185,7 @@ export function App() {
         snapshot={snapshot}
         connected={connected}
         onSelectSession={handleSelectSession}
-        customNames={customNames}
+        customNames={displayNames}
         onSpawnSession={handleSpawnSession}
         onNewTerminalSession={handleNewTerminalSession}
 
@@ -197,7 +205,7 @@ export function App() {
       <DetailPanel
         selectedSession={selectedSession}
         selectedSubagentId={selectedSubagentId}
-        customName={customNames[selectedSession?.sessionId ?? '']}
+        customName={displayNames[selectedSession?.sessionId ?? '']}
         onRename={rename}
         onClose={handleClose}
         connected={connected}
@@ -230,12 +238,12 @@ export function App() {
             : []
         }
         onSelectSession={(s) => handleSelectSession(s)}
-        customNames={customNames}
+        customNames={displayNames}
       />
       {selectedRoom && (
         <TaskListPanel
           room={selectedRoom}
-          customNames={customNames}
+          customNames={displayNames}
           onSelectSession={handleSelectSession}
           onClose={handleRoomDetailClose}
           panelWidth={panelWidth}

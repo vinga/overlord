@@ -42,7 +42,35 @@ Client dev server runs on `http://localhost:5173`.
 ```
 packages/
 ├── server/   Node.js + TypeScript + Express + ws + chokidar
-└── client/   React 18 + TypeScript + Vite + CSS Modules
+├── client/   React 18 + TypeScript + Vite + CSS Modules
+└── bridge/   Go binary — named-pipe relay for reliable terminal injection
+```
+
+**Server module structure** (`packages/server/src/`):
+```
+index.ts              — entry point, server bootstrap, shared state, wiring (~360 lines)
+types.ts              — shared server types
+logger.ts             — ring-buffer logger with WS broadcast
+session/
+  ├── stateManager.ts        — aggregates state, broadcasts OfficeSnapshot
+  ├── sessionWatcher.ts      — watches ~/.claude/sessions/*.json (chokidar)
+  ├── sessionEventHandlers.ts — added/changed/removed handlers, PTY linking
+  ├── transcriptReader.ts    — reads .jsonl transcript tail for state detection
+  ├── transcriptWatcher.ts   — watches transcript files, triggers state refresh
+  ├── processChecker.ts      — polls tasklist for alive PIDs
+  └── permissionChecker.ts   — detects permission prompts (Windows)
+pty/
+  ├── ptyManager.ts          — ConPTY session lifecycle
+  ├── ptyEvents.ts           — PTY output/exit/error/pid-ready handlers
+  ├── consoleInjector.ts     — PowerShell daemon for SendInput injection
+  └── pipeInjector.ts        — named-pipe injection via bridge binary
+ai/
+  ├── aiClassifier.ts        — heuristic + LLM session labeling & summaries
+  ├── claudeQuery.ts         — Claude API wrapper
+  └── taskStorage.ts         — per-session task/hint persistence
+api/
+  ├── apiRoutes.ts           — REST endpoints (inject, tasks, labels, delete)
+  └── wsHandler.ts           — WebSocket message handlers (terminal, session ops)
 ```
 
 **Server data flow:**
@@ -108,33 +136,52 @@ overlord/
 ├── package.json              # npm workspaces root
 ├── packages/
 │   ├── server/src/
-│   │   ├── index.ts          # Express + WS entry
-│   │   ├── sessionWatcher.ts
-│   │   ├── transcriptReader.ts
-│   │   ├── processChecker.ts
-│   │   └── stateManager.ts
-│   └── client/src/
-│       ├── App.tsx            # Root: view switching, state orchestration
-│       ├── types.ts           # All shared types
-│       ├── hooks/
-│       │   ├── useOfficeData.ts   # WebSocket connection
-│       │   ├── useTerminal.ts     # PTY session management
-│       │   ├── useCustomNames.ts  # Session naming
-│       │   ├── useRoomOrder.ts    # Drag order persistence
-│       │   └── useTick.ts         # Periodic re-render
-│       └── components/
-│           ├── Office.tsx         # Main grid layout
-│           ├── Room.tsx           # Workspace card with drag-to-reorder
-│           ├── WorkerGroup.tsx    # Session + subagent arc
-│           ├── Worker.tsx         # SVG avatar card
-│           ├── DetailPanel.tsx    # Activity feed, chat, terminal (largest)
-│           ├── TaskListPanel.tsx  # Room-level agents/tasks panel
-│           ├── InjectionInput.tsx # Message input with image paste
-│           ├── PtyTerminalPanel.tsx # Standalone PTY panel
-│           ├── XtermTerminal.tsx  # xterm.js embed
-│           ├── WorkerAvatar.tsx   # Reusable SVG avatar
-│           ├── OverlordLogo.tsx   # Header logo
-│           └── LogsPage.tsx       # Event log view
+│   │   ├── index.ts          # Entry point, bootstrap, shared state
+│   │   ├── types.ts          # Shared server types
+│   │   ├── logger.ts         # Ring-buffer logger
+│   │   ├── session/          # Session lifecycle & state
+│   │   │   ├── stateManager.ts
+│   │   │   ├── sessionWatcher.ts
+│   │   │   ├── sessionEventHandlers.ts
+│   │   │   ├── transcriptReader.ts
+│   │   │   ├── transcriptWatcher.ts
+│   │   │   ├── processChecker.ts
+│   │   │   └── permissionChecker.ts
+│   │   ├── pty/              # Terminal / injection
+│   │   │   ├── ptyManager.ts
+│   │   │   ├── ptyEvents.ts
+│   │   │   ├── consoleInjector.ts
+│   │   │   └── pipeInjector.ts
+│   │   ├── ai/               # Classification & LLM
+│   │   │   ├── aiClassifier.ts
+│   │   │   ├── claudeQuery.ts
+│   │   │   └── taskStorage.ts
+│   │   └── api/              # HTTP & WebSocket
+│   │       ├── apiRoutes.ts
+│   │       └── wsHandler.ts
+│   ├── client/src/
+│   │   ├── App.tsx            # Root: view switching, state orchestration
+│   │   ├── types.ts           # All shared types
+│   │   ├── hooks/
+│   │   │   ├── useOfficeData.ts   # WebSocket connection
+│   │   │   ├── useTerminal.ts     # PTY session management
+│   │   │   ├── useCustomNames.ts  # Session naming
+│   │   │   ├── useRoomOrder.ts    # Drag order persistence
+│   │   │   └── useTick.ts         # Periodic re-render
+│   │   └── components/
+│   │       ├── Office.tsx         # Main grid layout
+│   │       ├── Room.tsx           # Workspace card with drag-to-reorder
+│   │       ├── WorkerGroup.tsx    # Session + subagent arc
+│   │       ├── Worker.tsx         # SVG avatar card
+│   │       ├── DetailPanel.tsx    # Activity feed, chat, terminal (largest)
+│   │       ├── TaskListPanel.tsx  # Room-level agents/tasks panel
+│   │       ├── InjectionInput.tsx # Message input with image paste
+│   │       ├── PtyTerminalPanel.tsx # Standalone PTY panel
+│   │       ├── XtermTerminal.tsx  # xterm.js embed
+│   │       ├── WorkerAvatar.tsx   # Reusable SVG avatar
+│   │       ├── OverlordLogo.tsx   # Header logo
+│   │       └── LogsPage.tsx       # Event log view
+│   └── bridge/               # Go binary for named-pipe injection
 └── specs/
 ```
 

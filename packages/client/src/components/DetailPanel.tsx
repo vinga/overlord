@@ -66,6 +66,17 @@ function isFilePath(s: string): boolean {
 }
 
 
+function trimPath(fullPath: string, cwd?: string): string {
+  if (!cwd) return fullPath;
+  const norm = (p: string) => p.replace(/\\/g, '/').replace(/\/$/, '');
+  const normFull = norm(fullPath);
+  const normCwd = norm(cwd);
+  if (normFull.startsWith(normCwd + '/')) {
+    return normFull.slice(normCwd.length + 1);
+  }
+  return fullPath;
+}
+
 function computeDiff(oldStr: string, newStr: string): Array<{ type: 'removed' | 'added' | 'context', text: string }> {
   const oldLines = oldStr.split('\n');
   const newLines = newStr.split('\n');
@@ -287,7 +298,7 @@ function buildSegments(feed: ActivityItem[]): FeedSegment[] {
   for (const item of feed) {
     if (item.kind === 'tool') {
       const last = segments[segments.length - 1];
-      if (last?.type === 'toolGroup') {
+      if (last?.type === 'toolGroup' && item.toolName !== 'Agent') {
         last.items.push(item);
       } else {
         segments.push({ type: 'toolGroup', items: [item] });
@@ -321,6 +332,7 @@ interface ToolEntryProps {
   showDuration?: boolean;
   sessionState?: string;
   styles: Record<string, string>;
+  cwd?: string;
 }
 
 function ToolEntry({
@@ -336,6 +348,7 @@ function ToolEntry({
   showDuration,
   sessionState,
   styles,
+  cwd,
 }: ToolEntryProps) {
   const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
   const isDiffExpanded = expandedDiffs.has(diffKey);
@@ -358,7 +371,12 @@ function ToolEntry({
           <span className={styles.toolName}>⚡ {tool.toolName}</span>
         )}
         {showDuration && tool.durationMs !== undefined && tool.durationMs >= 2000 && (
-          <span className={styles.toolDuration}>{(tool.durationMs / 1000).toFixed(1)}s</span>
+          <span className={styles.toolDuration} title="Duration">
+            <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 2, verticalAlign: -0.5 }}>
+              <path d="M6.5.5a.5.5 0 00 0 1h3a.5.5 0 000-1zM8 3a6 6 0 100 12A6 6 0 008 3zm0 1.5a4.5 4.5 0 110 9 4.5 4.5 0 010-9zM8.25 5a.75.75 0 00-1.5 0v3.5c0 .414.336.75.75.75H10a.75.75 0 000-1.5H8.25z"/>
+            </svg>
+            took {(tool.durationMs / 1000).toFixed(1)}<span style={{ opacity: 0.6 }}>s</span>
+          </span>
         )}
         {showRunning && sessionState === 'working' && tool.durationMs === undefined && (
           <span className={styles.toolRunningSpinner} />
@@ -378,7 +396,7 @@ function ToolEntry({
       </div>
       {tool.content && (
         isFilePath(tool.content)
-          ? <button className={styles.toolDescLink} title="Open file" onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{tool.content}</button>
+          ? <button className={styles.toolDescLink} title={tool.content} onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{trimPath(tool.content, cwd)}</button>
           : <span className={styles.toolDesc}>{tool.content}</span>
       )}
       {isArgsExpanded && tool.inputJson && (
@@ -400,6 +418,22 @@ function ToolEntry({
   );
 }
 
+function formatFeedTimestamp(iso?: string): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (isNaN(date.getTime())) return null;
+  const now = new Date();
+  const isToday = date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  if (isToday) return `${hh}:${mm}`;
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mon = String(date.getMonth() + 1).padStart(2, '0');
+  return `${dd}.${mon}.${date.getFullYear()} ${hh}:${mm}`;
+}
+
 interface FeedSegmentsProps {
   feed: ActivityItem[];
   roleLabel: (role: string) => string;
@@ -407,9 +441,10 @@ interface FeedSegmentsProps {
   sessionState?: WorkerState;
   styles: Record<string, string>;
   isPty?: boolean;
+  cwd?: string;
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
@@ -474,7 +509,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty }:
                     ) : (
                       <div
                         className={styles.markdownContent}
-                        dangerouslySetInnerHTML={{ __html: renderMarkdown(seg.item.content) }}
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(seg.item.content.trimEnd()) }}
                       />
                     )}
                     <button
@@ -488,6 +523,14 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty }:
                     >
                       {isRaw ? 'md' : 'raw'}
                     </button>
+                    {seg.item.timestamp && (
+                      <span className={`${styles.feedTimestamp} ${seg.item.role === 'user' ? styles.feedTimestampUser : ''}`}>
+                        <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 3, verticalAlign: -1 }}>
+                          <path d="M8 0a8 8 0 110 16A8 8 0 018 0zm0 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM8 3a.75.75 0 01.75.75v3.69l2.28 2.28a.75.75 0 01-1.06 1.06l-2.5-2.5A.75.75 0 017.25 8V3.75A.75.75 0 018 3z"/>
+                        </svg>
+                        {formatFeedTimestamp(seg.item.timestamp)}
+                      </span>
+                    )}
                   </>
                 ) : (
                   <span className={styles.transcriptContent}>{seg.item.content}</span>
@@ -517,6 +560,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty }:
               showDuration={true}
               sessionState={sessionState}
               styles={styles}
+              cwd={cwd}
             />
           );
         }
@@ -565,6 +609,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty }:
                   showDuration={false}
                   sessionState={sessionState}
                   styles={styles}
+                  cwd={cwd}
                 />
               );
             })}
@@ -657,6 +702,7 @@ export function DetailPanel({
   const editInputRef = useRef<HTMLInputElement>(null);
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
   const [localSent, setLocalSent] = useState<string[]>([]);
+  const realCountAtFirstSend = useRef<number | null>(null);
   const [sendInput2, setSendInput2] = useState('');
   const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
@@ -691,6 +737,19 @@ export function DetailPanel({
     });
     return () => cancelAnimationFrame(raf);
   }, [selectedSession?.activityFeed, selectedSubagent?.activityFeed, activeTab]);
+
+  // Force scroll to bottom when user sends a message
+  useEffect(() => {
+    if (localSent.length === 0) return;
+    isAtBottomRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (transcriptRef.current) {
+          transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
+        }
+      });
+    });
+  }, [localSent.length]);
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
@@ -746,7 +805,14 @@ export function DetailPanel({
     if (!text && !pastedImage) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
     injectText(selectedSession.sessionId, full, !!pastedImage);
-    if (full) setLocalSent(prev => [...prev, full]);
+    if (full) {
+      // Snapshot real user message count on first pending send
+      if (realCountAtFirstSend.current === null) {
+        const feed = selectedSession.activityFeed ?? [];
+        realCountAtFirstSend.current = feed.filter(i => i.role === 'user').length;
+      }
+      setLocalSent(prev => [...prev, full]);
+    }
     setSendInput2('');
     setPastedImage(null);
   }
@@ -764,21 +830,29 @@ export function DetailPanel({
   const sessionError = selectedSession ? getError(selectedSession.sessionId) : undefined;
 
 
-  // Clear pending messages when Claude starts processing (state transitions to working/thinking)
-  const prevStateRef = useRef<string | undefined>(undefined);
+  // Clear stale pending messages after 30s (safety net — content de-duplication handles normal flow)
   useEffect(() => {
-    const currState = selectedSession?.state;
-    const prevState = prevStateRef.current;
-    prevStateRef.current = currState;
-    if (prevState === 'waiting' && (currState === 'working' || currState === 'thinking')) {
-      setLocalSent([]);
-    }
-  }, [selectedSession?.state]);
+    if (localSent.length === 0) return;
+    const timer = setTimeout(() => setLocalSent([]), 30_000);
+    return () => clearTimeout(timer);
+  }, [localSent]);
 
   // Build merged activityFeed: real feed + optimistic locally-sent messages
+  // Count-based: track how many new user messages appeared since we started sending
   const realFeed = selectedSession?.activityFeed ?? [];
-  const knownUserContents = new Set(realFeed.filter(i => i.role === 'user').map(i => i.content.slice(0, 200)));
-  const pendingMessages = localSent.filter(t => !knownUserContents.has(t.slice(0, 200)));
+  const currentRealUserCount = realFeed.filter(i => i.role === 'user').length;
+  const confirmed = realCountAtFirstSend.current !== null
+    ? Math.max(0, currentRealUserCount - realCountAtFirstSend.current)
+    : 0;
+  const pendingMessages = localSent.slice(confirmed);
+  // If all confirmed, reset tracking
+  if (confirmed >= localSent.length && localSent.length > 0) {
+    // Use queueMicrotask to avoid setState during render
+    queueMicrotask(() => {
+      setLocalSent([]);
+      realCountAtFirstSend.current = null;
+    });
+  }
   const mergedFeed: ActivityItem[] = [
     ...realFeed,
     ...pendingMessages.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200), pending: true })),
@@ -877,6 +951,7 @@ export function DetailPanel({
                             styles={styles as Record<string, string>}
                             ideName={selectedSession.ideName}
                             sessionState={selectedSubagent.state}
+                            cwd={selectedSession.cwd}
                           />
                         </div>
                       ) : (
@@ -954,7 +1029,7 @@ export function DetailPanel({
                       </>
                     ) : (
                       <>
-                        <h2 className={styles.sessionName} style={{ cursor: 'default' }}>{currentDisplayName}</h2>
+                        <h2 className={styles.sessionName} onDoubleClick={startEdit} title="Double-click to rename">{currentDisplayName}</h2>
                         <button
                           className={styles.nameBtn}
                           onClick={() => navigator.clipboard.writeText(selectedSession.sessionId)}
@@ -1058,6 +1133,7 @@ export function DetailPanel({
                                   ideName={selectedSession.ideName}
                                   sessionState={selectedSession.state}
                                   isPty={isPty}
+                                  cwd={selectedSession.cwd}
                                 />
                               </div>
                             ) : (

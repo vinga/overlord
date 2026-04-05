@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import type { WorkerState } from '../types';
 import styles from './Worker.module.css';
 
@@ -17,6 +17,7 @@ interface WorkerProps {
   currentTaskLabel?: string;
   isWorker?: boolean;
   onClick: () => void;
+  onRename?: (newName: string) => void;
 }
 
 interface WaitingIndicatorProps {
@@ -49,10 +50,37 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, isWorker, onClick }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, isWorker, onClick, onRename }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
+
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(label);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
+  const commitRename = useCallback(() => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== label && onRename) {
+      onRename(trimmed);
+    }
+    setIsEditing(false);
+  }, [editValue, label, onRename]);
+
+  const handleLabelDoubleClick = useCallback((e: React.MouseEvent) => {
+    if (!onRename || isSubagent) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setEditValue(label);
+    setIsEditing(true);
+  }, [onRename, isSubagent, label]);
 
   const isDone = state === 'waiting' && completionHint === 'done';
   const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}`;
@@ -122,7 +150,28 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       </svg>
 
       {!minimal && (
-        <span className={`${styles.label} ${isSubagent ? styles.labelSubagent : ''}`}>{label}</span>
+        isEditing ? (
+          <input
+            ref={inputRef}
+            className={styles.labelEdit}
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') commitRename();
+              if (e.key === 'Escape') { setIsEditing(false); setEditValue(label); }
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span
+            className={`${styles.label} ${isSubagent ? styles.labelSubagent : ''}`}
+            onDoubleClick={handleLabelDoubleClick}
+          >
+            {label}
+          </span>
+        )
       )}
       {!minimal && !isSubagent && currentTaskLabel && (state === 'working' || state === 'thinking') && (
         <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>

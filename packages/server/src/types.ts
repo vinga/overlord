@@ -12,6 +12,7 @@ export interface ActivityItem {
   isRedacted?: boolean;
   inputJson?: string;            // full tool input as JSON (truncated)
   durationMs?: number;           // for kind='tool': how long the tool call took
+  timestamp?: string;            // ISO timestamp of when this entry occurred
 }
 
 export interface Subagent {

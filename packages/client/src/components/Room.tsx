@@ -169,7 +169,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onS
       </button>
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', right: 0, marginTop: 4,
+          position: 'absolute', top: '100%', left: 0, marginTop: 4,
           background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.1)',
           borderRadius: 8, padding: 4, boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
           zIndex: 100, minWidth: 180,
@@ -179,14 +179,14 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onS
             onClick={() => { setOpen(false); onSpawnEmbedded(); }}
             onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-          >New session (embedded)</button>
+          >New Overlord Session</button>
           {onSpawnTerminal && (
             <button
               style={itemStyle}
               onClick={() => { setOpen(false); onSpawnTerminal(); }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >New session (terminal)</button>
+            >New Terminal Session</button>
           )}
         </div>
       )}
@@ -390,7 +390,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
                   currentName={customNames[session.sessionId] ?? session.proposedName ?? session.sessionId.slice(0, 8)}
                 />
               )}
-              <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} />
+              <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} />
             </div>
           );
         })}

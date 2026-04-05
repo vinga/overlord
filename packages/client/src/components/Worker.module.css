@@ -68,6 +68,22 @@
   max-height: 2.7em;
 }
 
+.labelEdit {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(212, 175, 55, 0.5);
+  border-radius: 4px;
+  padding: 2px 6px;
+  text-align: center;
+  max-width: 175px;
+  width: 100%;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.15);
+}
+
 .completionSummary {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 11px;

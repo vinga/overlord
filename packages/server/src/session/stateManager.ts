@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState } from './types.js';
-import { log } from './logger.js';
+import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
+import { log } from '../logger.js';
 import {
   findTranscriptPath,
   findTranscriptPathAnywhere,
@@ -14,8 +14,8 @@ import {
   clearProposedNameCache,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
-import { readTaskSummaries, acceptTaskSummary, saveCompletionHint, loadCompletionHint, clearCompletionHint } from './taskStorage.js';
-import type { TaskSummary } from './taskStorage.js';
+import { readTaskSummaries, acceptTaskSummary, saveCompletionHint, loadCompletionHint, clearCompletionHint } from '../ai/taskStorage.js';
+import type { TaskSummary } from '../ai/taskStorage.js';
 
 function normalizePath(p: string): string {
   // Convert WSL path /mnt/c/... to c:/...
@@ -134,7 +134,19 @@ export class StateManager {
           startedAt: entry.startedAt ?? Date.now(),
           state: 'closed',
           lastActivity: new Date(entry.startedAt ?? Date.now()).toISOString(),
-          launchMethod: entry.launchMethod ?? 'terminal',
+          // On startup, re-evaluate Overlord-tagged sessions to catch misclassifications.
+          // If the process is alive but NOT spawned by Overlord, correct the label now.
+          launchMethod: (() => {
+            const stored: Session['launchMethod'] = entry.launchMethod ?? 'terminal';
+            if (stored !== 'overlord-pty' && stored !== 'overlord-resume') return stored;
+            const pid = entry.pid ?? 0;
+            if (pid > 0 && !this.isSpawnedByOverlord(pid)) {
+              const ideInfo = this.readIdeInfo(entry.cwd ?? '');
+              const isIde = ideInfo != null && this.isChildOfIde(pid, ideInfo.idePid);
+              return isIde ? 'ide' : 'terminal';
+            }
+            return stored;
+          })(),
           color,
           subagents: [],
           proposedName: entry.proposedName,
@@ -236,7 +248,7 @@ export class StateManager {
     let state: WorkerState = existingSession?.state ?? 'waiting';
     let lastActivity = new Date().toISOString();
     let lastMessage: string | undefined;
-    let activityFeed: import('./types.js').ActivityItem[] | undefined;
+    let activityFeed: import('../types.js').ActivityItem[] | undefined;
     let slug: string | undefined;
     let model: string | undefined;
     let inputTokens: number | undefined;
@@ -312,7 +324,8 @@ export class StateManager {
     let launchMethod: Session['launchMethod'];
     if (isNew) {
       const pendingSpawnTs = this.pendingPtySpawns.get(normalizePath(cwd));
-      const isPendingPtySpawn = pendingSpawnTs != null && Date.now() - pendingSpawnTs < 5000;
+      const isPendingPtySpawn = pendingSpawnTs != null && Date.now() - pendingSpawnTs < 5000
+        && (raw.pid === 0 || this.isSpawnedByOverlord(raw.pid));
       if (isPendingPtySpawn) {
         launchMethod = 'overlord-pty';
         this.pendingPtySpawns.delete(normalizePath(cwd));
@@ -331,8 +344,16 @@ export class StateManager {
       const wasClosedNowActive = existingSession!.state === 'closed' && state !== 'closed';
       // Re-evaluate launchMethod if the PID changed (session was resumed in a new process)
       // or if a closed PTY session became active again without a pending PTY spawn.
-      if (!hasPendingPty && (pidChanged || wasClosedNowActive) && existingSession!.launchMethod === 'overlord-pty') {
-        launchMethod = isIdeSession ? 'ide' : 'terminal';
+      const wasOverlordSession = existingSession!.launchMethod === 'overlord-pty'
+        || existingSession!.launchMethod === 'overlord-resume';
+      if (!hasPendingPty && (pidChanged || wasClosedNowActive) && wasOverlordSession) {
+        // Re-check if this process is still Overlord-spawned; if not, correct the label
+        const stillOverlord = raw.pid > 0 && this.isSpawnedByOverlord(raw.pid);
+        if (!stillOverlord) {
+          launchMethod = isIdeSession ? 'ide' : 'terminal';
+        } else {
+          launchMethod = existingSession!.launchMethod;
+        }
       } else {
         launchMethod = existingSession!.launchMethod;
       }
@@ -926,29 +947,70 @@ export class StateManager {
     return result;
   }
 
-  /** Check if sessionPid is a child of idePid by walking the parent chain */
+  /** Check if sessionPid is a direct child of idePid (max 3 levels).
+   *  Stops early if node.exe is found in the chain — that means Overlord
+   *  is the intermediary, so the session was NOT launched by the IDE. */
   private isChildOfIde(sessionPid: number, idePid: number): boolean {
     let current = sessionPid;
-    // Walk up to 5 levels of parent processes
-    for (let i = 0; i < 5; i++) {
-      let parentPid: number | null;
+    for (let i = 0; i < 3; i++) {
+      let parentInfo: { pid: number; name: string } | null;
       if (this.parentPidCache.has(current)) {
-        parentPid = this.parentPidCache.get(current)!;
+        const cached = this.parentPidCache.get(current)!;
+        parentInfo = cached != null ? { pid: cached, name: '' } : null;
       } else {
         try {
           const out = execSync(
-            `powershell -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${current}').ParentProcessId"`,
+            `powershell -Command "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${current}' -ErrorAction SilentlyContinue; if ($p) { Write-Host \"$($p.ParentProcessId) $($p.Name)\" }"`,
             { encoding: 'utf-8', timeout: 3000 }
           ).trim();
-          parentPid = out ? parseInt(out, 10) : null;
-          if (parentPid != null && isNaN(parentPid)) parentPid = null;
+          if (out) {
+            const [pidStr, ...nameParts] = out.split(' ');
+            const pid = parseInt(pidStr, 10);
+            parentInfo = !isNaN(pid) ? { pid, name: nameParts.join(' ').toLowerCase() } : null;
+          } else {
+            parentInfo = null;
+          }
+        } catch {
+          parentInfo = null;
+        }
+        this.parentPidCache.set(current, parentInfo?.pid ?? null);
+      }
+      if (!parentInfo || parentInfo.pid === 0) return false;
+      // If node.exe is in the chain, this session was spawned through Overlord — not the IDE
+      if (parentInfo.name.startsWith('node')) return false;
+      if (parentInfo.pid === idePid) return true;
+      current = parentInfo.pid;
+    }
+    return false;
+  }
+
+  /** Check if sessionPid was spawned by Overlord (node.exe in parent chain within 2 hops) */
+  private isSpawnedByOverlord(sessionPid: number): boolean {
+    let current = sessionPid;
+    for (let i = 0; i < 2; i++) {
+      const cached = this.parentPidCache.get(current);
+      let parentPid: number | null = cached !== undefined ? cached : null;
+      let parentName = '';
+      if (cached === undefined) {
+        try {
+          const out = execSync(
+            `powershell -Command "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${current}' -ErrorAction SilentlyContinue; if ($p) { Write-Host \"$($p.ParentProcessId) $($p.Name)\" }"`,
+            { encoding: 'utf-8', timeout: 3000 }
+          ).trim();
+          if (out) {
+            const [pidStr, ...nameParts] = out.split(' ');
+            const pid = parseInt(pidStr, 10);
+            parentPid = !isNaN(pid) ? pid : null;
+            parentName = nameParts.join(' ').toLowerCase();
+          }
         } catch {
           parentPid = null;
         }
         this.parentPidCache.set(current, parentPid);
       }
-      if (parentPid == null || parentPid === 0) return false;
-      if (parentPid === idePid) return true;
+      if (!parentPid) return false;
+      // matches node.exe (Windows), node (Linux/Docker)
+      if (parentName === 'node' || parentName === 'node.exe' || parentName.startsWith('node ')) return true;
       current = parentPid;
     }
     return false;

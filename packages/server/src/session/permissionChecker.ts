@@ -51,7 +51,7 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
   let readScreen: ((pid: number) => Promise<string | null>) | undefined;
 
   const load = async () => {
-    const mod = await import('./consoleInjector.js');
+    const mod = await import('../pty/consoleInjector.js');
     readScreen = mod.readScreen;
   };
 

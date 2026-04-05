@@ -8,11 +8,12 @@ interface WorkerGroupProps {
   onSelectSession: (session: Session, subagentId?: string) => void;
   customName?: string;
   onDeleteSession?: (sessionId: string) => void;
+  onRename?: (sessionId: string, newName: string) => void;
 }
 
 const MAX_VISIBLE_SUBAGENTS = 4;
 
-export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession }: WorkerGroupProps) {
+export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename }: WorkerGroupProps) {
   const [expanded, setExpanded] = useState(false);
   const allRecentSubagents = session.userAccepted ? [] : session.subagents.filter(s =>
     s.state === 'working' || s.state === 'thinking' ||
@@ -38,6 +39,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           currentTaskLabel={session.currentTaskLabel}
           isWorker={session.isWorker}
           onClick={() => onSelectSession(session)}
+          onRename={onRename ? (name) => onRename(session.sessionId, name) : undefined}
         />
       </div>
 

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { WorkerState, Subagent, ActivityItem } from './types.js';
+import type { WorkerState, Subagent, ActivityItem } from '../types.js';
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -183,7 +183,7 @@ function detectCompactionIncremental(filePath: string, fileSize: number): { comp
 function describeInput(input: unknown): string {
   if (!input || typeof input !== 'object') return '';
   const obj = input as Record<string, unknown>;
-  const val = obj.file_path ?? obj.command ?? obj.pattern ?? obj.prompt ?? obj.description ?? obj.query ?? '';
+  const val = obj.file_path ?? obj.description ?? obj.command ?? obj.pattern ?? obj.prompt ?? obj.query ?? '';
   return String(val).slice(0, 100);
 }
 
@@ -342,6 +342,7 @@ export function readTranscriptState(filePath: string): {
       try {
         const parsed = JSON.parse(last30[i]) as {
           type?: string;
+          timestamp?: string;
           message?: {
             content?: string | Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
             model?: string;
@@ -372,7 +373,7 @@ export function readTranscriptState(filePath: string): {
               text = textBlock?.text;
             }
             if (text) {
-              activityFeed.unshift({ kind: 'message', role: 'user', content: text.slice(0, MAX_CONTENT_LENGTH) });
+              activityFeed.unshift({ kind: 'message', role: 'user', content: text.slice(0, MAX_CONTENT_LENGTH), timestamp: parsed.timestamp });
             }
           } else if (parsed.type === 'assistant') {
             // Assistant message: extract text and tool_use blocks
@@ -392,7 +393,7 @@ export function readTranscriptState(filePath: string): {
 
             // Unshift text first (so after unshifting tools, tools appear before text in feed)
             if (text) {
-              activityFeed.unshift({ kind: 'message', role: 'assistant', content: text.slice(0, MAX_CONTENT_LENGTH) });
+              activityFeed.unshift({ kind: 'message', role: 'assistant', content: text.slice(0, MAX_CONTENT_LENGTH), timestamp: parsed.timestamp });
             }
 
             // Then unshift tool_use blocks (they'll appear before the text in the final order)
@@ -425,6 +426,7 @@ export function readTranscriptState(filePath: string): {
                     const dur = toolDurations.get(blockId);
                     if (dur !== undefined) item.durationMs = dur;
                   }
+                  if (parsed.timestamp) item.timestamp = parsed.timestamp;
                   activityFeed.unshift(item);
                 }
               }
@@ -438,6 +440,7 @@ export function readTranscriptState(filePath: string): {
                     activityFeed.unshift({
                       kind: 'thinking',
                       content: thinkingText.slice(0, MAX_CONTENT_LENGTH),
+                      timestamp: parsed.timestamp,
                     });
                   }
                 }
@@ -673,7 +676,7 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
         const transcriptFile = path.join(subagentsDir, `${agentId}.jsonl`);
         let state: WorkerState = 'closed';
         let lastActivity = new Date().toISOString();
-        let activityFeed: import('./types.js').ActivityItem[] | undefined;
+        let activityFeed: import('../types.js').ActivityItem[] | undefined;
         let model: string | undefined;
 
         if (fs.existsSync(transcriptFile)) {

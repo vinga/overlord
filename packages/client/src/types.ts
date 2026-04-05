@@ -12,6 +12,7 @@ interface ActivityItem {
   isRedacted?: boolean;          // for kind='thinking'
   inputJson?: string;            // full tool input as JSON (truncated)
   durationMs?: number;           // for kind='tool': how long the tool call took
+  timestamp?: string;            // ISO timestamp of when this entry occurred
   pending?: boolean;             // optimistic locally-sent message, not yet processed
 }
 

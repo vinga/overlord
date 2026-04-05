@@ -7,7 +7,7 @@ import { createInterface } from 'readline';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const SCRIPT = path.join(__dirname, '..', 'inject.ps1');
+const SCRIPT = path.join(__dirname, '..', '..', 'inject.ps1');
 
 // ── Persistent PowerShell daemon ──────────────────────────────────────────────
 

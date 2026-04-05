@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chokidar, { FSWatcher } from 'chokidar';
-import { HAIKU_WORKER_CWD } from './claudeQuery.js';
+import { HAIKU_WORKER_CWD } from '../ai/claudeQuery.js';
 
 export interface RawSession {
   pid: number;
