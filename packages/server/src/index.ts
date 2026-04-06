@@ -261,10 +261,20 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       bridgeSessions.delete(sessionId);
       unregisterBridgePipe(sessionId);
       bridgePermText.delete(sessionId);
+      // Mark session idle immediately — bridge process has exited
+      stateManager.markClosed(sessionId);
     }
   });
 
-  // Connection 2: dedicated OUTPUT socket (for reading ConPTY output from bridge)
+  // Connection 2: dedicated OUTPUT socket — extracted to its own function so it can
+  // self-reconnect independently of the input socket (the connectBridgePipe guard checks
+  // bridgeManager.isConnected which only reflects the input socket; if the output socket
+  // disconnects while the input is still alive, calling connectBridgePipe again would be
+  // a no-op and the output socket would never come back).
+  connectBridgeOutputSocket(sessionId, pipeAddr, pipeName);
+}
+
+function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName: string): void {
   // Send "OUTPT\n" handshake so bridge adds this socket to the broadcast list
   const outputSocket = net.connect(pipeAddr, () => {
     outputSocket.write('OUTPT\n', () => {
@@ -278,9 +288,27 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       // Tell clients to clear immediately, then send RSNUD after the wrong-size repaint
       // arrives so the ConPTY is resized before the next repaint.
       broadcastRaw({ type: 'terminal:clear', sessionId });
+      // Health check: if no output arrives within 10s after nudge, the bridge's
+      // ConPTY reader is dead (broken pipe). Clean up so the UI doesn't show a
+      // phantom terminal tab that never renders anything.
+      let receivedOutput = false;
+      const healthTimer = setTimeout(() => {
+        if (!receivedOutput) {
+          console.log(`[bridge] DEAD: no output from ${sessionId.slice(0, 8)} after 10s — bridge process likely exited`);
+          bridgeSessions.delete(sessionId);
+          unregisterBridgePipe(sessionId);
+          bridgePermText.delete(sessionId);
+          outputSocket.destroy();
+          bridgeManager.disconnect(sessionId);
+          // Mark session idle immediately — don't wait for processChecker's next poll
+          stateManager.markClosed(sessionId);
+        }
+      }, 10_000);
+      healthTimer.unref();
+      outputSocket.once('data', () => { receivedOutput = true; clearTimeout(healthTimer); });
       setTimeout(() => {
-        const pipeAddr = bridgeManager.getPipeAddr(sessionId);
-        console.log(`[bridge] RSNUD: sending 120x30 to ${sessionId.slice(0, 8)} via ${pipeAddr}`);
+        const addr = bridgeManager.getPipeAddr(sessionId);
+        console.log(`[bridge] RSNUD: sending 120x30 to ${sessionId.slice(0, 8)} via ${addr}`);
         void resizeAndNudgeBridgePipe(sessionId, 120, 30).then(ok => {
           console.log(`[bridge] RSNUD result: ${ok ? 'ok' : 'failed'} for ${sessionId.slice(0, 8)}`);
         });
@@ -324,8 +352,13 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
     if (outputConnectFailed) {
       console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}`);
     } else {
-      console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
-      setTimeout(() => connectBridgePipe(sessionId, pipeName), 2000);
+      // Only reconnect if this session is still tracked (bridge window still alive).
+      // Do NOT call connectBridgePipe — that guard checks bridgeManager.isConnected()
+      // which reflects only the input socket, and would block this reconnect.
+      if (bridgeSessions.has(sessionId)) {
+        console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
+        setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 2000);
+      }
     }
   });
 }
@@ -364,8 +397,33 @@ function reconnectBridgePipes(): void {
   const registry = loadBridgeRegistry();
   const entries = Object.entries(registry);
   if (entries.length === 0) return;
-  console.log(`[bridge] reconnecting to ${entries.length} known bridge pipes...`);
+
+  // Deduplicate: if multiple sessions point to the same pipe, keep only the most recent
+  const pipeToSessions = new Map<string, string[]>();
   for (const [sessionId, pipeName] of entries) {
+    const arr = pipeToSessions.get(pipeName) ?? [];
+    arr.push(sessionId);
+    pipeToSessions.set(pipeName, arr);
+  }
+  // Clean up stale duplicates
+  let cleaned = false;
+  for (const [pipeName, sessionIds] of pipeToSessions) {
+    if (sessionIds.length > 1) {
+      // Keep only the session whose ID appears in the pipe name (canonical owner)
+      const canonical = sessionIds.find(id => pipeName.includes(id.slice(0, 8)));
+      const stale = sessionIds.filter(id => id !== canonical);
+      for (const id of stale) {
+        console.log(`[bridge] registry cleanup: removing stale ${id.slice(0, 8)} (duplicate pipe ${pipeName})`);
+        delete registry[id];
+        cleaned = true;
+      }
+    }
+  }
+  if (cleaned) saveBridgeRegistry(registry);
+
+  const validEntries = Object.entries(registry);
+  console.log(`[bridge] reconnecting to ${validEntries.length} known bridge pipes...`);
+  for (const [sessionId, pipeName] of validEntries) {
     // Try to connect — if bridge is dead, the error handler will clean up
     stateManager.setSessionType(sessionId, 'bridge');
     connectBridgePipe(sessionId, pipeName);

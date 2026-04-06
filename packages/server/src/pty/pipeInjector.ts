@@ -207,11 +207,13 @@ export async function nudgeBridgePipe(sessionId: string): Promise<boolean> {
         // before the connection closes (destroy sends RST which can abort the read).
         socket.write('NUDGE\n', (err) => {
           if (err) { resolve(false); return; }
+          writeDone = true;
           socket.end();
         });
       });
+      let writeDone = false;
       socket.on('close', () => resolve(true));
-      socket.on('error', () => resolve(false));
+      socket.on('error', (err) => resolve(writeDone && err.message.includes('EPIPE')));
       socket.setTimeout(3000, () => { socket.destroy(); resolve(false); });
     });
   } catch {
@@ -233,11 +235,17 @@ export async function resizeAndNudgeBridgePipe(sessionId: string, cols: number, 
         // 6-byte header and the "cols rows\n" payload before closing.
         socket.write(`RSNUD\n${cols} ${rows}\n`, (err) => {
           if (err) { resolve(false); return; }
+          // Mark write as done — EPIPE on subsequent read is expected when the bridge
+          // closes its end of the named pipe after processing the resize command.
+          writeDone = true;
           socket.end();
         });
       });
+      let writeDone = false;
       socket.on('close', () => resolve(true));
-      socket.on('error', () => resolve(false));
+      // EPIPE after write is expected on Windows named pipes when the bridge closes
+      // its end after processing RSNUD. Treat it as success if the write completed.
+      socket.on('error', (err) => resolve(writeDone && err.message.includes('EPIPE')));
       socket.setTimeout(3000, () => { socket.destroy(); resolve(false); });
     });
   } catch {

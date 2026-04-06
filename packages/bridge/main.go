@@ -95,8 +95,8 @@ func main() {
 	clients := newClientRegistry()
 
 	// Start child via ConPTY (Windows) or plain pty (Unix)
-	// Returns: write-to-child func, wait func, child PID, nudge func, resize+nudge func
-	writeToChild, waitForChild, childPid, nudgeRedraw, resizeAndNudge, err := startChildWithPty(args, clients)
+	// Returns: write-to-child func, wait func, child PID, nudge func, resize+nudge func, reader-dead channel
+	writeToChild, waitForChild, childPid, nudgeRedraw, resizeAndNudge, readerDead, err := startChildWithPty(args, clients)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start child: %v\n", err)
 		os.Exit(1)
@@ -242,8 +242,20 @@ func main() {
 		}
 	}()
 
-	// Wait for child to exit
-	exitCode := waitForChild()
-	fmt.Fprintf(os.Stderr, "[bridge] Child exited with code %d\n", exitCode)
-	os.Exit(exitCode)
+	// Wait for child to exit OR ConPTY reader to die
+	exitCh := make(chan int, 1)
+	go func() {
+		exitCh <- waitForChild()
+	}()
+
+	select {
+	case exitCode := <-exitCh:
+		fmt.Fprintf(os.Stderr, "[bridge] Child exited with code %d\n", exitCode)
+		os.Exit(exitCode)
+	case <-readerDead:
+		// ConPTY reader died but child is still alive — bridge is now useless
+		// (can't produce output). Exit so Overlord can detect the disconnection.
+		fmt.Fprintf(os.Stderr, "[bridge] ConPTY reader died while child is still alive — exiting bridge\n")
+		os.Exit(2)
+	}
 }

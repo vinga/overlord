@@ -12,7 +12,7 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
-func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), error) {
+func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
 	cmdLine := buildCommandLine(args)
 
 	cols, rows := getConsoleSize()
@@ -21,7 +21,7 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 
 	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(cols, rows))
 	if err != nil {
-		return nil, nil, 0, nil, nil, fmt.Errorf("conpty.Start: %w", err)
+		return nil, nil, 0, nil, nil, nil, fmt.Errorf("conpty.Start: %w", err)
 	}
 
 	pid := cpty.Pid()
@@ -37,8 +37,12 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 		cpty.Write(data)
 	}
 
+	// readerDead is closed when the ConPTY read goroutine exits (used by main to detect zombie state)
+	readerDead := make(chan struct{})
+
 	// Read ConPTY output → tee to console + pipe clients
 	go func() {
+		defer close(readerDead)
 		buf := make([]byte, 8192)
 		for {
 			n, err := cpty.Read(buf)
@@ -55,6 +59,7 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 				break
 			}
 		}
+		fmt.Fprintf(os.Stderr, "[bridge] ConPTY reader exited — bridge cannot produce output\n")
 	}()
 
 	// nudgeRedraw resizes ConPTY by +1 col then back, forcing the TUI to repaint.
@@ -88,7 +93,7 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 		return int(exitCode)
 	}
 
-	return writeFunc, waitFunc, pid, nudgeRedraw, resizeAndNudge, nil
+	return writeFunc, waitFunc, pid, nudgeRedraw, resizeAndNudge, readerDead, nil
 }
 
 func buildCommandLine(args []string) string {
