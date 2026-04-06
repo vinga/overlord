@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
+import { getBridgePath } from '../pty/pipeInjector.js';
 import { log } from '../logger.js';
 import {
   findTranscriptPath,
@@ -39,8 +40,10 @@ export class StateManager {
   private knownSessionsFile: string;
   private ideNameCache = new Map<string, { mtimeMs: number; result: { name: string; idePid: number } | undefined }>();
   private parentPidCache = new Map<number, number | null>(); // sessionPid → parentPid
+  readonly bridgePath: string;
 
   constructor(onChange: () => void) {
+    this.bridgePath = getBridgePath();
     this.onChangeCallback = onChange;
     this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.loadAccepted();
@@ -543,6 +546,7 @@ export class StateManager {
       session.inputTokens = result.inputTokens;
       session.compactCount = result.compactCount;
       session.isCompacting = result.isCompacting;
+      if (result.permissionMode) session.permissionMode = result.permissionMode;
       // Only update needsPermission from transcript when it clears (goes false).
       // Setting it true is owned by transcriptReader/addOrUpdate; clearing is also
       // done here when the session advances (transcript no longer shows stale tool_use).
@@ -676,7 +680,8 @@ export class StateManager {
         session.needsPermission = true;
         session.permissionPromptText = promptText;
         this.onChange();
-      } else if (promptText && !session.permissionPromptText) {
+      } else if (promptText && promptText !== session.permissionPromptText) {
+        // Screen reader text is richer than transcript-derived text — always update
         session.permissionPromptText = promptText;
         this.onChange();
       }
@@ -800,6 +805,7 @@ export class StateManager {
     return {
       rooms,
       updatedAt: new Date().toISOString(),
+      bridgePath: this.bridgePath,
     };
   }
 

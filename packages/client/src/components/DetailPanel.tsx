@@ -24,6 +24,59 @@ function renderMarkdown(text: string): string {
   return result;
 }
 
+/** Renders user message content, replacing @<path> image references with clickable thumbnails */
+function UserMessageContent({ content, styles }: { content: string; styles: Record<string, string> }) {
+  const [expandedImages, setExpandedImages] = useState<Set<number>>(() => new Set());
+  // Split content on @<path-to-overlord-paste-image> patterns
+  const imagePattern = /@((?:[A-Za-z]:\\|\/)[^\s]+overlord-paste-[^\s]+\.(?:png|jpg|jpeg))/gi;
+  const parts: Array<{ type: 'text'; value: string } | { type: 'image'; path: string; idx: number }> = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let imgIdx = 0;
+  while ((match = imagePattern.exec(content)) !== null) {
+    if (match.index > last) parts.push({ type: 'text', value: content.slice(last, match.index) });
+    parts.push({ type: 'image', path: match[1], idx: imgIdx++ });
+    last = match.index + match[0].length;
+  }
+  if (last < content.length) parts.push({ type: 'text', value: content.slice(last) });
+
+  // If no images found, fall back to regular markdown
+  if (parts.length === 1 && parts[0].type === 'text') {
+    return <div className={styles.markdownContent} dangerouslySetInnerHTML={{ __html: renderMarkdown(content.trimEnd()) }} />;
+  }
+
+  return (
+    <div className={styles.markdownContent}>
+      {parts.map((p, i) => {
+        if (p.type === 'text') {
+          return <span key={i} dangerouslySetInnerHTML={{ __html: renderMarkdown(p.value.trimEnd()) }} />;
+        }
+        const isExpanded = expandedImages.has(p.idx);
+        const src = `/api/paste-image?path=${encodeURIComponent(p.path)}`;
+        return (
+          <span key={i} className={styles.inlineImageBlock}>
+            <code className={styles.inlineImagePath} title="Click to copy path" onClick={() => { navigator.clipboard.writeText(p.path); }}>@{p.path}</code>
+            <button
+              className={styles.inlineImageToggle}
+              onClick={() => setExpandedImages(prev => {
+                const next = new Set(prev);
+                if (next.has(p.idx)) next.delete(p.idx); else next.add(p.idx);
+                return next;
+              })}
+              title={isExpanded ? 'Hide image' : 'Show image'}
+            >
+              {isExpanded ? '▾ hide' : '▸ preview'}
+            </button>
+            {isExpanded && (
+              <img src={src} alt="pasted" className={styles.inlineImage} />
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 interface PtyHandlers {
   sendInput: (sessionId: string, data: string) => void;
   injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
@@ -61,6 +114,7 @@ interface DetailPanelProps {
   customNames?: Record<string, string>;
   panelWidth: number;
   onPanelWidthChange?: (width: number) => void;
+  bridgePath?: string;
 }
 
 function isFilePath(s: string): boolean {
@@ -185,21 +239,21 @@ function PermissionPrompt({ sessionId, promptText, styles }: {
           onClick={() => void respond('\r')}
           disabled={responding}
         >
-          {error ? 'Failed' : 'Yes'}
+          {error ? 'Failed' : '1. Yes'}
         </button>
         <button
           className={`${styles.permissionBtn} ${styles.permissionBtnAlways}`}
           onClick={() => void respond('\x1b[B\r')}
           disabled={responding}
         >
-          Yes, allow this session
+          2. Yes, allow this session
         </button>
         <button
           className={`${styles.permissionBtn} ${styles.permissionBtnNo}`}
           onClick={() => void respond('\x1b')}
           disabled={responding}
         >
-          No
+          3. No
         </button>
       </div>
     </div>
@@ -508,6 +562,8 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                   <>
                     {isRaw ? (
                       <pre className={styles.rawContent}>{seg.item.content}</pre>
+                    ) : seg.item.role === 'user' ? (
+                      <UserMessageContent content={seg.item.content} styles={styles} />
                     ) : (
                       <div
                         className={styles.markdownContent}
@@ -664,6 +720,7 @@ export function DetailPanel({
   customNames,
   panelWidth,
   onPanelWidthChange,
+  bridgePath,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onMarkDone, onAcceptSession, onAcceptTask } = actions;
@@ -735,6 +792,7 @@ export function DetailPanel({
   const [copyConfirm, setCopyConfirm] = useState(false);
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
+  const [confirmKill, setConfirmKill] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [openingTerminal, setOpeningTerminal] = useState(false);
   const [openingBridged, setOpeningBridged] = useState(false);
@@ -807,6 +865,7 @@ export function DetailPanel({
     setCopyConfirm(false);
     setPastedImage(null);
     setKilling(false);
+    setConfirmKill(false);
     setResuming(false);
     setActiveTab('conversation');
     setSubagentActiveTab('conversation');
@@ -841,7 +900,7 @@ export function DetailPanel({
     const text = sendInput2.trim();
     if (!text && !pastedImage) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-    injectText(selectedSession.sessionId, full, !!pastedImage);
+    injectText(selectedSession.sessionId, full, true);
     if (full) {
       // Snapshot real user message count on first pending send
       if (realCountAtFirstSend.current === null) {
@@ -1135,6 +1194,14 @@ export function DetailPanel({
                     {(() => { const l = getLaunchInfo(selectedSession, isPty); return (
                       <span className={styles.launchBadge} data-category={l.category}>{l.name}</span>
                     ); })()}
+                    {selectedSession.permissionMode && (
+                      <span className={styles.permissionModeBadge} data-mode={selectedSession.permissionMode}>
+                        {selectedSession.permissionMode === 'bypassPermissions' ? 'bypass' :
+                         selectedSession.permissionMode === 'acceptEdits' ? 'auto-edit' :
+                         selectedSession.permissionMode === 'plan' ? 'plan' :
+                         selectedSession.permissionMode}
+                      </span>
+                    )}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
                   </div>
@@ -1347,7 +1414,7 @@ export function DetailPanel({
                                 const text = sendInput2.trim();
                                 if (!text && !pastedImage) {
                                   // bare Enter — send \r to confirm a prompt (e.g. permission dialog)
-                                  injectText(selectedSession.sessionId, '', false);
+                                  injectText(selectedSession.sessionId, '\r', false);
                                   return;
                                 }
                                 handleSend();
@@ -1599,11 +1666,11 @@ export function DetailPanel({
                         <div className={styles.resumeSection}>
                           <div className={styles.resumeSectionLabel}>{selectedSession.state === 'closed' ? 'Resume' : 'Connect'}</div>
                           <div className={styles.resumeCommand}>
-                            <code>claude --resume {selectedSession.sessionId} --name &quot;{currentDisplayName}&quot;</code>
+                            <code>cd {selectedSession.cwd} && claude --resume {selectedSession.sessionId} --name &quot;{currentDisplayName}&quot;</code>
                             <button
                               className={styles.resumeCopyIcon}
                               onClick={() => {
-                                navigator.clipboard.writeText(`claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}"`);
+                                navigator.clipboard.writeText(`cd "${selectedSession.cwd}" && claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}"`);
                                 setCopyConfirm(true);
                                 setTimeout(() => setCopyConfirm(false), 2000);
                               }}
@@ -1623,7 +1690,8 @@ export function DetailPanel({
                           {/* Bridge command row */}
                           {(() => {
                             const bridgeMarker = selectedSession.sessionId.slice(0, 8);
-                            const bridgeCmd = `overlord-bridge --pipe overlord-${bridgeMarker} -- claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}___BRG:${bridgeMarker}"`;
+                            const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
+                            const bridgeCmd = `cd "${selectedSession.cwd}" && ${bridgeBin} --pipe overlord-${bridgeMarker} -- claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}___BRG:${bridgeMarker}"`;
                             return (
                               <div className={styles.resumeCommand} style={{ marginTop: 4, opacity: 0.75 }}>
                                 <code style={{ fontSize: '0.78em' }}>{bridgeCmd}</code>
@@ -1687,6 +1755,34 @@ export function DetailPanel({
                               >
                                 {openingBridged ? 'Opening…' : 'Open Bridged'}
                               </button>
+                            )}
+                            {selectedSession.state !== 'closed' && (
+                              confirmKill ? (
+                                <div className={styles.killConfirmInline}>
+                                  <span>Kill session?</span>
+                                  <button
+                                    className={styles.killConfirmYes}
+                                    onClick={() => {
+                                      setConfirmKill(false);
+                                      setKilling(true);
+                                      fetch(`/api/sessions/${selectedSession.sessionId}/kill-process`, { method: 'POST' })
+                                        .catch(console.error)
+                                        .finally(() => setKilling(false));
+                                    }}
+                                  >
+                                    Kill
+                                  </button>
+                                  <button className={styles.killConfirmNo} onClick={() => setConfirmKill(false)}>Cancel</button>
+                                </div>
+                              ) : (
+                                <button
+                                  className={`${styles.resumeButton} ${styles.killSessionButton} ${killing ? styles.resumeButtonPending : ''}`}
+                                  disabled={killing}
+                                  onClick={() => setConfirmKill(true)}
+                                >
+                                  {killing ? 'Killing…' : 'Kill Session'}
+                                </button>
+                              )
                             )}
                           </div>
                         </div>

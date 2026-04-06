@@ -51,6 +51,7 @@ interface Session {
   sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide';
   needsPermission?: boolean;
   permissionPromptText?: string;
+  permissionMode?: string;
   completionHint?: 'done' | 'awaiting';
   completionSummaries?: Array<{ summary: string; completedAt: string; accepted?: boolean }>;
   userAccepted?: boolean;
@@ -68,6 +69,7 @@ interface Room {
 interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
+  bridgePath?: string;
 }
 
 // Terminal message types (server → client)

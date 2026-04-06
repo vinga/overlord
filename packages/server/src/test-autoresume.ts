@@ -149,8 +149,8 @@ async function test1_ptySessionIdsPersistAndReload(): Promise<void> {
 
   const sm1 = makeStateManager(dir);
 
-  // Add a session with launchMethod driven by a pending PTY spawn so
-  // addOrUpdate records it as 'overlord-pty'.
+  // Add a session with sessionType driven by a pending PTY spawn so
+  // addOrUpdate records it as 'embedded'.
   const cwd = path.join(dir, 'project-a');
   const sessionId = 'aaaaaaaa-0000-0000-0000-000000000001';
 
@@ -190,7 +190,7 @@ async function test2_getPtySessionsToResumeReturnsClosedPtySessions(): Promise<v
   sm.trackPendingPtySpawn(cwd);
   sm.addOrUpdate(rawSession({ sessionId: ptyId, cwd }));
 
-  // Add a plain terminal session (no pending spawn / resume → launchMethod = 'terminal')
+  // Add a plain terminal session (no pending spawn / resume → sessionType = 'plain')
   sm.addOrUpdate(rawSession({ sessionId: termId, cwd: path.join(dir, 'project-c') }));
 
   await nextTick();

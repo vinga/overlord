@@ -8,7 +8,7 @@ import type { WebSocket } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
-import { injectViaPipe } from '../pty/pipeInjector.js';
+import { injectViaPipe, bridgeManager } from '../pty/pipeInjector.js';
 import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { log } from '../logger.js';
@@ -79,6 +79,8 @@ export function registerApiRoutes(
       claudeToPtyId: Object.fromEntries(claudeToPtyId),
       pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
       pendingPtyByResumeId: Object.fromEntries([...pendingPtyByResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
+      bridgeSessions: [...bridgeSessions],
+      bridgeConnected: [...bridgeSessions].map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),
     });
   });
 

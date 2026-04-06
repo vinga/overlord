@@ -287,6 +287,7 @@ export function readTranscriptState(filePath: string): {
   needsPermission?: boolean;
   permissionPromptText?: string;
   lastUserIsDone?: boolean;
+  permissionMode?: string;
 } {
   try {
     const now = Date.now();
@@ -476,6 +477,18 @@ export function readTranscriptState(filePath: string): {
     // Detect "DONE" command: scan back for the most recent user message that is NOT a tool_result
     const lastUserIsDone = detectLastUserIsDone(last30);
 
+    // Detect permission mode from the most recent permission-mode entry
+    let permissionMode: string | undefined;
+    for (let i = last30.length - 1; i >= 0; i--) {
+      try {
+        const p = JSON.parse(last30[i]) as { type?: string; permissionMode?: string };
+        if (p.type === 'permission-mode' && p.permissionMode) {
+          permissionMode = p.permissionMode;
+          break;
+        }
+      } catch { /* skip */ }
+    }
+
     // Determine state + stateHint (hint is used for time-only re-evaluation without I/O)
     let state: WorkerState;
     let stateHint: TranscriptCache['stateHint'] = 'none';
@@ -547,6 +560,7 @@ export function readTranscriptState(filePath: string): {
       needsPermission: needsPermission || undefined,
       permissionPromptText,
       lastUserIsDone: lastUserIsDone || undefined,
+      permissionMode,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;

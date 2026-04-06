@@ -340,6 +340,7 @@ export function App() {
         }
         onSelectSession={(s) => handleSelectSession(s)}
         customNames={displayNames}
+        bridgePath={snapshot?.bridgePath}
       />}
       {selectedRoom && (
         <TaskListPanel

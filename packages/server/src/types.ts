@@ -49,6 +49,7 @@ export interface Session {
   needsPermission?: boolean;
   permissionPromptText?: string;
   permissionApprovedAt?: number;  // timestamp ms — suppress re-detection for 30s
+  permissionMode?: string;
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
@@ -69,4 +70,5 @@ export interface Room {
 export interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
+  bridgePath?: string;
 }
