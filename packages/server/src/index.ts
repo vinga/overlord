@@ -230,6 +230,19 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
     ? `\\\\.\\pipe\\${pipeName}`
     : join(os.tmpdir(), `${pipeName}.sock`);
 
+  // If another session is already connected to this pipe, disconnect it first.
+  // This happens when a session is replaced (e.g., /clear) and the new session
+  // picks up the same bridge marker → same pipe name.
+  for (const existingId of bridgeSessions) {
+    if (existingId !== sessionId && bridgeManager.getPipeAddr(existingId) === pipeAddr) {
+      console.log(`[bridge] pipe collision: disconnecting stale ${existingId.slice(0, 8)} (replaced by ${sessionId.slice(0, 8)}) on ${pipeName}`);
+      bridgeSessions.delete(existingId);
+      bridgeManager.disconnect(existingId);
+      unregisterBridgePipe(existingId);
+      bridgePermText.delete(existingId);
+    }
+  }
+
   bridgeSessions.add(sessionId);
   registerBridgePipe(sessionId, pipeName);
   // Store pipe addr immediately (synchronously) so nudge/resize one-shot connections
@@ -300,8 +313,8 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
           bridgePermText.delete(sessionId);
           outputSocket.destroy();
           bridgeManager.disconnect(sessionId);
-          // Mark session idle immediately — don't wait for processChecker's next poll
-          stateManager.markClosed(sessionId);
+          // Do NOT markClosed here — processChecker owns session lifecycle based on PID.
+          // The bridge may be alive but Claude inside just hasn't rendered yet (slow startup).
         }
       }, 10_000);
       healthTimer.unref();
@@ -640,6 +653,15 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     ptyToClaudeId.delete(ptyId);
     ptyManager.kill(ptyId);
     console.log(`[deleteSession] cleaned up PTY maps for pty=${ptyId}`);
+  }
+
+  // 6b. Clean up bridge state
+  if (bridgeSessions.has(sessionId)) {
+    bridgeSessions.delete(sessionId);
+    bridgeManager.disconnect(sessionId);
+    unregisterBridgePipe(sessionId);
+    bridgePermText.delete(sessionId);
+    console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }
 
   // 7. Always explicitly remove from state (don't rely on chokidar firing)
