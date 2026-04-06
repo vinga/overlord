@@ -3,7 +3,7 @@ import { useOfficeData } from './hooks/useOfficeData';
 import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
 
-import type { Session, TerminalMessage } from './types';
+import type { Session, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
 import { DetailPanel } from './components/DetailPanel';
 import { TaskListPanel } from './components/TaskListPanel';
@@ -20,9 +20,8 @@ export function App() {
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
+  const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const { customNames, autoNames, rename, ensureAutoName } = useCustomNames();
-  // Merge auto-proposed names with user custom names (custom names take priority)
-  const displayNames = useMemo(() => ({ ...autoNames, ...customNames }), [autoNames, customNames]);
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = localStorage.getItem('overlord:panelWidth');
@@ -46,6 +45,21 @@ export function App() {
 
   const { snapshot, connected, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
   const terminal = useTerminal(sendMessage, (id) => setActivePtySessionId(id));
+
+  // Build display names: proposedName from server > custom name from user > fallback
+  // autoNames are only used for populating the spawn input, not for display.
+  const displayNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    if (snapshot) {
+      for (const room of snapshot.rooms) {
+        for (const s of room.sessions) {
+          if (s.proposedName) names[s.sessionId] = s.proposedName;
+        }
+      }
+    }
+    // Custom names (user-set) override proposedName
+    return { ...names, ...customNames };
+  }, [snapshot, customNames]);
 
   // Keep ref in sync with the latest handler (runs synchronously during render)
   terminalHandlerRef.current = terminal.handleTerminalMessage;
@@ -107,22 +121,22 @@ export function App() {
     setPendingSpawnName('');
   }
 
-  function handleSpawnCommit(name: string) {
-    if (spawnCwd) {
-      // Spawn with the name baked into --name flag via server
+  function handleSpawnCommit(name: string | null) {
+    if (name !== null && spawnCwd) {
       terminal.spawnSession(spawnCwd, 80, 24, name.trim() || undefined);
     }
     setSpawnCwd(null);
     setPendingSpawnName('');
   }
 
-  function handleNewTerminalSession(cwd: string) {
+  function handleNewTerminalSession(cwd: string, mode: TerminalSpawnMode = 'bridge') {
     setTerminalSpawnCwd(cwd);
+    setTerminalSpawnMode(mode);
   }
 
-  function handleTerminalSpawnCommit(name: string) {
-    if (terminalSpawnCwd) {
-      terminal.openNewTerminal(terminalSpawnCwd, name || undefined);
+  function handleTerminalSpawnCommit(name: string | null) {
+    if (name !== null && terminalSpawnCwd) {
+      terminal.openNewTerminal(terminalSpawnCwd, name || undefined, terminalSpawnMode);
     }
     setTerminalSpawnCwd(null);
   }
@@ -190,7 +204,7 @@ export function App() {
         onNewTerminalSession={handleNewTerminalSession}
 
         selectedSessionId={selectedSessionId}
-        rightOffset={(selectedSessionId || selectedRoomId) ? panelWidth : 0}
+        rightOffset={panelWidth}
         onRoomClick={handleRoomClick}
         spawnCwd={spawnCwd}
         onSpawnNameChange={setPendingSpawnName}
@@ -210,6 +224,7 @@ export function App() {
         onClose={handleClose}
         connected={connected}
         isPtySession={terminal.isPtySession}
+        isBridgeSession={terminal.isBridgeSession}
         pty={{
           sendInput: terminal.sendInput,
           injectText: terminal.injectText,

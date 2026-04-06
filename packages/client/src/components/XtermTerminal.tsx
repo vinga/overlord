@@ -13,6 +13,8 @@ interface XtermTerminalProps {
   isExited?: boolean;
   onResume?: () => void;
   fillHeight?: boolean;
+  /** Fixed terminal size (disables auto-fit). Used for bridge sessions where ConPTY size is predetermined. */
+  fixedSize?: { cols: number; rows: number };
 }
 
 export function XtermTerminal({
@@ -23,6 +25,7 @@ export function XtermTerminal({
   isExited,
   onResume,
   fillHeight,
+  fixedSize,
 }: XtermTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -62,24 +65,27 @@ export function XtermTerminal({
         brightWhite: '#f0f6fc',
       },
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace',
-      fontSize: 13,
+      fontSize: fixedSize ? 11 : 13,
       lineHeight: 1.4,
       cursorBlink: false,
       cursorStyle: 'block',
       scrollback: 5000,
       allowTransparency: false,
+      ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}),
     });
 
-    const fitAddon = new FitAddon();
+    const fitAddon = fixedSize ? null : new FitAddon();
     const webLinksAddon = new WebLinksAddon();
 
-    term.loadAddon(fitAddon);
+    if (fitAddon) term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
 
     // Fit after panel slide-in animation completes (200ms)
     const fitTimer = setTimeout(() => {
-      fitAddon.fit();
+      if (fitAddon) {
+        fitAddon.fit();
+      }
       onResize(term.cols, term.rows);
     }, 250);
 
@@ -99,18 +105,21 @@ export function XtermTerminal({
       term.write(data);
     });
 
-    // Observe container size changes and fit/resize
-    const observer = new ResizeObserver(() => {
-      fitAddon.fit();
-      onResize(term.cols, term.rows);
-    });
-    observer.observe(containerRef.current);
+    // Observe container size changes and fit/resize (skip for fixed-size bridge terminals)
+    let observer: ResizeObserver | null = null;
+    if (fitAddon) {
+      observer = new ResizeObserver(() => {
+        fitAddon.fit();
+        onResize(term.cols, term.rows);
+      });
+      observer.observe(containerRef.current);
+    }
 
     return () => {
       clearTimeout(fitTimer);
       onDataDispose.dispose();
       unregister();
-      observer.disconnect();
+      observer?.disconnect();
       term.dispose();
       termRef.current = null;
     };

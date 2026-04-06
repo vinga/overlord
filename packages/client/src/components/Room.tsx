@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import type { Room as RoomType, Session } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import type { Room as RoomType, Session, TerminalSpawnMode } from '../types';
 import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
 import styles from './Room.module.css';
@@ -24,13 +24,13 @@ interface RoomProps {
   onRoomClick?: (roomId: string) => void;
   isSpawning?: boolean;
   onSpawnNameChange?: (name: string) => void;
-  onSpawnCommit?: (name: string) => void;
+  onSpawnCommit?: (name: string | null) => void;
   onDeleteSession?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, newName: string) => void;
   onCloneSession?: (sessionId: string) => void;
-  onNewTerminalSession?: (cwd: string) => void;
+  onNewTerminalSession?: (cwd: string, mode?: TerminalSpawnMode) => void;
   terminalSpawnCwd?: string | null;
-  onTerminalSpawnCommit?: (name: string) => void;
+  onTerminalSpawnCommit?: (name: string | null) => void;
   isPtySession?: (sessionId: string) => boolean;
 }
 
@@ -137,7 +137,7 @@ function DeskMenu({ onDelete, onRename, onClone, currentName }: { onDelete: () =
   );
 }
 
-function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onSpawnEmbedded: () => void; onSpawnTerminal?: () => void }) {
+function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onSpawnEmbedded: () => void; onSpawnTerminal?: (mode?: TerminalSpawnMode) => void }) {
   const [open, setOpen] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
 
@@ -180,14 +180,20 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onS
             onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
           >New Overlord Session</button>
-          {onSpawnTerminal && (
+          {onSpawnTerminal && (<>
             <button
               style={itemStyle}
-              onClick={() => { setOpen(false); onSpawnTerminal(); }}
+              onClick={() => { setOpen(false); onSpawnTerminal('bridge'); }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >New Terminal Session</button>
-          )}
+            >New Terminal (bridge)</button>
+            <button
+              style={itemStyle}
+              onClick={() => { setOpen(false); onSpawnTerminal('plain'); }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+            >New Terminal (direct)</button>
+          </>)}
         </div>
       )}
     </div>
@@ -200,19 +206,24 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [spawnName, setSpawnName] = useState('');
   const [terminalSpawnName, setTerminalSpawnName] = useState('');
+  const [terminalMode, setTerminalMode] = useState<TerminalSpawnMode>('bridge');
   const { getOrder, setOrder } = useRoomOrder();
 
   const isTerminalSpawning = terminalSpawnCwd === room.cwd;
 
-  // Compute next "Session-X" name
-  function getNextSessionName(): string {
-    const existing = Object.values(customNames);
+  function getNextName(prefix: string, separator: string = '+'): string {
+    const all = [
+      ...Object.values(customNames),
+      ...room.sessions.map(s => s.proposedName).filter(Boolean),
+    ];
     let max = 0;
-    for (const name of existing) {
-      const match = name.match(/^Session-(\d+)$/);
+    const escapedSep = separator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`^${prefix}\\${escapedSep}(\\d+)$`);
+    for (const name of all) {
+      const match = name?.match(pattern);
       if (match) max = Math.max(max, parseInt(match[1], 10));
     }
-    return `Session-${max + 1}`;
+    return `${prefix}${separator}${max + 1}`;
   }
 
   // Use room.id as the stable key for localStorage
@@ -223,17 +234,30 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
     return () => clearInterval(id);
   }, []);
 
+  const spawnInputRef = useRef<HTMLInputElement>(null);
+  const terminalSpawnInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    if (!isSpawning) setSpawnName('');
+    if (isSpawning) {
+      const name = getNextName('OVERLORD');
+      setSpawnName(name);
+      onSpawnNameChange?.(name);
+      setTimeout(() => { spawnInputRef.current?.focus(); spawnInputRef.current?.select(); }, 50);
+    } else {
+      setSpawnName('');
+    }
   }, [isSpawning]);
 
   useEffect(() => {
     if (isTerminalSpawning) {
-      setTerminalSpawnName(getNextSessionName());
+      const prefix = terminalMode === 'bridge' ? 'BRIDGE' : 'DIRECT';
+      const sep = terminalMode === 'bridge' ? '+' : '*';
+      const name = getNextName(prefix, sep);
+      setTerminalSpawnName(name);
+      setTimeout(() => { terminalSpawnInputRef.current?.focus(); terminalSpawnInputRef.current?.select(); }, 50);
     } else {
       setTerminalSpawnName('');
     }
-  }, [isTerminalSpawning]);
+  }, [isTerminalSpawning, terminalMode]);
 
   function handleSpawn(e: React.MouseEvent) {
     e.stopPropagation();
@@ -296,60 +320,49 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
           {room.name}
         </span>
         {onSpawnSession && (
-          <SpawnMenu
-            cwd={room.cwd}
-            onSpawnEmbedded={() => onSpawnSession?.(room.cwd)}
-            onSpawnTerminal={onNewTerminalSession ? () => onNewTerminalSession(room.cwd) : undefined}
-          />
+          <div style={{ position: 'relative' }}>
+            <SpawnMenu
+              cwd={room.cwd}
+              onSpawnEmbedded={() => onSpawnSession?.(room.cwd)}
+              onSpawnTerminal={onNewTerminalSession ? (mode?: TerminalSpawnMode) => { setTerminalMode(mode || 'bridge'); onNewTerminalSession(room.cwd, mode); } : undefined}
+            />
+            {(isSpawning || isTerminalSpawning) && (
+              <div className={styles.spawnPopup}>
+            <input
+              ref={isSpawning ? spawnInputRef : terminalSpawnInputRef}
+              className={styles.spawnNameInput}
+              type="text"
+              placeholder="Session name…"
+              value={isSpawning ? spawnName : terminalSpawnName}
+              maxLength={60}
+              onChange={(e) => {
+                if (isSpawning) {
+                  setSpawnName(e.target.value);
+                  onSpawnNameChange?.(e.target.value);
+                } else {
+                  setTerminalSpawnName(e.target.value);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (isSpawning) onSpawnCommit?.(spawnName);
+                  else onTerminalSpawnCommit?.(terminalSpawnName);
+                } else if (e.key === 'Escape') {
+                  e.stopPropagation();
+                  if (isSpawning) onSpawnCommit?.(null);
+                  else onTerminalSpawnCommit?.(null);
+                }
+              }}
+              onBlur={() => {
+                if (isSpawning) onSpawnCommit?.(null);
+                else onTerminalSpawnCommit?.(null);
+              }}
+            />
+          </div>
+        )}
+          </div>
         )}
       </div>
-      {isSpawning && (
-        <div className={styles.spawnNameRow}>
-          <input
-            className={styles.spawnNameInput}
-            type="text"
-            placeholder="Name this session…"
-            value={spawnName}
-            autoFocus
-            maxLength={60}
-            onChange={(e) => {
-              setSpawnName(e.target.value);
-              onSpawnNameChange?.(e.target.value);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                onSpawnCommit?.(spawnName);
-              } else if (e.key === 'Escape') {
-                onSpawnCommit?.('');
-              }
-            }}
-            onBlur={() => onSpawnCommit?.(spawnName)}
-          />
-          <span className={styles.spawnNameHint}>Starting…</span>
-        </div>
-      )}
-      {isTerminalSpawning && (
-        <div className={styles.spawnNameRow}>
-          <input
-            className={styles.spawnNameInput}
-            type="text"
-            placeholder="Name this session…"
-            value={terminalSpawnName}
-            autoFocus
-            maxLength={60}
-            onChange={(e) => setTerminalSpawnName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                onTerminalSpawnCommit?.(terminalSpawnName);
-              } else if (e.key === 'Escape') {
-                onTerminalSpawnCommit?.('');
-              }
-            }}
-            onBlur={() => onTerminalSpawnCommit?.(terminalSpawnName)}
-          />
-          <span className={styles.spawnNameHint}>Terminal</span>
-        </div>
-      )}
       <div className={styles.desks}>
         {sortedSessions.map((session) => {
           const isSelected = session.sessionId === selectedSessionId;

@@ -19,9 +19,10 @@ export interface WsHandlerContext {
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void;
-  openTerminalWindow: (cwd: string, command: string, title?: string, sessionId?: string) => Promise<void>;
+  openTerminalWindow: (cwd: string, command: string, title?: string, sessionId?: string, useBridge?: boolean) => Promise<void>;
   autoResumePtySessions: () => Promise<void>;
   getLogBuffer: () => unknown[];
+  bridgeInjectQueue: Map<string, Array<{ text: string; resolve: () => void }>>;
 }
 
 export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContext): void {
@@ -42,6 +43,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     openTerminalWindow,
     autoResumePtySessions,
     getLogBuffer,
+    bridgeInjectQueue,
   } = ctx;
 
   let autoResumeTriggered = false;
@@ -71,6 +73,16 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       if (buf && buf.length > 0) {
         const encoded = Buffer.concat(buf).toString('base64');
         sendToClient(ws, { type: 'terminal:output', sessionId: claudeSessionId, data: encoded });
+      }
+    }
+    // Replay active bridge session links (bridge sessions don't use ptyManager)
+    for (const bridgeSessionId of bridgeSessions) {
+      sendToClient(ws, { type: 'terminal:linked', ptySessionId: `bridge-${bridgeSessionId}`, claudeSessionId: bridgeSessionId, replay: true });
+      // Bridge output is buffered under the sessionId directly
+      const buf = ptyOutputBuffer.get(bridgeSessionId);
+      if (buf && buf.length > 0) {
+        const encoded = Buffer.concat(buf).toString('base64');
+        sendToClient(ws, { type: 'terminal:output', sessionId: bridgeSessionId, data: encoded });
       }
     }
 
@@ -160,7 +172,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const session = stateManager.getSession(sessionId);
         const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
         console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
-        stateManager.setLaunchMethod(sessionId, 'terminal');
+        stateManager.setSessionType(sessionId, 'plain');
         const safeName = sessionName.replace(/"/g, '');
         openTerminalWindow(cwd, `claude --resume ${sessionId} --name "${safeName}"`, `Claude: ${sessionName}`, sessionId)
           .then(() => sendToClient(ws, { type: 'terminal:external-opened', sessionId }))
@@ -171,10 +183,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       if (type === 'terminal:open-new') {
         const cwd = String(msg.cwd ?? process.cwd());
         const name = msg.name ? String(msg.name) : undefined;
+        const mode = msg.mode ? String(msg.mode) : undefined;
         const cwdName = name || cwd.split(/[\\/]/).pop() || 'New';
         const safeCwdName = cwdName.replace(/"/g, '');
-        console.log(`[open-new] cwd=${cwd} name=${cwdName}`);
-        openTerminalWindow(cwd, `claude --name "${safeCwdName}"`, `Claude: ${cwdName}`)
+        console.log(`[open-new] cwd=${cwd} name=${cwdName} mode=${mode ?? 'default'}`);
+        openTerminalWindow(cwd, `claude --name "${safeCwdName}"`, `Claude: ${cwdName}`, undefined, mode !== 'plain')
           .then(() => sendToClient(ws, { type: 'terminal:new-opened' }))
           .catch((err) => sendToClient(ws, { type: 'terminal:error', message: `Failed to open terminal: ${(err as Error).message}` }));
         return;
@@ -247,10 +260,14 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           return;
         }
 
-        console.log(`[inject] session=${sessionId} pid=${targetPid} extraEnter=${extraEnter} text="${text}" bridge=${bridgeSessions.has(sessionId)}`);
-        const textToSend = extraEnter ? text + '\r' : text;
+        const isBridge = bridgeSessions.has(sessionId);
+        // Bridge pipe receives raw bytes — always append \r so text gets submitted.
+        // Non-bridge injectText handles Enter internally via its extraEnter param.
+        const textToSend = isBridge ? (text + '\r') : (extraEnter ? text + '\r' : text);
+
+        console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
         // Try bridge pipe first, fall back to ConPTY injection
-        (bridgeSessions.has(sessionId)
+        (isBridge
           ? injectViaPipe(sessionId, textToSend).then(ok => { if (!ok) return injectText(targetPid, text, extraEnter); })
           : injectText(targetPid, text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))

@@ -185,6 +185,15 @@ overlord/
 └── specs/
 ```
 
+## Session Matching Rules
+
+**NEVER use CWD-based matching** to link sessions to PTY/bridge connections. Multiple sessions can share the same CWD, making CWD-based matching unreliable and prone to linking the wrong session. Instead:
+- Use **name markers** embedded in `--name` flags (e.g., `___OVR:ptyId`, `___BRG:marker`) for deterministic matching
+- Use **PID matching** when the spawner knows the child PID
+- Use **sessionId matching** (e.g., `pendingPtyByResumeId`) when the target session ID is known upfront
+
+This has been a recurring source of bugs. Always match by a unique identifier, never by CWD.
+
 ## Development Approach: Spec Driven Development
 
 All work in this project follows **Spec Driven Development (SDD)**. This means:

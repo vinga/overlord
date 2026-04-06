@@ -21,6 +21,7 @@ export interface SessionEventContext {
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   isStartupComplete: () => boolean;
+  linkPendingBridge?: (sessionId: string, cwd: string, rawName?: string) => void;
 }
 
 // Helper: check if any PTY resume is currently in progress (pendingPtyByResumeId not yet consumed)
@@ -57,7 +58,7 @@ export function migratePtyMaps(ctx: SessionEventContext, oldSessionId: string, n
   if (oldPtyId) {
     ctx.claudeToPtyId.set(newSessionId, oldPtyId);
     ctx.ptyToClaudeId.set(oldPtyId, newSessionId);
-    ctx.stateManager.setLaunchMethod(newSessionId, 'overlord-pty');
+    ctx.stateManager.setSessionType(newSessionId, 'embedded');
     ctx.broadcastRaw({ type: 'terminal:session-replaced', oldSessionId, newSessionId });
   }
 }
@@ -123,7 +124,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
           }
           ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
         }
-        ctx.stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+        ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
         const ptyPid = ctx.ptyManager.getPid(marker);
         if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
         applyPendingCloneInfo(marker, raw.sessionId);
@@ -138,7 +139,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
       // Set up ID mapping so output is rerouted from pty-xxx to real claudeSessionId
       ctx.ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
       ctx.claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
-      ctx.stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+      ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
       if (entry.ws) {
         // Normal spawn: link to the owning WS client
         const wsSessions = ctx.wsSessionMap.get(entry.ws);
@@ -151,7 +152,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         }
         ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
       }
-      ctx.stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+      ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
       // Update the session's PID to the PTY process PID so ProcessChecker doesn't mark it closed
       const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
       if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
@@ -179,7 +180,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
             }
             ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: retrySessionId });
           }
-          ctx.stateManager.setLaunchMethod(retrySessionId, 'overlord-pty');
+          ctx.stateManager.setSessionType(retrySessionId, 'embedded');
           const retryPtyPid = ctx.ptyManager.getPid(entry.ptySessionId);
           if (retryPtyPid) ctx.stateManager.setPid(retrySessionId, retryPtyPid);
           applyPendingCloneInfo(entry.ptySessionId, retrySessionId);
@@ -206,7 +207,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         }
         ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
       }
-      ctx.stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+      ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
       const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
       if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
       applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
@@ -241,6 +242,10 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         const clearName2 = raw.proposedName ?? raw.sessionId.slice(0, 8);
         log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName2, extra: recent.sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
       }
+    }
+    // Link pending bridge sessions (opened via "Open in Terminal" with bridge binary)
+    if (!linkedToPty && ctx.linkPendingBridge) {
+      ctx.linkPendingBridge(raw.sessionId, raw.cwd, raw.name);
     }
   });
 
@@ -289,7 +294,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
           }
           ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
         }
-        ctx.stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+        ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
         const ptyPid = ctx.ptyManager.getPid(marker);
         if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
         applyPendingCloneInfo(marker, raw.sessionId);
@@ -314,11 +319,15 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         }
         ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
       }
-      ctx.stateManager.setLaunchMethod(raw.sessionId, 'overlord-pty');
+      ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
       const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
       if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
       applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
       log('pty:started', 'PTY linked via resumeId (changed)', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
+    }
+    // Link pending bridge sessions (name may arrive in 'changed' after initial 'added' without name)
+    if (ctx.linkPendingBridge && raw.name?.includes('___BRG:')) {
+      ctx.linkPendingBridge(raw.sessionId, raw.cwd, raw.name);
     }
   });
 

@@ -41,7 +41,8 @@ export interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   ideName?: string;
-  launchMethod: 'terminal' | 'ide' | 'overlord-pty' | 'overlord-resume';
+  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide';
+  replacedBy?: string;
   color: string;
   subagents: Subagent[];
   resumedFrom?: string;

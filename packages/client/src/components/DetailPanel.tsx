@@ -51,6 +51,7 @@ interface DetailPanelProps {
   onClose: () => void;
   connected: boolean;
   isPtySession: (sessionId: string) => boolean;
+  isBridgeSession?: (sessionId: string) => boolean;
   pty: PtyHandlers;
   actions: SessionActions;
 
@@ -370,17 +371,6 @@ function ToolEntry({
         ) : (
           <span className={styles.toolName}>⚡ {tool.toolName}</span>
         )}
-        {showDuration && tool.durationMs !== undefined && tool.durationMs >= 2000 && (
-          <span className={styles.toolDuration} title="Duration">
-            <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 2, verticalAlign: -0.5 }}>
-              <path d="M6.5.5a.5.5 0 00 0 1h3a.5.5 0 000-1zM8 3a6 6 0 100 12A6 6 0 008 3zm0 1.5a4.5 4.5 0 110 9 4.5 4.5 0 010-9zM8.25 5a.75.75 0 00-1.5 0v3.5c0 .414.336.75.75.75H10a.75.75 0 000-1.5H8.25z"/>
-            </svg>
-            took {(tool.durationMs / 1000).toFixed(1)}<span style={{ opacity: 0.6 }}>s</span>
-          </span>
-        )}
-        {showRunning && sessionState === 'working' && tool.durationMs === undefined && (
-          <span className={styles.toolRunningSpinner} />
-        )}
         {hasDiff && (
           <button
             className={styles.diffToggle}
@@ -392,6 +382,17 @@ function ToolEntry({
           >
             diff
           </button>
+        )}
+        {showRunning && sessionState === 'working' && tool.durationMs === undefined && (
+          <span className={styles.toolRunningSpinner} />
+        )}
+        {showDuration && tool.durationMs !== undefined && (
+          <span className={styles.toolDuration} title="Duration">
+            <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 2, verticalAlign: -0.5 }}>
+              <path d="M6.5.5a.5.5 0 00 0 1h3a.5.5 0 000-1zM8 3a6 6 0 100 12A6 6 0 008 3zm0 1.5a4.5 4.5 0 110 9 4.5 4.5 0 010-9zM8.25 5a.75.75 0 00-1.5 0v3.5c0 .414.336.75.75.75H10a.75.75 0 000-1.5H8.25z"/>
+            </svg>
+            took {tool.durationMs < 100 ? '<0.1' : (tool.durationMs / 1000).toFixed(1)}<span style={{ opacity: 0.6 }}>s</span>
+          </span>
         )}
       </div>
       {tool.content && (
@@ -571,6 +572,11 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           ? toolNames.join(', ')
           : toolNames.slice(0, 3).join(', ') + ` +${toolNames.length - 3}`;
         const isLastSegment = segIdx === segments.length - 1;
+        // Show the last tool's description as a hint (active tool or last completed)
+        const lastTool = seg.items[seg.items.length - 1];
+        const activeDesc = lastTool?.content || undefined;
+        const groupTotalMs = seg.items.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
+        const hasGroupDuration = seg.items.some(t => t.durationMs !== undefined);
         return (
           <div key={segIdx} className={styles.toolGroup}>
             <button
@@ -585,10 +591,21 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             >
               <span className={styles.toolGroupIcon}>⚡</span>
               <span className={styles.toolGroupSummary}>{summary}</span>
-              <span className={styles.toolGroupCount}>{seg.items.length}</span>
-              {isLastSegment && sessionState === 'working' && seg.items.every(t => t.durationMs === undefined) && (
+              {isLastSegment && sessionState === 'working' && lastTool?.durationMs === undefined && (
                 <span className={styles.toolRunningSpinner} />
               )}
+              <span className={`${styles.toolDesc} ${isLastSegment ? '' : styles.toolDescHoverOnly}`} style={{ marginLeft: 4 }}>
+                {lastTool?.toolName}{activeDesc ? `: ${activeDesc.length > 50 ? activeDesc.slice(0, 50) + '…' : activeDesc}` : ''}
+              </span>
+              {hasGroupDuration && (
+                <span className={`${styles.toolDuration} ${styles.toolDescHoverOnly}`} title="Total duration">
+                  <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 2, verticalAlign: -0.5 }}>
+                    <path d="M6.5.5a.5.5 0 00 0 1h3a.5.5 0 000-1zM8 3a6 6 0 100 12A6 6 0 008 3zm0 1.5a4.5 4.5 0 110 9 4.5 4.5 0 010-9zM8.25 5a.75.75 0 00-1.5 0v3.5c0 .414.336.75.75.75H10a.75.75 0 000-1.5H8.25z"/>
+                  </svg>
+                  took {groupTotalMs < 100 ? '<0.1' : (groupTotalMs / 1000).toFixed(1)}<span style={{ opacity: 0.6 }}>s</span>
+                </span>
+              )}
+              <span className={styles.toolGroupCount}>{seg.items.length}</span>
               <span className={styles.toolGroupChevron}>{isExpanded ? '▾' : '▸'}</span>
             </button>
             {isExpanded && seg.items.map((tool, ti) => {
@@ -605,8 +622,8 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                   expandedArgs={expandedArgs}
                   setExpandedArgs={setExpandedArgs}
                   ideName={ideName}
-                  showRunning={false}
-                  showDuration={false}
+                  showRunning={true}
+                  showDuration={true}
                   sessionState={sessionState}
                   styles={styles}
                   cwd={cwd}
@@ -636,6 +653,7 @@ export function DetailPanel({
   onClose,
   connected,
   isPtySession,
+  isBridgeSession,
   pty,
   actions,
 
@@ -704,6 +722,8 @@ export function DetailPanel({
   const [localSent, setLocalSent] = useState<string[]>([]);
   const realCountAtFirstSend = useRef<number | null>(null);
   const [sendInput2, setSendInput2] = useState('');
+  const draftPerSession = useRef<Map<string, string>>(new Map());
+  const prevSessionIdRef = useRef<string | undefined>(undefined);
   const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -753,6 +773,15 @@ export function DetailPanel({
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
+    // Save current draft before switching
+    const prevId = prevSessionIdRef.current;
+    if (prevId && sendInput2.trim()) {
+      draftPerSession.current.set(prevId, sendInput2);
+    } else if (prevId) {
+      draftPerSession.current.delete(prevId);
+    }
+    prevSessionIdRef.current = selectedSession?.sessionId;
+
     isAtBottomRef.current = true;
     // Double rAF: wait for React render + browser layout/paint before scrolling
     const raf = requestAnimationFrame(() => {
@@ -765,7 +794,8 @@ export function DetailPanel({
     setIsEditing(false);
     setEditValue('');
     setLocalSent([]);
-    setSendInput2('');
+    // Restore draft for the new session
+    setSendInput2(selectedSession?.sessionId ? (draftPerSession.current.get(selectedSession.sessionId) ?? '') : '');
     setConfirmDelete(false);
     setCopyConfirm(false);
     setPastedImage(null);
@@ -814,12 +844,13 @@ export function DetailPanel({
       setLocalSent(prev => [...prev, full]);
     }
     setSendInput2('');
+    if (selectedSession) draftPerSession.current.delete(selectedSession.sessionId);
     setPastedImage(null);
   }
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && isOpen) onClose();
+      // Don't close on Escape — panel should stay open
     }
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
@@ -853,9 +884,14 @@ export function DetailPanel({
       realCountAtFirstSend.current = null;
     });
   }
+  // Content-based dedup: don't show pending messages that already appear in the real feed
+  const realUserContents = new Set(
+    realFeed.filter(i => i.role === 'user').map(i => i.content?.slice(0, 200))
+  );
+  const dedupedPending = pendingMessages.filter(t => !realUserContents.has(t.slice(0, 200)));
   const mergedFeed: ActivityItem[] = [
     ...realFeed,
-    ...pendingMessages.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200), pending: true })),
+    ...dedupedPending.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200), pending: true })),
   ];
 
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
@@ -884,13 +920,20 @@ export function DetailPanel({
     <>
       {/* Panel */}
       <div
-        className={`${styles.panel} ${isOpen ? styles.panelOpen : ''}`}
+        className={`${styles.panel} ${styles.panelOpen}`}
         role="dialog"
         aria-modal="true"
         aria-label="Session details"
         style={{ width: panelWidth }}
       >
         <div className={styles.resizeHandle} onMouseDown={onResizeMouseDown} />
+        {!selectedSession && (
+          <div className={styles.emptyPanel}>
+            <div className={styles.emptyPanelIcon}>👁</div>
+            <div className={styles.emptyPanelTitle}>No session selected</div>
+            <div className={styles.emptyPanelHint}>Click on a worker to view its conversation, tasks, and terminal</div>
+          </div>
+        )}
         {selectedSession && (
           <>
             {/* Color strip */}
@@ -1099,7 +1142,7 @@ export function DetailPanel({
                       Subagents
                     </button>
                   )}
-                  {(isPty || selectedSession.launchMethod === 'overlord-pty') && (
+                  {(isPty || selectedSession.sessionType === 'embedded') && (
                     <button
                       className={`${styles.tab} ${activeTab === 'terminal' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('terminal')}
@@ -1146,9 +1189,9 @@ export function DetailPanel({
                         sessionId={selectedSession.sessionId}
                         sessionState={selectedSession.state}
                         isPty={isPty}
-                        launchMethod={selectedSession.launchMethod}
+                        sessionType={selectedSession.sessionType}
                       />
-                      {selectedSession && selectedSession.state !== 'closed' && (
+                      {selectedSession && selectedSession.state !== 'closed' && !selectedSession.userAccepted && (
                         <>
                           <div className={`${styles.stateBar} ${stateBarClass}`}>
                             <span className={styles.stateBarDot} />
@@ -1338,7 +1381,7 @@ export function DetailPanel({
                 )}
 
                 {/* Tab: Terminal */}
-                {activeTab === 'terminal' && (isPty || selectedSession.launchMethod === 'overlord-pty') && (
+                {activeTab === 'terminal' && (isPty || selectedSession.sessionType === 'embedded') && (
                   isPty ? (
                     <div className={styles.terminalContent}>
                       <XtermTerminal
@@ -1346,13 +1389,14 @@ export function DetailPanel({
                         onInput={(data) => sendInput(selectedSession.sessionId, data)}
                         onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
                         registerOutputHandler={registerOutputHandler}
-                        isExited={isExited || selectedSession.state === 'closed'}
+                        isExited={isExited && !isPty}
                         onResume={
                           onResumeSession
                             ? () => onResumeSession(selectedSession.sessionId, selectedSession.cwd)
                             : undefined
                         }
                         fillHeight
+                        fixedSize={isBridgeSession?.(selectedSession.sessionId) ? { cols: 120, rows: 30 } : undefined}
                       />
                     </div>
                   ) : (

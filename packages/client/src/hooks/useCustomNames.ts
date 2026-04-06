@@ -44,10 +44,10 @@ export function useCustomNames() {
     });
   }, []);
 
-  const ensureAutoName = useCallback((session: { sessionId: string; launchMethod?: string }) => {
+  const ensureAutoName = useCallback((session: { sessionId: string; sessionType?: string }) => {
     setAutoNames(prev => {
       if (prev[session.sessionId]) return prev;
-      const type = session.launchMethod === 'overlord-pty' ? 'Terminal Session' : 'Overlord Session';
+      const type = session.sessionType === 'embedded' ? 'Terminal Session' : 'Overlord Session';
       const count = Object.values(prev).filter(n => n.startsWith(type)).length + 1;
       const next = { ...prev, [session.sessionId]: `${type} ${count}` };
       saveAuto(next);

@@ -17,9 +17,9 @@ interface OfficeProps {
   onRoomClick?: (roomId: string) => void;
   spawnCwd?: string | null;
   onSpawnNameChange?: (name: string) => void;
-  onSpawnCommit?: (name: string) => void;
+  onSpawnCommit?: (name: string | null) => void;
   terminalSpawnCwd?: string | null;
-  onTerminalSpawnCommit?: (name: string) => void;
+  onTerminalSpawnCommit?: (name: string | null) => void;
   onDeleteSession?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, name: string) => void;
   onCloneSession?: (sessionId: string) => void;

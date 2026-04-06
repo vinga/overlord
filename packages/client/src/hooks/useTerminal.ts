@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState } from 'react';
-import type { TerminalMessage } from '../types';
+import type { TerminalMessage, TerminalSpawnMode } from '../types';
 
 function decodeBase64(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -20,9 +20,10 @@ export interface UseTerminalResult {
   getError: (sessionId: string) => string | undefined;
   killSession: (sessionId: string) => void;
   openInTerminal: (sessionId: string, cwd: string) => void;
-  openNewTerminal: (cwd: string, name?: string) => void;
+  openNewTerminal: (cwd: string, name?: string, mode?: TerminalSpawnMode) => void;
   ptySessionIds: Set<string>;
   exitedSessions: Set<string>;
+  isBridgeSession: (sessionId: string) => boolean;
 }
 
 export function useTerminal(
@@ -37,6 +38,7 @@ export function useTerminal(
   const [ptySessionIds, setPtySessionIds] = useState<Set<string>>(new Set());
   const [exitedSessions, setExitedSessions] = useState<Set<string>>(new Set());
   const [sessionErrors, setSessionErrors] = useState<Map<string, string>>(new Map());
+  const bridgeSessionIds = useRef(new Set<string>());
 
   const onSpawnedRef = useRef(onSpawned);
   onSpawnedRef.current = onSpawned;
@@ -123,6 +125,24 @@ export function useTerminal(
     } else if (msg.type === 'terminal:linked') {
       const { ptySessionId, claudeSessionId, replay } = msg as { type: string; ptySessionId: string; claudeSessionId: string; replay?: boolean };
       migrateId(ptySessionId, claudeSessionId);
+      // Track bridge sessions (ptySessionId starts with "bridge-")
+      if (ptySessionId.startsWith('bridge-')) {
+        bridgeSessionIds.current.add(claudeSessionId);
+      }
+      // Ensure the session is in ptySessionIds (bridge sessions may not have a prior spawned event)
+      setPtySessionIds(prev => {
+        if (prev.has(claudeSessionId)) return prev;
+        const next = new Set(prev);
+        next.add(claudeSessionId);
+        return next;
+      });
+      // Clear exited state — bridge reconnection means the session is alive again
+      setExitedSessions(prev => {
+        if (!prev.has(claudeSessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(claudeSessionId);
+        return next;
+      });
       if (!replay) {
         // Clear buffered output and reset the xterm terminal to discard
         // startup crash noise from `claude --resume` (JS stack trace before TUI recovery)
@@ -199,6 +219,11 @@ export function useTerminal(
     [ptySessionIds]
   );
 
+  const isBridgeSession = useCallback(
+    (sessionId: string) => bridgeSessionIds.current.has(sessionId),
+    []
+  );
+
   const getError = useCallback(
     (sessionId: string) => sessionErrors.get(sessionId),
     [sessionErrors]
@@ -225,8 +250,8 @@ export function useTerminal(
   );
 
   const openNewTerminal = useCallback(
-    (cwd: string, name?: string) => {
-      sendMessage({ type: 'terminal:open-new', cwd, name });
+    (cwd: string, name?: string, mode: TerminalSpawnMode = 'bridge') => {
+      sendMessage({ type: 'terminal:open-new', cwd, name, mode });
     },
     [sendMessage]
   );
@@ -246,5 +271,6 @@ export function useTerminal(
     openNewTerminal,
     ptySessionIds,
     exitedSessions,
+    isBridgeSession,
   };
 }

@@ -229,11 +229,17 @@
   color: rgba(255, 255, 255, 0.6);
 }
 
-.spawnNameRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px 10px;
+.spawnPopup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  z-index: 100;
+  background: #1e1e2e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   animation: fadeIn 150ms ease;
 }
 
@@ -243,15 +249,15 @@
 }
 
 .spawnNameInput {
-  flex: 1;
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(212, 175, 55, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 4px;
   color: #e8e8e8;
-  font-size: 12px;
+  font-size: 13px;
   font-family: 'Inter', system-ui, sans-serif;
-  padding: 4px 8px;
+  padding: 6px 10px;
   outline: none;
+  width: 220px;
 }
 
 .spawnNameInput:focus {
@@ -261,10 +267,4 @@
 
 .spawnNameInput::placeholder {
   color: rgba(255, 255, 255, 0.3);
-}
-
-.spawnNameHint {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.35);
-  white-space: nowrap;
 }

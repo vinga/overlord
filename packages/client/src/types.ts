@@ -1,5 +1,8 @@
 type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
 
+/** How a new terminal session should be spawned */
+type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain';
+
 type ActivityItemKind = 'message' | 'tool' | 'thinking';
 
 interface ActivityItem {
@@ -45,7 +48,7 @@ interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   resumedFrom?: string;
-  launchMethod?: 'terminal' | 'ide' | 'overlord-pty' | 'overlord-resume';
+  sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide';
   needsPermission?: boolean;
   permissionPromptText?: string;
   completionHint?: 'done' | 'awaiting';
@@ -188,6 +191,7 @@ export type {
   Room,
   OfficeSnapshot,
   TerminalMessage,
+  TerminalSpawnMode,
   SnapshotMessage,
   TerminalSpawnRequest,
   TerminalInputRequest,
@@ -199,9 +203,9 @@ export type {
   LogEntryMessage,
 };
 
-// ── Launch method helpers ──────────────────────────────────
+// ── Session type helpers ──────────────────────────────────
 
-type LaunchCategory = 'pty' | 'ide' | 'terminal';
+type LaunchCategory = 'pty' | 'bridge' | 'ide' | 'terminal';
 
 interface LaunchInfo {
   category: LaunchCategory;
@@ -210,17 +214,16 @@ interface LaunchInfo {
 }
 
 function getLaunchInfo(
-  session: { launchMethod?: Session['launchMethod']; ideName?: string },
+  session: { sessionType?: Session['sessionType']; ideName?: string },
   isPtyActive?: boolean,
 ): LaunchInfo {
-  if (
-    isPtyActive ||
-    session.launchMethod === 'overlord-pty' ||
-    session.launchMethod === 'overlord-resume'
-  ) {
+  if (isPtyActive || session.sessionType === 'embedded') {
     return { category: 'pty', name: 'Overlord' };
   }
-  if (session.launchMethod === 'ide' || session.ideName) {
+  if (session.sessionType === 'bridge') {
+    return { category: 'bridge', name: 'Bridge' };
+  }
+  if (session.sessionType === 'ide' || session.ideName) {
     const rawName = session.ideName ?? 'IDE';
     // Shorten "IntelliJ IDEA" → "IntelliJ", "PyCharm Professional" → "PyCharm", etc.
     const shortName = rawName.replace(/\s+(IDEA|Community|Ultimate|Professional|Enterprise|Educational|CE)\b.*/, '').trim();

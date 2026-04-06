@@ -136,17 +136,29 @@ export class StateManager {
           lastActivity: new Date(entry.startedAt ?? Date.now()).toISOString(),
           // On startup, re-evaluate Overlord-tagged sessions to catch misclassifications.
           // If the process is alive but NOT spawned by Overlord, correct the label now.
-          launchMethod: (() => {
-            const stored: Session['launchMethod'] = entry.launchMethod ?? 'terminal';
-            if (stored !== 'overlord-pty' && stored !== 'overlord-resume') return stored;
+          sessionType: (() => {
+            // Backward compat: map old launchMethod values to new sessionType
+            let stored: Session['sessionType'];
+            if (entry.sessionType) {
+              stored = entry.sessionType;
+            } else if (entry.launchMethod) {
+              const lm = entry.launchMethod as string;
+              if (lm === 'overlord-pty' || lm === 'overlord-resume') stored = 'embedded';
+              else if (lm === 'ide') stored = 'ide';
+              else stored = 'plain';
+            } else {
+              stored = 'plain';
+            }
+            if (stored !== 'embedded') return stored;
             const pid = entry.pid ?? 0;
             if (pid > 0 && !this.isSpawnedByOverlord(pid)) {
               const ideInfo = this.readIdeInfo(entry.cwd ?? '');
               const isIde = ideInfo != null && this.isChildOfIde(pid, ideInfo.idePid);
-              return isIde ? 'ide' : 'terminal';
+              return isIde ? 'ide' : 'plain';
             }
             return stored;
           })(),
+          replacedBy: entry.replacedBy,
           color,
           subagents: [],
           proposedName: entry.proposedName,
@@ -170,7 +182,8 @@ export class StateManager {
         .map(s => ({
           sessionId: s.sessionId,
           cwd: s.cwd,
-          launchMethod: s.launchMethod,
+          sessionType: s.sessionType,
+          replacedBy: s.replacedBy,
           startedAt: s.startedAt,
           pid: s.pid,
           proposedName: s.proposedName,
@@ -305,7 +318,9 @@ export class StateManager {
         transcriptPath = fallbackPath;
       }
     }
-    const rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
+    let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
+    // Also strip bridge marker (___BRG:xxx) from display name
+    if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
     const proposedName = (rawName || undefined)
       ?? existingSession?.proposedName
       ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
@@ -320,42 +335,41 @@ export class StateManager {
 
     const isNew = !this.sessions.has(sessionId);
 
-    // Determine launch method only on first creation; preserve it on subsequent updates.
-    let launchMethod: Session['launchMethod'];
+    // Determine session type only on first creation; preserve it on subsequent updates.
+    let sessionType: Session['sessionType'];
     if (isNew) {
       const pendingSpawnTs = this.pendingPtySpawns.get(normalizePath(cwd));
       const isPendingPtySpawn = pendingSpawnTs != null && Date.now() - pendingSpawnTs < 5000
         && (raw.pid === 0 || this.isSpawnedByOverlord(raw.pid));
       if (isPendingPtySpawn) {
-        launchMethod = 'overlord-pty';
+        sessionType = 'embedded';
         this.pendingPtySpawns.delete(normalizePath(cwd));
       } else if (resumedFrom) {
-        // Resumed via /clear or other detection — inherit the old session's launchMethod
+        // Resumed via /clear or other detection — inherit the old session's sessionType
         const origSession = this.sessions.get(resumedFrom);
-        launchMethod = origSession?.launchMethod ?? 'terminal';
+        sessionType = origSession?.sessionType ?? 'plain';
       } else if (isIdeSession) {
-        launchMethod = 'ide';
+        sessionType = 'ide';
       } else {
-        launchMethod = 'terminal';
+        sessionType = 'plain';
       }
     } else {
       const hasPendingPty = this.pendingPtySpawns.has(normalizePath(cwd)) || this.hasPendingResume(cwd);
       const pidChanged = raw.pid > 0 && existingSession!.pid > 0 && raw.pid !== existingSession!.pid;
       const wasClosedNowActive = existingSession!.state === 'closed' && state !== 'closed';
-      // Re-evaluate launchMethod if the PID changed (session was resumed in a new process)
-      // or if a closed PTY session became active again without a pending PTY spawn.
-      const wasOverlordSession = existingSession!.launchMethod === 'overlord-pty'
-        || existingSession!.launchMethod === 'overlord-resume';
-      if (!hasPendingPty && (pidChanged || wasClosedNowActive) && wasOverlordSession) {
+      // Re-evaluate sessionType if the PID changed (session was resumed in a new process)
+      // or if a closed embedded session became active again without a pending PTY spawn.
+      const wasEmbeddedSession = existingSession!.sessionType === 'embedded';
+      if (!hasPendingPty && (pidChanged || wasClosedNowActive) && wasEmbeddedSession) {
         // Re-check if this process is still Overlord-spawned; if not, correct the label
         const stillOverlord = raw.pid > 0 && this.isSpawnedByOverlord(raw.pid);
         if (!stillOverlord) {
-          launchMethod = isIdeSession ? 'ide' : 'terminal';
+          sessionType = isIdeSession ? 'ide' : 'plain';
         } else {
-          launchMethod = existingSession!.launchMethod;
+          sessionType = existingSession!.sessionType;
         }
       } else {
-        launchMethod = existingSession!.launchMethod;
+        sessionType = existingSession!.sessionType;
       }
     }
 
@@ -387,7 +401,7 @@ export class StateManager {
       compactCount,
       isCompacting,
       ideName,
-      launchMethod,
+      sessionType,
       color,
       subagents,
       resumedFrom,
@@ -425,10 +439,10 @@ export class StateManager {
     }
   }
 
-  setLaunchMethod(sessionId: string, method: Session['launchMethod']): void {
+  setSessionType(sessionId: string, type: Session['sessionType']): void {
     const session = this.sessions.get(sessionId);
-    if (session && session.launchMethod !== method) {
-      this.sessions.set(sessionId, { ...session, launchMethod: method });
+    if (session && session.sessionType !== type) {
+      this.sessions.set(sessionId, { ...session, sessionType: type });
       this.onChange();
     }
   }
@@ -712,7 +726,7 @@ export class StateManager {
 
   getPtySessionIds(): string[] {
     return [...this.sessions.values()]
-      .filter(s => s.launchMethod === 'overlord-pty')
+      .filter(s => s.sessionType === 'embedded')
       .map(s => s.sessionId);
   }
 
@@ -731,7 +745,7 @@ export class StateManager {
 
   getPtySessionsToResume(): Array<{ sessionId: string; cwd: string }> {
     return [...this.sessions.values()]
-      .filter(s => s.launchMethod === 'overlord-pty' && s.state === 'closed')
+      .filter(s => s.sessionType === 'embedded' && s.state === 'closed')
       .map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
   }
 
@@ -888,7 +902,7 @@ export class StateManager {
             isCompacting: false,
             proposedName,
             ideName: undefined,
-            launchMethod: 'terminal', // historical recovery — can't verify IDE parentage
+            sessionType: 'plain', // historical recovery — can't verify IDE parentage
             color,
             subagents,
             needsPermission: false,

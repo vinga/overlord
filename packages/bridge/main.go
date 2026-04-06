@@ -3,17 +3,71 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
 )
 
+// clientRegistry tracks connected pipe clients for output broadcast
+type clientRegistry struct {
+	mu      sync.RWMutex
+	clients map[net.Conn]struct{}
+}
+
+func newClientRegistry() *clientRegistry {
+	return &clientRegistry{clients: make(map[net.Conn]struct{})}
+}
+
+func (r *clientRegistry) add(conn net.Conn) {
+	r.mu.Lock()
+	r.clients[conn] = struct{}{}
+	r.mu.Unlock()
+}
+
+func (r *clientRegistry) remove(conn net.Conn) {
+	r.mu.Lock()
+	delete(r.clients, conn)
+	r.mu.Unlock()
+}
+
+func (r *clientRegistry) broadcast(data []byte) {
+	r.mu.RLock()
+	var dead []net.Conn
+	for conn := range r.clients {
+		_, err := conn.Write(data)
+		if err != nil {
+			dead = append(dead, conn)
+		}
+	}
+	r.mu.RUnlock()
+	// Clean up broken connections
+	if len(dead) > 0 {
+		r.mu.Lock()
+		for _, conn := range dead {
+			delete(r.clients, conn)
+			conn.Close()
+			fmt.Fprintf(os.Stderr, "[bridge] removed dead client from broadcast\n")
+		}
+		r.mu.Unlock()
+	}
+}
+
 func main() {
+	// Redirect stderr to a log file so bridge diagnostics don't render
+	// in the console window and corrupt ConPTY output
+	logFile, err := os.OpenFile(filepath.Join(os.TempDir(), "overlord-bridge.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		os.Stderr = logFile
+	}
+
+	enableVTProcessing()
+	setRawInputMode()
+
 	pipeName := flag.String("pipe", "", "Pipe/socket name (e.g. overlord-{sessionId})")
 	flag.Parse()
 
@@ -22,14 +76,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Everything after "--" is the child command
 	args := flag.Args()
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "No command specified after --")
 		os.Exit(1)
 	}
 
-	// Create platform-specific listener
+	// Create named pipe / unix socket listener
 	listener, addr, err := createListener(*pipeName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create listener: %v\n", err)
@@ -39,41 +92,25 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "[bridge] Listening on %s\n", addr)
 
-	// Start the child process
-	cmd := exec.Command(args[0], args[1:]...)
-	childIn, err := cmd.StdinPipe()
+	clients := newClientRegistry()
+
+	// Start child via ConPTY (Windows) or plain pty (Unix)
+	// Returns: write-to-child func, wait func, child PID
+	writeToChild, waitForChild, childPid, err := startChildWithPty(args, clients)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create stdin pipe: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Child stdout/stderr go directly to our stdout/stderr
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	// On Windows, create the child in its own console group so it can handle
-	// Ctrl+C independently. On Unix this is not needed.
-	configureCmdPlatform(cmd)
-
-	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start child: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "[bridge] Child PID: %d\n", cmd.Process.Pid)
+	fmt.Fprintf(os.Stderr, "[bridge] Child PID: %d\n", childPid)
 
-	// Mutex protects writes to childIn from multiple goroutines
-	var mu sync.Mutex
-
-	// Forward our stdin to child stdin (so user can still type)
+	// Forward console stdin to child
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				mu.Lock()
-				childIn.Write(buf[:n])
-				mu.Unlock()
+				writeToChild(buf[:n])
 			}
 			if err != nil {
 				break
@@ -81,57 +118,84 @@ func main() {
 		}
 	}()
 
-	// Accept pipe/socket connections in a loop (Overlord may reconnect)
+	// Accept pipe connections
+	// Protocol: if client sends "INPUT\n" as first 6 bytes, it's an input-only connection
+	// (reads forwarded to child, no output broadcast). Otherwise it's a normal bidirectional connection.
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				// Listener closed — bridge shutting down
 				break
 			}
-			fmt.Fprintf(os.Stderr, "[bridge] Client connected\n")
-			go handleConnection(conn, childIn, &mu)
+			go func() {
+				// Peek at first bytes to detect input-only handshake
+				header := make([]byte, 6)
+				n, err := conn.Read(header)
+				if err != nil {
+					conn.Close()
+					return
+				}
+
+				if n == 6 && string(header[:6]) == "INPUT\n" {
+					// Input-only connection: forward pipe→child, no broadcast
+					fmt.Fprintf(os.Stderr, "[bridge] Input-only client connected\n")
+					defer func() {
+						conn.Close()
+						fmt.Fprintf(os.Stderr, "[bridge] Input-only client disconnected\n")
+					}()
+					buf := make([]byte, 4096)
+					for {
+						n, err := conn.Read(buf)
+						if n > 0 {
+							fmt.Fprintf(os.Stderr, "[bridge] pipe→child %d bytes: %q\n", n, string(buf[:n]))
+							writeToChild(buf[:n])
+						}
+						if err != nil {
+							break
+						}
+					}
+				} else {
+					// Normal bidirectional connection: read input + receive broadcast
+					fmt.Fprintf(os.Stderr, "[bridge] Client connected\n")
+					// Forward the header bytes we already read (they're real input)
+					if n > 0 {
+						writeToChild(header[:n])
+					}
+					clients.add(conn)
+					defer func() {
+						clients.remove(conn)
+						conn.Close()
+						fmt.Fprintf(os.Stderr, "[bridge] Client disconnected\n")
+					}()
+					buf := make([]byte, 4096)
+					for {
+						n, err := conn.Read(buf)
+						if n > 0 {
+							writeToChild(buf[:n])
+						}
+						if err != nil {
+							break
+						}
+					}
+				}
+			}()
 		}
 	}()
 
-	// Forward signals to child
+	// Forward signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	if runtime.GOOS != "windows" {
 		signal.Notify(sigCh, syscall.SIGTERM)
 	}
 	go func() {
-		for sig := range sigCh {
-			cmd.Process.Signal(sig)
+		for range sigCh {
+			// ConPTY child gets signals through the pseudo-console
 		}
 	}()
 
 	// Wait for child to exit
-	err = cmd.Wait()
-	fmt.Fprintf(os.Stderr, "[bridge] Child exited\n")
-
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
-		}
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
-
-func handleConnection(conn net.Conn, childIn io.WriteCloser, mu *sync.Mutex) {
-	defer conn.Close()
-	buf := make([]byte, 4096)
-	for {
-		n, err := conn.Read(buf)
-		if n > 0 {
-			mu.Lock()
-			childIn.Write(buf[:n])
-			mu.Unlock()
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[bridge] Client disconnected\n")
-			break
-		}
-	}
+	exitCode := waitForChild()
+	fmt.Fprintf(os.Stderr, "[bridge] Child exited with code %d\n", exitCode)
+	os.Exit(exitCode)
 }

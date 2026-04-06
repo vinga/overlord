@@ -93,6 +93,36 @@
   transform: translateX(0);
 }
 
+.emptyPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 12px;
+  opacity: 0.4;
+}
+
+.emptyPanelIcon {
+  font-size: 36px;
+  line-height: 1;
+}
+
+.emptyPanelTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  letter-spacing: 0.02em;
+}
+
+.emptyPanelHint {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+  max-width: 240px;
+  line-height: 1.5;
+}
+
 .resizeHandle {
   position: absolute;
   left: 0;
@@ -676,6 +706,7 @@
   line-height: 1.6;
   word-break: break-word;
   color: inherit;
+  white-space: normal;
 }
 .markdownContent p { margin: 0 0 8px; }
 .markdownContent p:last-child { margin-bottom: 0; }
@@ -926,9 +957,20 @@
   font-size: 13px;
   color: #666;
   font-family: 'Courier New', monospace;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.toolDescHoverOnly {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.toolGroupHeader:hover .toolDescHoverOnly {
+  opacity: 1;
 }
 
 .toolDescLink {
@@ -987,9 +1029,7 @@
 .toolGroupSummary {
   font-size: 12px;
   font-weight: 500;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 0;
   white-space: nowrap;
 }
 

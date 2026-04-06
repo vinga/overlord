@@ -55,6 +55,8 @@ export function markTranscriptDirty(filePath: string): void {
  */
 function reEvalStateFromCache(cached: TranscriptCache): WorkerState {
   const ageSec = (Date.now() - cached.fileModifiedMs) / 1000;
+  // After 2 minutes of no file updates, assume the session/subagent is stale
+  if (ageSec > 120) return 'waiting';
   switch (cached.stateHint) {
     case 'tool_use':     return ageSec < 8 ? 'working' : 'thinking';
     case 'assistant_text': return ageSec < 3 ? 'working' : 'waiting';
@@ -108,7 +110,7 @@ export function findTranscriptPathAnywhere(sessionId: string): string | null {
  * Returns the lines from the tail portion, dropping the first (potentially partial) line.
  * This avoids reading entire multi-MB transcript files into memory every 3 seconds.
  */
-const TAIL_BYTES = 512 * 1024; // 512KB — plenty for 500 lines of JSON
+const TAIL_BYTES = 2 * 1024 * 1024; // 2MB — large tool outputs (Read, Write) can be 200KB+ per line
 
 function readFileTail(filePath: string, fileSize: number): string[] {
   if (fileSize <= TAIL_BYTES) {
@@ -311,7 +313,7 @@ export function readTranscriptState(filePath: string): {
 
     // Read only the tail of the file — avoids reading entire multi-MB transcripts
     const tailLines = readFileTail(filePath, stat.size);
-    const last30 = tailLines.slice(-(MAX_FEED_MESSAGES * 5));
+    const last30 = tailLines.slice(-(MAX_FEED_MESSAGES * 20));
 
     // Find last event with type field
     let lastTypedEvent: { type: string; [key: string]: unknown } | null = null;
@@ -485,7 +487,16 @@ export function readTranscriptState(filePath: string): {
       const userContentArr = Array.isArray(userContent?.content) ? userContent!.content as Array<{ type?: string }> : [];
       const isToolResult = userContentArr.length > 0 && userContentArr[0]?.type === 'tool_result';
 
-      if (isToolResult) {
+      // Detect "[Request interrupted by user]" — session is waiting for new input
+      const firstBlock = userContentArr[0] as { type?: string; text?: string } | undefined;
+      const isInterrupted = !isToolResult && firstBlock?.type === 'text'
+        && typeof firstBlock.text === 'string'
+        && firstBlock.text.startsWith('[Request interrupted by user');
+
+      if (isInterrupted) {
+        stateHint = 'none';
+        state = 'waiting';
+      } else if (isToolResult) {
         stateHint = 'tool_result';
         state = ageSec < 8 ? 'working' : 'thinking';
       } else {

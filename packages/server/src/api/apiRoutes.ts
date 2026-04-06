@@ -73,7 +73,7 @@ export function registerApiRoutes(
     const sessions = snapshot.rooms.flatMap(r => r.sessions);
     res.json({
       sessionCount: sessions.length,
-      sessions: sessions.map(s => ({ sessionId: s.sessionId, name: s.proposedName ?? '', cwd: s.cwd, state: s.state, isWorker: s.isWorker, pid: s.pid, launchMethod: s.launchMethod })),
+      sessions: sessions.map(s => ({ sessionId: s.sessionId, name: s.proposedName ?? '', cwd: s.cwd, state: s.state, isWorker: s.isWorker, pid: s.pid, sessionType: s.sessionType, replacedBy: s.replacedBy })),
       ptyToClaudeId: Object.fromEntries(ptyToClaudeId),
       claudeToPtyId: Object.fromEntries(claudeToPtyId),
       pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),

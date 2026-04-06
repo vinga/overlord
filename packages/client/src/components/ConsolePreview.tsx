@@ -6,10 +6,10 @@ interface ConsolePreviewProps {
   sessionId: string;
   sessionState: WorkerState;
   isPty: boolean;
-  launchMethod?: string;
+  sessionType?: string;
 }
 
-export function ConsolePreview({ sessionId, sessionState, isPty, launchMethod }: ConsolePreviewProps) {
+export function ConsolePreview({ sessionId, sessionState, isPty, sessionType }: ConsolePreviewProps) {
   const [expanded, setExpanded] = useState(false);
   const [screenText, setScreenText] = useState('');
   const [available, setAvailable] = useState(true);
@@ -67,7 +67,7 @@ export function ConsolePreview({ sessionId, sessionState, isPty, launchMethod }:
   }, [expanded, isPty, sessionState, sessionId]);
 
   // Don't render for PTY sessions (Terminal tab), IDE sessions (shared console), or closed
-  if (isPty || sessionState === 'closed' || launchMethod === 'ide') return null;
+  if (isPty || sessionState === 'closed' || sessionType === 'ide') return null;
   if (!available && !screenText) return null;
 
   return (

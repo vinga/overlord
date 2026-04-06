@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import * as net from 'net';
 import { execSync, spawn } from 'child_process';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -10,7 +11,7 @@ import { StateManager } from './session/stateManager.js';
 import { SessionWatcher } from './session/sessionWatcher.js';
 import { ProcessChecker } from './session/processChecker.js';
 import { PtyManager } from './pty/ptyManager.js';
-import { getBridgePath, getPipeName } from './pty/pipeInjector.js';
+import { getBridgePath, getPipeName, bridgeManager, injectViaPipe } from './pty/pipeInjector.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
 import { initLogger, log, getBuffer } from './logger.js';
@@ -72,20 +73,66 @@ const pendingCloneInfo = new Map<string, { name: string; originalSessionId: stri
 // Track sessions opened via bridge (have named pipe for injection)
 const bridgeSessions = new Set<string>();
 
+// Persistent bridge pipe registry — survives server restarts
+const BRIDGE_REGISTRY_PATH = join(os.tmpdir(), 'overlord-bridge-registry.json');
+
+function loadBridgeRegistry(): Record<string, string> {
+  try {
+    return JSON.parse(fs.readFileSync(BRIDGE_REGISTRY_PATH, 'utf-8'));
+  } catch { return {}; }
+}
+
+function saveBridgeRegistry(registry: Record<string, string>): void {
+  fs.writeFileSync(BRIDGE_REGISTRY_PATH, JSON.stringify(registry, null, 2));
+}
+
+function registerBridgePipe(sessionId: string, pipeName: string): void {
+  const reg = loadBridgeRegistry();
+  reg[sessionId] = pipeName;
+  saveBridgeRegistry(reg);
+}
+
+function unregisterBridgePipe(sessionId: string): void {
+  const reg = loadBridgeRegistry();
+  delete reg[sessionId];
+  saveBridgeRegistry(reg);
+}
+
+// Pending bridge connections for new sessions (marker → temp pipe name)
+// When a new session appears with ___BRG:<marker> in its name, we link it to the bridge pipe.
+const pendingBridgeByMarker = new Map<string, { pipeName: string; timestamp: number }>();
+
+// Bridge injection queue (kept for potential future use)
+const bridgeInjectQueue = new Map<string, Array<{ text: string; resolve: () => void }>>();
+
 // Helper: open a terminal window via overlord-bridge for reliable injection
-async function openTerminalWindow(cwd: string, command: string, title?: string, sessionId?: string): Promise<void> {
+async function openTerminalWindow(cwd: string, command: string, title?: string, sessionId?: string, useBridge: boolean = true): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const windowTitle = (title ?? 'Claude').replace(/"/g, '');
     const bridgePath = getBridgePath();
-    const bridgeExists = fs.existsSync(bridgePath);
+    const bridgeExists = useBridge && fs.existsSync(bridgePath);
 
     let fullCmd: string;
-    if (bridgeExists && sessionId) {
+    if (bridgeExists) {
       // Use bridge for reliable named-pipe injection
-      const pipeName = getPipeName(sessionId);
+      const pipeName = sessionId
+        ? getPipeName(sessionId)
+        : `overlord-new-${Date.now().toString(36)}`;
       const safeBridge = bridgePath.replace(/\//g, '\\');
-      fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K "${safeBridge}" --pipe ${pipeName} -- ${command}`;
-      bridgeSessions.add(sessionId);
+
+      if (sessionId) {
+        bridgeSessions.add(sessionId);
+        bridgeManager.enableReconnect(sessionId);
+        setTimeout(() => bridgeManager.connect(sessionId), 3000);
+      } else {
+        // Embed a unique marker in the command's --name flag for reliable matching
+        const bridgeMarker = `brg-${Date.now().toString(36)}`;
+        pendingBridgeByMarker.set(bridgeMarker, { pipeName, timestamp: Date.now() });
+        command = command.replace(/--name "([^"]*)"/, `--name "$1___BRG:${bridgeMarker}"`);
+      }
+
+      // Run bridge directly (no cmd.exe /K) so it owns the console from row 0.
+      fullCmd = `start "${windowTitle}" /D "${cwd}" ${safeBridge} --pipe ${pipeName} -- ${command}`;
       console.log(`[open-terminal] using bridge, pipe=${pipeName}`);
     } else {
       // Fallback: direct spawn (no bridge binary available)
@@ -108,6 +155,106 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       }
     });
   });
+}
+
+// Connect to a bridge pipe for a given session. Used for both initial linking and reconnection.
+// Opens TWO connections: one for reading output, one for writing input.
+// This prevents output backpressure from blocking input delivery.
+function connectBridgePipe(sessionId: string, pipeName: string): void {
+  if (bridgeManager.isConnected(sessionId)) return; // already connected
+
+  const pipeAddr = process.platform === 'win32'
+    ? `\\\\.\\pipe\\${pipeName}`
+    : join(os.tmpdir(), `${pipeName}.sock`);
+
+  bridgeSessions.add(sessionId);
+  registerBridgePipe(sessionId, pipeName);
+
+  // Connection 1: dedicated INPUT socket (for writing injections to the bridge)
+  // Send "INPUT\n" handshake so bridge knows not to broadcast output to this socket
+  const inputSocket = net.connect(pipeAddr, () => {
+    inputSocket.write('INPUT\n', () => {
+      console.log(`[bridge] input socket connected for ${sessionId.slice(0, 8)}`);
+      bridgeManager.registerSocket(sessionId, inputSocket);
+    });
+  });
+
+  let inputConnectFailed = false;
+  inputSocket.on('error', (err: Error) => {
+    console.log(`[bridge] input socket error for ${sessionId.slice(0, 8)}: ${err.message}`);
+    inputConnectFailed = true;
+  });
+  // Discard any data received on the input socket (output goes to the other socket)
+  inputSocket.on('data', () => {});
+  inputSocket.on('close', () => {
+    bridgeManager.disconnect(sessionId);
+    if (inputConnectFailed) {
+      console.log(`[bridge] input pipe dead for ${sessionId.slice(0, 8)}, removing from registry`);
+      bridgeSessions.delete(sessionId);
+      unregisterBridgePipe(sessionId);
+    }
+  });
+
+  // Connection 2: dedicated OUTPUT socket (for reading ConPTY output from bridge)
+  const outputSocket = net.connect(pipeAddr, () => {
+    console.log(`[bridge] output socket connected for ${sessionId.slice(0, 8)}`);
+    broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId });
+  });
+
+  outputSocket.on('data', (data: Buffer) => {
+    let buf = ptyOutputBuffer.get(sessionId);
+    if (!buf) { buf = []; ptyOutputBuffer.set(sessionId, buf); }
+    buf.push(data);
+    if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
+    broadcastRaw({ type: 'terminal:output', sessionId, data: data.toString('base64') });
+  });
+
+  let outputConnectFailed = false;
+  outputSocket.on('error', (err: Error) => {
+    console.log(`[bridge] output socket error for ${sessionId.slice(0, 8)}: ${err.message}`);
+    outputConnectFailed = true;
+  });
+
+  outputSocket.on('close', () => {
+    if (outputConnectFailed) {
+      console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}`);
+    } else {
+      console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
+      setTimeout(() => connectBridgePipe(sessionId, pipeName), 2000);
+    }
+  });
+}
+
+// Called when a new session appears — check if its name contains a ___BRG: marker
+function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): void {
+  if (!rawName || !rawName.includes('___BRG:')) return;
+
+  const marker = rawName.split('___BRG:')[1];
+  if (!marker) return;
+
+  const pending = pendingBridgeByMarker.get(marker);
+  if (!pending) return;
+
+  // Only match recent entries (< 30s)
+  if (Date.now() - pending.timestamp > 30_000) {
+    pendingBridgeByMarker.delete(marker);
+    return;
+  }
+  pendingBridgeByMarker.delete(marker);
+  console.log(`[bridge] linking new session ${sessionId.slice(0, 8)} to pipe ${pending.pipeName} via marker ${marker}`);
+  connectBridgePipe(sessionId, pending.pipeName);
+}
+
+// Reconnect to all known bridge pipes on startup
+function reconnectBridgePipes(): void {
+  const registry = loadBridgeRegistry();
+  const entries = Object.entries(registry);
+  if (entries.length === 0) return;
+  console.log(`[bridge] reconnecting to ${entries.length} known bridge pipes...`);
+  for (const [sessionId, pipeName] of entries) {
+    // Try to connect — if bridge is dead, the error handler will clean up
+    connectBridgePipe(sessionId, pipeName);
+  }
 }
 
 // Helper: send a typed message to a specific client
@@ -161,6 +308,7 @@ const sessionCtx: SessionEventContext = {
   broadcastRaw,
   sendToClient,
   isStartupComplete: () => startupComplete,
+  linkPendingBridge,
 };
 
 // Setup session watcher
@@ -168,6 +316,9 @@ const sessionWatcher = new SessionWatcher();
 registerSessionEventHandlers(sessionWatcher, sessionCtx);
 sessionWatcher.start();
 startupComplete = true;
+
+// Reconnect to any bridge pipes that survived the server restart
+reconnectBridgePipes();
 
 // Load closed sessions from transcripts on startup
 stateManager.loadClosedSessionsFromTranscripts().catch(err => {
@@ -211,6 +362,29 @@ wirePtyEvents({
   PTY_BUFFER_MAX_CHUNKS,
   broadcastRaw,
   sendToClient,
+});
+
+// Bridge pipe events → broadcast to clients (same flow as PTY output)
+bridgeManager.on('connected', (sessionId: string) => {
+  console.log(`[bridge] connected event for ${sessionId.slice(0, 8)}, broadcasting terminal:linked`);
+  broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId });
+});
+
+bridgeManager.on('output', (sessionId: string, data: Buffer) => {
+  // Buffer for replay on reconnect
+  let buf = ptyOutputBuffer.get(sessionId);
+  if (!buf) { buf = []; ptyOutputBuffer.set(sessionId, buf); }
+  buf.push(data);
+  if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
+
+  const encoded = data.toString('base64');
+  broadcastRaw({ type: 'terminal:output', sessionId, data: encoded });
+});
+
+bridgeManager.on('disconnected', (sessionId: string) => {
+  // Don't remove from bridgeSessions — the bridge terminal window is still alive,
+  // the pipe will reconnect. Only remove when session is explicitly closed/deleted.
+  console.log(`[bridge] disconnected from ${sessionId.slice(0, 8)}, will reconnect`);
 });
 
 // Shared helper: kill a Claude session by PID and remove its session file + state
@@ -318,6 +492,7 @@ setupWebSocketHandler(wss, {
   openTerminalWindow,
   autoResumePtySessions,
   getLogBuffer: getBuffer,
+  bridgeInjectQueue,
 });
 
 // API routes (moved to apiRoutes.ts)
