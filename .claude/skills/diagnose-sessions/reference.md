@@ -423,8 +423,18 @@ Every pipe connection starts with a 6-byte handshake read by the bridge:
 2. Connect OUTPUT socket → send "OUTPT\n" → receive broadcast output → buffer + broadcast as terminal:output
 3. On output connect: broadcast terminal:linked to clients
 4. On disconnect: reconnect after 2s (output socket only)
-5. On connect error: remove from bridge registry (pipe dead)
+5. On connect error: remove from bridge registry (pipe dead) + markClosed(sessionId)
+6. Health timer: if no output arrives within 10s → bridge is dead → cleanup + markClosed(sessionId)
 ```
+
+**Dead bridge detection (health timer):** 10s after the output socket connects and sends `OUTPT\n`, if no output has arrived, the bridge is assumed dead (bridge process likely exited). The server calls `bridgeSessions.delete()`, `unregisterBridgePipe()`, `outputSocket.destroy()`, `bridgeManager.disconnect()`, and `stateManager.markClosed()`. This immediately marks the session as closed in the UI rather than waiting up to 30s for processChecker.
+
+**Bridge exit codes:**
+- Exit code 0: child (Claude) exited cleanly
+- Exit code 1: child exited with an error (e.g., Claude encountered an unhandled exception)
+- Exit code 2: ConPTY reader goroutine died while child still alive — bridge detected via `readerDead` channel and exited to signal Overlord
+
+**When bridges die unexpectedly:** The pipe becomes ENOENT. Server's input socket close handler fires → `markClosed(sessionId)`. If the bridge exits between server start and `reconnectBridgePipes()` completing, the input socket connect will fail with ENOENT → same cleanup path.
 
 ### Session Matching
 Bridge sessions use `___BRG:<marker>` name markers (NOT CWD-based matching):
@@ -495,6 +505,19 @@ if n == 6 && string(header[:6]) == "RSNUD\n" {
 ```
 
 **CRITICAL: `socket.end()` not `socket.destroy()`**. `destroy()` sends TCP RST which may abort the connection before the bridge finishes reading the header. `end()` sends FIN, allowing the bridge to complete reading before closing.
+
+**EPIPE on RSNUD/NUDGE is expected and not a failure.** After the bridge closes its end of the named pipe connection (`conn.Close()` in Go), Windows sends RST back to Node.js. If Node.js is in the middle of a read/close cycle, it gets `read EPIPE`. The bridge HAS processed the command successfully. The fix: track `writeDone` — if EPIPE fires after a successful write, resolve the promise as `true` (success), not `false`. Without this fix, RSNUD always logs "failed" and the health timer kills the session after 10s.
+
+```typescript
+// pipeInjector.ts — EPIPE after write = success
+let writeDone = false;
+socket.write(`RSNUD\n${cols} ${rows}\n`, (err) => {
+  if (err) { resolve(false); return; }
+  writeDone = true;
+  socket.end();
+});
+socket.on('error', (err) => resolve(writeDone && err.message.includes('EPIPE')));
+```
 
 ### Pipe Address Mismatch: `pipeAddrs` Map
 
@@ -588,3 +611,6 @@ cursor: fixedSize ? '#0d1117' : 'transparent',
 | Bridge Terminal PTY empty — bridge alive but ConPTY reader dead (zombie bridge) | ConPTY read pipe broke ("Potok został zakończony" / pipe terminated) while child still alive. Bridge stuck in `waitForChild()`, pipe accepts connections but output goroutine exited. | Server health check: 10s after output socket connects, if no data → marks bridge DEAD and cleans up. Bridge binary: `readerDead` channel causes exit(2) when read goroutine dies. Check `%TEMP%/overlord-bridge.log` for `read error` or `ConPTY reader exited`. Kill stale bridge process and restart. |
 | Bridge registry corruption — multiple sessions mapped to same pipe | Manual bridge restart or session re-linking caused duplicate entries in `%TEMP%/overlord-bridge-registry.json` | Fixed: `reconnectBridgePipes()` deduplicates on startup — keeps canonical session (whose ID appears in pipe name), removes stale duplicates |
 | Two visible cursors in bridge terminal | xterm.js cursor + ConPTY cursor both visible | Fixed by `cursor: fixedSize ? '#0d1117' : 'transparent'` in XtermTerminal.tsx |
+| Bridge terminal empty + `[bridge] RSNUD result: failed` in server log | EPIPE after bridge closes named pipe — resolved as false, health timer fires at 10s | Fixed: `writeDone` flag in `pipeInjector.ts` — EPIPE after successful write treated as success |
+| Bridge session disappears from UI 10s after server restart | Health timer: no output in 10s → bridge marked dead + `markClosed()` called | Check bridge log for "Child exited with code 1" — bridge process died. Restart the bridge in IntelliJ. |
+| Bridge session shows as `waiting` but terminal tab is empty | Bridge process died (pipe ENOENT), health timer cleaned up, but processChecker hadn't fired yet | Now fixed: health timer calls `markClosed()` immediately so UI shows session as closed |
