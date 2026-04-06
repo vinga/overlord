@@ -424,10 +424,12 @@ Every pipe connection starts with a 6-byte handshake read by the bridge:
 3. On output connect: broadcast terminal:linked to clients
 4. On disconnect: reconnect after 2s (output socket only)
 5. On connect error: remove from bridge registry (pipe dead) + markClosed(sessionId)
-6. Health timer: if no output arrives within 10s → bridge is dead → cleanup + markClosed(sessionId)
+6. Health timer: if no output arrives within 10s → bridge tracking cleaned up (does NOT markClosed)
 ```
 
-**Dead bridge detection (health timer):** 10s after the output socket connects and sends `OUTPT\n`, if no output has arrived, the bridge is assumed dead (bridge process likely exited). The server calls `bridgeSessions.delete()`, `unregisterBridgePipe()`, `outputSocket.destroy()`, `bridgeManager.disconnect()`, and `stateManager.markClosed()`. This immediately marks the session as closed in the UI rather than waiting up to 30s for processChecker.
+**Dead bridge detection (health timer):** 10s after the output socket connects and sends `OUTPT\n`, if no output has arrived, the server cleans up bridge tracking: `bridgeSessions.delete()`, `unregisterBridgePipe()`, `outputSocket.destroy()`, `bridgeManager.disconnect()`. **Does NOT call `markClosed()`** — processChecker owns session lifecycle based on PID. The health timer fires when the bridge is unresponsive, but this can happen during slow Claude startup (e.g., resuming a session takes >10s to render the TUI). Calling `markClosed()` from the health timer would incorrectly close a session that is still alive.
+
+**Why NOT to call markClosed in health timer:** When Claude finishes a task and exits, a new Claude may start in the same bridge window. The output socket reconnects. The new Claude can take >10s to render its TUI (loading/resuming). If the health timer called `markClosed()`, the session would appear closed in the UI even though the PID is alive. ProcessChecker detects dead PIDs (runs every 5s) and is the authoritative source for session closure.
 
 **Bridge exit codes:**
 - Exit code 0: child (Claude) exited cleanly
@@ -612,5 +614,5 @@ cursor: fixedSize ? '#0d1117' : 'transparent',
 | Bridge registry corruption — multiple sessions mapped to same pipe | Manual bridge restart or session re-linking caused duplicate entries in `%TEMP%/overlord-bridge-registry.json` | Fixed: `reconnectBridgePipes()` deduplicates on startup — keeps canonical session (whose ID appears in pipe name), removes stale duplicates |
 | Two visible cursors in bridge terminal | xterm.js cursor + ConPTY cursor both visible | Fixed by `cursor: fixedSize ? '#0d1117' : 'transparent'` in XtermTerminal.tsx |
 | Bridge terminal empty + `[bridge] RSNUD result: failed` in server log | EPIPE after bridge closes named pipe — resolved as false, health timer fires at 10s | Fixed: `writeDone` flag in `pipeInjector.ts` — EPIPE after successful write treated as success |
-| Bridge session disappears from UI 10s after server restart | Health timer: no output in 10s → bridge marked dead + `markClosed()` called | Check bridge log for "Child exited with code 1" — bridge process died. Restart the bridge in IntelliJ. |
-| Bridge session shows as `waiting` but terminal tab is empty | Bridge process died (pipe ENOENT), health timer cleaned up, but processChecker hadn't fired yet | Now fixed: health timer calls `markClosed()` immediately so UI shows session as closed |
+| Bridge session disappears from PTY tab 10s after server restart | Health timer: no output in 10s → bridge tracking cleaned up (bridgeSessions removed) | Check bridge log for "Child exited with code 1" — bridge process died. Restart the bridge in IntelliJ. |
+| Bridge session shows as `closed` but Claude is alive in bridge window | Health timer was incorrectly calling markClosed() when Claude takes >10s to render after restart | Fixed: health timer no longer calls markClosed(). ProcessChecker handles session closure via PID. |
