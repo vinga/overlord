@@ -53,16 +53,25 @@ export function markTranscriptDirty(filePath: string): void {
  * Re-evaluate the time-dependent state from a cached stateHint without any file I/O.
  * Returns null if the state hasn't changed (caller can skip broadcasting).
  */
-function reEvalStateFromCache(cached: TranscriptCache): WorkerState {
+function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; needsPermission?: boolean } {
   const ageSec = (Date.now() - cached.fileModifiedMs) / 1000;
   // After 2 minutes of no file updates, assume the session/subagent is stale
-  if (ageSec > 120) return 'waiting';
+  // But still check for pending tool_use → permission prompt
+  if (ageSec > 120) {
+    if (cached.stateHint === 'tool_use') return { state: 'waiting', needsPermission: true };
+    return { state: 'waiting' };
+  }
   switch (cached.stateHint) {
-    case 'tool_use':     return ageSec < 8 ? 'working' : 'thinking';
-    case 'assistant_text': return ageSec < 3 ? 'working' : 'waiting';
-    case 'tool_result':  return ageSec < 8 ? 'working' : 'thinking';
-    case 'user_input':   return ageSec < 8 ? 'working' : 'thinking';
-    case 'none':         return 'waiting';
+    case 'tool_use': {
+      const state: WorkerState = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
+      // Tool pending >8s with no result → likely permission prompt
+      const needsPermission = ageSec > 8 ? true : undefined;
+      return { state, needsPermission };
+    }
+    case 'assistant_text': return { state: ageSec < 3 ? 'working' : 'waiting' };
+    case 'tool_result':  return { state: ageSec < 8 ? 'working' : 'thinking' };
+    case 'user_input':   return { state: ageSec < 8 ? 'working' : 'thinking' };
+    case 'none':         return { state: 'waiting' };
   }
 }
 
@@ -276,6 +285,7 @@ export function readTranscriptState(filePath: string): {
   compactCount?: number;
   isCompacting?: boolean;
   needsPermission?: boolean;
+  permissionPromptText?: string;
   lastUserIsDone?: boolean;
 } {
   try {
@@ -284,9 +294,9 @@ export function readTranscriptState(filePath: string): {
 
     // Fast path: file not dirty and we checked recently → just re-evaluate time-based state
     if (cached && !cached.dirty && (now - cached.lastCheckedAt) < MIN_STAT_INTERVAL_MS) {
-      const newState = reEvalStateFromCache(cached);
-      if (newState !== cached.result.state) {
-        cached.result = { ...cached.result, state: newState };
+      const reEval = reEvalStateFromCache(cached);
+      if (reEval.state !== cached.result.state || reEval.needsPermission !== cached.result.needsPermission) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission };
       }
       return cached.result;
     }
@@ -299,9 +309,9 @@ export function readTranscriptState(filePath: string): {
     if (cached && !cached.dirty && cached.mtimeMs === fileModifiedMs && cached.fileSize === stat.size) {
       cached.lastCheckedAt = now;
       cached.fileModifiedMs = fileModifiedMs;
-      const newState = reEvalStateFromCache(cached);
-      if (newState !== cached.result.state) {
-        cached.result = { ...cached.result, state: newState };
+      const reEval = reEvalStateFromCache(cached);
+      if (reEval.state !== cached.result.state || reEval.needsPermission !== cached.result.needsPermission) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission };
       }
       return cached.result;
     }
@@ -470,14 +480,31 @@ export function readTranscriptState(filePath: string): {
     let state: WorkerState;
     let stateHint: TranscriptCache['stateHint'] = 'none';
     let needsPermission: boolean | undefined;
+    let permissionPromptText: string | undefined;
     if (lastTypedEvent?.type === 'assistant') {
       const lastContent = lastTypedEvent.message as { content?: unknown } | undefined;
-      const contentArr = Array.isArray(lastContent?.content) ? lastContent!.content as Array<{ type?: string }> : [];
-      const endsWithToolUse = contentArr.length > 0 && contentArr[contentArr.length - 1]?.type === 'tool_use';
+      const contentArr = Array.isArray(lastContent?.content) ? lastContent!.content as Array<{ type?: string; name?: string; input?: unknown }> : [];
+      const lastBlock = contentArr.length > 0 ? contentArr[contentArr.length - 1] : undefined;
+      const endsWithToolUse = lastBlock?.type === 'tool_use';
 
       if (endsWithToolUse) {
         stateHint = 'tool_use';
-        state = ageSec < 8 ? 'working' : 'thinking';
+        if (ageSec < 5) {
+          state = 'working';
+        } else if (ageSec > 8) {
+          // Tool pending for >8s with no tool_result → likely waiting for permission.
+          // Auto-approved tools execute immediately; this delay means the user is being prompted.
+          state = 'waiting';
+          needsPermission = true;
+          // Build a description from the tool_use block (not the actual prompt — we can't read it)
+          if (lastBlock?.name) {
+            const toolInput = lastBlock.input as Record<string, unknown> | undefined;
+            const desc = toolInput ? describeInput(toolInput) : '';
+            permissionPromptText = desc ? `${lastBlock.name}: ${desc}` : lastBlock.name;
+          }
+        } else {
+          state = 'thinking';
+        }
       } else {
         stateHint = 'assistant_text';
         state = ageSec < 3 ? 'working' : 'waiting';
@@ -518,6 +545,7 @@ export function readTranscriptState(filePath: string): {
       compactCount: compactCount > 0 ? compactCount : undefined,
       isCompacting: isCompacting || undefined,
       needsPermission: needsPermission || undefined,
+      permissionPromptText,
       lastUserIsDone: lastUserIsDone || undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });

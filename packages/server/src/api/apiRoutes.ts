@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
-import { join } from 'path';
+import { join, resolve, dirname, basename } from 'path';
 import { exec, execSync } from 'child_process';
 import express from 'express';
 import type { Express } from 'express';
@@ -29,6 +29,7 @@ export function registerApiRoutes(
   bridgeSessions: Set<string>,
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void,
   generateCompletionSummary: (sessionId: string, forMessage: string) => Promise<void>,
+  ptyOutputBuffer: Map<string, Buffer[]>,
 ): void {
   const { ptyToClaudeId, claudeToPtyId, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
 
@@ -158,9 +159,11 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
-  // Screen buffer endpoint: reads the console screen buffer of a session's process
+  // Screen buffer endpoint: reads the console screen buffer of a session's process.
+  // For bridge sessions, returns the last portion of the pipe output buffer (ANSI-stripped).
   app.get('/api/sessions/:sessionId/screen', async (req, res) => {
-    const session = stateManager.getSession(req.params.sessionId);
+    const { sessionId } = req.params;
+    const session = stateManager.getSession(sessionId);
     if (!session) {
       res.status(404).json({ error: 'Session not found' });
       return;
@@ -169,10 +172,35 @@ export function registerApiRoutes(
       res.status(400).json({ error: 'Session is closed' });
       return;
     }
+    // Bridge sessions: serve from ptyOutputBuffer (ANSI-stripped)
+    if (bridgeSessions.has(sessionId)) {
+      const chunks = ptyOutputBuffer.get(sessionId);
+      if (!chunks || chunks.length === 0) {
+        res.json({ text: '', sessionId });
+        return;
+      }
+      const raw = Buffer.concat(chunks.slice(-50)).toString('utf8');
+      // Strip ANSI and process carriage returns
+      const stripped = raw
+        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+        .replace(/\x1b[^[\]]/g, '')
+        .replace(/\x1b/g, '')
+        .replace(/[^\x20-\x7e\n\t\r]/g, '');
+      const text = stripped.split('\n').map(line => {
+        const parts = line.split('\r');
+        for (let i = parts.length - 1; i >= 0; i--) {
+          if (parts[i].trim()) return parts[i];
+        }
+        return parts[parts.length - 1];
+      }).join('\n').trim();
+      res.json({ text, sessionId });
+      return;
+    }
     try {
       const { readScreen } = await import('../pty/consoleInjector.js');
       const text = await readScreen(session.pid);
-      res.json({ text: text ?? '', pid: session.pid, sessionId: req.params.sessionId });
+      res.json({ text: text ?? '', pid: session.pid, sessionId });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -278,5 +306,48 @@ export function registerApiRoutes(
       path: filepath,
       previewUrl: `data:image/${ext};base64,${base64}`,
     });
+  });
+
+  // Serve pasted images by path (only overlord-paste-* files from temp dir)
+  app.get('/api/paste-image', (req, res) => {
+    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!filePath || !basename(filePath).startsWith('overlord-paste-')) {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    try {
+      if (!fs.existsSync(filePath)) { res.status(404).send('Not found'); return; }
+      const ext = filePath.split('.').pop()?.toLowerCase();
+      const mime = ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'application/octet-stream';
+      res.setHeader('Content-Type', mime);
+      res.send(fs.readFileSync(filePath));
+    } catch { res.status(500).send('Error'); }
+  });
+
+  // Directory browser for new-folder spawn dialog
+  app.get('/api/directories', (req, res) => {
+    const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+    try {
+      const resolved = requestedPath ? resolve(requestedPath) : process.cwd();
+      if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+        res.status(400).json({ error: 'Not a valid directory' });
+        return;
+      }
+      const parentDir = dirname(resolved);
+      const parent = parentDir !== resolved ? parentDir : null;
+      const entries = fs.readdirSync(resolved, { withFileTypes: true });
+      const dirs = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith('$') && e.name !== 'System Volume Information')
+        .map(e => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      res.json({ current: resolved, parent, dirs });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EPERM') {
+        res.status(403).json({ error: 'Permission denied' });
+      } else {
+        res.status(500).json({ error: (err as Error).message });
+      }
+    }
   });
 }

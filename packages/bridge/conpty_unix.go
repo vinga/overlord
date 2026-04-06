@@ -13,21 +13,21 @@ import (
 // startChildWithPty on Unix: use a simple pipe-based approach.
 // For full PTY support on Unix, cgo would be needed for openpty/forkpty.
 // This fallback works for injection; output goes to console directly.
-func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, error) {
+func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), error) {
 	cmd := exec.Command(args[0], args[1:]...)
 	childIn, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, nil, nil, err
 	}
 	childOut, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, nil, nil, err
 	}
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, nil, nil, err
 	}
 
 	var writeMu sync.Mutex
@@ -68,5 +68,8 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 		return 0
 	}
 
-	return writeFunc, waitFunc, cmd.Process.Pid, nil
+	nudgeRedraw := func() {}         // no-op on Unix
+	resizeAndNudge := func(_, _ int) {} // no-op on Unix
+
+	return writeFunc, waitFunc, cmd.Process.Pid, nudgeRedraw, resizeAndNudge, nil
 }

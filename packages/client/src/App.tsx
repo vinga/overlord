@@ -8,20 +8,33 @@ import { Office } from './components/Office';
 import { DetailPanel } from './components/DetailPanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
+import { DirectoryPickerDialog } from './components/DirectoryPickerDialog';
 import type { Room } from './types';
 
 
 export function App() {
-  const [view, setView] = useState<'office' | 'logs'>('office');
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [selectedSubagentId, setSelectedSubagentId] = useState<string | undefined>(undefined);
+  const [view, setView] = useState<'office' | 'logs'>(() => {
+    return window.location.hash.startsWith('#logs') ? 'logs' : 'office';
+  });
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(() => {
+    const m = window.location.hash.match(/^#session\/([^/]+)/);
+    return m ? m[1] : null;
+  });
+  const [selectedSubagentId, setSelectedSubagentId] = useState<string | undefined>(() => {
+    const m = window.location.hash.match(/^#session\/[^/]+\/([^/]+)/);
+    return m ? m[1] : undefined;
+  });
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => {
+    const m = window.location.hash.match(/^#room\/(.+)/);
+    return m ? m[1] : null;
+  });
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
-  const { customNames, autoNames, rename, ensureAutoName } = useCustomNames();
+  const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
+  const { customNames, rename } = useCustomNames();
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = localStorage.getItem('overlord:panelWidth');
@@ -61,19 +74,74 @@ export function App() {
     return { ...names, ...customNames };
   }, [snapshot, customNames]);
 
+  // Sync state → URL hash
+  const suppressHashChange = useRef(false);
+  useEffect(() => {
+    let hash = '';
+    if (view === 'logs') {
+      hash = '#logs';
+    } else if (selectedSessionId) {
+      hash = `#session/${selectedSessionId}`;
+      if (selectedSubagentId) hash += `/${selectedSubagentId}`;
+    } else if (selectedRoomId) {
+      hash = `#room/${selectedRoomId}`;
+    }
+    suppressHashChange.current = true;
+    window.history.replaceState(null, '', hash || window.location.pathname);
+    // Reset flag after microtask so it doesn't block real navigation
+    queueMicrotask(() => { suppressHashChange.current = false; });
+  }, [view, selectedSessionId, selectedSubagentId, selectedRoomId]);
+
+  // Sync URL hash → state (for link navigation / back button)
+  useEffect(() => {
+    function onHashChange() {
+      if (suppressHashChange.current) return;
+      const h = window.location.hash;
+      if (h.startsWith('#logs')) {
+        setView('logs');
+      } else if (h.startsWith('#session/')) {
+        const m = h.match(/^#session\/([^/]+)(?:\/(.+))?/);
+        if (m) {
+          setView('office');
+          setSelectedSessionId(m[1]);
+          setSelectedSubagentId(m[2] || undefined);
+          setSelectedRoomId(null);
+        }
+      } else if (h.startsWith('#room/')) {
+        const m = h.match(/^#room\/(.+)/);
+        if (m) {
+          setView('office');
+          setSelectedRoomId(m[1]);
+          setSelectedSessionId(null);
+          setSelectedSubagentId(undefined);
+        }
+      } else {
+        setView('office');
+        setSelectedSessionId(null);
+        setSelectedSubagentId(undefined);
+        setSelectedRoomId(null);
+      }
+    }
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
   // Keep ref in sync with the latest handler (runs synchronously during render)
   terminalHandlerRef.current = terminal.handleTerminalMessage;
 
-  // Auto-generate proposed names for new sessions
-  useEffect(() => {
-    if (!snapshot) return;
-    snapshot.rooms.flatMap(r => r.sessions).forEach(s => ensureAutoName(s));
-  }, [snapshot, ensureAutoName]);
 
-  // Auto-select PTY sessions in DetailPanel when they are spawned/resumed
+  // Auto-select PTY sessions in DetailPanel when they are spawned/resumed.
+  // For pty-xxx IDs (pre-linking), immediately show the terminal panel.
   // When terminal:linked fires, activePtySessionId switches from 'pty-xxx' to real claudeSessionId.
   useEffect(() => {
-    if (!activePtySessionId || activePtySessionId.startsWith('pty-')) return;
+    if (!activePtySessionId) return;
+    if (activePtySessionId.startsWith('pty-')) {
+      // Immediately show the PTY terminal (before session file is created / linked)
+      setSelectedSessionId(activePtySessionId);
+      setSelectedSubagentId(undefined);
+      setSelectedRoomId(null);
+      return;
+    }
     const linkedId = activePtySessionId;
     setActivePtySessionId(null);
     setSelectedSessionId(linkedId);
@@ -139,6 +207,15 @@ export function App() {
       terminal.openNewTerminal(terminalSpawnCwd, name || undefined, terminalSpawnMode);
     }
     setTerminalSpawnCwd(null);
+  }
+
+  function handleNewFolderSpawn(cwd: string, name: string, mode: TerminalSpawnMode) {
+    setShowDirectoryPicker(false);
+    if (mode === 'embedded') {
+      terminal.spawnSession(cwd, 80, 24, name || undefined);
+    } else {
+      terminal.openNewTerminal(cwd, name || undefined, mode);
+    }
   }
 
   function handleDeleteSession(sessionId: string) {
@@ -215,9 +292,17 @@ export function App() {
         onCloneSession={handleCloneSession}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
+        onOpenDirectoryPicker={() => setShowDirectoryPicker(true)}
       />
-      <DetailPanel
+      <DirectoryPickerDialog
+        open={showDirectoryPicker}
+        onClose={() => setShowDirectoryPicker(false)}
+        onSpawn={handleNewFolderSpawn}
+        defaultPath={snapshot?.rooms[0]?.cwd}
+      />
+      {!selectedRoom && <DetailPanel
         selectedSession={selectedSession}
+        selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}
         customName={displayNames[selectedSession?.sessionId ?? '']}
         onRename={rename}
@@ -237,6 +322,7 @@ export function App() {
           onDeleteSession: handleDeleteSession,
           onResumeSession: (sessionId, cwd) => { terminal.resumeSession(sessionId, cwd); },
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
+          onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),
           onMarkDone: (sessionId) => { fetch(`/api/sessions/${sessionId}/mark-done`, { method: 'POST' }).catch(console.error); },
           onAcceptSession: handleAcceptSession,
           onAcceptTask: handleAcceptTask,
@@ -254,7 +340,7 @@ export function App() {
         }
         onSelectSession={(s) => handleSelectSession(s)}
         customNames={displayNames}
-      />
+      />}
       {selectedRoom && (
         <TaskListPanel
           room={selectedRoom}

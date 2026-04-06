@@ -27,9 +27,11 @@ export function ConsolePreview({ sessionId, sessionState, isPty, sessionType }: 
     setAvailable(true);
   }
 
+  const isBridge = sessionType === 'bridge';
+
   // Poll when expanded and session is active
   useEffect(() => {
-    if (!expanded || isPty || sessionState === 'closed') return;
+    if (!expanded || (isPty && !isBridge) || sessionState === 'closed') return;
 
     const gen = ++generationRef.current;
 
@@ -66,8 +68,8 @@ export function ConsolePreview({ sessionId, sessionState, isPty, sessionType }: 
     };
   }, [expanded, isPty, sessionState, sessionId]);
 
-  // Don't render for PTY sessions (Terminal tab), IDE sessions (shared console), or closed
-  if (isPty || sessionState === 'closed' || sessionType === 'ide') return null;
+  // Don't render for non-bridge PTY sessions (they have the Terminal tab) or closed sessions
+  if ((isPty && !isBridge) || sessionState === 'closed') return null;
   if (!available && !screenText) return null;
 
   return (

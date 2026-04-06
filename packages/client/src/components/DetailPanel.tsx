@@ -37,6 +37,7 @@ interface SessionActions {
   onDeleteSession?: (sessionId: string) => void;
   onResumeSession?: (sessionId: string, cwd: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
+  onOpenBridged?: (sessionId: string, cwd: string) => void;
   onMarkDone?: (sessionId: string) => void;
   onAcceptSession?: (sessionId: string) => void;
   onAcceptTask?: (sessionId: string, completedAt: string) => void;
@@ -647,6 +648,7 @@ const STATE_ICONS: Record<string, string> = {
 
 export function DetailPanel({
   selectedSession,
+  selectedSessionId,
   selectedSubagentId,
   customName,
   onRename,
@@ -664,8 +666,11 @@ export function DetailPanel({
   onPanelWidthChange,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onOpenInTerminal, onMarkDone, onAcceptSession, onAcceptTask } = actions;
-  const isOpen = selectedSession !== null;
+  const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onMarkDone, onAcceptSession, onAcceptTask } = actions;
+  // Panel is "open" if we have a session OR a pending PTY session ID
+  const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
+  const isPendingPty = !selectedSession && !!effectiveSessionId && isPtySession(effectiveSessionId);
+  const isOpen = selectedSession !== null || isPendingPty;
 
   // Re-render every second to update duration / relative times — only when panel is open
   useTick(selectedSession ? 1000 : null);
@@ -732,6 +737,8 @@ export function DetailPanel({
   const [killing, setKilling] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [openingTerminal, setOpeningTerminal] = useState(false);
+  const [openingBridged, setOpeningBridged] = useState(false);
+  const [bridgeCopyConfirm, setBridgeCopyConfirm] = useState(false);
   const currentDisplayName =
     customName ??
     selectedSession?.proposedName ??
@@ -927,12 +934,35 @@ export function DetailPanel({
         style={{ width: panelWidth }}
       >
         <div className={styles.resizeHandle} onMouseDown={onResizeMouseDown} />
-        {!selectedSession && (
+        {!selectedSession && !isPendingPty && (
           <div className={styles.emptyPanel}>
             <div className={styles.emptyPanelIcon}>👁</div>
             <div className={styles.emptyPanelTitle}>No session selected</div>
             <div className={styles.emptyPanelHint}>Click on a worker to view its conversation, tasks, and terminal</div>
           </div>
+        )}
+        {isPendingPty && effectiveSessionId && (
+          <>
+            <div className={styles.colorStrip} style={{ background: '#d4af37' }} />
+            <button className={styles.closeButton} onClick={onClose} aria-label="Close panel">&times;</button>
+            <div className={styles.panelHeader}>
+              <div className={styles.headerMain}>
+                <h2 className={styles.sessionName}>Starting session...</h2>
+                <div className={styles.summaryRow}>
+                  <span style={{ color: '#888', fontSize: 13 }}>Waiting for Claude to initialize</span>
+                </div>
+              </div>
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <XtermTerminal
+                sessionId={effectiveSessionId}
+                onInput={(data) => sendInput(effectiveSessionId, data)}
+                onResize={(cols, rows) => resizePty(effectiveSessionId, cols, rows)}
+                registerOutputHandler={registerOutputHandler}
+                fillHeight
+              />
+            </div>
+          </>
         )}
         {selectedSession && (
           <>
@@ -1102,9 +1132,9 @@ export function DetailPanel({
                         return isDone && !!onAcceptSession ? () => onAcceptSession(selectedSession.sessionId) : undefined;
                       })()}
                     />
-                    {selectedSession.startedAt > 0 && (
-                      <span className={styles.summaryMeta}>{formatStartedAt(selectedSession.startedAt)}</span>
-                    )}
+                    {(() => { const l = getLaunchInfo(selectedSession, isPty); return (
+                      <span className={styles.launchBadge} data-category={l.category}>{l.name}</span>
+                    ); })()}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
                   </div>
@@ -1308,7 +1338,10 @@ export function DetailPanel({
                                 if (onResumeSession) setShowConvoResumePrompt(true);
                                 return;
                               }
-                              if (e.key === 'Enter' && !e.shiftKey) {
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setSendInput2('');
+                              } else if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 if (!connected) return;
                                 const text = sendInput2.trim();
@@ -1587,6 +1620,35 @@ export function DetailPanel({
                               )}
                             </button>
                           </div>
+                          {/* Bridge command row */}
+                          {(() => {
+                            const bridgeMarker = selectedSession.sessionId.slice(0, 8);
+                            const bridgeCmd = `overlord-bridge --pipe overlord-${bridgeMarker} -- claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}___BRG:${bridgeMarker}"`;
+                            return (
+                              <div className={styles.resumeCommand} style={{ marginTop: 4, opacity: 0.75 }}>
+                                <code style={{ fontSize: '0.78em' }}>{bridgeCmd}</code>
+                                <button
+                                  className={styles.resumeCopyIcon}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(bridgeCmd);
+                                    setBridgeCopyConfirm(true);
+                                    setTimeout(() => setBridgeCopyConfirm(false), 2000);
+                                  }}
+                                  title={`Copy bridge command:\n${bridgeCmd}`}
+                                >
+                                  {bridgeCopyConfirm ? (
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="20 6 9 17 4 12"/>
+                                    </svg>
+                                  ) : (
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                    </svg>
+                                  )}
+                                </button>
+                              </div>
+                            );
+                          })()}
                           <div className={styles.resumeButtons}>
                             {onResumeSession && (
                               <button
@@ -1611,6 +1673,19 @@ export function DetailPanel({
                                 }}
                               >
                                 {openingTerminal ? 'Opening…' : selectedSession.state === 'closed' ? 'Open in Terminal' : 'Attach in Terminal'}
+                              </button>
+                            )}
+                            {onOpenBridged && (
+                              <button
+                                className={`${styles.resumeButton} ${openingBridged ? styles.resumeButtonPending : ''}`}
+                                disabled={openingBridged}
+                                onClick={() => {
+                                  setOpeningBridged(true);
+                                  onOpenBridged(selectedSession.sessionId, selectedSession.cwd);
+                                  setTimeout(() => setOpeningBridged(false), 3000);
+                                }}
+                              >
+                                {openingBridged ? 'Opening…' : 'Open Bridged'}
                               </button>
                             )}
                           </div>

@@ -226,7 +226,50 @@ If deeper PTY diagnostics are needed, suggest adding a temporary debug log to `p
 
 ---
 
-## Step 9 — Summary Report
+## Step 9 — Check Bridge Sessions
+
+Check the bridge registry and verify bridge pipe connectivity:
+
+```bash
+node -e "
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const registryPath = path.join(os.tmpdir(), 'overlord-bridge-registry.json');
+if (!fs.existsSync(registryPath)) {
+  console.log('No bridge registry file found.');
+} else {
+  const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  const entries = Object.entries(registry);
+  console.log('Bridge registry entries:', entries.length);
+  for (const [sessionId, pipeName] of entries) {
+    console.log('  ', sessionId.slice(0,8), '| pipe:', pipeName);
+    // Check if the named pipe exists (Windows)
+    const pipeAddr = process.platform === 'win32' ? '\\\\\\\\.\\\\pipe\\\\' + pipeName : path.join(os.tmpdir(), pipeName + '.sock');
+    const net = require('net');
+    const sock = net.connect(pipeAddr);
+    sock.on('connect', () => { console.log('    ALIVE (pipe reachable)'); sock.destroy(); });
+    sock.on('error', (err) => { console.log('    DEAD (' + err.code + ')'); });
+  }
+}
+"
+```
+
+Also check the bridge log for errors:
+
+```bash
+cat $(echo $TEMP)/overlord-bridge.log | tail -30
+```
+
+**Red flags:**
+- Registry entry but pipe unreachable → bridge process died, server will fail to reconnect
+- No `output socket connected` in server log → `OUTPT\n` handshake not sent (Terminal PTY tab will be empty)
+- `pipe→child 0 bytes` in bridge log → null data being forwarded
+- `removed dead client from broadcast` in bridge log → output socket disconnected (server should auto-reconnect)
+
+---
+
+## Step 10 — Summary Report
 
 After running all checks, produce this summary table:
 
@@ -242,3 +285,5 @@ After running all checks, produce this summary table:
 | Stale transcripts (active but >5m old) | N | list any |
 | /clear detection failures | N | session file unchanged but transcript stale |
 | Suspected PTY leaks | N | list any |
+| Bridge registry entries | N | list any dead pipes |
+| Bridge sockets connected | pass/fail | input + output per session |

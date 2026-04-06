@@ -166,6 +166,19 @@ export class StateManager {
           completionSummaries: entry.completionSummaries,
           userAccepted: entry.userAccepted,
         });
+
+        // Load transcript for closed sessions so conversation history is visible after restart
+        const transcriptPath = findTranscriptPath(entry.cwd, entry.sessionId)
+          ?? findTranscriptPathAnywhere(entry.sessionId);
+        if (transcriptPath) {
+          try {
+            const result = readTranscriptState(transcriptPath);
+            const s = this.sessions.get(entry.sessionId)!;
+            s.activityFeed = result.activityFeed;
+            if (result.lastActivity) s.lastActivity = result.lastActivity;
+            // Do NOT override state — keep it 'closed'
+          } catch { /* ignore */ }
+        }
       }
       if (dirty) {
         fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
@@ -268,6 +281,7 @@ export class StateManager {
     let compactCount: number | undefined;
     let isCompacting: boolean | undefined;
     let needsPermission: boolean | undefined;
+    let permissionPromptText: string | undefined;
 
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
@@ -296,6 +310,7 @@ export class StateManager {
       compactCount = result.compactCount;
       isCompacting = result.isCompacting;
       needsPermission = result.needsPermission;
+      permissionPromptText = result.permissionPromptText;
       slug = readSlug(transcriptPath);
     } else if (resumedFrom) {
       // claude --resume appends to the original transcript rather than creating a new one.
@@ -313,6 +328,7 @@ export class StateManager {
         compactCount = result.compactCount;
         isCompacting = result.isCompacting;
         needsPermission = result.needsPermission;
+        permissionPromptText = result.permissionPromptText;
         slug = readSlug(fallbackPath);
         // Use the fallback path for proposedName resolution below
         transcriptPath = fallbackPath;
@@ -331,7 +347,9 @@ export class StateManager {
     const ideInfo = this.readIdeInfo(cwd);
     // Only tag as IDE if the session process is actually a child of the IDE process
     const isIdeSession = ideInfo != null && raw.pid > 0 && this.isChildOfIde(raw.pid, ideInfo.idePid);
-    const ideName = isIdeSession ? ideInfo.name : undefined;
+    const ideName = isIdeSession
+      ? ideInfo.name
+      : (raw.pid > 0 ? this.detectIdeFromProcessChain(raw.pid) : undefined);
 
     const isNew = !this.sessions.has(sessionId);
 
@@ -406,7 +424,7 @@ export class StateManager {
       subagents,
       resumedFrom,
       needsPermission: needsPermission || existingSession?.needsPermission,
-      permissionPromptText: needsPermission ? undefined : existingSession?.permissionPromptText,
+      permissionPromptText: permissionPromptText || existingSession?.permissionPromptText,
       permissionApprovedAt: existingSession?.permissionApprovedAt,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       completionSummaries,
@@ -537,6 +555,9 @@ export class StateManager {
           Date.now() - session.permissionApprovedAt < 30_000;
         if (!suppressed) {
           session.needsPermission = result.needsPermission;
+          if (result.permissionPromptText && !session.permissionPromptText) {
+            session.permissionPromptText = result.permissionPromptText;
+          }
         }
       }
       session.slug = slug;
@@ -996,6 +1017,44 @@ export class StateManager {
       current = parentInfo.pid;
     }
     return false;
+  }
+
+  private static readonly IDE_PROCESS_NAMES: Record<string, string> = {
+    'idea64.exe': 'IntelliJ IDEA',
+    'idea.exe': 'IntelliJ IDEA',
+    'code.exe': 'VS Code',
+    'clion64.exe': 'CLion',
+    'clion.exe': 'CLion',
+    'webstorm64.exe': 'WebStorm',
+    'webstorm.exe': 'WebStorm',
+    'pycharm64.exe': 'PyCharm',
+    'pycharm.exe': 'PyCharm',
+    'rider64.exe': 'Rider',
+    'rider.exe': 'Rider',
+    'goland64.exe': 'GoLand',
+    'goland.exe': 'GoLand',
+    'datagrip64.exe': 'DataGrip',
+    'datagrip.exe': 'DataGrip',
+  };
+
+  /** Walk the parent process chain (up to 6 hops) to detect a known IDE ancestor.
+   *  Returns the IDE display name if found, undefined otherwise.
+   *  Uses -EncodedCommand to avoid shell quoting issues with variable expansion in Filter. */
+  private detectIdeFromProcessChain(pid: number): string | undefined {
+    if (process.platform !== 'win32') return undefined;
+    try {
+      const script = `$p=${pid};$names=@();for($i=0;$i-lt6;$i++){$pr=Get-CimInstance Win32_Process -Filter "ProcessId=$p" -EA SilentlyContinue;if(!$pr){break};$names+=$pr.Name;$p=$pr.ParentProcessId};$names -join ','`;
+      const encoded = Buffer.from(script, 'utf16le').toString('base64');
+      const out = execSync(`powershell -EncodedCommand ${encoded}`, { encoding: 'utf-8', timeout: 5000 }).trim();
+      if (!out) return undefined;
+      for (const name of out.split(',')) {
+        const ideName = StateManager.IDE_PROCESS_NAMES[name.trim().toLowerCase()];
+        if (ideName) return ideName;
+      }
+    } catch {
+      // ignore — non-critical detection
+    }
+    return undefined;
   }
 
   /** Check if sessionPid was spawned by Overlord (node.exe in parent chain within 2 hops) */

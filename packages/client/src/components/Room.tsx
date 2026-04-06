@@ -390,7 +390,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
                   const launch = getLaunchInfo(session, isPtySession?.(session.sessionId));
                   return (
                     <div className={styles.deskLaunchRow}>
-                      <span className={styles.deskLaunchBadge} data-method={launch.category}>{launch.name}</span>
+                      <span className={styles.deskLaunchBadge} data-category={launch.category}>{launch.name}</span>
                     </div>
                   );
                 })()}

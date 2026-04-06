@@ -15,11 +15,12 @@ export interface UseTerminalResult {
   sendInput: (sessionId: string, data: string) => void;
   injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
   resizePty: (sessionId: string, cols: number, rows: number) => void;
-  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => () => void;
+  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => () => void;
   isPtySession: (sessionId: string) => boolean;
   getError: (sessionId: string) => string | undefined;
   killSession: (sessionId: string) => void;
   openInTerminal: (sessionId: string, cwd: string) => void;
+  openBridgedTerminal: (sessionId: string, cwd: string) => void;
   openNewTerminal: (cwd: string, name?: string, mode?: TerminalSpawnMode) => void;
   ptySessionIds: Set<string>;
   exitedSessions: Set<string>;
@@ -122,6 +123,15 @@ export function useTerminal(
     } else if (msg.type === 'terminal:session-replaced') {
       const { oldSessionId, newSessionId } = msg;
       migrateId(oldSessionId, newSessionId);
+    } else if (msg.type === 'terminal:clear') {
+      const { sessionId } = msg as { type: string; sessionId: string };
+      // Clear client-side buffered output so it doesn't replay after the nudge
+      outputBuffer.current.delete(sessionId);
+      // Reset the xterm terminal — ESC c is a full terminal reset (clears screen + scrollback)
+      const handler = outputHandlers.current.get(sessionId);
+      if (handler) {
+        handler(new TextEncoder().encode('\x1bc'));
+      }
     } else if (msg.type === 'terminal:linked') {
       const { ptySessionId, claudeSessionId, replay } = msg as { type: string; ptySessionId: string; claudeSessionId: string; replay?: boolean };
       migrateId(ptySessionId, claudeSessionId);
@@ -199,19 +209,23 @@ export function useTerminal(
   );
 
   const registerOutputHandler = useCallback(
-    (sessionId: string, handler: (data: Uint8Array) => void) => {
+    (sessionId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => {
       outputHandlers.current.set(sessionId, handler);
-      // Flush any buffered output
+      // Flush any client-side buffered output
       const buf = outputBuffer.current.get(sessionId);
       if (buf && buf.length > 0) {
         for (const chunk of buf) handler(chunk);
         outputBuffer.current.delete(sessionId);
       }
+      // Request server-side buffer replay (covers view-switch remounts where
+      // the xterm instance was disposed and client buffer was already flushed).
+      // Pass cols/rows so bridge sessions can resize their ConPTY to match the xterm.
+      sendMessage({ type: 'terminal:replay', sessionId, ...(cols && rows ? { cols, rows } : {}) });
       return () => {
         outputHandlers.current.delete(sessionId);
       };
     },
-    []
+    [sendMessage]
   );
 
   const isPtySession = useCallback(
@@ -249,6 +263,14 @@ export function useTerminal(
     [sendMessage]
   );
 
+  const openBridgedTerminal = useCallback(
+    (sessionId: string, cwd: string) => {
+      console.log('[openBridgedTerminal] sending', sessionId, cwd);
+      sendMessage({ type: 'terminal:open-bridged', sessionId, cwd });
+    },
+    [sendMessage]
+  );
+
   const openNewTerminal = useCallback(
     (cwd: string, name?: string, mode: TerminalSpawnMode = 'bridge') => {
       sendMessage({ type: 'terminal:open-new', cwd, name, mode });
@@ -268,6 +290,7 @@ export function useTerminal(
     getError,
     killSession,
     openInTerminal,
+    openBridgedTerminal,
     openNewTerminal,
     ptySessionIds,
     exitedSessions,

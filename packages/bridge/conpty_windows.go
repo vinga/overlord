@@ -12,7 +12,7 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
-func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, error) {
+func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), error) {
 	cmdLine := buildCommandLine(args)
 
 	cols, rows := getConsoleSize()
@@ -21,11 +21,14 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 
 	cpty, err := conpty.Start(cmdLine, conpty.ConPtyDimensions(cols, rows))
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("conpty.Start: %w", err)
+		return nil, nil, 0, nil, nil, fmt.Errorf("conpty.Start: %w", err)
 	}
 
 	pid := cpty.Pid()
 	fmt.Fprintf(os.Stderr, "[bridge] ConPTY started, PID=%d\n", pid)
+
+	// currentCols/currentRows track the live ConPTY dimensions (updated by resizeAndNudge)
+	currentCols, currentRows := cols, rows
 
 	var writeMu sync.Mutex
 	writeFunc := func(data []byte) {
@@ -54,6 +57,27 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 		}
 	}()
 
+	// nudgeRedraw resizes ConPTY by +1 col then back, forcing the TUI to repaint.
+	// Uses currentCols/currentRows so it works correctly after a resize.
+	nudgeRedraw := func() {
+		fmt.Fprintf(os.Stderr, "[bridge] nudging ConPTY redraw (%dx%d)\n", currentCols, currentRows)
+		cpty.Resize(int(currentCols)+1, int(currentRows))
+		cpty.Resize(int(currentCols), int(currentRows))
+	}
+
+	// resizeAndNudge resizes the ConPTY to the given dimensions and forces a full repaint.
+	// Called when Overlord's xterm is a different size than the IntelliJ terminal that
+	// launched the bridge, so Claude renders at the correct width for display.
+	resizeAndNudge := func(newCols, newRows int) {
+		fmt.Fprintf(os.Stderr, "[bridge] resize+nudge ConPTY %dx%d → %dx%d\n", currentCols, currentRows, newCols, newRows)
+		currentCols = newCols
+		currentRows = newRows
+		cpty.Resize(newCols, newRows)
+		// Nudge after resize so the TUI re-renders at the new size
+		cpty.Resize(newCols+1, newRows)
+		cpty.Resize(newCols, newRows)
+	}
+
 	waitFunc := func() int {
 		exitCode, err := cpty.Wait(context.Background())
 		cpty.Close()
@@ -64,7 +88,7 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 		return int(exitCode)
 	}
 
-	return writeFunc, waitFunc, pid, nil
+	return writeFunc, waitFunc, pid, nudgeRedraw, resizeAndNudge, nil
 }
 
 func buildCommandLine(args []string) string {

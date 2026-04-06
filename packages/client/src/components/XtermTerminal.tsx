@@ -9,7 +9,7 @@ interface XtermTerminalProps {
   sessionId: string;
   onInput: (data: string) => void;
   onResize: (cols: number, rows: number) => void;
-  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => () => void;
+  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => () => void;
   isExited?: boolean;
   onResume?: () => void;
   fillHeight?: boolean;
@@ -44,7 +44,7 @@ export function XtermTerminal({
       theme: {
         background: '#0d1117',
         foreground: '#e6edf3',
-        cursor: 'transparent',
+        cursor: fixedSize ? '#0d1117' : 'transparent',
         cursorAccent: '#0d1117',
         selectionBackground: 'rgba(88, 166, 255, 0.25)',
         black: '#0d1117',
@@ -100,10 +100,11 @@ export function XtermTerminal({
       }
     });
 
-    // Register handler for incoming PTY output
+    // Register handler for incoming PTY output.
+    // Pass cols/rows for bridge sessions so the server can resize the ConPTY to match.
     const unregister = registerOutputHandler(sessionId, (data) => {
       term.write(data);
-    });
+    }, fixedSize?.cols, fixedSize?.rows);
 
     // Observe container size changes and fit/resize (skip for fixed-size bridge terminals)
     let observer: ResizeObserver | null = null;

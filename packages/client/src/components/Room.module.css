@@ -155,20 +155,30 @@
   line-height: 1.4;
   white-space: nowrap;
   pointer-events: none;
+  border: 1px solid transparent;
 }
 
-.deskLaunchBadge[data-method="pty"] {
-  background: rgba(212, 175, 55, 0.12);
+.deskLaunchBadge[data-category="pty"] {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: rgba(212, 175, 55, 0.25);
   color: rgba(212, 175, 55, 0.8);
 }
 
-.deskLaunchBadge[data-method="ide"] {
-  background: rgba(168, 139, 250, 0.12);
+.deskLaunchBadge[data-category="bridge"] {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.25);
+  color: rgba(56, 189, 248, 0.8);
+}
+
+.deskLaunchBadge[data-category="ide"] {
+  background: rgba(168, 139, 250, 0.08);
+  border-color: rgba(168, 139, 250, 0.2);
   color: rgba(168, 139, 250, 0.7);
 }
 
-.deskLaunchBadge[data-method="terminal"] {
-  background: rgba(255, 255, 255, 0.06);
+.deskLaunchBadge[data-category="terminal"] {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.35);
 }
 

@@ -107,13 +107,19 @@ interface TerminalSessionReplacedMessage {
   newSessionId: string;
 }
 
+interface TerminalClearMessage {
+  type: 'terminal:clear';
+  sessionId: string;
+}
+
 type TerminalMessage =
   | TerminalOutputMessage
   | TerminalSpawnedMessage
   | TerminalExitMessage
   | TerminalErrorMessage
   | TerminalLinkedMessage
-  | TerminalSessionReplacedMessage;
+  | TerminalSessionReplacedMessage
+  | TerminalClearMessage;
 
 // Typed snapshot message (server → client)
 interface SnapshotMessage {
@@ -191,6 +197,7 @@ export type {
   Room,
   OfficeSnapshot,
   TerminalMessage,
+  TerminalClearMessage,
   TerminalSpawnMode,
   SnapshotMessage,
   TerminalSpawnRequest,
@@ -217,19 +224,25 @@ function getLaunchInfo(
   session: { sessionType?: Session['sessionType']; ideName?: string },
   isPtyActive?: boolean,
 ): LaunchInfo {
-  if (isPtyActive || session.sessionType === 'embedded') {
-    return { category: 'pty', name: 'Overlord' };
-  }
+  // Shorten "IntelliJ IDEA" → "IntelliJ", "PyCharm Professional" → "PyCharm", etc.
+  const shortIde = (raw: string) =>
+    raw.replace(/\s+(IDEA|Community|Ultimate|Professional|Enterprise|Educational|CE)\b.*/, '').trim();
+
   if (session.sessionType === 'bridge') {
-    return { category: 'bridge', name: 'Bridge' };
+    const suffix = session.ideName ? ` / ${shortIde(session.ideName)}` : '';
+    return { category: 'bridge', name: `Bridge${suffix}` };
+  }
+  // Only show "Overlord" if the session was actually spawned by Overlord.
+  // isPtyActive alone is not enough — an IDE/terminal session can have a PTY
+  // attached without being Overlord-originated.
+  if (session.sessionType === 'embedded' || (isPtyActive && !session.sessionType)) {
+    return { category: 'pty', name: 'Overlord' };
   }
   if (session.sessionType === 'ide' || session.ideName) {
     const rawName = session.ideName ?? 'IDE';
-    // Shorten "IntelliJ IDEA" → "IntelliJ", "PyCharm Professional" → "PyCharm", etc.
-    const shortName = rawName.replace(/\s+(IDEA|Community|Ultimate|Professional|Enterprise|Educational|CE)\b.*/, '').trim();
-    return { category: 'ide', name: shortName };
+    return { category: 'ide', name: shortIde(rawName) };
   }
-  return { category: 'terminal', name: 'Terminal' };
+  return { category: 'terminal', name: session.ideName ? `Terminal / ${shortIde(session.ideName)}` : 'Terminal' };
 }
 
 export { getLaunchInfo };

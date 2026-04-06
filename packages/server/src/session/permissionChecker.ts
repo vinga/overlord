@@ -10,6 +10,9 @@ const PRIMARY_PATTERN   = /do you want to/i;
 const SECONDARY_PATTERNS = [
   /esc to cancel/i,
   /yes,? (?:and )?allow .* (?:during|for) this session/i,
+  /don'?t ask again/i,          // newer permission format: "Yes, and don't ask again for X"
+  /\(esc\)/i,                    // newer format puts "(esc)" at end of option 3
+  /^\s*\d\.\s+yes\b/im,         // numbered option list starting with "1. Yes"
 ];
 
 function looksLikePermissionPrompt(text: string): boolean {

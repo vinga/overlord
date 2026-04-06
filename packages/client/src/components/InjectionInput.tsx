@@ -101,6 +101,9 @@ export function InjectionInput({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setText('');
     }
   }
 

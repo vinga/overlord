@@ -123,6 +123,25 @@
   font-variant-numeric: tabular-nums;
 }
 
+.newSessionBtn {
+  margin-left: auto;
+  padding: 5px 14px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+  color: #d4af37;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.newSessionBtn:hover {
+  background: rgba(212, 175, 55, 0.15);
+  border-color: rgba(212, 175, 55, 0.4);
+}
+
 .tasksBtn {
   margin-left: 20px;
   padding: 4px 12px;

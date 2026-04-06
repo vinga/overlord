@@ -24,6 +24,7 @@ interface OfficeProps {
   onRenameSession?: (sessionId: string, name: string) => void;
   onCloneSession?: (sessionId: string) => void;
   isPtySession?: (sessionId: string) => boolean;
+  onOpenDirectoryPicker?: () => void;
 }
 
 function formatUpdatedAt(updatedAt: string): string {
@@ -35,7 +36,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
 
   const visibleRooms = useMemo(() =>
@@ -49,6 +50,11 @@ export const Office = React.memo(function Office({ snapshot, connected, onSelect
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
       <header className={styles.header}>
         <OverlordLogo />
+        {onOpenDirectoryPicker && (
+          <button className={styles.newSessionBtn} onClick={onOpenDirectoryPicker}>
+            + New Session
+          </button>
+        )}
       </header>
       <div className={styles.content}>
         {!hasRooms ? (

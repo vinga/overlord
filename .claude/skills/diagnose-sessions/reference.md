@@ -386,6 +386,164 @@ Only works on Windows (returns null/no-op on other platforms).
 
 ---
 
+## Architecture: Bridge Mode (Named Pipe Relay)
+
+Bridge mode spawns Claude in a separate console window via the Go bridge binary (`packages/bridge/overlord-bridge.exe`). Unlike embedded PTY sessions (where node-pty owns the ConPTY), bridge sessions have their own independent ConPTY that survives Overlord server restarts.
+
+### Data Flow
+```
+User's console window ←→ overlord-bridge.exe (ConPTY owner)
+                              ↕ named pipe (\\.\pipe\overlord-brg-XXXXXXXX)
+                         Overlord server (two sockets per bridge):
+                           - INPUT socket  → sends keystrokes to bridge → child
+                           - OUTPUT socket ← receives ConPTY output broadcast
+                              ↕ WebSocket
+                         Client (xterm.js in PTY Terminal tab)
+```
+
+### Bridge Binary (`packages/bridge/`)
+- **Entry point:** `main.go` — creates ConPTY child, named pipe listener, stdin→child forwarding
+- **Windows console setup:** `vt_windows.go` — `enableVTProcessing()`, `setRawInputMode()`, `syncConsoleDimensions()`
+- **Unix stubs:** `vt_stub.go` — no-op functions for cross-platform compilation
+- **ConPTY child:** `pty_windows.go` — `startChildWithPty()` creates ConPTY with detected dimensions (120×30), returns `writeToChild` func
+- **Stderr:** Redirected to `%TEMP%/overlord-bridge.log` at start of `main()` to prevent console corruption
+- **Build:** `powershell -Command "Set-Location 'C:\projekty\overlord\packages\bridge'; & 'C:\Program Files\Go\bin\go.exe' build -o overlord-bridge.exe . 2>&1"`
+
+### Handshake Protocol
+Every pipe connection starts with a 6-byte handshake read by the bridge:
+- `INPUT\n` → **Input-only**: pipe reads forwarded to child via `writeToChild()`, NOT added to broadcast list
+- `OUTPT\n` → **Output-only**: added to broadcast client list, blocks draining reads (no input forwarding)
+- Anything else → **Legacy bidirectional**: first bytes forwarded to child, added to broadcast
+
+**Why dual sockets:** A single bidirectional socket causes output backpressure to block injection writes, and output data received by the input path gets garbage-forwarded to the child as null bytes.
+
+### Server-Side Connection (`connectBridgePipe` in `index.ts`)
+```
+1. Connect INPUT socket → send "INPUT\n" → register in bridgeManager (for injection)
+2. Connect OUTPUT socket → send "OUTPT\n" → receive broadcast output → buffer + broadcast as terminal:output
+3. On output connect: broadcast terminal:linked to clients
+4. On disconnect: reconnect after 2s (output socket only)
+5. On connect error: remove from bridge registry (pipe dead)
+```
+
+### Session Matching
+Bridge sessions use `___BRG:<marker>` name markers (NOT CWD-based matching):
+1. UI spawns bridge: `overlord-bridge.exe --pipe overlord-brg-XXXXXXXX -- claude --name "UserName___BRG:brg-XXXXXXXX"`
+2. Claude writes session file with `name` field containing `___BRG:brg-XXXXXXXX`
+3. `linkPendingBridge()` in `sessionEventHandlers` detects marker, calls `connectBridgePipe()`
+4. `stateManager.addOrUpdate()` strips `___BRG:` suffix from `proposedName`
+
+### Persistence Across Server Restarts
+- **Bridge registry:** `%TEMP%/overlord-bridge-registry.json` maps `{sessionId → pipeName}`
+- `registerBridgePipe()` / `unregisterBridgePipe()` maintain the file
+- `reconnectBridgePipes()` called on server startup — reads registry, reconnects to all known pipes
+- Dead pipes (connect error) are automatically removed from registry
+
+### Output Buffering & Replay
+- Server buffers bridge output in `ptyOutputBuffer` (same ring buffer as PTY sessions, 500 chunks max)
+- On new WS connection: server replays `terminal:linked` + buffered output for all bridge sessions
+- On view switch (xterm remount): client sends `terminal:replay` message → server replays buffer
+- Bridge sessions keyed by `sessionId` directly (not ptySessionId)
+
+### Console Setup (Windows)
+- **Raw input mode:** Disables `ENABLE_LINE_INPUT` (0x0002) and `ENABLE_ECHO_INPUT` (0x0004), enables `ENABLE_VIRTUAL_TERMINAL_INPUT` (0x0200) — keystrokes go directly to ConPTY
+- **Dimension sync:** `syncConsoleDimensions()` — move cursor to (0,0), shrink window to 1×1, set buffer to exact size (120×30), expand window to match
+- **VT processing:** `enableVTProcessing()` — enables `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on stdout for ANSI escape sequences
+
+### Conversation Injection for Bridge Sessions
+- Overlord Conversation UI sends `terminal:inject` with text
+- `wsHandler.ts` detects bridge session via `bridgeSessions.has(sessionId)`
+- Always appends `\r` (carriage return) for bridge sessions: `text + '\r'`
+- Writes via `bridgeManager.write(sessionId, data)` → INPUT socket → bridge → child ConPTY
+
+### Client-Side Bridge Detection
+- `useTerminal.ts` tracks `bridgeSessionIds` ref
+- On `terminal:linked` with `ptySessionId` starting with `bridge-`, adds `claudeSessionId` to set
+- `isBridgeSession(id)` callback passed to DetailPanel
+- Bridge terminals rendered with `fixedSize={{ cols: 120, rows: 30 }}` (matching ConPTY dimensions)
+
+### NUDGE and RSNUD Protocols (ConPTY Redraw)
+
+Bridge sessions use two additional one-shot pipe protocols for triggering redraws without sending input:
+
+- **`NUDGE\n`** (6 bytes): Bridge calls `nudgeRedraw()` — resizes ConPTY by +1 col and back, forcing a full repaint. Bridge closes connection immediately after.
+- **`RSNUD\n`** (6 bytes header, then `"cols rows\n"` payload): Bridge reads the size string, resizes ConPTY to those exact dimensions, then nudges. Used when xterm.js size (120×30) differs from the terminal that started the bridge (e.g., IntelliJ at 145×21).
+
+**Why RSNUD is needed:** The bridge starts with whatever dimensions the host terminal has. If the user opens the Overlord PTY Terminal tab (xterm at 120×30), the ConPTY content renders at the wrong width, causing misaligned text and cursor. RSNUD resizes the ConPTY to match xterm, then triggers a full repaint so everything renders correctly.
+
+**Server trigger:** `resizeAndNudgeBridgePipe(sessionId, cols, rows)` in `pipeInjector.ts`. Called 400ms after the output socket connects (the initial nudge from `OUTPT\n` connection fires at the wrong size; the delayed RSNUD corrects it). Also called from `terminal:replay` handler with client's current cols/rows.
+
+**TypeScript implementation (`pipeInjector.ts`):**
+```typescript
+socket.write(`RSNUD\n${cols} ${rows}\n`, (err) => {
+  if (err) { resolve(false); return; }
+  socket.end();  // Use end(), NOT destroy() — graceful FIN lets bridge read both header + payload
+});
+```
+
+**Go implementation (`main.go`):**
+```go
+if n == 6 && string(header[:6]) == "RSNUD\n" {
+    sizeBuf := make([]byte, 32)
+    sn, _ := conn.Read(sizeBuf)
+    var newCols, newRows int
+    fmt.Sscanf(string(sizeBuf[:sn]), "%d %d", &newCols, &newRows)
+    resizeAndNudge(newCols, newRows)
+    conn.Close()
+    return
+}
+```
+
+**CRITICAL: `socket.end()` not `socket.destroy()`**. `destroy()` sends TCP RST which may abort the connection before the bridge finishes reading the header. `end()` sends FIN, allowing the bridge to complete reading before closing.
+
+### Pipe Address Mismatch: `pipeAddrs` Map
+
+`pipePath(sessionId)` generates `\\.\pipe\overlord-<full-uuid>` but manually-started bridges listen on `\\.\pipe\overlord-<8char-marker>` (e.g., `overlord-brg-abc123`). NUDGE/RSNUD one-shot connections were silently failing because they connected to the wrong pipe address.
+
+**Fix:** `BridgeConnectionManager` maintains a `pipeAddrs: Map<string, string>`. `connectBridgePipe()` calls `bridgeManager.setPipeAddr(sessionId, pipeAddr)` **synchronously** (before the `net.connect()` call) so the address is available immediately for any `terminal:replay` that arrives before the async connect callback fires.
+
+**Critical timing:** If `setPipeAddr()` is called inside the connect callback (async), a `terminal:replay` arriving before connect completes will fall back to the wrong `pipePath(sessionId)` address. Move it before `net.connect()`.
+
+### Bridge Binary Must Be Rebuilt After Go Changes
+
+The bridge binary (`overlord-bridge.exe`) is a compiled Go binary. Changes to `.go` files in `packages/bridge/` do NOT take effect until the binary is rebuilt. This is a common source of confusion — code looks correct but old behavior persists.
+
+**Symptom of stale binary:** NUDGE/RSNUD text appears in the terminal output as literal characters (`RSNUD`, `120 30`). The old binary (without the protocol handlers) treats RSNUD connections as legacy bidirectional clients and forwards the bytes to the child process as keyboard input.
+
+**Rebuild command:**
+```powershell
+Set-Location 'C:\projekty\overlord\packages\bridge'
+& 'C:\Program Files\Go\bin\go.exe' build -o overlord-bridge.exe .
+```
+Or from bash:
+```bash
+cd C:/projekty/overlord/packages/bridge && "/c/Program Files/Go/bin/go.exe" build -o overlord-bridge.exe .
+```
+
+**After rebuild:** Restart any bridge sessions so they pick up the new binary (existing bridge processes continue using the old binary — you must start a new one).
+
+### Double Cursor in Bridge Terminal (FIXED)
+
+Bridge sessions render two visible cursors: one from the ConPTY output (Claude's own cursor character in the terminal output stream), and one from xterm.js's own cursor rendering.
+
+**Root cause:** xterm.js renders a block cursor at the current cursor position. With `cursor: 'transparent'`, the cursor block has a transparent background but may still be visible depending on xterm.js version. Meanwhile, Claude's terminal renders its own cursor character as part of the ConPTY output.
+
+**Fix:** For bridge sessions (`fixedSize` prop set), use `cursor: '#0d1117'` (background color) instead of `'transparent'`. This makes xterm's cursor block identical to the background — fully invisible. The ConPTY output is solely responsible for cursor rendering.
+
+**In `XtermTerminal.tsx`:**
+```typescript
+cursor: fixedSize ? '#0d1117' : 'transparent',
+```
+
+**Why internal PTY sessions are unaffected:** Internal PTY sessions don't emit their own visible cursor characters — xterm's cursor IS the cursor, and `'transparent'` makes it look like the character at that position with normal colors. Bridge sessions have TWO cursors competing.
+
+### Known Limitations
+- Bridge window title shows `___BRG:` marker (cosmetic — not yet fixed)
+- Messages sent while Claude is "working" may be lost (ConPTY buffers but Claude TUI may discard stdin during processing)
+- Bridge binary must be rebuilt manually after Go code changes (`go build`) — stale binary causes RSNUD bytes to appear as terminal input
+
+---
+
 ## Quick Symptom Reference
 
 | Symptom | Most Likely Cause | Where to Check |
@@ -417,3 +575,13 @@ Only works on Windows (returns null/no-op on other platforms).
 | Claude process exits after a few minutes | Large transcript file causing I/O contention | Check transcript `.jsonl` file sizes — files >10MB cause issues if tail-read optimization is missing |
 | Console Preview rotates between sessions | Pending queue response mismatch in consoleInjector | Check `doReadScreen()` timeout handling, verify per-PID cache |
 | Console Preview empty or injection blocked | Daemon queue flooded | Check `pending` count in server logs; restart server |
+| Bridge Terminal PTY tab empty | Output socket missing `OUTPT\n` handshake — bridge blocks on `conn.Read()` | Check bridge log at `%TEMP%/overlord-bridge.log`; verify `connectBridgePipe` sends `OUTPT\n` |
+| Bridge Terminal PTY tab goes blank on view switch | xterm disposed on unmount, no replay on remount | Verify `terminal:replay` message sent by client and handled by server |
+| Bridge conversation injection not arriving | Input socket not connected, or missing `\r` append | Check bridge log for `pipe→child` messages; verify `INPUT\n` handshake |
+| Bridge session not detected after spawn | `___BRG:` marker missing from session name | Check session file `name` field; verify `linkPendingBridge` in index.ts |
+| Bridge session lost after server restart | Bridge registry file missing or stale | Check `%TEMP%/overlord-bridge-registry.json`; verify `reconnectBridgePipes()` |
+| Null bytes sent to bridge child process | Output data forwarded on input socket (pre-handshake bug) | Verify dual-socket with `INPUT\n`/`OUTPT\n` handshake protocol |
+| `RSNUD` / `120 30` text appears as input in bridge terminal | Stale bridge binary — rebuilt before NUDGE/RSNUD handlers existed | Rebuild binary: `cd packages/bridge && go build -o overlord-bridge.exe .` |
+| Bridge terminal cursor/content misaligned (wrong width) | ConPTY started at host terminal size (e.g., 145×21), xterm is 120×30 | RSNUD is sent 400ms after output socket connects; check server log for `[bridge] RSNUD result: ok` |
+| RSNUD/NUDGE fails silently (connection succeeds but bridge ignores it) | Wrong pipe address — `pipePath(sessionId)` ≠ actual bridge pipe name | Check `pipeAddrs` Map; verify `setPipeAddr()` called synchronously in `connectBridgePipe` before `net.connect()` |
+| Two visible cursors in bridge terminal | xterm.js cursor + ConPTY cursor both visible | Fixed by `cursor: fixedSize ? '#0d1117' : 'transparent'` in XtermTerminal.tsx |

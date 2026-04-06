@@ -43,6 +43,10 @@ export interface BridgeEvents {
 class BridgeConnectionManager extends EventEmitter {
   private connections = new Map<string, net.Socket>();
   private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Stores the actual pipe address for each session (set from index.ts when connecting).
+  // Used by nudge/resize one-shot connections which need the correct pipe path
+  // (may differ from pipePath(sessionId) when bridges use a short marker name).
+  private pipeAddrs = new Map<string, string>();
 
   /** Connect to a bridge pipe and start reading output */
   connect(sessionId: string): void {
@@ -91,6 +95,7 @@ class BridgeConnectionManager extends EventEmitter {
       socket.destroy();
       this.connections.delete(sessionId);
     }
+    this.pipeAddrs.delete(sessionId);
   }
 
   /** Write input to the bridge pipe */
@@ -101,9 +106,25 @@ class BridgeConnectionManager extends EventEmitter {
     return true;
   }
 
-  /** Register an externally-created socket (e.g. from linkPendingBridge) */
-  registerSocket(sessionId: string, socket: net.Socket): void {
+  /** Register an externally-created socket and its pipe address */
+  registerSocket(sessionId: string, socket: net.Socket, pipeAddr?: string): void {
     this.connections.set(sessionId, socket);
+    if (pipeAddr) this.pipeAddrs.set(sessionId, pipeAddr);
+  }
+
+  /** Store the pipe address for a session (for one-shot nudge/resize connections) */
+  setPipeAddr(sessionId: string, pipeAddr: string): void {
+    this.pipeAddrs.set(sessionId, pipeAddr);
+  }
+
+  /** Get the stored pipe address for a session, falling back to the default path */
+  getPipeAddr(sessionId: string): string {
+    return this.pipeAddrs.get(sessionId) ?? pipePath(sessionId);
+  }
+
+  /** Clean up pipe address when session disconnects */
+  clearPipeAddr(sessionId: string): void {
+    this.pipeAddrs.delete(sessionId);
   }
 
   /** Check if connected to a bridge */
@@ -165,6 +186,57 @@ export async function injectViaPipe(sessionId: string, text: string): Promise<bo
           resolve(!err);
         });
       });
+      socket.on('error', () => resolve(false));
+      socket.setTimeout(3000, () => { socket.destroy(); resolve(false); });
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Trigger a nudge (full ConPTY redraw) via the bridge's named pipe.
+ * Connects with NUDGE\n protocol — bridge calls nudgeRedraw() and closes.
+ */
+export async function nudgeBridgePipe(sessionId: string): Promise<boolean> {
+  try {
+    return await new Promise<boolean>((resolve) => {
+      const pp = bridgeManager.getPipeAddr(sessionId);
+      const socket = net.connect(pp, () => {
+        // Use end() not destroy() — graceful FIN lets the bridge read the 6-byte header
+        // before the connection closes (destroy sends RST which can abort the read).
+        socket.write('NUDGE\n', (err) => {
+          if (err) { resolve(false); return; }
+          socket.end();
+        });
+      });
+      socket.on('close', () => resolve(true));
+      socket.on('error', () => resolve(false));
+      socket.setTimeout(3000, () => { socket.destroy(); resolve(false); });
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resize the bridge ConPTY to cols×rows, then trigger a full repaint.
+ * Sends RSNUD\n + "{cols} {rows}\n" — bridge resizes and nudges in one step.
+ * Used when Overlord's xterm size differs from the terminal that launched the bridge.
+ */
+export async function resizeAndNudgeBridgePipe(sessionId: string, cols: number, rows: number): Promise<boolean> {
+  try {
+    return await new Promise<boolean>((resolve) => {
+      const pp = bridgeManager.getPipeAddr(sessionId);
+      const socket = net.connect(pp, () => {
+        // Use end() not destroy() — graceful FIN lets the bridge read both the
+        // 6-byte header and the "cols rows\n" payload before closing.
+        socket.write(`RSNUD\n${cols} ${rows}\n`, (err) => {
+          if (err) { resolve(false); return; }
+          socket.end();
+        });
+      });
+      socket.on('close', () => resolve(true));
       socket.on('error', () => resolve(false));
       socket.setTimeout(3000, () => { socket.destroy(); resolve(false); });
     });

@@ -95,8 +95,8 @@ func main() {
 	clients := newClientRegistry()
 
 	// Start child via ConPTY (Windows) or plain pty (Unix)
-	// Returns: write-to-child func, wait func, child PID
-	writeToChild, waitForChild, childPid, err := startChildWithPty(args, clients)
+	// Returns: write-to-child func, wait func, child PID, nudge func, resize+nudge func
+	writeToChild, waitForChild, childPid, nudgeRedraw, resizeAndNudge, err := startChildWithPty(args, clients)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start child: %v\n", err)
 		os.Exit(1)
@@ -119,8 +119,10 @@ func main() {
 	}()
 
 	// Accept pipe connections
-	// Protocol: if client sends "INPUT\n" as first 6 bytes, it's an input-only connection
-	// (reads forwarded to child, no output broadcast). Otherwise it's a normal bidirectional connection.
+	// Protocol: client sends a 6-byte handshake to identify connection type:
+	//   "INPUT\n"  → input-only (reads forwarded to child, no output broadcast)
+	//   "OUTPT\n"  → output-only (receives broadcast, no reads forwarded)
+	//   anything else → legacy bidirectional connection
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -128,10 +130,56 @@ func main() {
 				break
 			}
 			go func() {
-				// Peek at first bytes to detect input-only handshake
 				header := make([]byte, 6)
 				n, err := conn.Read(header)
 				if err != nil {
+					conn.Close()
+					return
+				}
+
+				if n == 6 && string(header[:6]) == "OUTPT\n" {
+					// Output-only connection: receives broadcast, no input forwarding
+					fmt.Fprintf(os.Stderr, "[bridge] Output-only client connected\n")
+					clients.add(conn)
+					// Nudge ConPTY to redraw so this client gets the current screen
+					nudgeRedraw()
+					defer func() {
+						clients.remove(conn)
+						conn.Close()
+						fmt.Fprintf(os.Stderr, "[bridge] Output-only client disconnected\n")
+					}()
+					// Block until the connection is closed (drain any unexpected data)
+					buf := make([]byte, 4096)
+					for {
+						_, err := conn.Read(buf)
+						if err != nil {
+							break
+						}
+					}
+					return
+				}
+
+				if n == 6 && string(header[:6]) == "NUDGE\n" {
+					// Nudge-only connection: trigger full redraw and close immediately
+					fmt.Fprintf(os.Stderr, "[bridge] Nudge request: triggering ConPTY redraw\n")
+					nudgeRedraw()
+					conn.Close()
+					return
+				}
+
+				if n == 6 && string(header[:6]) == "RSNUD\n" {
+					// Resize+Nudge: read "cols rows\n", resize ConPTY to match Overlord's xterm,
+					// then force a full repaint so content renders at the correct width.
+					sizeBuf := make([]byte, 32)
+					sn, _ := conn.Read(sizeBuf)
+					var newCols, newRows int
+					fmt.Sscanf(string(sizeBuf[:sn]), "%d %d", &newCols, &newRows)
+					fmt.Fprintf(os.Stderr, "[bridge] Resize+Nudge: %dx%d\n", newCols, newRows)
+					if newCols > 0 && newRows > 0 {
+						resizeAndNudge(newCols, newRows)
+					} else {
+						nudgeRedraw()
+					}
 					conn.Close()
 					return
 				}

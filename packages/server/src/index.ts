@@ -11,7 +11,7 @@ import { StateManager } from './session/stateManager.js';
 import { SessionWatcher } from './session/sessionWatcher.js';
 import { ProcessChecker } from './session/processChecker.js';
 import { PtyManager } from './pty/ptyManager.js';
-import { getBridgePath, getPipeName, bridgeManager, injectViaPipe } from './pty/pipeInjector.js';
+import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
 import { initLogger, log, getBuffer } from './logger.js';
@@ -58,6 +58,58 @@ const claudeToPtyId = new Map<string, string>();
 const ptyOutputBuffer = new Map<string, Buffer[]>();
 const PTY_BUFFER_MAX_CHUNKS = 500;
 
+// Rolling text buffer for bridge permission detection (last 8KB per session, plain text after ANSI strip)
+const bridgePermText = new Map<string, string>();
+const BRIDGE_PERM_BUF_SIZE = 8192;
+
+function stripAnsi(raw: string): string {
+  const stripped = raw
+    // CSI sequences: ESC [ ... final-byte  (covers [?2026h, [0m, [2J, etc.)
+    .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+    // OSC sequences: ESC ] ... ST or BEL
+    .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+    // Other ESC + single char
+    .replace(/\x1b[^[\]]/g, '')
+    // Strip remaining bare ESC
+    .replace(/\x1b/g, '')
+    // Strip non-printable chars except newline/tab/CR
+    .replace(/[^\x20-\x7e\n\t\r]/g, '');
+
+  // Process carriage returns: \r moves to start of line, later content wins.
+  // Find the last non-empty segment per newline-delimited chunk.
+  return stripped.split('\n').map(line => {
+    const parts = line.split('\r');
+    // Work backwards to find the last non-empty segment (trailing \r gives empty string)
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i].trim()) return parts[i];
+    }
+    return parts[parts.length - 1];
+  }).join('\n');
+}
+
+const BRIDGE_PERM_PRIMARY = /do you want to/i;
+const BRIDGE_PERM_SECONDARY = [
+  /esc to cancel/i,
+  /yes,? (?:and )?allow .* (?:during|for) this session/i,
+  /yes,? allow .* from this project/i,
+];
+
+function extractBridgePromptBlock(text: string): string {
+  // Find the line containing "Do you want to" and take from there forward
+  const lines = text.split('\n');
+  const startIdx = lines.findIndex(l => /do you want to/i.test(l));
+  if (startIdx === -1) return text.slice(-400);
+  // Include up to 10 lines from the prompt (covers Yes/No options + Esc hint)
+  return lines.slice(startIdx, startIdx + 10).join('\n').trim();
+}
+
+function checkBridgePermission(sessionId: string): void {
+  const text = bridgePermText.get(sessionId) ?? '';
+  const hasPrompt = BRIDGE_PERM_PRIMARY.test(text) && BRIDGE_PERM_SECONDARY.some(p => p.test(text));
+  // stateManager available at call time (called from connectBridgePipe which runs after init)
+  stateManager.setNeedsPermission(sessionId, hasPrompt, hasPrompt ? extractBridgePromptBlock(text) : undefined);
+}
+
 // Track recently removed sessions for CWD-based /clear detection (new PID case)
 const recentlyRemovedByCwd = new Map<string, { sessionId: string; removedAt: number }>();
 
@@ -72,6 +124,9 @@ const pendingCloneInfo = new Map<string, { name: string; originalSessionId: stri
 
 // Track sessions opened via bridge (have named pipe for injection)
 const bridgeSessions = new Set<string>();
+// Tracks sessions currently mid-connection (async connect in progress).
+// Prevents the session watcher and reconnectBridgePipes from both connecting.
+const pendingBridgeConnect = new Set<string>();
 
 // Persistent bridge pipe registry — survives server restarts
 const BRIDGE_REGISTRY_PATH = join(os.tmpdir(), 'overlord-bridge-registry.json');
@@ -135,9 +190,15 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       fullCmd = `start "${windowTitle}" /D "${cwd}" ${safeBridge} --pipe ${pipeName} -- ${command}`;
       console.log(`[open-terminal] using bridge, pipe=${pipeName}`);
     } else {
-      // Fallback: direct spawn (no bridge binary available)
-      fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K ${command}`;
-      console.log('[open-terminal] no bridge, direct spawn');
+      // Direct spawn — run command in a new terminal window.
+      // If command starts with a quoted exe path, use start directly (no cmd.exe /K wrapper)
+      // to avoid nested quote parsing issues. Otherwise wrap in cmd.exe /K.
+      if (command.startsWith('"')) {
+        fullCmd = `start "${windowTitle}" /D "${cwd}" ${command}`;
+      } else {
+        fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K ${command}`;
+      }
+      console.log('[open-terminal] direct spawn');
     }
 
     console.log('[open-terminal] running:', fullCmd);
@@ -161,7 +222,9 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
 // Opens TWO connections: one for reading output, one for writing input.
 // This prevents output backpressure from blocking input delivery.
 function connectBridgePipe(sessionId: string, pipeName: string): void {
-  if (bridgeManager.isConnected(sessionId)) return; // already connected
+  // Guard against concurrent calls (async connect in progress) and already-connected sessions
+  if (bridgeManager.isConnected(sessionId) || pendingBridgeConnect.has(sessionId)) return;
+  pendingBridgeConnect.add(sessionId);
 
   const pipeAddr = process.platform === 'win32'
     ? `\\\\.\\pipe\\${pipeName}`
@@ -169,19 +232,24 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
 
   bridgeSessions.add(sessionId);
   registerBridgePipe(sessionId, pipeName);
+  // Store pipe addr immediately (synchronously) so nudge/resize one-shot connections
+  // use the correct path even if terminal:replay arrives before the async connect fires.
+  bridgeManager.setPipeAddr(sessionId, pipeAddr);
 
   // Connection 1: dedicated INPUT socket (for writing injections to the bridge)
   // Send "INPUT\n" handshake so bridge knows not to broadcast output to this socket
   const inputSocket = net.connect(pipeAddr, () => {
     inputSocket.write('INPUT\n', () => {
       console.log(`[bridge] input socket connected for ${sessionId.slice(0, 8)}`);
-      bridgeManager.registerSocket(sessionId, inputSocket);
+      pendingBridgeConnect.delete(sessionId); // connection established, unblock guard
+      bridgeManager.registerSocket(sessionId, inputSocket, pipeAddr);
     });
   });
 
   let inputConnectFailed = false;
   inputSocket.on('error', (err: Error) => {
     console.log(`[bridge] input socket error for ${sessionId.slice(0, 8)}: ${err.message}`);
+    pendingBridgeConnect.delete(sessionId);
     inputConnectFailed = true;
   });
   // Discard any data received on the input socket (output goes to the other socket)
@@ -192,21 +260,58 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       console.log(`[bridge] input pipe dead for ${sessionId.slice(0, 8)}, removing from registry`);
       bridgeSessions.delete(sessionId);
       unregisterBridgePipe(sessionId);
+      bridgePermText.delete(sessionId);
     }
   });
 
   // Connection 2: dedicated OUTPUT socket (for reading ConPTY output from bridge)
+  // Send "OUTPT\n" handshake so bridge adds this socket to the broadcast list
   const outputSocket = net.connect(pipeAddr, () => {
-    console.log(`[bridge] output socket connected for ${sessionId.slice(0, 8)}`);
-    broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId });
+    outputSocket.write('OUTPT\n', () => {
+      // Clear stale buffer — nudgeRedraw on the bridge side will immediately
+      // produce a fresh full-screen repaint that fills the buffer from scratch.
+      // Without this, replay sends historical output + redraw = garbled display.
+      ptyOutputBuffer.delete(sessionId);
+      console.log(`[bridge] output socket connected for ${sessionId.slice(0, 8)}`);
+      broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId });
+      // The bridge auto-nudges at IntelliJ's terminal size (not Overlord's 120×30 xterm).
+      // Tell clients to clear immediately, then send RSNUD after the wrong-size repaint
+      // arrives so the ConPTY is resized before the next repaint.
+      broadcastRaw({ type: 'terminal:clear', sessionId });
+      setTimeout(() => {
+        const pipeAddr = bridgeManager.getPipeAddr(sessionId);
+        console.log(`[bridge] RSNUD: sending 120x30 to ${sessionId.slice(0, 8)} via ${pipeAddr}`);
+        void resizeAndNudgeBridgePipe(sessionId, 120, 30).then(ok => {
+          console.log(`[bridge] RSNUD result: ${ok ? 'ok' : 'failed'} for ${sessionId.slice(0, 8)}`);
+        });
+      }, 400);
+    });
   });
 
   outputSocket.on('data', (data: Buffer) => {
     let buf = ptyOutputBuffer.get(sessionId);
     if (!buf) { buf = []; ptyOutputBuffer.set(sessionId, buf); }
+
+    // \x1b[?2026h is the "synchronized output" start marker that Ink/React TUI
+    // sends before every full-screen repaint. Use it as a checkpoint: discard
+    // history so the replay buffer always begins at a complete, self-contained frame.
+    // This prevents cursor-position-dependent incremental chunks from rendering
+    // on top of unrelated history in a fresh xterm instance.
+    if (data.includes(0x1b) && data.toString('binary').includes('\x1b[?2026h')) {
+      buf = [];
+      ptyOutputBuffer.set(sessionId, buf);
+    }
+
     buf.push(data);
     if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
     broadcastRaw({ type: 'terminal:output', sessionId, data: data.toString('base64') });
+
+    // Update rolling plain-text buffer for permission detection
+    const prev = bridgePermText.get(sessionId) ?? '';
+    const appended = prev + stripAnsi(data.toString('utf8'));
+    bridgePermText.set(sessionId, appended.length > BRIDGE_PERM_BUF_SIZE
+      ? appended.slice(appended.length - BRIDGE_PERM_BUF_SIZE) : appended);
+    checkBridgePermission(sessionId);
   });
 
   let outputConnectFailed = false;
@@ -232,17 +337,26 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
   const marker = rawName.split('___BRG:')[1];
   if (!marker) return;
 
-  const pending = pendingBridgeByMarker.get(marker);
-  if (!pending) return;
+  if (bridgeSessions.has(sessionId)) return; // already connected
 
-  // Only match recent entries (< 30s)
-  if (Date.now() - pending.timestamp > 30_000) {
+  const pending = pendingBridgeByMarker.get(marker);
+
+  // Derive pipe name: Overlord-spawned sessions register a pending entry with the
+  // exact pipe name; manually-started bridges use the convention overlord-<marker>.
+  const pipeName = pending?.pipeName ?? `overlord-${marker}`;
+
+  if (pending) {
+    // Only match recent entries (< 30s)
+    if (Date.now() - pending.timestamp > 30_000) {
+      pendingBridgeByMarker.delete(marker);
+      return;
+    }
     pendingBridgeByMarker.delete(marker);
-    return;
   }
-  pendingBridgeByMarker.delete(marker);
-  console.log(`[bridge] linking new session ${sessionId.slice(0, 8)} to pipe ${pending.pipeName} via marker ${marker}`);
-  connectBridgePipe(sessionId, pending.pipeName);
+
+  console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (manual spawn)'}`);
+  stateManager.setSessionType(sessionId, 'bridge');
+  connectBridgePipe(sessionId, pipeName);
 }
 
 // Reconnect to all known bridge pipes on startup
@@ -253,6 +367,7 @@ function reconnectBridgePipes(): void {
   console.log(`[bridge] reconnecting to ${entries.length} known bridge pipes...`);
   for (const [sessionId, pipeName] of entries) {
     // Try to connect — if bridge is dead, the error handler will clean up
+    stateManager.setSessionType(sessionId, 'bridge');
     connectBridgePipe(sessionId, pipeName);
   }
 }
@@ -504,6 +619,7 @@ registerApiRoutes(
   bridgeSessions,
   deleteSession,
   aiClassifier.generateCompletionSummary.bind(aiClassifier),
+  ptyOutputBuffer,
 );
 
 // Start HTTP server

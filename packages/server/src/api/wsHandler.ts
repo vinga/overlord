@@ -1,8 +1,9 @@
+import * as fs from 'fs';
 import type { WebSocket, WebSocketServer } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
-import { injectViaPipe } from '../pty/pipeInjector.js';
+import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath } from '../pty/pipeInjector.js';
 import { log } from '../logger.js';
 
 export interface WsHandlerContext {
@@ -78,12 +79,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     // Replay active bridge session links (bridge sessions don't use ptyManager)
     for (const bridgeSessionId of bridgeSessions) {
       sendToClient(ws, { type: 'terminal:linked', ptySessionId: `bridge-${bridgeSessionId}`, claudeSessionId: bridgeSessionId, replay: true });
-      // Bridge output is buffered under the sessionId directly
-      const buf = ptyOutputBuffer.get(bridgeSessionId);
-      if (buf && buf.length > 0) {
-        const encoded = Buffer.concat(buf).toString('base64');
-        sendToClient(ws, { type: 'terminal:output', sessionId: bridgeSessionId, data: encoded });
-      }
+      // Don't send historical buffer — terminal:replay will trigger a fresh nudge instead
     }
 
     ws.on('message', (raw) => {
@@ -101,6 +97,13 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
         const name = msg.name ? String(msg.name) : undefined;
+
+        // Auto-create directory if it doesn't exist
+        if (!fs.existsSync(cwd)) {
+          fs.mkdirSync(cwd, { recursive: true });
+          console.log(`[spawn] created directory: ${cwd}`);
+        }
+
         // Generate a unique sessionId for this PTY session
         const sessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -180,10 +183,36 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         return;
       }
 
+      if (type === 'terminal:open-bridged') {
+        // Open a new terminal window running the bridge command for this session.
+        // The bridge connects to a named pipe; Overlord detects the ___BRG:<marker> name
+        // and links the PTY output to this session automatically.
+        const sessionId = String(msg.sessionId ?? '');
+        const cwd = String(msg.cwd ?? process.cwd());
+        const session = stateManager.getSession(sessionId);
+        const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
+        const marker = sessionId.slice(0, 8);
+        const safeName = sessionName.replace(/"/g, '');
+        const bridgePath = getBridgePath();
+        const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
+        console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
+        openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
+          .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))
+          .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` }));
+        return;
+      }
+
       if (type === 'terminal:open-new') {
         const cwd = String(msg.cwd ?? process.cwd());
         const name = msg.name ? String(msg.name) : undefined;
         const mode = msg.mode ? String(msg.mode) : undefined;
+
+        // Auto-create directory if it doesn't exist
+        if (!fs.existsSync(cwd)) {
+          fs.mkdirSync(cwd, { recursive: true });
+          console.log(`[open-new] created directory: ${cwd}`);
+        }
+
         const cwdName = name || cwd.split(/[\\/]/).pop() || 'New';
         const safeCwdName = cwdName.replace(/"/g, '');
         console.log(`[open-new] cwd=${cwd} name=${cwdName} mode=${mode ?? 'default'}`);
@@ -286,6 +315,38 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
         ptyManager.resize(claudeToPtyId.get(sessionId) ?? sessionId, cols, rows);
+        return;
+      }
+
+      if (type === 'terminal:replay') {
+        // Client requests replay of buffered output (e.g. after terminal remount on view switch)
+        const sessionId = String(msg.sessionId ?? '');
+
+        // Bridge sessions: stale buffer contains incremental frames that cause artifacts.
+        // Clear the buffer, tell the client to reset xterm, then nudge the bridge for a
+        // fresh full-screen repaint which flows through the live OUTPT channel.
+        if (bridgeSessions.has(sessionId)) {
+          ptyOutputBuffer.set(sessionId, []);
+          sendToClient(ws, { type: 'terminal:clear', sessionId });
+          const cols = Number(msg.cols || 0);
+          const rows = Number(msg.rows || 0);
+          if (cols > 0 && rows > 0) {
+            // Resize ConPTY to match Overlord's xterm dimensions before nudging,
+            // so the repaint renders at the correct width (not IntelliJ's terminal width)
+            void resizeAndNudgeBridgePipe(sessionId, cols, rows);
+          } else {
+            void nudgeBridgePipe(sessionId);
+          }
+          return;
+        }
+
+        // Non-bridge: send buffered output as before
+        const ptySessionId = claudeToPtyId.get(sessionId);
+        const buf = ptyOutputBuffer.get(ptySessionId ?? sessionId) ?? ptyOutputBuffer.get(sessionId);
+        if (buf && buf.length > 0) {
+          const encoded = Buffer.concat(buf).toString('base64');
+          sendToClient(ws, { type: 'terminal:output', sessionId, data: encoded });
+        }
         return;
       }
 
