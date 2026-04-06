@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useTick } from '../hooks/useTick';
-import type { Session, WorkerState, ActivityItem } from '../types';
+import type { Session, WorkerState, ActivityItem, PendingQuestion } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
@@ -25,8 +25,12 @@ function renderMarkdown(text: string): string {
 }
 
 /** Renders user message content, replacing @<path> image references with clickable thumbnails */
-function UserMessageContent({ content, styles }: { content: string; styles: Record<string, string> }) {
-  const [expandedImages, setExpandedImages] = useState<Set<number>>(() => new Set());
+function UserMessageContent({ content, styles, expandedImages, onToggleImage }: {
+  content: string;
+  styles: Record<string, string>;
+  expandedImages: Set<number>;
+  onToggleImage: (idx: number) => void;
+}) {
   // Split content on @<path-to-overlord-paste-image> patterns
   const imagePattern = /@((?:[A-Za-z]:\\|\/)[^\s]+overlord-paste-[^\s]+\.(?:png|jpg|jpeg))/gi;
   const parts: Array<{ type: 'text'; value: string } | { type: 'image'; path: string; idx: number }> = [];
@@ -58,11 +62,7 @@ function UserMessageContent({ content, styles }: { content: string; styles: Reco
             <code className={styles.inlineImagePath} title="Click to copy path" onClick={() => { navigator.clipboard.writeText(p.path); }}>@{p.path}</code>
             <button
               className={styles.inlineImageToggle}
-              onClick={() => setExpandedImages(prev => {
-                const next = new Set(prev);
-                if (next.has(p.idx)) next.delete(p.idx); else next.add(p.idx);
-                return next;
-              })}
+              onClick={() => onToggleImage(p.idx)}
               title={isExpanded ? 'Hide image' : 'Show image'}
             >
               {isExpanded ? '▾ hide' : '▸ preview'}
@@ -256,6 +256,65 @@ function PermissionPrompt({ sessionId, promptText, styles }: {
           3. No
         </button>
       </div>
+    </div>
+  );
+}
+
+function QuestionPrompt({ sessionId, question, styles }: {
+  sessionId: string;
+  question: PendingQuestion;
+  styles: Record<string, string>;
+}) {
+  const [responding, setResponding] = React.useState(false);
+  const [selected, setSelected] = React.useState<string | null>(null);
+  const [error, setError] = React.useState(false);
+
+  const respond = async (label: string) => {
+    setResponding(true);
+    setSelected(label);
+    setError(false);
+    try {
+      const response = await fetch(`/api/sessions/${sessionId}/inject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: label + '\r' }),
+      });
+      if (!response.ok) {
+        console.error(`Question respond failed: ${response.status} ${response.statusText}`);
+        setError(true);
+        setSelected(null);
+        setTimeout(() => setError(false), 3000);
+      }
+    } finally {
+      setResponding(false);
+    }
+  };
+
+  return (
+    <div className={styles.questionPrompt}>
+      {question.header && <div className={styles.questionHeader}>{question.header}</div>}
+      <div className={styles.questionText}>{question.question}</div>
+      {question.options.length > 0 ? (
+        <div className={styles.questionOptions}>
+          {question.options.map((opt, i) => (
+            <button
+              key={i}
+              className={`${styles.questionOption} ${selected === opt.label ? styles.questionOptionSelected : ''} ${error ? styles.questionOptionError : ''}`}
+              onClick={() => void respond(opt.label)}
+              disabled={responding}
+            >
+              <span className={styles.questionOptionLabel}>{opt.label}</span>
+              {opt.description && <span className={styles.questionOptionDesc}>{opt.description}</span>}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className={styles.questionPromptActions}>
+          <button className={`${styles.permissionBtn} ${styles.permissionBtnYes}`} onClick={() => void respond('\r')} disabled={responding}>
+            {error ? 'Failed' : 'Continue'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -507,6 +566,17 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
+  // Keyed by message content so state survives UserMessageContent remounts
+  const [expandedImagesMap, setExpandedImagesMap] = useState<Map<string, Set<number>>>(new Map());
+  const toggleImage = useCallback((contentKey: string, idx: number) => {
+    setExpandedImagesMap(prev => {
+      const next = new Map(prev);
+      const set = new Set(next.get(contentKey) ?? []);
+      if (set.has(idx)) set.delete(idx); else set.add(idx);
+      next.set(contentKey, set);
+      return next;
+    });
+  }, []);
 
   return (
     <>
@@ -563,7 +633,12 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                     {isRaw ? (
                       <pre className={styles.rawContent}>{seg.item.content}</pre>
                     ) : seg.item.role === 'user' ? (
-                      <UserMessageContent content={seg.item.content} styles={styles} />
+                      <UserMessageContent
+                        content={seg.item.content}
+                        styles={styles}
+                        expandedImages={expandedImagesMap.get(seg.item.content ?? '') ?? new Set()}
+                        onToggleImage={(idx) => toggleImage(seg.item.content ?? '', idx)}
+                      />
                     ) : (
                       <div
                         className={styles.markdownContent}
@@ -970,14 +1045,17 @@ export function DetailPanel({
     : [];
   const stateBarIsDone = selectedSession?.state === 'waiting' && selectedSession?.completionHint === 'done';
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
+  const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion;
   const stateBarLabel = stateBarIsDone ? 'Task complete'
     : stateBarNeedsApproval ? 'Waiting for approval'
+    : stateBarHasQuestion ? 'Question for you'
     : selectedSession?.state === 'waiting' && stateBarActiveSubagents.length > 0 ? 'Delegated · waiting for subagent'
     : selectedSession?.state === 'waiting' ? 'Waiting for your response'
     : selectedSession?.state === 'thinking' ? 'Thinking...'
     : 'Working...';
   const stateBarClass = stateBarIsDone ? styles.stateBarDone
     : stateBarNeedsApproval ? styles.stateBarPermission
+    : stateBarHasQuestion ? styles.stateBarQuestion
     : selectedSession?.state === 'waiting' ? styles.stateBarWaiting
     : selectedSession?.state === 'thinking' ? styles.stateBarThinking
     : styles.stateBarActive;
@@ -1192,18 +1270,28 @@ export function DetailPanel({
                       })()}
                     />
                     {(() => { const l = getLaunchInfo(selectedSession, isPty); return (
-                      <span className={styles.launchBadge} data-category={l.category}>{l.name}</span>
+                      <span className={styles.launchBadge} data-category={l.category} title={`Session type: ${l.name}`}>{l.name}</span>
                     ); })()}
                     {selectedSession.permissionMode && (
-                      <span className={styles.permissionModeBadge} data-mode={selectedSession.permissionMode}>
+                      <span
+                        className={styles.permissionModeBadge}
+                        data-mode={selectedSession.permissionMode}
+                        title={`Permission mode: ${
+                          selectedSession.permissionMode === 'bypassPermissions' ? 'Bypass — all tools run without asking' :
+                          selectedSession.permissionMode === 'acceptEdits' ? 'Auto-edit — file edits auto-approved, other tools ask' :
+                          selectedSession.permissionMode === 'plan' ? 'Plan — Claude plans before acting, asks before each step' :
+                          selectedSession.permissionMode === 'default' ? 'Default — asks before risky operations' :
+                          selectedSession.permissionMode
+                        }`}
+                      >
                         {selectedSession.permissionMode === 'bypassPermissions' ? 'bypass' :
                          selectedSession.permissionMode === 'acceptEdits' ? 'auto-edit' :
                          selectedSession.permissionMode === 'plan' ? 'plan' :
                          selectedSession.permissionMode}
                       </span>
                     )}
-                    <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
-                    {selectedSession.model && <span className={styles.summaryMeta}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
+                    <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} title={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
+                    {selectedSession.model && <span className={styles.summaryMeta} title={`Model: ${selectedSession.model}`}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
                   </div>
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
@@ -1293,15 +1381,15 @@ export function DetailPanel({
                           <div className={`${styles.stateBar} ${stateBarClass}`}>
                             <span className={styles.stateBarDot} />
                             <span className={styles.stateBarLabel}>{stateBarLabel}</span>
+                            {elapsedSeconds > 2 && (
+                              <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
+                            )}
                             {stateBarActiveSubagents.length > 0 && (
                               <span className={styles.stateBarDelegate}>
                                 · {stateBarActiveSubagents.length} delegated
                               </span>
                             )}
                             <div style={{flex: 1}} />
-                            {(selectedSession.state === 'thinking' || selectedSession.state === 'working') && elapsedSeconds > 2 && (
-                              <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
-                            )}
                             {stateBarIsDone && !selectedSession.userAccepted && onAcceptSession && (
                               <button
                                 className={styles.acceptBtn}
@@ -1314,6 +1402,44 @@ export function DetailPanel({
                             {stateBarIsDone && selectedSession.userAccepted && (
                               <span className={styles.acceptedLabel}>Accepted ✓</span>
                             )}
+                            {(selectedSession.state === 'working' || selectedSession.state === 'thinking') && (
+                              <>
+                                <button
+                                  className={styles.interruptBtnSmall}
+                                  title="Interrupt (Esc)"
+                                  onClick={async () => {
+                                    try {
+                                      await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ text: '\x1b' }),
+                                      });
+                                    } catch (err) {
+                                      console.error('Interrupt failed:', err);
+                                    }
+                                  }}
+                                >
+                                  ■
+                                </button>
+                                <button
+                                  className={styles.forceStopBtnSmall}
+                                  title="Force Stop (Ctrl+C)"
+                                  onClick={async () => {
+                                    try {
+                                      await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ text: '\x03' }),
+                                      });
+                                    } catch (err) {
+                                      console.error('Force stop failed:', err);
+                                    }
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </>
+                            )}
                           </div>
                           {stateBarNeedsApproval && (
                             <PermissionPrompt
@@ -1322,44 +1448,14 @@ export function DetailPanel({
                               styles={styles}
                             />
                           )}
+                          {!stateBarNeedsApproval && selectedSession.pendingQuestion && (
+                            <QuestionPrompt
+                              sessionId={selectedSession.sessionId}
+                              question={selectedSession.pendingQuestion}
+                              styles={styles}
+                            />
+                          )}
                         </>
-                      )}
-                      {(selectedSession.state === 'working' || selectedSession.state === 'thinking') && (
-                        <div className={styles.interruptBar}>
-                          <span className={styles.interruptLabel}>Session is {selectedSession.state}…</span>
-                          <button
-                            className={styles.interruptBtn}
-                            onClick={async () => {
-                              try {
-                                await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ text: '\x1b' }),
-                                });
-                              } catch (err) {
-                                console.error('Interrupt failed:', err);
-                              }
-                            }}
-                          >
-                            ■ Interrupt
-                          </button>
-                          <button
-                            className={styles.forceStopBtn}
-                            onClick={async () => {
-                              try {
-                                await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ text: '\x03' }),
-                                });
-                              } catch (err) {
-                                console.error('Force stop failed:', err);
-                              }
-                            }}
-                          >
-                            Force Stop
-                          </button>
-                        </div>
                       )}
                       <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''}`}>
                         {sessionError && (

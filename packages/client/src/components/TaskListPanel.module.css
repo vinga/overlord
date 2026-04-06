@@ -26,21 +26,70 @@
 .resizeHandle:hover { background: rgba(212, 175, 55, 0.15); }
 .resizing .resizeHandle { background: rgba(212, 175, 55, 0.25); }
 
-/* ── Header / Tabs ─────────────────────────────────────────────────── */
+/* ── Header ─────────────────────────────────────────────────────────── */
 
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px 0 4px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  height: 48px;
+.panelHeader {
   flex-shrink: 0;
+  padding: 16px 16px 14px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: #0e0e18;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
-.tabs {
+.headerWithIcon {
   display: flex;
-  height: 100%;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.roomIcon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  color: #d4af37;
+}
+
+.headerMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.roomTitle {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  color: #e8e8e8;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roomPath {
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+/* ── Tab bar ─────────────────────────────────────────────────────────── */
+
+.tabBar {
+  display: flex;
+  height: 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  padding: 0 4px;
 }
 
 .tab {
@@ -61,20 +110,6 @@
 .tabActive {
   color: #e8e8e8;
   border-bottom-color: #d4af37;
-}
-
-.roomName {
-  font-size: 12px;
-  font-weight: 600;
-  color: #d4af37;
-  opacity: 0.75;
-  letter-spacing: 0.04em;
-  flex: 1;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 8px;
 }
 
 .closeBtn {

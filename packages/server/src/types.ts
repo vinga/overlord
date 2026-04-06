@@ -25,6 +25,19 @@ export interface Subagent {
   model?: string;
 }
 
+export interface PendingQuestionOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+export interface PendingQuestion {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: PendingQuestionOption[];
+}
+
 export interface Session {
   sessionId: string;
   slug?: string;
@@ -50,6 +63,7 @@ export interface Session {
   permissionPromptText?: string;
   permissionApprovedAt?: number;  // timestamp ms — suppress re-detection for 30s
   permissionMode?: string;
+  pendingQuestion?: PendingQuestion;
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;

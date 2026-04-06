@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { WorkerState, Subagent, ActivityItem } from '../types.js';
+import type { WorkerState, Subagent, ActivityItem, PendingQuestion } from '../types.js';
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -288,6 +288,7 @@ export function readTranscriptState(filePath: string): {
   permissionPromptText?: string;
   lastUserIsDone?: boolean;
   permissionMode?: string;
+  pendingQuestion?: PendingQuestion;
 } {
   try {
     const now = Date.now();
@@ -477,12 +478,15 @@ export function readTranscriptState(filePath: string): {
     // Detect "DONE" command: scan back for the most recent user message that is NOT a tool_result
     const lastUserIsDone = detectLastUserIsDone(last30);
 
-    // Detect permission mode from the most recent permission-mode entry
+    // Detect permission mode from the most recent source:
+    // 1. Dedicated `type: "permission-mode"` entries (written at session start)
+    // 2. `permissionMode` field on `type: "user"` messages (written with every user message)
+    // Scan backwards — first match wins (most recent).
     let permissionMode: string | undefined;
     for (let i = last30.length - 1; i >= 0; i--) {
       try {
         const p = JSON.parse(last30[i]) as { type?: string; permissionMode?: string };
-        if (p.type === 'permission-mode' && p.permissionMode) {
+        if (p.permissionMode) {
           permissionMode = p.permissionMode;
           break;
         }
@@ -494,6 +498,7 @@ export function readTranscriptState(filePath: string): {
     let stateHint: TranscriptCache['stateHint'] = 'none';
     let needsPermission: boolean | undefined;
     let permissionPromptText: string | undefined;
+    let pendingQuestion: PendingQuestion | undefined;
     if (lastTypedEvent?.type === 'assistant') {
       const lastContent = lastTypedEvent.message as { content?: unknown } | undefined;
       const contentArr = Array.isArray(lastContent?.content) ? lastContent!.content as Array<{ type?: string; name?: string; input?: unknown }> : [];
@@ -501,22 +506,51 @@ export function readTranscriptState(filePath: string): {
       const endsWithToolUse = lastBlock?.type === 'tool_use';
 
       if (endsWithToolUse) {
-        stateHint = 'tool_use';
-        if (ageSec < 5) {
-          state = 'working';
-        } else if (ageSec > 8) {
-          // Tool pending for >8s with no tool_result → likely waiting for permission.
-          // Auto-approved tools execute immediately; this delay means the user is being prompted.
-          state = 'waiting';
-          needsPermission = true;
-          // Build a description from the tool_use block (not the actual prompt — we can't read it)
-          if (lastBlock?.name) {
-            const toolInput = lastBlock.input as Record<string, unknown> | undefined;
-            const desc = toolInput ? describeInput(toolInput) : '';
-            permissionPromptText = desc ? `${lastBlock.name}: ${desc}` : lastBlock.name;
+        const toolName = lastBlock?.name ?? '';
+        // MCP tools (mcp__*) can run for minutes — don't flag as permission prompt
+        const isMcpTool = toolName.startsWith('mcp__');
+        // AskUserQuestion is an interactive question — shown as its own UI, not a permission prompt
+        const isAskUser = toolName === 'AskUserQuestion';
+
+        if (isAskUser) {
+          // Extract question data from tool input
+          const toolInput = lastBlock!.input as { questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string }> }> } | undefined;
+          const firstQ = toolInput?.questions?.[0];
+          if (firstQ && firstQ.question) {
+            pendingQuestion = {
+              question: firstQ.question,
+              header: firstQ.header,
+              multiSelect: firstQ.multiSelect ?? false,
+              options: (firstQ.options ?? []).map(o => ({
+                label: o.label ?? '',
+                description: o.description,
+                preview: o.preview,
+              })).filter(o => o.label),
+            };
           }
+          stateHint = 'tool_use';
+          state = ageSec < 5 ? 'working' : 'waiting';
         } else {
-          state = 'thinking';
+          stateHint = isMcpTool ? 'tool_result' : 'tool_use';
+          // Always compute permissionPromptText when a tool_use is pending, so it's
+          // available in the cache when reEvalStateFromCache later sets needsPermission.
+          // (The full parse may run when ageSec < 5, but re-eval fires when ageSec > 8.)
+          if (toolName) {
+            const toolInput = lastBlock!.input as Record<string, unknown> | undefined;
+            const desc = toolInput ? describeInput(toolInput) : '';
+            permissionPromptText = desc ? `${toolName}: ${desc}` : toolName;
+          }
+          if (isMcpTool) {
+            // MCP tools are long-running external calls — treat like tool_result (working/thinking)
+            state = ageSec < 8 ? 'working' : 'thinking';
+          } else if (ageSec < 5) {
+            state = 'working';
+          } else if (ageSec > 8) {
+            state = 'waiting';
+            needsPermission = true;
+          } else {
+            state = 'thinking';
+          }
         }
       } else {
         stateHint = 'assistant_text';
@@ -561,6 +595,7 @@ export function readTranscriptState(filePath: string): {
       permissionPromptText,
       lastUserIsDone: lastUserIsDone || undefined,
       permissionMode,
+      pendingQuestion,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;

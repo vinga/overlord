@@ -285,6 +285,8 @@ export class StateManager {
     let isCompacting: boolean | undefined;
     let needsPermission: boolean | undefined;
     let permissionPromptText: string | undefined;
+    let permissionMode: string | undefined;
+    let pendingQuestion: import('../types.js').PendingQuestion | undefined;
 
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
@@ -314,6 +316,8 @@ export class StateManager {
       isCompacting = result.isCompacting;
       needsPermission = result.needsPermission;
       permissionPromptText = result.permissionPromptText;
+      permissionMode = result.permissionMode;
+      pendingQuestion = result.pendingQuestion;
       slug = readSlug(transcriptPath);
     } else if (resumedFrom) {
       // claude --resume appends to the original transcript rather than creating a new one.
@@ -332,6 +336,8 @@ export class StateManager {
         isCompacting = result.isCompacting;
         needsPermission = result.needsPermission;
         permissionPromptText = result.permissionPromptText;
+        permissionMode = result.permissionMode;
+        pendingQuestion = result.pendingQuestion;
         slug = readSlug(fallbackPath);
         // Use the fallback path for proposedName resolution below
         transcriptPath = fallbackPath;
@@ -428,7 +434,9 @@ export class StateManager {
       resumedFrom,
       needsPermission: needsPermission || existingSession?.needsPermission,
       permissionPromptText: permissionPromptText || existingSession?.permissionPromptText,
+      permissionMode: permissionMode || existingSession?.permissionMode,
       permissionApprovedAt: existingSession?.permissionApprovedAt,
+      pendingQuestion: pendingQuestion ?? existingSession?.pendingQuestion,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       completionSummaries,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
@@ -564,6 +572,8 @@ export class StateManager {
           }
         }
       }
+      // Update pendingQuestion: set when present, clear when gone
+      session.pendingQuestion = result.pendingQuestion ?? undefined;
       session.slug = slug;
       session.proposedName = proposedName;
       session.subagents = subagents;

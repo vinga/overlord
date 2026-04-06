@@ -5,6 +5,40 @@ import { WorkerGroup } from './WorkerGroup';
 import styles from './Room.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 
+// 300 distinctive names for new sessions — pick a random unused one
+const SESSION_NAMES = [
+  'Alaric','Amara','Ashton','Astrid','Aurelia','Balthazar','Bastian','Beatrix','Bramble','Brynhild',
+  'Callisto','Caspian','Cassius','Cedar','Celestine','Dagny','Dashiell','Delphine','Dusk','Dmitri',
+  'Eirik','Elowen','Ember','Enrique','Esme','Falcon','Florian','Freya','Fujin','Felix',
+  'Gautier','Gideon','Grove','Gunnar','Galatea','Hadrian','Halcyon','Hazel','Hikaru','Hector',
+  'Idris','Ingrid','Isolde','Indigo','Isadora','Jasper','Jinhai','Jorvik','Juniper','Juno',
+  'Kael','Kaida','Kestrel','Kieran','Knox','Lark','Leander','Lirien','Lysander','Lucian',
+  'Magnus','Marcellus','Mireille','Moss','Maeve','Nero','Niamh','Nyx','Noelle','Naveen',
+  'Octavia','Odin','Onyx','Orion','Ophelia','Paloma','Percival','Petra','Petal','Phoenix',
+  'Quillan','Quillon','Quentin','Quinlan','Quade','Rafaela','Ragnar','Raven','Rosalind','Rune',
+  'Sable','Sigrid','Soren','Storm','Stellan','Talon','Thalassa','Theron','Torsten','Thistle',
+  'Ulric','Ulfric','Umber','Ursa','Ulysse','Vale','Vesper','Viggo','Vidar','Valentina',
+  'Wahid','Wilder','Wren','Wynne','Wolfgang','Xanthe','Xiomara','Xander','Xerxes','Xyla',
+  'Yael','Ysolde','Yuki','Yarrow','Yves','Zephyr','Zora','Zenith','Zahir','Zinnia',
+  'Rowan','Thane','Elara','Cassian','Saffron','Oberon','Linnea','Cosimo','Fenrir','Solana',
+  'Altair','Briar','Calyx','Dante','Eclipse','Finch','Garnet','Haven','Iona','Jovian',
+  'Katya','Lazarus','Meridian','Noor','Oleander','Pax','Rhiannon','Solstice','Tiberius','Umbra',
+  'Vega','Willow','Xylo','Yara','Zander','Anika','Blaise','Corvus','Daria','Elodie',
+  'Fable','Galen','Harlow','Inara','Jericho','Koda','Linden','Maren','Nemo','Orla',
+  'Sage','Tavi','Vexen','Whisper','Xeno','Arwen','Blythe','Cyrus','Dione','Eris',
+  'Fern','Greer','Helios','Arden','Kira','Lumen','Milo','Nico','Opal','Pike',
+  'Rook','Slate','Tarn','Voss','Wynn','Ximena','Zarya','Ajax','Birch','Cleo',
+  'Draco','Etta','Flint','Gale','Heron','Iris','Jace','Kelda','Lyric','Mace',
+  'Nash','Priya','Shale','Teal','Vane','Corvo','Dove','Echo','Frost','Grail',
+  'Heath','Ibis','Jade','Nell','Oaken','Penn','Rhea','Skye','Axel','Beck',
+  'Crux','Fenn','Halo','Jett','Nord','Pyre','Astra','Blaze','Cade','Drift',
+  'Flux','Grit','Seren','Larkin','Mercer','Sparrow','Hollis','Bronte','Isidore','Clover',
+  'Evander','Fielding','Gareth','Hadley','Ianthe','Jasmine','Kellan','Lorelei','Maddox','Nolan',
+  'Olexa','Pascal','Reverie','Simone','Tamsin','Ulyana','Viktor','Waverly','Xaldin','Yasmin',
+  'Zephyra','Archer','Bellamy','Cedric','Dulcie','Esmera','Fabian','Gemma','Harper','Ignace',
+  'Jorah','Atlas','Isolde','Cinder','Thalia','Oriel','Ronan','Sable','Lyra','Ember',
+];
+
 function lastActivityLabel(isoTimestamp: string): string {
   const diffMs = Date.now() - new Date(isoTimestamp).getTime();
   const diffMin = Math.floor(diffMs / 60000);
@@ -212,14 +246,20 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
   const isTerminalSpawning = terminalSpawnCwd === room.cwd;
 
   function getNextName(prefix: string, separator: string = '+'): string {
-    const all = [
+    const usedNames = new Set([
       ...Object.values(customNames),
       ...room.sessions.map(s => s.proposedName).filter(Boolean),
-    ];
+    ] as string[]);
+    // Pick a random unused name from the pool
+    const available = SESSION_NAMES.filter(n => !usedNames.has(n));
+    if (available.length > 0) {
+      return available[Math.floor(Math.random() * available.length)];
+    }
+    // Fallback: numbered names if all 300 are taken
     let max = 0;
     const escapedSep = separator.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`^${prefix}\\${escapedSep}(\\d+)$`);
-    for (const name of all) {
+    for (const name of usedNames) {
       const match = name?.match(pattern);
       if (match) max = Math.max(max, parseInt(match[1], 10));
     }

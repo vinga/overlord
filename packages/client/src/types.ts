@@ -29,6 +29,19 @@ interface Subagent {
   model?: string;
 }
 
+interface PendingQuestionOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+interface PendingQuestion {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: PendingQuestionOption[];
+}
+
 interface Session {
   sessionId: string;
   slug?: string;
@@ -52,6 +65,7 @@ interface Session {
   needsPermission?: boolean;
   permissionPromptText?: string;
   permissionMode?: string;
+  pendingQuestion?: PendingQuestion;
   completionHint?: 'done' | 'awaiting';
   completionSummaries?: Array<{ summary: string; completedAt: string; accepted?: boolean }>;
   userAccepted?: boolean;
@@ -196,6 +210,8 @@ export type {
   ActivityItem,
   Subagent,
   Session,
+  PendingQuestion,
+  PendingQuestionOption,
   Room,
   OfficeSnapshot,
   TerminalMessage,

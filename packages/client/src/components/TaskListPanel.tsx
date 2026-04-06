@@ -118,24 +118,36 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
     <div className={`${styles.panel} ${isResizing ? styles.resizing : ''}`} style={{ width: panelWidth }}>
       <div className={styles.resizeHandle} onMouseDown={handleResizeStart} />
 
-      {/* Header */}
-      <div className={styles.header}>
-        <div className={styles.tabs}>
-          <button
-            className={`${styles.tab} ${activeTab === 'agents' ? styles.tabActive : ''}`}
-            onClick={() => setActiveTab('agents')}
-          >
-            Agents
-          </button>
-          <button
-            className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
-            onClick={() => setActiveTab('tasks')}
-          >
-            Tasks
-          </button>
+      {/* Room identity header */}
+      <div className={styles.panelHeader}>
+        <div className={styles.headerWithIcon}>
+          <svg className={styles.roomIcon} viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+            {/* Folder tab */}
+            <path d="M4 14c0-1.1.9-2 2-2h8l3 3h17a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V14z" fill="currentColor" fillOpacity="0.15" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
+            <path d="M4 17h32" stroke="currentColor" strokeWidth="1" strokeOpacity="0.4"/>
+          </svg>
+          <div className={styles.headerMain}>
+            <h2 className={styles.roomTitle}>{room.name}</h2>
+            <span className={styles.roomPath}>{room.cwd}</span>
+          </div>
         </div>
-        <span className={styles.roomName}>{room.name}</span>
         <button className={styles.closeBtn} onClick={onClose} title="Close">✕</button>
+      </div>
+
+      {/* Tab bar */}
+      <div className={styles.tabBar}>
+        <button
+          className={`${styles.tab} ${activeTab === 'agents' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('agents')}
+        >
+          Agents
+        </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('tasks')}
+        >
+          Tasks
+        </button>
       </div>
 
       {/* Tasks tab: filter chips */}
