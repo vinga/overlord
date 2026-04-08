@@ -63,6 +63,14 @@ const PTY_BUFFER_MAX_CHUNKS = 500;
 const bridgePermText = new Map<string, string>();
 const BRIDGE_PERM_BUF_SIZE = 8192;
 
+// Last detected permission mode per bridge session — updated as text streams through
+const bridgePermMode = new Map<string, string>();
+const BRIDGE_PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
+  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
+  { pattern: /accept edits on/i, mode: 'acceptEdits' },
+  { pattern: /plan mode on/i, mode: 'plan' },
+];
+
 function stripAnsi(raw: string): string {
   const stripped = raw
     // CSI sequences: ESC [ ... final-byte  (covers [?2026h, [0m, [2J, etc.)
@@ -240,7 +248,7 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       bridgeSessions.delete(existingId);
       bridgeManager.disconnect(existingId);
       unregisterBridgePipe(existingId);
-      bridgePermText.delete(existingId);
+      bridgePermText.delete(existingId); bridgePermMode.delete(existingId);
     }
   }
 
@@ -274,7 +282,7 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       console.log(`[bridge] input pipe dead for ${sessionId.slice(0, 8)}, removing from registry`);
       bridgeSessions.delete(sessionId);
       unregisterBridgePipe(sessionId);
-      bridgePermText.delete(sessionId);
+      bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
       // Mark session idle immediately — bridge process has exited
       stateManager.markClosed(sessionId);
     }
@@ -311,7 +319,7 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
           console.log(`[bridge] DEAD: no output from ${sessionId.slice(0, 8)} after 10s — bridge process likely exited`);
           bridgeSessions.delete(sessionId);
           unregisterBridgePipe(sessionId);
-          bridgePermText.delete(sessionId);
+          bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
           outputSocket.destroy();
           bridgeManager.disconnect(sessionId);
           // Do NOT markClosed here — processChecker owns session lifecycle based on PID.
@@ -339,7 +347,8 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     // history so the replay buffer always begins at a complete, self-contained frame.
     // This prevents cursor-position-dependent incremental chunks from rendering
     // on top of unrelated history in a fresh xterm instance.
-    if (data.includes(0x1b) && data.toString('binary').includes('\x1b[?2026h')) {
+    const isRepaint = data.includes(0x1b) && data.toString('binary').includes('\x1b[?2026h');
+    if (isRepaint) {
       buf = [];
       ptyOutputBuffer.set(sessionId, buf);
     }
@@ -354,6 +363,21 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     bridgePermText.set(sessionId, appended.length > BRIDGE_PERM_BUF_SIZE
       ? appended.slice(appended.length - BRIDGE_PERM_BUF_SIZE) : appended);
     checkBridgePermission(sessionId);
+
+    // On each full repaint, detect permission mode from the fresh frame — most reliable source
+    if (isRepaint) {
+      const frameText = stripAnsi(data.toString('utf8'));
+      let frameMode: string | undefined;
+      for (const { pattern, mode } of BRIDGE_PERM_MODE_PATTERNS) {
+        if (pattern.test(frameText)) { frameMode = mode; break; }
+      }
+      const resolvedMode = frameMode ?? 'default';
+      const current = stateManager.getSession(sessionId)?.permissionMode;
+      if (resolvedMode !== current) {
+        bridgePermMode.set(sessionId, resolvedMode);
+        stateManager.setPermissionMode(sessionId, resolvedMode);
+      }
+    }
   });
 
   let outputConnectFailed = false;
@@ -688,7 +712,7 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     bridgeSessions.delete(sessionId);
     bridgeManager.disconnect(sessionId);
     unregisterBridgePipe(sessionId);
-    bridgePermText.delete(sessionId);
+    bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
     console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }
 
