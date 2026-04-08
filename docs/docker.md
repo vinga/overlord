@@ -11,10 +11,10 @@ Run Claude Office Monitor in Docker with Traefik reverse proxy, accessible at `h
 
 ### 1. Configure your `.claude` path
 
-Copy `.env.example` to `.env` and set your Windows username:
+Copy `.env.example` to `.env` and set your username:
 
 ```env
-CLAUDE_DIR=C:/Users/kamil/.claude
+CLAUDE_DIR=C:/Users/<username>/.claude
 ```
 
 ### 2. Add `overlord.localhost` to your hosts file
