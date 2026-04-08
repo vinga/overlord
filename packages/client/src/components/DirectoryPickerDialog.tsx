@@ -1,25 +1,33 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { TerminalSpawnMode } from '../types';
 import styles from './DirectoryPickerDialog.module.css';
+import { SessionCommands } from './SessionCommands';
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onSpawn: (cwd: string, name: string, mode: TerminalSpawnMode) => void;
   defaultPath?: string;
+  suggestedName?: string;
+  bridgePath?: string;
 }
 
-export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath }: Props) {
+export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, suggestedName, bridgePath }: Props) {
   const [currentPath, setCurrentPath] = useState(defaultPath || '');
   const [pathInput, setPathInput] = useState(defaultPath || '');
   const [dirs, setDirs] = useState<string[]>([]);
   const [parent, setParent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sessionName, setSessionName] = useState('');
+  const [sessionName, setSessionName] = useState(suggestedName || '');
   const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
   const nameInputRef = useRef<HTMLInputElement>(null);
   const pathInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync suggested name when dialog opens
+  useEffect(() => {
+    if (open && suggestedName) setSessionName(suggestedName);
+  }, [open, suggestedName]);
 
   // Fetch directories when currentPath changes
   useEffect(() => {
@@ -41,21 +49,25 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath }: P
           setParent(data.parent);
           setCurrentPath(data.current);
           setPathInput(data.current);
-          // Auto-generate session name from folder basename
-          const basename = data.current.split(/[\\/]/).filter(Boolean).pop() || 'New';
-          setSessionName(prev => prev || basename);
+          // Only fall back to folder basename if no suggested name was provided
+          if (!suggestedName) {
+            const basename = data.current.split(/[\\/]/).filter(Boolean).pop() || 'New';
+            setSessionName(prev => prev || basename);
+          }
         }
       })
       .catch(() => setError('Failed to fetch directories'))
       .finally(() => setLoading(false));
   }, [currentPath, open]);
 
-  // Update session name when navigating
+  // Update session name when navigating (only if user hasn't set a custom name and no suggestedName)
   const navigateTo = useCallback((path: string) => {
     setCurrentPath(path);
-    const basename = path.split(/[\\/]/).filter(Boolean).pop() || 'New';
-    setSessionName(basename);
-  }, []);
+    if (!suggestedName) {
+      const basename = path.split(/[\\/]/).filter(Boolean).pop() || 'New';
+      setSessionName(basename);
+    }
+  }, [suggestedName]);
 
   // Handle path input Enter
   const handlePathKeyDown = (e: React.KeyboardEvent) => {
@@ -197,6 +209,17 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath }: P
             </div>
           </div>
         </div>
+
+        {/* IntelliJ / terminal commands */}
+        {currentPath && sessionName && (
+          <div className={styles.commandsSection}>
+            <SessionCommands
+              cwd={currentPath}
+              name={sessionName}
+              bridgePath={bridgePath}
+            />
+          </div>
+        )}
 
         {/* Actions */}
         <div className={styles.actions}>

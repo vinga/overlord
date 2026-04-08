@@ -122,8 +122,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
         </div>
       )}
       <svg
-        width="88"
-        height="115"
+        width="70"
+        height="92"
         viewBox="0 0 40 52"
         xmlns="http://www.w3.org/2000/svg"
         className={styles.svg}
@@ -173,7 +173,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
           </span>
         )
       )}
-      {!minimal && !isSubagent && currentTaskLabel && (state === 'working' || state === 'thinking') && (
+      {!minimal && !isSubagent && currentTaskLabel && state !== 'closed' && (
         <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>
       )}
       {!minimal && completionSummaries && completionSummaries.length > 0 && completionHint === 'done' && !isSubagent && (

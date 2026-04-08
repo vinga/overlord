@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useTick } from '../hooks/useTick';
-import type { Session, WorkerState, ActivityItem, PendingQuestion } from '../types';
+import type { Session, WorkerState, ActivityItem, PendingQuestionSet } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { Worker } from './Worker';
 import { ConsolePreview } from './ConsolePreview';
 import styles from './DetailPanel.module.css';
+import { SessionCommands } from './SessionCommands';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
@@ -260,39 +261,79 @@ function PermissionPrompt({ sessionId, promptText, styles }: {
   );
 }
 
-function QuestionPrompt({ sessionId, question, styles }: {
+function QuestionPrompt({ sessionId, questionSet, initialStage, onStageChange, styles }: {
   sessionId: string;
-  question: PendingQuestion;
+  questionSet: PendingQuestionSet;
+  initialStage: number;
+  onStageChange: (stage: number) => void;
   styles: Record<string, string>;
 }) {
+  const [stage, setStage] = React.useState(initialStage);
   const [responding, setResponding] = React.useState(false);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [error, setError] = React.useState(false);
 
-  const respond = async (label: string) => {
+  const questions = questionSet.questions ?? [];
+  if (questions.length === 0) return null;
+  const question = questions[stage];
+  if (!question) return null;
+  const total = questions.length;
+
+  // AskUserQuestion TUI uses arrow-key navigation.
+  // We send arrows first, wait for the TUI to process them, then send Enter.
+  const doInject = async (text: string, raw = false) => {
+    const r = await fetch(`/api/sessions/${sessionId}/inject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, raw }),
+    });
+    if (!r.ok) throw new Error(`inject failed: ${r.status}`);
+  };
+
+  const respond = async (optionIndex: number, label: string) => {
     setResponding(true);
     setSelected(label);
     setError(false);
     try {
-      const response = await fetch(`/api/sessions/${sessionId}/inject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: label + '\r' }),
-      });
-      if (!response.ok) {
-        console.error(`Question respond failed: ${response.status} ${response.statusText}`);
-        setError(true);
-        setSelected(null);
-        setTimeout(() => setError(false), 3000);
+      // Send each arrow individually (raw=true so no auto-appended \r), then Enter
+      for (let i = 0; i < optionIndex; i++) {
+        await doInject('\x1b[B', true);
+        await new Promise(r => setTimeout(r, 80));
       }
-    } finally {
+      await doInject('\r');
+      if (stage < total - 1) {
+        // Advance to next question after a brief pause
+        setTimeout(() => {
+          const next = stage + 1;
+          setStage(next);
+          onStageChange(next);
+          setSelected(null);
+          setResponding(false);
+        }, 400);
+      } else {
+        // Last question answered — TUI shows a "Review + Submit" confirmation step.
+        // Auto-confirm by sending Enter (selects "Submit answers", option 1) after a delay.
+        setTimeout(() => void doInject('\r').catch(() => null), 600);
+        // Clear persisted stage so next question set starts at 0
+        onStageChange(0);
+        // Leave responding=true until transcript clears the prompt
+      }
+    } catch {
+      setError(true);
+      setSelected(null);
       setResponding(false);
+      setTimeout(() => setError(false), 3000);
     }
   };
 
   return (
     <div className={styles.questionPrompt}>
-      {question.header && <div className={styles.questionHeader}>{question.header}</div>}
+      <div className={styles.questionMeta}>
+        {question.header && <span className={styles.questionHeader}>{question.header}</span>}
+        {total > 1 && (
+          <span className={styles.questionProgress}>{stage + 1} / {total}</span>
+        )}
+      </div>
       <div className={styles.questionText}>{question.question}</div>
       {question.options.length > 0 ? (
         <div className={styles.questionOptions}>
@@ -300,17 +341,20 @@ function QuestionPrompt({ sessionId, question, styles }: {
             <button
               key={i}
               className={`${styles.questionOption} ${selected === opt.label ? styles.questionOptionSelected : ''} ${error ? styles.questionOptionError : ''}`}
-              onClick={() => void respond(opt.label)}
+              onClick={() => void respond(i, opt.label)}
               disabled={responding}
             >
-              <span className={styles.questionOptionLabel}>{opt.label}</span>
-              {opt.description && <span className={styles.questionOptionDesc}>{opt.description}</span>}
+              <span className={styles.questionOptionNum}>{i + 1}</span>
+              <span className={styles.questionOptionBody}>
+                <span className={styles.questionOptionLabel}>{opt.label}</span>
+                {opt.description && <span className={styles.questionOptionDesc}>{opt.description}</span>}
+              </span>
             </button>
           ))}
         </div>
       ) : (
         <div className={styles.questionPromptActions}>
-          <button className={`${styles.permissionBtn} ${styles.permissionBtnYes}`} onClick={() => void respond('\r')} disabled={responding}>
+          <button className={`${styles.permissionBtn} ${styles.permissionBtnYes}`} onClick={() => void respond(0, 'Continue')} disabled={responding}>
             {error ? 'Failed' : 'Continue'}
           </button>
         </div>
@@ -406,12 +450,15 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
 type FeedSegment =
   | { type: 'message'; item: ActivityItem }
   | { type: 'toolGroup'; items: ActivityItem[] }
-  | { type: 'thinking'; item: ActivityItem };
+  | { type: 'thinking'; item: ActivityItem }
+  | { type: 'compact'; item: ActivityItem };
 
 function buildSegments(feed: ActivityItem[]): FeedSegment[] {
   const segments: FeedSegment[] = [];
   for (const item of feed) {
-    if (item.kind === 'tool') {
+    if (item.kind === 'compact') {
+      segments.push({ type: 'compact', item });
+    } else if (item.kind === 'tool') {
       const last = segments[segments.length - 1];
       if (last?.type === 'toolGroup' && item.toolName !== 'Agent') {
         last.items.push(item);
@@ -581,6 +628,17 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   return (
     <>
       {segments.map((seg, segIdx) => {
+        if (seg.type === 'compact') {
+          const meta = seg.item.compactMeta;
+          const tokens = meta?.preTokens ? meta.preTokens.toLocaleString() : null;
+          return (
+            <div key={segIdx} className={styles.compactDivider}>
+              <span className={styles.compactDividerLabel}>
+                ✦ Compacted{meta?.trigger === 'manual' ? ' (manual)' : ''}{tokens ? ` · ${tokens} tokens` : ''}
+              </span>
+            </div>
+          );
+        }
         if (seg.type === 'thinking') {
           const isExpanded = expandedThinking.has(segIdx);
           if (seg.item.isRedacted) {
@@ -809,6 +867,8 @@ export function DetailPanel({
 
   const transcriptRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  // Persist question stage across remounts (snapshot refreshes can unmount/remount QuestionPrompt)
+  const questionStageRef = useRef<Map<string, number>>(new Map());
 
   function setPanelWidth(next: number) {
     onPanelWidthChange?.(next);
@@ -864,14 +924,12 @@ export function DetailPanel({
   const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [copyConfirm, setCopyConfirm] = useState(false);
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [openingTerminal, setOpeningTerminal] = useState(false);
   const [openingBridged, setOpeningBridged] = useState(false);
-  const [bridgeCopyConfirm, setBridgeCopyConfirm] = useState(false);
   const currentDisplayName =
     customName ??
     selectedSession?.proposedName ??
@@ -937,7 +995,6 @@ export function DetailPanel({
     // Restore draft for the new session
     setSendInput2(selectedSession?.sessionId ? (draftPerSession.current.get(selectedSession.sessionId) ?? '') : '');
     setConfirmDelete(false);
-    setCopyConfirm(false);
     setPastedImage(null);
     setKilling(false);
     setConfirmKill(false);
@@ -974,6 +1031,8 @@ export function DetailPanel({
     if (!selectedSession) return;
     const text = sendInput2.trim();
     if (!text && !pastedImage) return;
+    // During compaction, preserve the draft — injection will be queued but may be swallowed
+    if (selectedSession.isCompacting) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
     injectText(selectedSession.sessionId, full, true);
     if (full) {
@@ -1046,14 +1105,17 @@ export function DetailPanel({
   const stateBarIsDone = selectedSession?.state === 'waiting' && selectedSession?.completionHint === 'done';
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
   const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion;
-  const stateBarLabel = stateBarIsDone ? 'Task complete'
+  const isCompacting = selectedSession?.isCompacting === true;
+  const stateBarLabel = isCompacting ? 'Compacting conversation…'
+    : stateBarIsDone ? 'Task complete'
     : stateBarNeedsApproval ? 'Waiting for approval'
     : stateBarHasQuestion ? 'Question for you'
     : selectedSession?.state === 'waiting' && stateBarActiveSubagents.length > 0 ? 'Delegated · waiting for subagent'
     : selectedSession?.state === 'waiting' ? 'Waiting for your response'
     : selectedSession?.state === 'thinking' ? 'Thinking...'
     : 'Working...';
-  const stateBarClass = stateBarIsDone ? styles.stateBarDone
+  const stateBarClass = isCompacting ? styles.stateBarCompacting
+    : stateBarIsDone ? styles.stateBarDone
     : stateBarNeedsApproval ? styles.stateBarPermission
     : stateBarHasQuestion ? styles.stateBarQuestion
     : selectedSession?.state === 'waiting' ? styles.stateBarWaiting
@@ -1242,8 +1304,8 @@ export function DetailPanel({
                         <h2 className={styles.sessionName} onDoubleClick={startEdit} title="Double-click to rename">{currentDisplayName}</h2>
                         <button
                           className={styles.nameBtn}
-                          onClick={() => navigator.clipboard.writeText(selectedSession.sessionId)}
-                          title={`Copy session ID: ${selectedSession.sessionId}`}
+                          onClick={() => navigator.clipboard.writeText(`name: ${currentDisplayName} id: ${selectedSession.sessionId}`)}
+                          title={`Copy name + ID`}
                         >
                           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                             <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/>
@@ -1274,20 +1336,23 @@ export function DetailPanel({
                     ); })()}
                     {selectedSession.permissionMode && (
                       <span
-                        className={styles.permissionModeBadge}
+                        className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
                         data-mode={selectedSession.permissionMode}
-                        title={`Permission mode: ${
-                          selectedSession.permissionMode === 'bypassPermissions' ? 'Bypass — all tools run without asking' :
-                          selectedSession.permissionMode === 'acceptEdits' ? 'Auto-edit — file edits auto-approved, other tools ask' :
-                          selectedSession.permissionMode === 'plan' ? 'Plan — Claude plans before acting, asks before each step' :
-                          selectedSession.permissionMode === 'default' ? 'Default — asks before risky operations' :
-                          selectedSession.permissionMode
-                        }`}
+                        title="Click to cycle permission mode (shift+tab)"
+                        role="button"
+                        tabIndex={0}
+                        onClick={async () => {
+                          try {
+                            await fetch(`/api/sessions/${selectedSession.sessionId}/cycle-permission-mode`, {
+                              method: 'POST',
+                            });
+                          } catch { /* ignore */ }
+                        }}
                       >
                         {selectedSession.permissionMode === 'bypassPermissions' ? 'bypass' :
                          selectedSession.permissionMode === 'acceptEdits' ? 'auto-edit' :
                          selectedSession.permissionMode === 'plan' ? 'plan' :
-                         selectedSession.permissionMode}
+                         'default'}
                       </span>
                     )}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} title={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
@@ -1450,8 +1515,11 @@ export function DetailPanel({
                           )}
                           {!stateBarNeedsApproval && selectedSession.pendingQuestion && (
                             <QuestionPrompt
+                              key={selectedSession.sessionId + '-q'}
                               sessionId={selectedSession.sessionId}
-                              question={selectedSession.pendingQuestion}
+                              questionSet={selectedSession.pendingQuestion}
+                              initialStage={questionStageRef.current.get(selectedSession.sessionId) ?? 0}
+                              onStageChange={(s) => { questionStageRef.current.set(selectedSession.sessionId, s); }}
                               styles={styles}
                             />
                           )}
@@ -1761,58 +1829,12 @@ export function DetailPanel({
                       {(
                         <div className={styles.resumeSection}>
                           <div className={styles.resumeSectionLabel}>{selectedSession.state === 'closed' ? 'Resume' : 'Connect'}</div>
-                          <div className={styles.resumeCommand}>
-                            <code>cd {selectedSession.cwd} && claude --resume {selectedSession.sessionId} --name &quot;{currentDisplayName}&quot;</code>
-                            <button
-                              className={styles.resumeCopyIcon}
-                              onClick={() => {
-                                navigator.clipboard.writeText(`cd "${selectedSession.cwd}" && claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}"`);
-                                setCopyConfirm(true);
-                                setTimeout(() => setCopyConfirm(false), 2000);
-                              }}
-                              title="Copy"
-                            >
-                              {copyConfirm ? (
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="20 6 9 17 4 12"/>
-                                </svg>
-                              ) : (
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                  <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                                </svg>
-                              )}
-                            </button>
-                          </div>
-                          {/* Bridge command row */}
-                          {(() => {
-                            const bridgeMarker = selectedSession.sessionId.slice(0, 8);
-                            const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
-                            const bridgeCmd = `cd "${selectedSession.cwd}" && ${bridgeBin} --pipe overlord-${bridgeMarker} -- claude --resume ${selectedSession.sessionId} --name "${currentDisplayName}___BRG:${bridgeMarker}"`;
-                            return (
-                              <div className={styles.resumeCommand} style={{ marginTop: 4, opacity: 0.75 }}>
-                                <code style={{ fontSize: '0.78em' }}>{bridgeCmd}</code>
-                                <button
-                                  className={styles.resumeCopyIcon}
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(bridgeCmd);
-                                    setBridgeCopyConfirm(true);
-                                    setTimeout(() => setBridgeCopyConfirm(false), 2000);
-                                  }}
-                                  title={`Copy bridge command:\n${bridgeCmd}`}
-                                >
-                                  {bridgeCopyConfirm ? (
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                      <polyline points="20 6 9 17 4 12"/>
-                                    </svg>
-                                  ) : (
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                                    </svg>
-                                  )}
-                                </button>
-                              </div>
-                            );
-                          })()}
+                          <SessionCommands
+                            cwd={selectedSession.cwd}
+                            name={currentDisplayName}
+                            sessionId={selectedSession.sessionId}
+                            bridgePath={bridgePath}
+                          />
                           <div className={styles.resumeButtons}>
                             {onResumeSession && (
                               <button

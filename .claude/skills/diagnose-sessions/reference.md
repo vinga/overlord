@@ -371,9 +371,11 @@ All paths:
 Two independent channels via consoleInjector.ts (persistent PowerShell daemon → inject.ps1):
 
 INPUT (inject):
-  POST /api/sessions/:id/inject { text } → consoleInjector.injectText(pid, text)
-  → PowerShell WriteConsoleInput() → keystrokes injected into session's console input buffer
-  Used for: permission responses, interrupt (Escape), force stop (Ctrl+C), sending messages
+  POST /api/sessions/:id/inject { text, raw? } → consoleInjector.injectText(pid, text, false, raw)
+  → inject.ps1 Inject(): tries TryPipeInject (write to stdin pipe) → TryConsoleInput (WriteConsoleInput) → TryWindowMessage
+  raw=false (default): appends \r if text doesn't end with \r (safe for simple text/enter)
+  raw=true: sends exact bytes, no modification — required for escape sequences like \x1b[B (down arrow)
+  Used for: permission responses, interrupt (Escape), force stop (Ctrl+C), sending messages, AskUserQuestion navigation
 
 OUTPUT (read):
   GET /api/sessions/:id/screen → consoleInjector.readScreen(pid)
@@ -383,6 +385,37 @@ OUTPUT (read):
 Both use the same persistent PowerShell daemon process for performance.
 Only works on Windows (returns null/no-op on other platforms).
 ```
+
+---
+
+## Architecture: AskUserQuestion Detection & UI
+
+When Claude calls the `AskUserQuestion` tool (multi-step interactive questions), Overlord detects it
+and shows an interactive prompt UI in the DetailPanel, allowing the user to click options without
+switching to the terminal.
+
+**Detection pipeline:**
+1. `transcriptReader.ts` — last assistant content block is `tool_use` with `name === 'AskUserQuestion'`
+2. Extracts ALL questions from `input.questions[]` into `PendingQuestionSet`
+3. Uses `stateHint = 'ask_user_question'` (never escalates to `needsPermission`)
+4. State goes `working → waiting` after 5s (no permission prompt ever)
+5. `stateManager` passes `pendingQuestion: PendingQuestionSet` through `addOrUpdate`
+6. WebSocket snapshot delivers to client; DetailPanel renders `QuestionPrompt` component
+
+**Injection strategy (arrow keys):**
+- Claude's AskUserQuestion TUI uses arrow-key navigation (NOT number keys)
+- Option N (index i): send `\x1b[B` (raw=true) × i times, then `\r`
+- `raw=true` is critical — without it, inject.ps1 auto-appends `\r` to each arrow, immediately submitting
+- Multi-stage: stage state is persisted in a `useRef` Map in DetailPanel, keyed by sessionId,
+  so it survives component remounts caused by snapshot refreshes
+- After last question: auto-injects `\r` after 600ms to confirm the "Review + Submit" step
+
+**Key files:**
+- `transcriptReader.ts` — detection + PendingQuestionSet extraction
+- `stateManager.ts` — `pendingQuestion` pass-through (cleared when state leaves 'waiting')
+- `DetailPanel.tsx` — `QuestionPrompt` component + `questionStageRef` persistence
+- `apiRoutes.ts` — `/api/sessions/:id/inject` endpoint, `raw` parameter support
+- `inject.ps1` — `TryPipeInject` (write raw bytes to stdin pipe) handles escape sequences
 
 ---
 
@@ -615,4 +648,7 @@ cursor: fixedSize ? '#0d1117' : 'transparent',
 | Two visible cursors in bridge terminal | xterm.js cursor + ConPTY cursor both visible | Fixed by `cursor: fixedSize ? '#0d1117' : 'transparent'` in XtermTerminal.tsx |
 | Bridge terminal empty + `[bridge] RSNUD result: failed` in server log | EPIPE after bridge closes named pipe — resolved as false, health timer fires at 10s | Fixed: `writeDone` flag in `pipeInjector.ts` — EPIPE after successful write treated as success |
 | Bridge session disappears from PTY tab 10s after server restart | Health timer: no output in 10s → bridge tracking cleaned up (bridgeSessions removed) | Check bridge log for "Child exited with code 1" — bridge process died. Restart the bridge in IntelliJ. |
-| Bridge session shows as `closed` but Claude is alive in bridge window | Health timer was incorrectly calling markClosed() when Claude takes >10s to render after restart | Fixed: health timer no longer calls markClosed(). ProcessChecker handles session closure via PID. |
+| Bridge session shows as `closed` but Claude is alive in bridge window | Health timer was incorrectly calling markClosed() when Claude takes >10s to render after restart | Fixed: health timer no longer calls markClosed(). ProcessChecker handles session closure via PID. || AskUserQuestion prompt not showing in Overlord UI | Session not detected as having pendingQuestion; transcript re-read timing | Check `session.pendingQuestion` in `/api/debug/state`; verify `stateHint=ask_user_question` in transcriptReader |
+| Clicking option always selects Option 1 | `raw=false` causes inject.ps1 to auto-append `\r` after each arrow, submitting immediately | Fixed: arrow injections use `raw=true` so `\x1b[B` bytes arrive clean; only final `\r` triggers selection |
+| AskUserQuestion UI resets to Q1 mid-flow | Snapshot refresh clears `pendingQuestion` briefly, unmounting/remounting component and resetting stage | Fixed: stage persisted in `questionStageRef` Map in DetailPanel keyed by sessionId |
+| AskUserQuestion answered but terminal shows Review step and hangs | Multi-question flow has a final "Submit answers / Cancel" confirmation step | Fixed: after last question, auto-inject `\r` after 600ms to confirm |

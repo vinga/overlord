@@ -21,6 +21,7 @@ import { registerSessionEventHandlers } from './session/sessionEventHandlers.js'
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
+import { cleanupOldWorkerTranscripts } from './ai/claudeQuery.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
 import type { OfficeSnapshot } from './types.js';
 
@@ -475,8 +476,32 @@ const stateManager = new StateManager(() => {
 
 const aiClassifier = new AiClassifier(stateManager);
 
+// Bridge-aware screen text reader for permissionChecker
+async function getScreenText(sessionId: string, pid: number): Promise<string | null> {
+  if (bridgeSessions.has(sessionId)) {
+    const chunks = ptyOutputBuffer.get(sessionId);
+    if (!chunks || chunks.length === 0) return null;
+    const raw = Buffer.concat(chunks.slice(-50)).toString('utf8');
+    const stripped = raw
+      .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+      .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+      .replace(/\x1b[^[\]]/g, '')
+      .replace(/\x1b/g, '')
+      .replace(/[^\x20-\x7e\n\t\r]/g, '');
+    return stripped.split('\n').map(line => {
+      const parts = line.split('\r');
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (parts[i].trim()) return parts[i];
+      }
+      return parts[parts.length - 1];
+    }).join('\n').trim() || null;
+  }
+  const { readScreen } = await import('./pty/consoleInjector.js');
+  return readScreen(pid);
+}
+
 // Start permission checker (Windows-only; no-op on other platforms)
-startPermissionChecker(stateManager);
+startPermissionChecker(stateManager, getScreenText);
 
 // Shared context for session event handlers and transcript watcher
 const sessionCtx: SessionEventContext = {
@@ -502,6 +527,9 @@ const sessionWatcher = new SessionWatcher();
 registerSessionEventHandlers(sessionWatcher, sessionCtx);
 sessionWatcher.start();
 startupComplete = true;
+
+// Clean up old haiku-worker transcript files (>15 min)
+cleanupOldWorkerTranscripts();
 
 // Reconnect to any bridge pipes that survived the server restart
 reconnectBridgePipes();

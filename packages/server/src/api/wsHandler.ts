@@ -192,9 +192,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const session = stateManager.getSession(sessionId);
         const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
         const marker = sessionId.slice(0, 8);
-        const safeName = sessionName.replace(/"/g, '');
+        const safeName = sessionName.replace(/["\s]/g, '-');
         const bridgePath = getBridgePath();
-        const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
+        const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name ${safeName}___BRG:${marker}`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
           .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))

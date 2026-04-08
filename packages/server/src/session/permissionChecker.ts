@@ -41,13 +41,31 @@ function cleanText(text: string): string {
     .trim();
 }
 
-export interface PermissionCheckable {
-  getAllSessionIds(): string[];
-  getSession(id: string): { pid: number; state: string } | undefined;
-  setNeedsPermission(sessionId: string, value: boolean, promptText?: string): void;
+// Detect permission mode from the CLI status bar text
+const PERMISSION_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
+  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
+  { pattern: /accept edits on/i, mode: 'acceptEdits' },
+  { pattern: /plan mode on/i, mode: 'plan' },
+];
+
+function detectPermissionMode(text: string): string | undefined {
+  for (const { pattern, mode } of PERMISSION_MODE_PATTERNS) {
+    if (pattern.test(text)) return mode;
+  }
+  return undefined;
 }
 
-export function startPermissionChecker(stateManager: PermissionCheckable): (() => void) | undefined {
+export interface PermissionCheckable {
+  getAllSessionIds(): string[];
+  getSession(id: string): { pid: number; state: string; permissionMode?: string } | undefined;
+  setNeedsPermission(sessionId: string, value: boolean, promptText?: string): void;
+  setPermissionMode(sessionId: string, mode: string | undefined): void;
+}
+
+export function startPermissionChecker(
+  stateManager: PermissionCheckable,
+  getScreenText?: (sessionId: string, pid: number) => Promise<string | null>,
+): (() => void) | undefined {
   if (!IS_WINDOWS) return undefined;
 
   // Lazy import to avoid loading on non-Windows
@@ -58,7 +76,7 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
     readScreen = mod.readScreen;
   };
 
-  load().catch(() => { /* ignore */ });
+  load().catch(() => { /* ignore — runCycle will retry */ });
 
   // Hysteresis: only clear needsPermission after 3 consecutive misses
   const missCount = new Map<string, number>();
@@ -66,7 +84,12 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
   let stopped = false;
 
   const runCycle = async () => {
-    if (stopped || !readScreen) return;
+    if (stopped) return;
+    if (!readScreen) {
+      // Module not loaded yet — retry soon
+      setTimeout(runCycle, 1000);
+      return;
+    }
     const ids = stateManager.getAllSessionIds();
 
     // Remove stale entries from missCount for sessions no longer tracked
@@ -81,7 +104,9 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
       // Only check sessions that might be stuck
       if (session.state === 'closed') continue;
       try {
-        const text = await readScreen(session.pid);
+        const text = getScreenText
+          ? await getScreenText(id, session.pid)
+          : (readScreen ? await readScreen(session.pid) : null);
         const hasPrompt = text ? looksLikePermissionPrompt(text) : false;
         if (hasPrompt) {
           // Prompt detected: set flag and reset miss counter
@@ -92,8 +117,22 @@ export function startPermissionChecker(stateManager: PermissionCheckable): (() =
           // owns clearing. Screen reader only CONFIRMS/ENHANCES, never removes.
           missCount.set(id, (missCount.get(id) ?? 0) + 1);
         }
-      } catch {
-        // ignore
+        // Detect permission mode from status bar
+        if (text) {
+          const screenMode = detectPermissionMode(text);
+          const current = stateManager.getSession(id)?.permissionMode;
+          console.log(`[permCheck] ${id.slice(0,8)} pid=${session.pid} screenMode=${screenMode} current=${current} textLen=${text.length}`);
+          if (screenMode && screenMode !== current) {
+            stateManager.setPermissionMode(id, screenMode);
+          } else if (!screenMode && current && current !== 'default') {
+            // Status bar doesn't show a mode → back to default
+            stateManager.setPermissionMode(id, 'default');
+          }
+        } else {
+          console.log(`[permCheck] ${id.slice(0,8)} pid=${session.pid} readScreen=null`);
+        }
+      } catch (err) {
+        console.log(`[permCheck] ${id.slice(0,8)} error: ${err}`);
       }
     }
 

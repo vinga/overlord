@@ -257,6 +257,11 @@
   background: rgba(212, 175, 55, 0.18);
 }
 
+.commandsSection {
+  padding: 4px 20px 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

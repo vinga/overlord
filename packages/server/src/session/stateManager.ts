@@ -5,6 +5,45 @@ import { execSync } from 'child_process';
 import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { log } from '../logger.js';
+
+/**
+ * Batch-query all process parent/name info in one OS call, then walk chains in JS.
+ * Windows: single `Get-CimInstance Win32_Process` call.
+ * macOS/Linux: single `ps -eo pid,ppid,comm` call.
+ * Returns a lookup map: pid → { parentPid, name }.
+ */
+function getAllProcessInfo(): Map<number, { parentPid: number; name: string }> {
+  const procMap = new Map<number, { parentPid: number; name: string }>();
+  try {
+    if (process.platform === 'win32') {
+      const script = `Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name -EA SilentlyContinue | ForEach-Object { Write-Host "$($_.ProcessId)|$($_.ParentProcessId)|$($_.Name)" }`;
+      const encoded = Buffer.from(script, 'utf16le').toString('base64');
+      const out = execSync(`powershell -NoProfile -EncodedCommand ${encoded}`, { encoding: 'utf-8', timeout: 10000 }).trim();
+      for (const line of out.split('\n')) {
+        const parts = line.trim().split('|');
+        if (parts.length >= 3) {
+          const pid = parseInt(parts[0], 10);
+          const parentPid = parseInt(parts[1], 10);
+          const name = parts[2].toLowerCase().trim();
+          if (!isNaN(pid) && !isNaN(parentPid)) procMap.set(pid, { parentPid, name });
+        }
+      }
+    } else {
+      // macOS/Linux: ps is fast and universally available
+      const out = execSync('ps -eo pid,ppid,comm', { encoding: 'utf-8', timeout: 5000 }).trim();
+      for (const line of out.split('\n').slice(1)) { // skip header
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (match) {
+          const pid = parseInt(match[1], 10);
+          const parentPid = parseInt(match[2], 10);
+          const name = path.basename(match[3]).toLowerCase().trim();
+          if (!isNaN(pid) && !isNaN(parentPid)) procMap.set(pid, { parentPid, name });
+        }
+      }
+    }
+  } catch { /* ignore — process checks are best-effort */ }
+  return procMap;
+}
 import {
   findTranscriptPath,
   findTranscriptPathAnywhere,
@@ -40,6 +79,9 @@ export class StateManager {
   private knownSessionsFile: string;
   private ideNameCache = new Map<string, { mtimeMs: number; result: { name: string; idePid: number } | undefined }>();
   private parentPidCache = new Map<number, number | null>(); // sessionPid → parentPid
+  /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
+  private processSnapshot = new Map<number, { parentPid: number; name: string }>();
+  private processSnapshotAge = 0;
   readonly bridgePath: string;
 
   constructor(onChange: () => void) {
@@ -48,8 +90,19 @@ export class StateManager {
     this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.loadAccepted();
     this.loadDeleted();
+    this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
     this.loadKnownSessions();
     this.loadPendingResumes();
+  }
+
+  /** Refresh the full process snapshot (one OS call). */
+  private refreshProcessSnapshot(): void {
+    this.processSnapshot = getAllProcessInfo();
+    this.processSnapshotAge = Date.now();
+    // Populate the legacy parentPidCache from the snapshot
+    for (const [pid, info] of this.processSnapshot) {
+      this.parentPidCache.set(pid, info.parentPid);
+    }
   }
 
   private onChange(): void {
@@ -211,6 +264,14 @@ export class StateManager {
     } catch { /* ignore */ }
   }
 
+  undelete(sessionId: string): void {
+    if (!this.deletedSessionIds.has(sessionId)) return;
+    this.deletedSessionIds.delete(sessionId);
+    try {
+      fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
+    } catch { /* ignore */ }
+  }
+
   markDeleted(sessionId: string): void {
     this.deletedSessionIds.add(sessionId);
     try {
@@ -286,7 +347,7 @@ export class StateManager {
     let needsPermission: boolean | undefined;
     let permissionPromptText: string | undefined;
     let permissionMode: string | undefined;
-    let pendingQuestion: import('../types.js').PendingQuestion | undefined;
+    let pendingQuestion: import('../types.js').PendingQuestionSet | undefined;
 
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
@@ -554,7 +615,10 @@ export class StateManager {
       session.inputTokens = result.inputTokens;
       session.compactCount = result.compactCount;
       session.isCompacting = result.isCompacting;
-      if (result.permissionMode) session.permissionMode = result.permissionMode;
+      // Only overwrite permissionMode from transcript if screen hasn't locked it recently
+      if (result.permissionMode && !(session.permissionModeLockedUntil && Date.now() < session.permissionModeLockedUntil)) {
+        session.permissionMode = result.permissionMode;
+      }
       // Only update needsPermission from transcript when it clears (goes false).
       // Setting it true is owned by transcriptReader/addOrUpdate; clearing is also
       // done here when the session advances (transcript no longer shows stale tool_use).
@@ -717,6 +781,16 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (session && session.currentTaskLabel !== label) {
       session.currentTaskLabel = label;
+      this.onChange();
+    }
+  }
+
+  setPermissionMode(sessionId: string, mode: string | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (session && session.permissionMode !== mode) {
+      session.permissionMode = mode;
+      // Lock for 15s so transcript events can't overwrite a screen-detected mode change
+      session.permissionModeLockedUntil = Date.now() + 15_000;
       this.onChange();
     }
   }
@@ -1000,37 +1074,16 @@ export class StateManager {
 
   /** Check if sessionPid is a direct child of idePid (max 3 levels).
    *  Stops early if node.exe is found in the chain — that means Overlord
-   *  is the intermediary, so the session was NOT launched by the IDE. */
+   *  is the intermediary, so the session was NOT launched by the IDE.
+   *  Uses the process snapshot for fast lookups (no per-PID OS calls). */
   private isChildOfIde(sessionPid: number, idePid: number): boolean {
     let current = sessionPid;
     for (let i = 0; i < 3; i++) {
-      let parentInfo: { pid: number; name: string } | null;
-      if (this.parentPidCache.has(current)) {
-        const cached = this.parentPidCache.get(current)!;
-        parentInfo = cached != null ? { pid: cached, name: '' } : null;
-      } else {
-        try {
-          const out = execSync(
-            `powershell -Command "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${current}' -ErrorAction SilentlyContinue; if ($p) { Write-Host \"$($p.ParentProcessId) $($p.Name)\" }"`,
-            { encoding: 'utf-8', timeout: 3000 }
-          ).trim();
-          if (out) {
-            const [pidStr, ...nameParts] = out.split(' ');
-            const pid = parseInt(pidStr, 10);
-            parentInfo = !isNaN(pid) ? { pid, name: nameParts.join(' ').toLowerCase() } : null;
-          } else {
-            parentInfo = null;
-          }
-        } catch {
-          parentInfo = null;
-        }
-        this.parentPidCache.set(current, parentInfo?.pid ?? null);
-      }
-      if (!parentInfo || parentInfo.pid === 0) return false;
-      // If node.exe is in the chain, this session was spawned through Overlord — not the IDE
-      if (parentInfo.name.startsWith('node')) return false;
-      if (parentInfo.pid === idePid) return true;
-      current = parentInfo.pid;
+      const info = this.processSnapshot.get(current) ?? this.getProcessInfoFallback(current);
+      if (!info || info.parentPid === 0) return false;
+      if (info.name.startsWith('node')) return false;
+      if (info.parentPid === idePid) return true;
+      current = info.parentPid;
     }
     return false;
   }
@@ -1055,53 +1108,67 @@ export class StateManager {
 
   /** Walk the parent process chain (up to 6 hops) to detect a known IDE ancestor.
    *  Returns the IDE display name if found, undefined otherwise.
-   *  Uses -EncodedCommand to avoid shell quoting issues with variable expansion in Filter. */
+   *  Uses the process snapshot for fast lookups (no per-PID OS calls). */
   private detectIdeFromProcessChain(pid: number): string | undefined {
-    if (process.platform !== 'win32') return undefined;
-    try {
-      const script = `$p=${pid};$names=@();for($i=0;$i-lt6;$i++){$pr=Get-CimInstance Win32_Process -Filter "ProcessId=$p" -EA SilentlyContinue;if(!$pr){break};$names+=$pr.Name;$p=$pr.ParentProcessId};$names -join ','`;
-      const encoded = Buffer.from(script, 'utf16le').toString('base64');
-      const out = execSync(`powershell -EncodedCommand ${encoded}`, { encoding: 'utf-8', timeout: 5000 }).trim();
-      if (!out) return undefined;
-      for (const name of out.split(',')) {
-        const ideName = StateManager.IDE_PROCESS_NAMES[name.trim().toLowerCase()];
-        if (ideName) return ideName;
-      }
-    } catch {
-      // ignore — non-critical detection
+    let current = pid;
+    for (let i = 0; i < 6; i++) {
+      const info = this.processSnapshot.get(current) ?? this.getProcessInfoFallback(current);
+      if (!info || info.parentPid === 0) return undefined;
+      const ideName = StateManager.IDE_PROCESS_NAMES[info.name];
+      if (ideName) return ideName;
+      current = info.parentPid;
     }
     return undefined;
   }
 
-  /** Check if sessionPid was spawned by Overlord (node.exe in parent chain within 2 hops) */
+  /** Check if sessionPid was spawned by Overlord (node.exe in parent chain within 2 hops).
+   *  Uses the process snapshot for fast lookups (no per-PID OS calls). */
   private isSpawnedByOverlord(sessionPid: number): boolean {
     let current = sessionPid;
     for (let i = 0; i < 2; i++) {
-      const cached = this.parentPidCache.get(current);
-      let parentPid: number | null = cached !== undefined ? cached : null;
-      let parentName = '';
-      if (cached === undefined) {
-        try {
-          const out = execSync(
-            `powershell -Command "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${current}' -ErrorAction SilentlyContinue; if ($p) { Write-Host \"$($p.ParentProcessId) $($p.Name)\" }"`,
-            { encoding: 'utf-8', timeout: 3000 }
-          ).trim();
-          if (out) {
-            const [pidStr, ...nameParts] = out.split(' ');
-            const pid = parseInt(pidStr, 10);
-            parentPid = !isNaN(pid) ? pid : null;
-            parentName = nameParts.join(' ').toLowerCase();
-          }
-        } catch {
-          parentPid = null;
-        }
-        this.parentPidCache.set(current, parentPid);
-      }
-      if (!parentPid) return false;
-      // matches node.exe (Windows), node (Linux/Docker)
+      const info = this.processSnapshot.get(current) ?? this.getProcessInfoFallback(current);
+      if (!info || info.parentPid === 0) return false;
+      // Check the parent process name — Overlord runs as node.exe
+      const parentName = (this.processSnapshot.get(info.parentPid) ?? this.getProcessInfoFallback(info.parentPid))?.name ?? '';
       if (parentName === 'node' || parentName === 'node.exe' || parentName.startsWith('node ')) return true;
-      current = parentPid;
+      current = info.parentPid;
     }
     return false;
+  }
+
+  /** Fallback: query a single PID if it's not in the snapshot (process started after snapshot).
+   *  Caches the result in the snapshot to avoid repeated lookups. */
+  private getProcessInfoFallback(pid: number): { parentPid: number; name: string } | null {
+    if (this.processSnapshot.has(pid)) return this.processSnapshot.get(pid)!;
+    try {
+      let out: string;
+      if (process.platform === 'win32') {
+        out = execSync(
+          `powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -EA SilentlyContinue; if ($p) { Write-Host \\"$($p.ParentProcessId)|$($p.Name)\\" }"`,
+          { encoding: 'utf-8', timeout: 3000 }
+        ).trim();
+      } else {
+        out = execSync(`ps -p ${pid} -o ppid=,comm=`, { encoding: 'utf-8', timeout: 2000 }).trim();
+        if (out) {
+          const match = out.match(/^\s*(\d+)\s+(.+)$/);
+          if (match) out = `${match[1]}|${path.basename(match[2])}`;
+          else out = '';
+        }
+      }
+      if (out) {
+        const parts = out.split('|');
+        if (parts.length >= 2) {
+          const parentPid = parseInt(parts[0], 10);
+          const name = parts[1].toLowerCase().trim();
+          if (!isNaN(parentPid)) {
+            const info = { parentPid, name };
+            this.processSnapshot.set(pid, info);
+            this.parentPidCache.set(pid, parentPid);
+            return info;
+          }
+        }
+      }
+    } catch { /* ignore */ }
+    return null;
   }
 }

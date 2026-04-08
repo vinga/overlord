@@ -450,9 +450,10 @@
 
 .sessionName {
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 600;
   color: #e8e8e8;
+  letter-spacing: normal;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -907,6 +908,18 @@
   border: 1px solid transparent;
 }
 
+.permissionModeBadgeClickable {
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.1s;
+}
+.permissionModeBadgeClickable:hover {
+  filter: brightness(1.3);
+  transform: scale(1.05);
+}
+.permissionModeBadgeClickable:active {
+  transform: scale(0.95);
+}
+
 .permissionModeBadge[data-mode="bypassPermissions"] {
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.2);
@@ -923,6 +936,12 @@
   background: rgba(34, 197, 94, 0.08);
   border-color: rgba(34, 197, 94, 0.2);
   color: rgba(34, 197, 94, 0.85);
+}
+
+.permissionModeBadge[data-mode="default"] {
+  background: rgba(148, 163, 184, 0.06);
+  border-color: rgba(148, 163, 184, 0.15);
+  color: rgba(148, 163, 184, 0.6);
 }
 
 .summaryMetaAgo {
@@ -1607,6 +1626,16 @@
   animation: stateDotPulse 1.5s ease-in-out infinite;
 }
 
+.stateBarCompacting {
+  background: rgba(251, 146, 60, 0.08);
+  color: #fb923c;
+}
+.stateBarCompacting .stateBarDot {
+  background: #fb923c;
+  box-shadow: 0 0 6px rgba(251, 146, 60, 0.8);
+  animation: stateDotPulse 1.5s ease-in-out infinite;
+}
+
 .stateBarWaiting {
   background: rgba(245, 158, 11, 0.08);
   color: #f59e0b;
@@ -1660,9 +1689,9 @@
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 11px;
   font-weight: 600;
-  color: #d4af37;
-  background: rgba(212, 175, 55, 0.08);
-  border: 1px solid rgba(212, 175, 55, 0.4);
+  color: #4ade80;
+  background: rgba(74, 222, 128, 0.1);
+  border: 1px solid rgba(74, 222, 128, 0.4);
   border-radius: 5px;
   padding: 2px 10px;
   cursor: pointer;
@@ -1672,8 +1701,8 @@
 }
 
 .acceptBtn:hover {
-  background: rgba(212, 175, 55, 0.18);
-  border-color: rgba(212, 175, 55, 0.7);
+  background: rgba(74, 222, 128, 0.2);
+  border-color: rgba(74, 222, 128, 0.7);
 }
 
 .acceptedLabel {
@@ -1870,6 +1899,32 @@
 
 
 
+.compactDivider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 0 4px;
+}
+
+.compactDivider::before,
+.compactDivider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(212, 175, 55, 0.2);
+}
+
+.compactDividerLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: rgba(212, 175, 55, 0.55);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .thinkingBlock {
   margin: 2px 0;
 }
@@ -1999,13 +2054,26 @@
   padding: 12px 14px;
 }
 
+.questionMeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .questionHeader {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: rgba(167, 139, 250, 0.7);
-  margin-bottom: 6px;
+}
+
+.questionProgress {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(167, 139, 250, 0.45);
+  margin-left: auto;
 }
 
 .questionText {
@@ -2025,9 +2093,9 @@
 
 .questionOption {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
-  gap: 2px;
+  gap: 10px;
   width: 100%;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(139, 92, 246, 0.25);
@@ -2037,6 +2105,30 @@
   text-align: left;
   transition: background 0.15s, border-color 0.15s;
   font-family: 'Inter', system-ui, sans-serif;
+}
+
+.questionOptionNum {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(139, 92, 246, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  color: #a78bfa;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.questionOptionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .questionOption:hover:not(:disabled) {

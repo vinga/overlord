@@ -1,6 +1,6 @@
 export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 
-export type ActivityItemKind = 'message' | 'tool' | 'thinking';
+export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
 
 export interface ActivityItem {
   kind: ActivityItemKind;
@@ -13,6 +13,7 @@ export interface ActivityItem {
   inputJson?: string;            // full tool input as JSON (truncated)
   durationMs?: number;           // for kind='tool': how long the tool call took
   timestamp?: string;            // ISO timestamp of when this entry occurred
+  compactMeta?: { trigger: string; preTokens: number }; // for kind='compact'
 }
 
 export interface Subagent {
@@ -36,6 +37,11 @@ export interface PendingQuestion {
   header?: string;
   multiSelect?: boolean;
   options: PendingQuestionOption[];
+}
+
+/** All questions from one AskUserQuestion tool call */
+export interface PendingQuestionSet {
+  questions: PendingQuestion[];
 }
 
 export interface Session {
@@ -63,7 +69,8 @@ export interface Session {
   permissionPromptText?: string;
   permissionApprovedAt?: number;  // timestamp ms — suppress re-detection for 30s
   permissionMode?: string;
-  pendingQuestion?: PendingQuestion;
+  permissionModeLockedUntil?: number;  // timestamp ms — screen-detected mode, blocks transcript overwrite
+  pendingQuestion?: PendingQuestionSet;
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;

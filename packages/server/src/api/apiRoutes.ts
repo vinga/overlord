@@ -88,13 +88,13 @@ export function registerApiRoutes(
   app.post('/api/sessions/:sessionId/inject', express.json(), (req, res) => {
     void (async () => {
       const { sessionId } = req.params;
-      const { text } = req.body as { text?: string };
+      const { text, raw } = req.body as { text?: string; raw?: boolean };
       if (!text) { res.status(400).json({ error: 'text required' }); return; }
 
       const session = stateManager.getSession(sessionId);
       if (!session) { res.status(404).json({ error: 'session not found' }); return; }
 
-      console.log(`[approve] sessionId=${sessionId} pid=${session.pid} needsPermission=${session.needsPermission} text=${JSON.stringify(text)}`);
+      console.log(`[approve] sessionId=${sessionId} pid=${session.pid} needsPermission=${session.needsPermission} raw=${raw} text=${JSON.stringify(text)}`);
       try {
         // Try bridge pipe first, fall back to ConPTY injection
         let injected = false;
@@ -103,7 +103,7 @@ export function registerApiRoutes(
           if (injected) console.log(`[approve] pipe inject done session=${sessionId}`);
         }
         if (!injected) {
-          await injectText(session.pid, text);
+          await injectText(session.pid, text, false, raw === true);
           console.log(`[approve] injectText done pid=${session.pid}`);
         }
         // Proactively clear the flag so the UI updates immediately
@@ -111,6 +111,72 @@ export function registerApiRoutes(
         res.json({ ok: true });
       } catch (err) {
         console.log(`[approve] error: ${String(err)}`);
+        res.status(500).json({ error: String(err) });
+      }
+    })();
+  });
+
+  // Cycle permission mode (Shift+Tab) and immediately read screen to update chip
+  app.post('/api/sessions/:sessionId/cycle-permission-mode', (req, res) => {
+    void (async () => {
+      const { sessionId } = req.params;
+      const session = stateManager.getSession(sessionId);
+      if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+
+      try {
+        // Inject Shift+Tab to cycle the mode
+        if (bridgeSessions.has(sessionId)) {
+          await injectViaPipe(sessionId, '\x1b[Z');
+        } else {
+          await injectText(session.pid, '\x1b[Z', false, true);
+        }
+
+        // Wait for the TUI to update, then read screen (bridge sessions use output buffer)
+        await new Promise(r => setTimeout(r, 500));
+        let text: string | null = null;
+        if (bridgeSessions.has(sessionId)) {
+          const chunks = ptyOutputBuffer.get(sessionId);
+          if (chunks && chunks.length > 0) {
+            const raw = Buffer.concat(chunks.slice(-50)).toString('utf8');
+            const stripped = raw
+              .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+              .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+              .replace(/\x1b[^[\]]/g, '')
+              .replace(/\x1b/g, '')
+              .replace(/[^\x20-\x7e\n\t\r]/g, '');
+            text = stripped.split('\n').map(line => {
+              const parts = line.split('\r');
+              for (let i = parts.length - 1; i >= 0; i--) {
+                if (parts[i].trim()) return parts[i];
+              }
+              return parts[parts.length - 1];
+            }).join('\n').trim() || null;
+          }
+        } else {
+          const { readScreen } = await import('../pty/consoleInjector.js');
+          text = await readScreen(session.pid);
+        }
+
+        // Detect new mode from screen text
+        const PERMISSION_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
+          { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
+          { pattern: /accept edits on/i, mode: 'acceptEdits' },
+          { pattern: /plan mode on/i, mode: 'plan' },
+        ];
+        let newMode: string | undefined;
+        if (text) {
+          for (const { pattern, mode } of PERMISSION_MODE_PATTERNS) {
+            if (pattern.test(text)) { newMode = mode; break; }
+          }
+          if (!newMode) newMode = 'default';
+        }
+
+        if (newMode !== undefined) {
+          stateManager.setPermissionMode(sessionId, newMode);
+        }
+
+        res.json({ ok: true, mode: newMode });
+      } catch (err) {
         res.status(500).json({ error: String(err) });
       }
     })();

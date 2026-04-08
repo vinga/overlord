@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { WorkerState, Subagent, ActivityItem, PendingQuestion } from '../types.js';
+import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet } from '../types.js';
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -9,7 +9,7 @@ interface TranscriptCache {
   fileModifiedMs: number; // raw mtime for age calculation
   lastCheckedAt: number; // wall-clock time of last stat() call
   /** Which state-determination branch to use when re-evaluating from time alone */
-  stateHint: 'tool_use' | 'assistant_text' | 'tool_result' | 'user_input' | 'none';
+  stateHint: 'tool_use' | 'ask_user_question' | 'assistant_text' | 'tool_result' | 'user_input' | 'none';
   result: ReturnType<typeof readTranscriptState>;
   dirty: boolean; // set by markDirty() when chokidar fires
 }
@@ -59,6 +59,7 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
   // But still check for pending tool_use → permission prompt
   if (ageSec > 120) {
     if (cached.stateHint === 'tool_use') return { state: 'waiting', needsPermission: true };
+    // ask_user_question stays waiting without permission flag
     return { state: 'waiting' };
   }
   switch (cached.stateHint) {
@@ -67,6 +68,11 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
       // Tool pending >8s with no result → likely permission prompt
       const needsPermission = ageSec > 8 ? true : undefined;
       return { state, needsPermission };
+    }
+    case 'ask_user_question': {
+      // AskUserQuestion — never a permission prompt, just goes to waiting
+      const state: WorkerState = ageSec < 5 ? 'working' : 'waiting';
+      return { state };
     }
     case 'assistant_text': return { state: ageSec < 3 ? 'working' : 'waiting' };
     case 'tool_result':  return { state: ageSec < 8 ? 'working' : 'thinking' };
@@ -97,6 +103,53 @@ export function findTranscriptPath(cwd: string, sessionId: string): string | nul
     // ignore
   }
   return null;
+}
+
+/**
+ * When a session's transcript is stale (>1h old) but the process is alive, the session
+ * may have been /clear'd — Claude creates a new sessionId + transcript but the session
+ * file still references the old one. Scan the project dir for a recently-modified
+ * transcript that isn't already tracked by another session.
+ *
+ * To verify ownership, read the first 4KB of the candidate and check if it references
+ * the stale session's ID (e.g. in task output paths or queue operations).
+ */
+export function findFresherTranscript(cwd: string, excludeSessionId: string, knownSessionIds: Set<string>): string | null {
+  const slug = cwdToSlug(cwd);
+  const dir = path.join(os.homedir(), '.claude', 'projects', slug);
+  try {
+    const files = fs.readdirSync(dir);
+    const candidates: Array<{ path: string; mtimeMs: number }> = [];
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue;
+      const sid = file.replace('.jsonl', '');
+      if (sid === excludeSessionId) continue;
+      if (knownSessionIds.has(sid)) continue;
+      const full = path.join(dir, file);
+      try {
+        const stat = fs.statSync(full);
+        if (!stat.isFile()) continue;
+        if (Date.now() - stat.mtimeMs > 3600_000) continue;
+        candidates.push({ path: full, mtimeMs: stat.mtimeMs });
+      } catch { /* skip */ }
+    }
+    // Sort by most recent first
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // Verify ownership: read head of candidate, check if it references the stale sessionId
+    for (const c of candidates) {
+      try {
+        const fd = fs.openSync(c.path, 'r');
+        const buf = Buffer.alloc(4096);
+        const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+        fs.closeSync(fd);
+        const head = buf.toString('utf-8', 0, bytesRead);
+        if (head.includes(excludeSessionId)) {
+          return c.path;
+        }
+      } catch { /* skip */ }
+    }
+    return null;
+  } catch { return null; }
 }
 
 export function findTranscriptPathAnywhere(sessionId: string): string | null {
@@ -288,7 +341,7 @@ export function readTranscriptState(filePath: string): {
   permissionPromptText?: string;
   lastUserIsDone?: boolean;
   permissionMode?: string;
-  pendingQuestion?: PendingQuestion;
+  pendingQuestion?: PendingQuestionSet;
 } {
   try {
     const now = Date.now();
@@ -356,13 +409,26 @@ export function readTranscriptState(filePath: string): {
       try {
         const parsed = JSON.parse(last30[i]) as {
           type?: string;
+          subtype?: string;
           timestamp?: string;
+          compactMetadata?: { trigger?: string; preTokens?: number };
           message?: {
             content?: string | Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
             model?: string;
             usage?: { input_tokens?: number; cache_read_input_tokens?: number };
           };
         };
+        if (parsed && parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
+          activityFeed.unshift({
+            kind: 'compact',
+            content: 'Conversation compacted',
+            timestamp: parsed.timestamp,
+            compactMeta: {
+              trigger: parsed.compactMetadata?.trigger ?? 'auto',
+              preTokens: parsed.compactMetadata?.preTokens ?? 0,
+            },
+          });
+        }
         if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
           const rawContent = parsed.message?.content;
 
@@ -498,7 +564,7 @@ export function readTranscriptState(filePath: string): {
     let stateHint: TranscriptCache['stateHint'] = 'none';
     let needsPermission: boolean | undefined;
     let permissionPromptText: string | undefined;
-    let pendingQuestion: PendingQuestion | undefined;
+    let pendingQuestion: PendingQuestionSet | undefined;
     if (lastTypedEvent?.type === 'assistant') {
       const lastContent = lastTypedEvent.message as { content?: unknown } | undefined;
       const contentArr = Array.isArray(lastContent?.content) ? lastContent!.content as Array<{ type?: string; name?: string; input?: unknown }> : [];
@@ -513,22 +579,25 @@ export function readTranscriptState(filePath: string): {
         const isAskUser = toolName === 'AskUserQuestion';
 
         if (isAskUser) {
-          // Extract question data from tool input
+          // Extract ALL questions from tool input
           const toolInput = lastBlock!.input as { questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string }> }> } | undefined;
-          const firstQ = toolInput?.questions?.[0];
-          if (firstQ && firstQ.question) {
-            pendingQuestion = {
-              question: firstQ.question,
-              header: firstQ.header,
-              multiSelect: firstQ.multiSelect ?? false,
-              options: (firstQ.options ?? []).map(o => ({
+          const rawQuestions = toolInput?.questions ?? [];
+          const parsedQuestions: PendingQuestion[] = rawQuestions
+            .filter(q => q.question)
+            .map(q => ({
+              question: q.question!,
+              header: q.header,
+              multiSelect: q.multiSelect ?? false,
+              options: (q.options ?? []).map(o => ({
                 label: o.label ?? '',
                 description: o.description,
                 preview: o.preview,
               })).filter(o => o.label),
-            };
+            }));
+          if (parsedQuestions.length > 0) {
+            pendingQuestion = { questions: parsedQuestions };
           }
-          stateHint = 'tool_use';
+          stateHint = 'ask_user_question';
           state = ageSec < 5 ? 'working' : 'waiting';
         } else {
           stateHint = isMcpTool ? 'tool_result' : 'tool_use';
@@ -722,6 +791,7 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
     'subagents'
   );
 
+  const TEN_MINUTES_MS = 10 * 60 * 1000;
   const subagents: Subagent[] = [];
 
   try {
@@ -768,6 +838,13 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
         let model: string | undefined;
 
         if (fs.existsSync(transcriptFile)) {
+          // Skip expensive transcript read for old subagents (>10min)
+          try {
+            const tStat = fs.statSync(transcriptFile);
+            if (Date.now() - tStat.mtimeMs > TEN_MINUTES_MS) {
+              continue; // will be filtered out anyway
+            }
+          } catch { /* proceed to read */ }
           const result = readTranscriptState(transcriptFile);
           state = result.state;
           lastActivity = result.lastActivity;
@@ -792,7 +869,6 @@ export function readSubagents(cwd: string, sessionId: string): Subagent[] {
     // ignore directory read errors
   }
 
-  const TEN_MINUTES_MS = 10 * 60 * 1000;
   const now = Date.now();
   return subagents.filter((s) => {
     if (s.state === 'working' || s.state === 'thinking') return true;

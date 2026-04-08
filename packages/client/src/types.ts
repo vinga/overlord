@@ -3,7 +3,7 @@ type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
 /** How a new terminal session should be spawned */
 type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain';
 
-type ActivityItemKind = 'message' | 'tool' | 'thinking';
+type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
 
 interface ActivityItem {
   kind: ActivityItemKind;
@@ -17,6 +17,7 @@ interface ActivityItem {
   durationMs?: number;           // for kind='tool': how long the tool call took
   timestamp?: string;            // ISO timestamp of when this entry occurred
   pending?: boolean;             // optimistic locally-sent message, not yet processed
+  compactMeta?: { trigger: string; preTokens: number }; // for kind='compact'
 }
 
 interface Subagent {
@@ -42,6 +43,10 @@ interface PendingQuestion {
   options: PendingQuestionOption[];
 }
 
+interface PendingQuestionSet {
+  questions: PendingQuestion[];
+}
+
 interface Session {
   sessionId: string;
   slug?: string;
@@ -65,7 +70,7 @@ interface Session {
   needsPermission?: boolean;
   permissionPromptText?: string;
   permissionMode?: string;
-  pendingQuestion?: PendingQuestion;
+  pendingQuestion?: PendingQuestionSet;
   completionHint?: 'done' | 'awaiting';
   completionSummaries?: Array<{ summary: string; completedAt: string; accepted?: boolean }>;
   userAccepted?: boolean;
@@ -211,6 +216,7 @@ export type {
   Subagent,
   Session,
   PendingQuestion,
+  PendingQuestionSet,
   PendingQuestionOption,
   Room,
   OfficeSnapshot,

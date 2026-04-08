@@ -158,6 +158,96 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
     .on('add', handleTranscriptAdded)
     .on('change', handleTranscriptFile);
 
+  // Startup scan: for each stale session (transcript >1h old, PID alive), look for an
+  // orphan transcript that references its sessionId — indicating a /clear replacement
+  // that happened while the server was down.
+  // Unlike handleTranscriptAdded (which uses CWD matching), this uses content-based
+  // verification to avoid mismatching when multiple sessions share the same CWD.
+  setTimeout(() => {
+    try {
+      const knownIds = new Set(ctx.stateManager.getAllSessionIds());
+      // Collect stale sessions grouped by slug dir
+      const staleBySlug = new Map<string, Array<{ sessionId: string; pid: number; cwd: string }>>();
+      for (const sessionId of knownIds) {
+        const session = ctx.stateManager.getSession(sessionId);
+        if (!session || session.state === 'closed' || session.pid <= 0) continue;
+        if (session.isWorker) continue;
+        const lastActivityAge = Date.now() - new Date(session.lastActivity).getTime();
+        if (lastActivityAge > 3600_000) {
+          const slug = session.cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
+          if (!staleBySlug.has(slug)) staleBySlug.set(slug, []);
+          staleBySlug.get(slug)!.push({ sessionId, pid: session.pid, cwd: session.cwd });
+        }
+      }
+      if (staleBySlug.size === 0) return;
+
+      for (const [slug, staleSessions] of staleBySlug) {
+        const slugDir = join(projectsDir, slug);
+        let files: string[];
+        try { files = fs.readdirSync(slugDir); } catch { continue; }
+        // Collect orphan transcripts (recently modified, not owned by any known session,
+        // or owned but with pid=0 meaning it was registered as standalone without a process)
+        const orphans: Array<{ sid: string; full: string; mtimeMs: number }> = [];
+        for (const file of files) {
+          if (!file.endsWith('.jsonl')) continue;
+          const sid = file.replace('.jsonl', '');
+          // Skip if it's a stale session itself (not an orphan)
+          if (staleSessions.some(s => s.sessionId === sid)) continue;
+          // Allow sessions with pid=0 (registered as standalone but unlinked)
+          if (knownIds.has(sid)) {
+            const existing = ctx.stateManager.getSession(sid);
+            if (existing && existing.pid > 0) continue; // truly owned, skip
+          }
+          const full = join(slugDir, file);
+          try {
+            const stat = fs.statSync(full);
+            if (!stat.isFile()) continue;
+            if (Date.now() - stat.mtimeMs > 6 * 3600_000) continue;
+            orphans.push({ sid, full, mtimeMs: stat.mtimeMs });
+          } catch { /* skip */ }
+        }
+        if (orphans.length === 0) continue;
+
+        // For each orphan, read its head and try to match to a stale session by ID reference
+        for (const orphan of orphans) {
+          let head = '';
+          try {
+            const fd = fs.openSync(orphan.full, 'r');
+            const buf = Buffer.alloc(4096);
+            const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
+            fs.closeSync(fd);
+            head = buf.toString('utf-8', 0, bytesRead);
+          } catch { continue; }
+
+          // Find which stale session this orphan references
+          const match = staleSessions.find(s => head.includes(s.sessionId));
+          if (!match) continue;
+
+          console.log(`[transcript:startup] orphan ${orphan.sid.slice(0, 8)} references stale ${match.sessionId.slice(0, 8)} — replacing`);
+          const clearName = ctx.stateManager.getSession(match.sessionId)?.proposedName ?? match.sessionId.slice(0, 8);
+          closeOrRemoveReplaced(ctx.sessionCtx, match.sessionId);
+          // Undelete in case the orphan was previously deleted (e.g. by an earlier aggressive scan)
+          ctx.stateManager.undelete(orphan.sid);
+          // If the orphan was already registered as a standalone session (pid=0), remove it first
+          // so addOrUpdate creates it fresh with the correct PID
+          const existingOrphan = ctx.stateManager.getSession(orphan.sid);
+          if (existingOrphan && existingOrphan.pid === 0) {
+            ctx.stateManager.remove(orphan.sid);
+          }
+          ctx.stateManager.addOrUpdate({ sessionId: orphan.sid, pid: match.pid, cwd: match.cwd, startedAt: Date.now() });
+          ctx.stateManager.transferName(match.sessionId, orphan.sid);
+          migratePtyMaps(ctx.sessionCtx, match.sessionId, orphan.sid, match.pid);
+          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: match.sessionId, newSessionId: orphan.sid });
+          log('clear:detected', 'Startup orphan clear detected', { sessionId: orphan.sid, sessionName: clearName, extra: match.sessionId.slice(0, 8) + ' → ' + orphan.sid.slice(0, 8) });
+          knownIds.add(orphan.sid);
+          break; // One replacement per orphan
+        }
+      }
+    } catch (err) {
+      console.log(`[transcript:startup] scan error: ${err}`);
+    }
+  }, 3000); // Delay so all session files are loaded first
+
   // Periodic state refresh — re-evaluate all session states every 3s
   // (smallest state threshold is 3s, so polling must be at least that frequent)
   setInterval(() => {

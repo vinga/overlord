@@ -30,15 +30,7 @@
   display: block;
 }
 
-/* Working: bounce */
-.working .svg {
-  animation: bounce 0.6s ease-in-out infinite alternate;
-}
-
-@keyframes bounce {
-  from { transform: translateY(0); }
-  to { transform: translateY(-4px); }
-}
+/* Working: no bounce */
 
 .labelRow {
   margin-top: 8px;
@@ -56,7 +48,8 @@
 .label {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: normal;
   color: #ccc;
   overflow: hidden;
   max-width: 175px;

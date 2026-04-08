@@ -6,7 +6,7 @@ import styles from './Room.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 
 // 300 distinctive names for new sessions — pick a random unused one
-const SESSION_NAMES = [
+export const SESSION_NAMES = [
   'Alaric','Amara','Ashton','Astrid','Aurelia','Balthazar','Bastian','Beatrix','Bramble','Brynhild',
   'Callisto','Caspian','Cassius','Cedar','Celestine','Dagny','Dashiell','Delphine','Dusk','Dmitri',
   'Eirik','Elowen','Ember','Enrique','Esme','Falcon','Florian','Freya','Fujin','Felix',

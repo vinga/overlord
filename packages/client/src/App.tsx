@@ -9,6 +9,7 @@ import { DetailPanel } from './components/DetailPanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
 import { DirectoryPickerDialog } from './components/DirectoryPickerDialog';
+import { SESSION_NAMES } from './components/Room';
 import type { Room } from './types';
 
 
@@ -34,6 +35,7 @@ export function App() {
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
+  const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
   const { customNames, rename } = useCustomNames();
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -292,13 +294,26 @@ export function App() {
         onCloneSession={handleCloneSession}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
-        onOpenDirectoryPicker={() => setShowDirectoryPicker(true)}
+        onOpenDirectoryPicker={() => {
+          const usedNames = new Set([
+            ...Object.values(customNames),
+            ...(snapshot?.rooms.flatMap(r => r.sessions.map(s => s.proposedName)).filter(Boolean) ?? []),
+          ] as string[]);
+          const available = SESSION_NAMES.filter(n => !usedNames.has(n));
+          const name = available.length > 0
+            ? available[Math.floor(Math.random() * available.length)]
+            : 'Session';
+          setDirPickerSuggestedName(name);
+          setShowDirectoryPicker(true);
+        }}
       />
       <DirectoryPickerDialog
         open={showDirectoryPicker}
         onClose={() => setShowDirectoryPicker(false)}
         onSpawn={handleNewFolderSpawn}
         defaultPath={snapshot?.rooms[0]?.cwd}
+        suggestedName={dirPickerSuggestedName}
+        bridgePath={snapshot?.bridgePath}
       />
       {!selectedRoom && <DetailPanel
         selectedSession={selectedSession}
