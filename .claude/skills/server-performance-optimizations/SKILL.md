@@ -69,9 +69,24 @@ Then add `_trace('label')` before/after each phase. Key phases to time:
 - `loadClosedSessionsFromTranscripts()` — reads closed session transcripts
 - `httpServer.listen()` — should be instant
 
+## /clear Detection Architecture
+
+Three mechanisms detect `/clear` (session replacement). **None use CWD matching** — CWD is unreliable because multiple sessions share the same CWD.
+
+1. **Session file watcher** (`sessionEventHandlers.ts` `changed` event) — fires when `~/.claude/sessions/{pid}.json` updates in-place with a new `sessionId` (same PID). Fastest path — near-instant detection.
+
+2. **Periodic stale transcript check** (3s interval in `transcriptWatcher.ts`) — for sessions in `working`/`thinking` state where `lastActivity` hasn't changed for 3 consecutive polls (9+ seconds), reads the session file to check if `sessionId` changed. **Not heavy:** only fires once per stale period (resets counter after triggering), and the session file is a tiny JSON (~100 bytes). Active and idle sessions never trigger this.
+
+3. **Startup orphan scan** (3s delay after boot in `transcriptWatcher.ts`) — for sessions >1h stale with alive PIDs, scans transcript directory for orphan `.jsonl` files. Uses **content-based matching** (reads first 4KB of orphan, checks if it references a known stale sessionId). Only runs once at startup.
+
+### Permission Detection (False Positives)
+
+Long-running tools (`Bash`, `Agent`, `WebFetch`, `WebSearch`, `execute_command`, `RunCommand`) must NOT trigger the permission prompt UI. The transcript heuristic treats `tool_use` entries >8s old as permission prompts — but these tools legitimately run for minutes. They are treated like MCP tools: show `working`/`thinking`, never `needsPermission`. See `LONG_RUNNING_TOOLS` set in `transcriptReader.ts`.
+
 ## Rules
 
 - **NEVER spawn individual PowerShell/shell calls per PID** during startup. Always use the batch snapshot.
 - **NEVER read subagent transcripts without checking mtime first.** The 10-minute threshold is the same as the display filter.
 - **NEVER skip haiku worker cleanup.** Without it, thousands of files accumulate within days.
+- **NEVER use CWD-based matching** to link sessions or detect /clear. Always use PID, sessionId, or name markers.
 - Cross-platform: every OS-level optimization must work on both Windows and macOS.

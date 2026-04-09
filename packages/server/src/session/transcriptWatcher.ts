@@ -45,7 +45,13 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
     if (!parsed) return;
     // Mark dirty immediately so the next poll knows to re-read the file
     markTranscriptDirty(filePath);
-    const { sessionId } = parsed;
+    const { sessionId, isSubagent } = parsed;
+    // Unknown non-subagent session changing — could be an orphan after server restart
+    // (ignoreInitial:true means existing files don't fire 'add'). Run replacement detection.
+    if (!isSubagent && !ctx.stateManager.getSession(sessionId)) {
+      handleTranscriptAdded(filePath);
+      return;
+    }
     const existing = transcriptDebounceTimers.get(sessionId);
     if (existing) clearTimeout(existing);
     transcriptDebounceTimers.set(sessionId, setTimeout(() => {
@@ -54,7 +60,12 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
     }, 150));
   }
 
-  // Handle new .jsonl files appearing — detect /clear session replacement
+  // Handle new .jsonl files appearing — register unknown sessions.
+  // /clear detection is NOT done here (CWD matching is unreliable — multiple sessions share CWDs).
+  // Instead, /clear is detected by:
+  //   1. sessionEventHandlers 'changed' — session file updates in-place with new sessionId (same PID)
+  //   2. Periodic stale transcript check (3s interval) — reads session file, detects sessionId mismatch
+  //   3. Startup orphan scan — content-based verification for server-was-down cases
   function handleTranscriptAdded(filePath: string): void {
     const parsed = parseTranscriptPath(filePath);
     if (!parsed) return;
@@ -73,7 +84,8 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       return;
     }
 
-    // Unknown session: read cwd from the transcript to detect /clear replacement
+    // Unknown session: read cwd and register as standalone.
+    // The session watcher or /clear detection mechanisms will link it properly if needed.
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const lines = content.split('\n');
@@ -86,67 +98,115 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
         } catch { /* skip malformed */ }
       }
 
-      if (!cwd) {
-        // No cwd found yet — let normal flow handle it
-        handleTranscriptFile(filePath);
-        return;
-      }
-
-      // Find the most recently active non-closed session in the same CWD — that's the cleared one.
-      const normalizedCwd = cwd.replace(/\\/g, '/').toLowerCase();
-      let bestSession: { sessionId: string; pid: number; isWorker?: boolean } | null = null;
-      let bestActivity = -Infinity;
-
-      for (const sid of ctx.stateManager.getAllSessionIds()) {
-        if (sid === newSessionId) continue;
-        const s = ctx.stateManager.getSession(sid);
-        if (!s || s.state === 'closed') continue;
-        if (s.cwd.replace(/\\/g, '/').toLowerCase() !== normalizedCwd) continue;
-        const t = new Date(s.lastActivity).getTime();
-        if (t > bestActivity) {
-          bestActivity = t;
-          bestSession = { sessionId: sid, pid: s.pid, isWorker: s.isWorker };
+      if (cwd) {
+        // Check if there's a pending clear for this exact session — triggered by the UI Clear button.
+        // This is NOT CWD matching: the pending entry was explicitly recorded when /clear was injected
+        // into a known session. We use CWD only to verify the orphan belongs to the same project.
+        const pending = ctx.stateManager.consumePendingClearReplacement(cwd);
+        if (pending) {
+          const clearSession = ctx.stateManager.getSession(pending.sessionId);
+          console.log(`[transcript:add] pending found: ${pending.sessionId.slice(0, 8)}, clearSession=${!!clearSession}`);
+          if (clearSession) {
+            const clearName = clearSession.proposedName ?? pending.sessionId.slice(0, 8);
+            console.log(`[transcript:add] pending-clear replacement: ${pending.sessionId.slice(0, 8)} → ${newSessionId.slice(0, 8)}`);
+            ctx.stateManager.undelete(newSessionId);
+            const existingNew = ctx.stateManager.getSession(newSessionId);
+            if (existingNew && existingNew.pid === 0) ctx.stateManager.remove(newSessionId);
+            ctx.stateManager.addOrUpdate({ sessionId: newSessionId, pid: clearSession.pid, cwd, startedAt: Date.now() });
+            // transferName and migratePtyMaps must run BEFORE removing old session
+            // so they can still read old session's proposedName and bridge/PTY state
+            ctx.stateManager.transferName(pending.sessionId, newSessionId);
+            migratePtyMaps(ctx.sessionCtx, pending.sessionId, newSessionId, clearSession.pid);
+            // Broadcast session:replaced BEFORE markDeleted so client migrates room order
+            // before the snapshot that removes the old session arrives.
+            ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: pending.sessionId, newSessionId });
+            // markDeleted (not just remove) so session watcher won't re-register old session from stale {pid}.json
+            ctx.stateManager.markDeleted(pending.sessionId);
+            log('clear:detected', 'Live clear detected via UI Clear button', { sessionId: newSessionId, sessionName: clearName, extra: pending.sessionId.slice(0, 8) + ' → ' + newSessionId.slice(0, 8) });
+            handleTranscriptFile(filePath);
+            return;
+          }
         }
-      }
 
-      // Skip /clear detection if a PTY resume is in progress — interim sessions are not /clear replacements
-      if (hasActiveResumeInProgress(ctx.sessionCtx)) {
-        console.log(`[transcript:add] skipping /clear detection for ${newSessionId.slice(0, 8)} — PTY resume in progress`);
+        // /clear detection fallback: new transcript has /clear in its first lines.
+        // Only replace if there is exactly ONE candidate session in the same CWD of each type —
+        // ambiguous cases (multiple bridge or PTY sessions in same dir) are left alone.
+        const hasClear = lines.slice(0, 20).some(line => {
+          if (!line.trim()) return false;
+          try {
+            const e = JSON.parse(line) as Record<string, unknown>;
+            const content = (e.message as Record<string, unknown> | undefined)?.content;
+            if (typeof content === 'string') return content.includes('<command-name>/clear</command-name>');
+            if (Array.isArray(content)) return (content as Array<Record<string, unknown>>).some(
+              p => typeof p.text === 'string' && p.text.includes('<command-name>/clear</command-name>'));
+            return false;
+          } catch { return false; }
+        });
+
+        if (hasClear) {
+          const normalCwd = cwd.replace(/\\/g, '/').toLowerCase();
+
+          // Bridge sessions: replace only when unambiguous (exactly 1 bridge in same CWD)
+          const bridgeMatches = [...ctx.sessionCtx.bridgeSessions].filter(id => {
+            if (id === newSessionId) return false;
+            const s = ctx.stateManager.getSession(id);
+            return s && s.state !== 'closed' && s.cwd.replace(/\\/g, '/').toLowerCase() === normalCwd;
+          });
+          // Embedded PTY sessions: replace only when unambiguous (exactly 1 PTY in same CWD)
+          const ptyMatches = [...ctx.sessionCtx.claudeToPtyId.keys()].filter(id => {
+            if (id === newSessionId) return false;
+            const s = ctx.stateManager.getSession(id);
+            return s && s.state !== 'closed' && s.cwd.replace(/\\/g, '/').toLowerCase() === normalCwd;
+          });
+
+          const clearId = bridgeMatches.length === 1 ? bridgeMatches[0]
+            : ptyMatches.length === 1 ? ptyMatches[0]
+            : undefined;
+
+          if (clearId) {
+            const clearSession = ctx.stateManager.getSession(clearId)!;
+            const clearName = clearSession.proposedName ?? clearId.slice(0, 8);
+            const kind = bridgeMatches.length === 1 ? 'bridge' : 'PTY';
+            console.log(`[transcript:add] ${kind} /clear detected: ${clearId.slice(0, 8)} → ${newSessionId.slice(0, 8)}`);
+            ctx.stateManager.undelete(newSessionId);
+            const existingNew = ctx.stateManager.getSession(newSessionId);
+            if (existingNew && existingNew.pid === 0) ctx.stateManager.remove(newSessionId);
+            ctx.stateManager.addOrUpdate({ sessionId: newSessionId, pid: clearSession.pid, cwd, startedAt: Date.now() });
+            ctx.stateManager.transferName(clearId, newSessionId);
+            migratePtyMaps(ctx.sessionCtx, clearId, newSessionId, clearSession.pid);
+            ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: clearId, newSessionId });
+            ctx.stateManager.markDeleted(clearId);
+            log('clear:detected', `${kind} /clear detected via terminal`, { sessionId: newSessionId, sessionName: clearName, extra: clearId.slice(0, 8) + ' → ' + newSessionId.slice(0, 8) });
+            handleTranscriptFile(filePath);
+            return;
+          }
+        }
+
+        // Skip internal Overlord worker sessions (haiku-worker, etc.)
+        const cwdNorm = cwd.toLowerCase().replace(/\\/g, '/');
+        if (cwdNorm.includes('/.claude/')) return;
+
+        // Skip deleted sessions — addOrUpdate is a no-op for them, which would cause
+        // handleTranscriptFile below to re-call handleTranscriptAdded infinitely.
+        if (ctx.stateManager.isDeleted(newSessionId)) return;
+        ctx.stateManager.addOrUpdate({ sessionId: newSessionId, pid: 0, cwd, startedAt: Date.now() });
+        console.log(`[transcript:add] new session: ${newSessionId.slice(0, 8)} (cwd: ${cwd})`);
+
+        // Session registered — trigger normal refresh so activityFeed is populated.
+        // MUST return after this to avoid the unconditional handleTranscriptFile below,
+        // which would see the session as unknown (if addOrUpdate was skipped) and recurse.
         handleTranscriptFile(filePath);
         return;
       }
-
-      if (bestSession !== null) {
-        closeOrRemoveReplaced(ctx.sessionCtx, bestSession.sessionId);
-        ctx.stateManager.addOrUpdate({
-          sessionId: newSessionId,
-          pid: bestSession.pid,
-          cwd,
-          startedAt: Date.now(),
-          kind: bestSession.isWorker ? 'haiku-worker' : undefined,
-        });
-        ctx.stateManager.transferName(bestSession.sessionId, newSessionId);
-        migratePtyMaps(ctx.sessionCtx, bestSession.sessionId, newSessionId);
-        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: bestSession.sessionId, newSessionId });
-        const clearName3 = ctx.stateManager.getSession(newSessionId)?.proposedName ?? newSessionId.slice(0, 8);
-        log('clear:detected', 'Clear detected', { sessionId: newSessionId, sessionName: clearName3, extra: bestSession.sessionId.slice(0, 8) + ' → ' + newSessionId.slice(0, 8) });
-        console.log(`[transcript:add] /clear detected: ${bestSession.sessionId} → ${newSessionId} (cwd: ${cwd})`);
-      } else {
-        // No matching session found — register as new standalone session
-        ctx.stateManager.addOrUpdate({
-          sessionId: newSessionId,
-          pid: 0,
-          cwd,
-          startedAt: Date.now(),
-        });
-        console.log(`[transcript:add] new standalone session: ${newSessionId} (cwd: ${cwd})`);
-      }
+      // cwd not found in first 15 lines: don't call handleTranscriptFile — session not
+      // registered yet, calling it would trigger infinite handleTranscriptAdded recursion.
+      console.log(`[transcript:add] no cwd in ${newSessionId.slice(0, 8)}, deferring (will retry on next change)`);
+      return;
     } catch {
-      // If we can't read the file yet, fall through to the normal handler
+      // File not readable yet — skip. Chokidar will fire 'change' when it's ready.
+      console.log(`[transcript:add] read error for ${newSessionId.slice(0, 8)}, deferring`);
+      return;
     }
-
-    // Always let the normal refresh flow run so the new session gets registered
-    handleTranscriptFile(filePath);
   }
 
   chokidar
@@ -173,7 +233,7 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
         if (!session || session.state === 'closed' || session.pid <= 0) continue;
         if (session.isWorker) continue;
         const lastActivityAge = Date.now() - new Date(session.lastActivity).getTime();
-        if (lastActivityAge > 3600_000) {
+        if (lastActivityAge > 900_000) { // 15 min — catches recent post-clear orphans
           const slug = session.cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
           if (!staleBySlug.has(slug)) staleBySlug.set(slug, []);
           staleBySlug.get(slug)!.push({ sessionId, pid: session.pid, cwd: session.cwd });
@@ -202,7 +262,7 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           try {
             const stat = fs.statSync(full);
             if (!stat.isFile()) continue;
-            if (Date.now() - stat.mtimeMs > 6 * 3600_000) continue;
+            if (Date.now() - stat.mtimeMs > 6 * 3600_000) continue; // still keep 6h window for orphans
             orphans.push({ sid, full, mtimeMs: stat.mtimeMs });
           } catch { /* skip */ }
         }
@@ -220,7 +280,8 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           } catch { continue; }
 
           // Find which stale session this orphan references
-          const match = staleSessions.find(s => head.includes(s.sessionId));
+          let match = staleSessions.find(s => head.includes(s.sessionId));
+
           if (!match) continue;
 
           console.log(`[transcript:startup] orphan ${orphan.sid.slice(0, 8)} references stale ${match.sessionId.slice(0, 8)} — replacing`);
@@ -263,7 +324,7 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           try {
             if (fs.existsSync(sessionFilePath)) {
               const raw = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8')) as { pid: number; sessionId: string; cwd: string; startedAt: number };
-              if (raw.sessionId !== sessionId) {
+              if (raw.sessionId !== sessionId && !ctx.stateManager.isDeleted(raw.sessionId)) {
                 const clearName = sess2.proposedName ?? sessionId.slice(0, 8);
                 closeOrRemoveReplaced(ctx.sessionCtx, sessionId);
                 ctx.stateManager.addOrUpdate(raw);

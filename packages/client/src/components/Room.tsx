@@ -4,6 +4,7 @@ import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
 import styles from './Room.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
+import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 
 // 300 distinctive names for new sessions — pick a random unused one
 export const SESSION_NAMES = [
@@ -68,7 +69,7 @@ interface RoomProps {
   isPtySession?: (sessionId: string) => boolean;
 }
 
-function DeskMenu({ onDelete, onRename, onClone, currentName }: { onDelete: () => void; onRename?: (name: string) => void; onClone?: () => void; currentName?: string }) {
+function DeskMenu({ onDelete, onRename, onClone, onClear, currentName }: { onDelete: () => void; onRename?: (name: string) => void; onClone?: () => void; onClear?: () => void; currentName?: string }) {
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameVal, setNameVal] = useState('');
@@ -152,6 +153,18 @@ function DeskMenu({ onDelete, onRename, onClone, currentName }: { onDelete: () =
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
                 >Clone</button>
+              )}
+              {onClear && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setOpen(false); onClear(); }}
+                  style={{
+                    display: 'block', width: '100%', padding: '8px 14px',
+                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                    fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(251,146,60,0.1)'; e.currentTarget.style.color = '#fb923c'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+                >Clear</button>
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }}
@@ -242,6 +255,8 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
   const [terminalSpawnName, setTerminalSpawnName] = useState('');
   const [terminalMode, setTerminalMode] = useState<TerminalSpawnMode>('bridge');
   const { getOrder, setOrder } = useRoomOrder();
+  const { isCollapsed, toggle } = useRoomCollapsed();
+  const collapsed = isCollapsed(room.id);
 
   const isTerminalSpawning = terminalSpawnCwd === room.cwd;
 
@@ -346,9 +361,26 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
     setDragOverId(null);
   };
 
+  // Compute state counts for collapsed summary
+  const stateCounts = room.sessions.reduce<Record<string, number>>((acc, s) => {
+    acc[s.state] = (acc[s.state] ?? 0) + 1;
+    return acc;
+  }, {});
+
   return (
-    <div className={styles.room}>
+    <div className={`${styles.room} ${collapsed ? styles.roomCollapsed : ''}`}>
       <div className={styles.titleBar}>
+        <button
+          className={styles.collapseBtn}
+          onClick={() => toggle(room.id)}
+          data-tooltip={collapsed ? 'Expand room' : 'Collapse room'}
+          data-tooltip-dir="down"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+            style={{ transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+            <polyline points="2 3 5 6 8 3" />
+          </svg>
+        </button>
         <span
           className={`${styles.roomName} ${onRoomClick ? styles.roomNameClickable : ''}`}
           onClick={onRoomClick ? (e) => { e.stopPropagation(); onRoomClick(room.id); } : undefined}
@@ -359,6 +391,19 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
         >
           {room.name}
         </span>
+        {collapsed && (
+          <div className={styles.collapsedChips}>
+            {(['working', 'thinking', 'waiting', 'closed'] as const).map(state => {
+              const count = stateCounts[state];
+              if (!count) return null;
+              return (
+                <span key={state} className={`${styles.stateChip} ${styles[`stateChip_${state}`]}`} data-tooltip={`${count} ${state}`}>
+                  {count}
+                </span>
+              );
+            })}
+          </div>
+        )}
         {onSpawnSession && (
           <div style={{ position: 'relative' }}>
             <SpawnMenu
@@ -403,7 +448,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
           </div>
         )}
       </div>
-      <div className={styles.desks}>
+      {!collapsed && <div className={styles.desks}>
         {sortedSessions.map((session) => {
           const isSelected = session.sessionId === selectedSessionId;
           const isDragging = draggedId === session.sessionId;
@@ -440,6 +485,13 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
                   onDelete={() => onDeleteSession(session.sessionId)}
                   onRename={onRenameSession ? (name) => onRenameSession(session.sessionId, name) : undefined}
                   onClone={onCloneSession && session.activityFeed && session.activityFeed.length > 0 ? () => onCloneSession(session.sessionId) : undefined}
+                  onClear={session.state !== 'closed' ? () => {
+                    fetch(`/api/sessions/${session.sessionId}/inject`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ text: '/clear\r' }),
+                    }).catch(() => null);
+                  } : undefined}
                   currentName={customNames[session.sessionId] ?? session.proposedName ?? session.sessionId.slice(0, 8)}
                 />
               )}
@@ -447,7 +499,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
             </div>
           );
         })}
-      </div>
+      </div>}
     </div>
   );
 }

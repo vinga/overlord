@@ -1,8 +1,10 @@
 import type { WebSocket } from 'ws';
 import type { PtyManager } from './ptyManager.js';
+import type { StateManager } from '../session/stateManager.js';
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
+  stateManager: StateManager;
   wsSessionMap: Map<WebSocket, Set<string>>;
   ptyToClaudeId: Map<string, string>;
   claudeToPtyId: Map<string, string>;
@@ -17,16 +19,46 @@ export interface PtyEventsContext {
 export function wirePtyEvents(ctx: PtyEventsContext): void {
   // Wire PtyManager events → broadcast to ALL connected clients
   // so any tab can view the PTY terminal
+  const PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
+    { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
+    { pattern: /accept edits on/i, mode: 'acceptEdits' },
+    { pattern: /plan mode on/i, mode: 'plan' },
+  ];
+
   ctx.ptyManager.on('output', (sessionId: string, data: string) => {
     // Buffer output for replay on reconnect
     let buf = ctx.ptyOutputBuffer.get(sessionId);
     if (!buf) { buf = []; ctx.ptyOutputBuffer.set(sessionId, buf); }
+
+    const isRepaint = data.includes('\x1b[?2026h');
+    if (isRepaint) {
+      buf = [];
+      ctx.ptyOutputBuffer.set(sessionId, buf);
+    }
+
     buf.push(Buffer.from(data));
     if (buf.length > ctx.PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - ctx.PTY_BUFFER_MAX_CHUNKS);
 
     const effectiveId = ctx.ptyToClaudeId.get(sessionId) ?? sessionId;
     const encoded = Buffer.from(data).toString('base64');
     ctx.broadcastRaw({ type: 'terminal:output', sessionId: effectiveId, data: encoded });
+
+    // On repaint, detect permission mode and update immediately
+    if (isRepaint) {
+      const text = data.replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '').replace(/\x1b[^[\]]/g, '')
+        .replace(/\x1b/g, '').replace(/[^\x20-\x7e\n\t\r]/g, '');
+      let frameMode: string | undefined;
+      for (const { pattern, mode } of PERM_MODE_PATTERNS) {
+        if (pattern.test(text)) { frameMode = mode; break; }
+      }
+      const resolvedMode = frameMode ?? 'default';
+      // REVERT NOTE: original code guarded this with: if (resolvedMode !== current) { ... }
+      // CHANGE: Always call setPermissionMode on repaint — even if mode unchanged — so the
+      // lock gets refreshed for non-default modes, preventing permissionChecker
+      // from flipping back to 'default' between repaints.
+      ctx.stateManager.setPermissionMode(effectiveId, resolvedMode);
+    }
   });
 
   ctx.ptyManager.on('exit', (sessionId: string, code: number) => {

@@ -6,7 +6,7 @@
   position: relative;
   user-select: none;
   outline: none;
-  width: 190px;
+  width: 165px;
   transition: filter 0.25s ease, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -38,7 +38,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  max-width: 175px;
+  max-width: 155px;
 }
 
 .labelSubagent {
@@ -52,7 +52,7 @@
   letter-spacing: normal;
   color: #ccc;
   overflow: hidden;
-  max-width: 175px;
+  max-width: 155px;
   text-align: center;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -71,7 +71,7 @@
   border-radius: 4px;
   padding: 2px 6px;
   text-align: center;
-  max-width: 175px;
+  max-width: 155px;
   width: 100%;
   outline: none;
   box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.15);
@@ -82,7 +82,7 @@
   font-size: 11px;
   color: rgba(34, 197, 94, 0.75);
   text-align: center;
-  max-width: 175px;
+  max-width: 155px;
   line-height: 1.3;
   margin-top: 2px;
   word-wrap: break-word;
@@ -132,7 +132,7 @@
 }
 
 .nameInput {
-  width: 160px;
+  width: 140px;
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 14px;
   font-weight: 500;
@@ -373,7 +373,7 @@
   font-size: 11px;
   color: rgba(167, 139, 250, 0.75);
   text-align: center;
-  max-width: 175px;
+  max-width: 155px;
   line-height: 1.3;
   margin-top: 2px;
   word-wrap: break-word;

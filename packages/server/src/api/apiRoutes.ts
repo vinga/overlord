@@ -95,6 +95,13 @@ export function registerApiRoutes(
       if (!session) { res.status(404).json({ error: 'session not found' }); return; }
 
       console.log(`[approve] sessionId=${sessionId} pid=${session.pid} needsPermission=${session.needsPermission} raw=${raw} text=${JSON.stringify(text)}`);
+      // /clear: wipe activity feed BEFORE injecting to avoid a race where the session
+      // watcher fires markClosed() before we get back from await, making the guard skip.
+      if (text.trimStart().startsWith('/clear')) {
+        stateManager.clearActivityFeed(sessionId);
+        const sess = stateManager.getSession(sessionId);
+        if (sess) stateManager.markPendingClearReplacement(sessionId, sess.cwd);
+      }
       try {
         // Try bridge pipe first, fall back to ConPTY injection
         let injected = false;
@@ -131,11 +138,13 @@ export function registerApiRoutes(
           await injectText(session.pid, '\x1b[Z', false, true);
         }
 
-        // Wait for the TUI to update, then read screen (bridge sessions use output buffer)
+        // Wait for the TUI to update, then read screen
         await new Promise(r => setTimeout(r, 500));
         let text: string | null = null;
-        if (bridgeSessions.has(sessionId)) {
-          const chunks = ptyOutputBuffer.get(sessionId);
+        const { claudeToPtyId } = ptyMaps;
+        const bufKey = bridgeSessions.has(sessionId) ? sessionId : (claudeToPtyId.get(sessionId) ?? null);
+        if (bufKey) {
+          const chunks = ptyOutputBuffer.get(bufKey);
           if (chunks && chunks.length > 0) {
             const raw = Buffer.concat(chunks.slice(-50)).toString('utf8');
             const stripped = raw
@@ -195,6 +204,14 @@ export function registerApiRoutes(
     } catch {
       res.status(500).json({ error: 'Kill failed' });
     }
+  });
+
+  // Delete a session from state (removes from UI; does not kill the process)
+  app.delete('/api/sessions/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    if (!stateManager.getSession(sessionId)) { res.status(404).json({ error: 'Session not found' }); return; }
+    deleteSession(sessionId, undefined, 'session:delete (REST)');
+    res.json({ ok: true });
   });
 
   // Manually mark a session as done

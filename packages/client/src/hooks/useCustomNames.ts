@@ -65,5 +65,23 @@ export function useCustomNames() {
     [customNames, autoNames]
   );
 
-  return { customNames, autoNames, rename, getDisplayName, ensureAutoName };
+  // Transfer both custom and auto name from oldId → newId (called on /clear)
+  const migrateSession = useCallback((oldId: string, newId: string) => {
+    setCustomNames(prev => {
+      if (!prev[oldId]) return prev;
+      const next = { ...prev, [newId]: prev[oldId] };
+      delete next[oldId];
+      save(next);
+      return next;
+    });
+    setAutoNames(prev => {
+      if (!prev[oldId]) return prev;
+      const next = { ...prev, [newId]: prev[oldId] };
+      delete next[oldId];
+      saveAuto(next);
+      return next;
+    });
+  }, []);
+
+  return { customNames, autoNames, rename, getDisplayName, ensureAutoName, migrateSession };
 }

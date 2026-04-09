@@ -290,14 +290,42 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         const isBridge = bridgeSessions.has(sessionId);
-        // Bridge pipe receives raw bytes — always append \r so text gets submitted.
-        // Non-bridge injectText handles Enter internally via its extraEnter param.
-        const textToSend = isBridge ? (text + '\r') : (extraEnter ? text + '\r' : text);
+        // PTY: \r — line discipline converts it to newline for the app.
+        // Bridge: relays to ConPTY, so \r is also correct.
+        const ptyTextToSend = text + (extraEnter ? '\r' : '');
+        const bridgeTextToSend = text + '\r';
+
+        // Mark pending clear so the replacement transcript gets linked to this session
+        if (text.trimStart().startsWith('/clear')) {
+          stateManager.clearActivityFeed(sessionId);
+          const sess = stateManager.getSession(sessionId);
+          if (sess) stateManager.markPendingClearReplacement(sessionId, sess.cwd);
+        }
+
+        // Prefer PTY stdin write when an active PTY is linked to this claude session.
+        // Writing directly to the TTY is more reliable than ConPTY virtual keystroke
+        // injection and ensures text+Enter always reaches the process atomically.
+        const ptyId = claudeToPtyId.get(sessionId);
+        if (ptyId && ptyManager.has(ptyId)) {
+          console.log(`[inject] pty session=${sessionId.slice(0, 8)} ptyId=${ptyId.slice(0, 8)} text="${text}"`);
+          ptyManager.write(ptyId, ptyTextToSend);
+          console.log(`[inject] pty write ok`);
+          return;
+        }
 
         console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
-        // Try bridge pipe first, fall back to ConPTY injection
+        // Try bridge pipe first, fall back to ConPTY injection.
+        // For bridge+extraEnter: mirror the ConPTY path — send a delayed second \r
+        // so that @-image autocomplete has time to settle before Enter is processed.
         (isBridge
-          ? injectViaPipe(sessionId, textToSend).then(ok => { if (!ok) return injectText(targetPid, text, extraEnter); })
+          ? injectViaPipe(sessionId, bridgeTextToSend).then(ok => {
+              if (!ok) return injectText(targetPid, text, extraEnter);
+              if (extraEnter) {
+                setTimeout(() => injectViaPipe(sessionId, '\r').then(ok2 => {
+                  if (!ok2) injectText(targetPid, '', false);
+                }), 600);
+              }
+            })
           : injectText(targetPid, text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))
           .catch((err: Error) => {
@@ -330,12 +358,15 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           sendToClient(ws, { type: 'terminal:clear', sessionId });
           const cols = Number(msg.cols || 0);
           const rows = Number(msg.rows || 0);
+          console.log(`[terminal:replay] bridge nudge for ${sessionId.slice(0, 8)} cols=${cols} rows=${rows}`);
           if (cols > 0 && rows > 0) {
-            // Resize ConPTY to match Overlord's xterm dimensions before nudging,
-            // so the repaint renders at the correct width (not IntelliJ's terminal width)
-            void resizeAndNudgeBridgePipe(sessionId, cols, rows);
+            void resizeAndNudgeBridgePipe(sessionId, cols, rows).then(ok => {
+              console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ${sessionId.slice(0, 8)}`);
+            });
           } else {
-            void nudgeBridgePipe(sessionId);
+            void nudgeBridgePipe(sessionId).then(ok => {
+              console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ${sessionId.slice(0, 8)}`);
+            });
           }
           return;
         }

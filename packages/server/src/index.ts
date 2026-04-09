@@ -17,7 +17,7 @@ import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
-import { registerSessionEventHandlers } from './session/sessionEventHandlers.js';
+import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
@@ -58,6 +58,10 @@ const claudeToPtyId = new Map<string, string>();
 // Ring buffer for PTY output — replayed on new WS connections so the terminal isn't blank
 const ptyOutputBuffer = new Map<string, Buffer[]>();
 const PTY_BUFFER_MAX_CHUNKS = 500;
+
+// When a bridge session is replaced (e.g. /clear), maps old sessionId → new sessionId.
+// The existing output socket is closed over the old ID, so we reroute its output here.
+const bridgeIdOverrides = new Map<string, string>();
 
 // Rolling text buffer for bridge permission detection (last 8KB per session, plain text after ANSI strip)
 const bridgePermText = new Map<string, string>();
@@ -160,6 +164,30 @@ function unregisterBridgePipe(sessionId: string): void {
   const reg = loadBridgeRegistry();
   delete reg[sessionId];
   saveBridgeRegistry(reg);
+}
+
+/** Migrate all bridge state from oldId to newId (used after /clear replacement). */
+function migrateBridgeSession(oldId: string, newId: string): void {
+  if (!bridgeSessions.has(oldId)) return;
+  // Reroute output socket output (handler is closed over oldId)
+  bridgeIdOverrides.set(oldId, newId);
+  // Migrate input socket and pipe address
+  bridgeManager.migrateSession(oldId, newId);
+  // Migrate pipe registry
+  const reg = loadBridgeRegistry();
+  if (reg[oldId]) { reg[newId] = reg[oldId]; delete reg[oldId]; saveBridgeRegistry(reg); }
+  // Migrate buffered output and permission state
+  const buf = ptyOutputBuffer.get(oldId);
+  if (buf) { ptyOutputBuffer.set(newId, buf); ptyOutputBuffer.delete(oldId); }
+  const pt = bridgePermText.get(oldId); if (pt) { bridgePermText.set(newId, pt); bridgePermText.delete(oldId); }
+  const pm = bridgePermMode.get(oldId); if (pm) { bridgePermMode.set(newId, pm); bridgePermMode.delete(oldId); }
+  bridgeSessions.delete(oldId);
+  bridgeSessions.add(newId);
+  stateManager.setSessionType(newId, 'bridge');
+  // Tell clients the bridge terminal is now under newId
+  broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${newId}`, claudeSessionId: newId, replay: true });
+  // Nudge the bridge so the fresh screen state flows into newId's buffer before xterm mounts
+  setTimeout(() => void resizeAndNudgeBridgePipe(newId, 120, 30), 300);
 }
 
 // Pending bridge connections for new sessions (marker → temp pipe name)
@@ -265,6 +293,9 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       console.log(`[bridge] input socket connected for ${sessionId.slice(0, 8)}`);
       pendingBridgeConnect.delete(sessionId); // connection established, unblock guard
       bridgeManager.registerSocket(sessionId, inputSocket, pipeAddr);
+      // Revive sessions loaded as 'closed' from known-sessions on restart.
+      // The bridge is alive → the process is still running → session is active again.
+      stateManager.reviveClosedSession(sessionId);
     });
   });
 
@@ -339,8 +370,11 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
   });
 
   outputSocket.on('data', (data: Buffer) => {
-    let buf = ptyOutputBuffer.get(sessionId);
-    if (!buf) { buf = []; ptyOutputBuffer.set(sessionId, buf); }
+    // Follow the override chain (supports multiple /clear cycles: A→B→C)
+    let eid = sessionId;
+    for (let i = 0; i < 10 && bridgeIdOverrides.has(eid); i++) eid = bridgeIdOverrides.get(eid)!;
+    let buf = ptyOutputBuffer.get(eid);
+    if (!buf) { buf = []; ptyOutputBuffer.set(eid, buf); }
 
     // \x1b[?2026h is the "synchronized output" start marker that Ink/React TUI
     // sends before every full-screen repaint. Use it as a checkpoint: discard
@@ -350,19 +384,19 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     const isRepaint = data.includes(0x1b) && data.toString('binary').includes('\x1b[?2026h');
     if (isRepaint) {
       buf = [];
-      ptyOutputBuffer.set(sessionId, buf);
+      ptyOutputBuffer.set(eid, buf);
     }
 
     buf.push(data);
     if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
-    broadcastRaw({ type: 'terminal:output', sessionId, data: data.toString('base64') });
+    broadcastRaw({ type: 'terminal:output', sessionId: eid, data: data.toString('base64') });
 
     // Update rolling plain-text buffer for permission detection
-    const prev = bridgePermText.get(sessionId) ?? '';
+    const prev = bridgePermText.get(eid) ?? '';
     const appended = prev + stripAnsi(data.toString('utf8'));
-    bridgePermText.set(sessionId, appended.length > BRIDGE_PERM_BUF_SIZE
+    bridgePermText.set(eid, appended.length > BRIDGE_PERM_BUF_SIZE
       ? appended.slice(appended.length - BRIDGE_PERM_BUF_SIZE) : appended);
-    checkBridgePermission(sessionId);
+    checkBridgePermission(eid);
 
     // On each full repaint, detect permission mode from the fresh frame — most reliable source
     if (isRepaint) {
@@ -372,11 +406,12 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
         if (pattern.test(frameText)) { frameMode = mode; break; }
       }
       const resolvedMode = frameMode ?? 'default';
-      const current = stateManager.getSession(sessionId)?.permissionMode;
-      if (resolvedMode !== current) {
-        bridgePermMode.set(sessionId, resolvedMode);
-        stateManager.setPermissionMode(sessionId, resolvedMode);
-      }
+      // REVERT NOTE: original code guarded with: if (resolvedMode !== current) { bridgePermMode.set(...); stateManager.setPermissionMode(...); }
+      // CHANGE: Always call setPermissionMode on repaint — even if mode unchanged — so the
+      // lock gets refreshed for non-default modes, preventing permissionChecker
+      // from flipping back to 'default' between repaints.
+      bridgePermMode.set(eid, resolvedMode);
+      stateManager.setPermissionMode(eid, resolvedMode);
     }
   });
 
@@ -393,7 +428,9 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       // Only reconnect if this session is still tracked (bridge window still alive).
       // Do NOT call connectBridgePipe — that guard checks bridgeManager.isConnected()
       // which reflects only the input socket, and would block this reconnect.
-      if (bridgeSessions.has(sessionId)) {
+      let currentId = sessionId;
+      for (let i = 0; i < 10 && bridgeIdOverrides.has(currentId); i++) currentId = bridgeIdOverrides.get(currentId)!;
+      if (bridgeSessions.has(currentId)) {
         console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
         setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 2000);
       }
@@ -414,7 +451,56 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
 
   // Derive pipe name: Overlord-spawned sessions register a pending entry with the
   // exact pipe name; manually-started bridges use the convention overlord-<marker>.
-  const pipeName = pending?.pipeName ?? `overlord-${marker}`;
+  // On restart after /clear, the marker changed (e.g., brg-X) but the pipe kept its
+  // original name (e.g., overlord-new-X). Check the registry for a matching pipe.
+  let pipeName: string;
+  if (pending) {
+    pipeName = pending.pipeName;
+  } else {
+    // Check registry for a pipe whose suffix matches this marker's suffix.
+    // This handles /clear while server was down: the old session registered the pipe,
+    // the new session has a new marker (brg-X) but shares the suffix (X).
+    const markerSuffix = marker.replace(/^brg-/, '');
+    const reg = loadBridgeRegistry();
+    const regMatch = Object.entries(reg).find(([, pName]) => pName.replace(/^overlord-(new-)?/, '') === markerSuffix);
+    if (regMatch && regMatch[0] !== sessionId) {
+      // Migrate registry from old sessionId to new one
+      const [oldRegId, matchedPipe] = regMatch;
+      console.log(`[bridge] registry migration in linkPendingBridge: ${oldRegId.slice(0, 8)} → ${sessionId.slice(0, 8)}`);
+      delete reg[oldRegId];
+      reg[sessionId] = matchedPipe;
+      saveBridgeRegistry(reg);
+      // Undelete and re-register the new session if it was previously deleted
+      // (addOrUpdate silently skips deleted sessions, so it may not be in the stateManager yet)
+      stateManager.undelete(sessionId);
+      if (!stateManager.getSession(sessionId)) {
+        // Re-read the session file to register it
+        const sessionsDir = join(os.homedir(), '.claude', 'sessions');
+        for (const file of fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'))) {
+          try {
+            const raw = JSON.parse(fs.readFileSync(join(sessionsDir, file), 'utf-8')) as {
+              sessionId: string; pid: number; cwd: string; startedAt: number; name?: string;
+            };
+            if (raw.sessionId === sessionId) {
+              stateManager.addOrUpdate(raw);
+              break;
+            }
+          } catch { /* skip */ }
+        }
+      }
+      // Transfer name and close old session
+      stateManager.transferName(oldRegId, sessionId);
+      closeOrRemoveReplaced(sessionCtx, oldRegId);
+      broadcastRaw({ type: 'session:replaced', oldSessionId: oldRegId, newSessionId: sessionId });
+      log('clear:detected', 'Bridge /clear detected via marker match', {
+        sessionId, sessionName: stateManager.getSession(sessionId)?.proposedName ?? sessionId.slice(0, 8),
+        extra: oldRegId.slice(0, 8) + ' → ' + sessionId.slice(0, 8),
+      });
+      pipeName = matchedPipe;
+    } else {
+      pipeName = regMatch ? regMatch[1] : `overlord-${marker}`;
+    }
+  }
 
   if (pending) {
     // Only match recent entries (< 30s)
@@ -459,6 +545,57 @@ function reconnectBridgePipes(): void {
   }
   if (cleaned) saveBridgeRegistry(registry);
 
+  // Migrate registry entries whose sessionId changed (e.g., /clear while server was down).
+  // The session file now has a new sessionId but the bridge pipe is still alive under the old one.
+  // The old session may NOT be in the stateManager (session watcher loaded the new ID from the
+  // session file). We find the replacement by scanning session files for matching bridge markers.
+  let migrated = false;
+  const sessionsDir = join(os.homedir(), '.claude', 'sessions');
+  for (const [oldId, pipeName] of Object.entries(registry)) {
+    // Already known and alive — no migration needed
+    if (stateManager.getSession(oldId)) continue;
+
+    // Extract the unique suffix from the pipe name (e.g., "mnqs8m2f" from "overlord-new-mnqs8m2f")
+    const pipeSuffix = pipeName.replace(/^overlord-(new-)?/, '');
+
+    // Scan session files for one whose ___BRG: marker shares this suffix
+    let sessionFiles: string[];
+    try { sessionFiles = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json')); } catch { continue; }
+
+    for (const file of sessionFiles) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(join(sessionsDir, file), 'utf-8')) as {
+          sessionId: string; pid: number; cwd: string; startedAt: number; name?: string;
+        };
+        if (!raw.name?.includes('___BRG:')) continue;
+        const marker = raw.name.split('___BRG:')[1];
+        if (!marker) continue;
+        // Match: marker "brg-mnqs8m2f" shares suffix "mnqs8m2f" with pipe "overlord-new-mnqs8m2f"
+        const markerSuffix = marker.replace(/^brg-/, '');
+        if (markerSuffix !== pipeSuffix) continue;
+        if (raw.sessionId === oldId) break; // same ID, no migration needed
+
+        const newId = raw.sessionId;
+        const newSession = stateManager.getSession(newId);
+        const oldName = newSession?.proposedName ?? oldId.slice(0, 8);
+        console.log(`[bridge] registry migration: ${oldId.slice(0, 8)} → ${newId.slice(0, 8)} (session file changed while server was down)`);
+        registry[newId] = pipeName;
+        delete registry[oldId];
+        stateManager.addOrUpdate(raw);
+        stateManager.transferName(oldId, newId);
+        // Remove old session if it still exists (e.g., loaded from known-sessions as closed)
+        closeOrRemoveReplaced(sessionCtx, oldId);
+        broadcastRaw({ type: 'session:replaced', oldSessionId: oldId, newSessionId: newId });
+        log('clear:detected', 'Bridge registry clear detected on startup', {
+          sessionId: newId, sessionName: oldName, extra: oldId.slice(0, 8) + ' → ' + newId.slice(0, 8),
+        });
+        migrated = true;
+        break;
+      } catch { /* skip unreadable */ }
+    }
+  }
+  if (migrated) saveBridgeRegistry(registry);
+
   const validEntries = Object.entries(registry);
   console.log(`[bridge] reconnecting to ${validEntries.length} known bridge pipes...`);
   for (const [sessionId, pipeName] of validEntries) {
@@ -500,32 +637,41 @@ const stateManager = new StateManager(() => {
 
 const aiClassifier = new AiClassifier(stateManager);
 
-// Bridge-aware screen text reader for permissionChecker
+// Extract readable text from a raw terminal output buffer (last N chunks)
+function bufferToText(chunks: Buffer[]): string | null {
+  if (!chunks || chunks.length === 0) return null;
+  return stripAnsi(Buffer.concat(chunks.slice(-50)).toString('utf8')).trim() || null;
+}
+
+// Screen text reader for permissionChecker — handles bridge, embedded PTY, and plain sessions
 async function getScreenText(sessionId: string, pid: number): Promise<string | null> {
+  // Bridge sessions: use ptyOutputBuffer keyed by sessionId
   if (bridgeSessions.has(sessionId)) {
-    const chunks = ptyOutputBuffer.get(sessionId);
-    if (!chunks || chunks.length === 0) return null;
-    const raw = Buffer.concat(chunks.slice(-50)).toString('utf8');
-    const stripped = raw
-      .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
-      .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
-      .replace(/\x1b[^[\]]/g, '')
-      .replace(/\x1b/g, '')
-      .replace(/[^\x20-\x7e\n\t\r]/g, '');
-    return stripped.split('\n').map(line => {
-      const parts = line.split('\r');
-      for (let i = parts.length - 1; i >= 0; i--) {
-        if (parts[i].trim()) return parts[i];
-      }
-      return parts[parts.length - 1];
-    }).join('\n').trim() || null;
+    return bufferToText(ptyOutputBuffer.get(sessionId) ?? []);
   }
+  // Embedded PTY sessions: ptyOutputBuffer is keyed by the PTY session ID
+  const ptyId = claudeToPtyId.get(sessionId);
+  if (ptyId) {
+    return bufferToText(ptyOutputBuffer.get(ptyId) ?? []);
+  }
+  // Plain/IDE sessions: try Windows console API
   const { readScreen } = await import('./pty/consoleInjector.js');
   return readScreen(pid);
 }
 
 // Start permission checker (Windows-only; no-op on other platforms)
-startPermissionChecker(stateManager, getScreenText);
+// injectIntoSession: tries bridge pipe first, falls back to ConPTY injection
+async function injectIntoSession(sessionId: string, text: string): Promise<void> {
+  const session = stateManager.getSession(sessionId);
+  if (!session) return;
+  if (bridgeSessions.has(sessionId)) {
+    const ok = await injectViaPipe(sessionId, text);
+    if (ok) return;
+  }
+  const { injectText } = await import('./pty/consoleInjector.js');
+  await injectText(session.pid, text, false);
+}
+startPermissionChecker(stateManager, getScreenText, injectIntoSession);
 
 // Shared context for session event handlers and transcript watcher
 const sessionCtx: SessionEventContext = {
@@ -540,6 +686,8 @@ const sessionCtx: SessionEventContext = {
   pendingCloneInfo,
   ptyOutputBuffer,
   recentlyRemovedByCwd,
+  bridgeSessions,
+  migrateBridgeSession,
   broadcastRaw,
   sendToClient,
   isStartupComplete: () => startupComplete,
@@ -577,6 +725,12 @@ processChecker.start((pids) => {
   stateManager.updateAlivePids(pids);
 });
 
+// Periodic GC: remove haiku-worker ghosts, stale closed sessions, and old transcripts every 60s
+setInterval(() => {
+  stateManager.cleanupStaleSessions();
+  cleanupOldWorkerTranscripts();
+}, 60_000).unref();
+
 // Transcript watcher + state refresh (moved to transcriptWatcher.ts)
 startTranscriptWatcher({
   stateManager,
@@ -591,6 +745,7 @@ startTranscriptWatcher({
 // PTY event handlers (moved to ptyEvents.ts)
 wirePtyEvents({
   ptyManager,
+  stateManager,
   wsSessionMap,
   ptyToClaudeId,
   claudeToPtyId,

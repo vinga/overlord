@@ -102,9 +102,22 @@ export function XtermTerminal({
 
     // Register handler for incoming PTY output.
     // Pass cols/rows for bridge sessions so the server can resize the ConPTY to match.
-    const unregister = registerOutputHandler(sessionId, (data) => {
+    const hasContent = { current: false };
+    const makeHandler = () => registerOutputHandler(sessionId, (data) => {
+      hasContent.current = true;
       term.write(data);
     }, fixedSize?.cols, fixedSize?.rows);
+
+    let unregister = makeHandler();
+
+    // If no content arrives within 1.5s, re-register to trigger another terminal:replay nudge.
+    // This recovers from timing issues where the bridge nudge fires before the WS handler is ready.
+    const retryTimer = setTimeout(() => {
+      if (!hasContent.current) {
+        unregister();
+        unregister = makeHandler();
+      }
+    }, 1500);
 
     // Observe container size changes and fit/resize (skip for fixed-size bridge terminals)
     let observer: ResizeObserver | null = null;
@@ -118,6 +131,7 @@ export function XtermTerminal({
 
     return () => {
       clearTimeout(fitTimer);
+      clearTimeout(retryTimer);
       onDataDispose.dispose();
       unregister();
       observer?.disconnect();

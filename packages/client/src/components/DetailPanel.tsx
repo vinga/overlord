@@ -1061,34 +1061,47 @@ export function DetailPanel({
   const sessionError = selectedSession ? getError(selectedSession.sessionId) : undefined;
 
 
-  // Clear stale pending messages after 30s (safety net — content de-duplication handles normal flow)
+  // Clear stale pending messages after 15s (safety net — content de-duplication handles normal flow)
   useEffect(() => {
     if (localSent.length === 0) return;
-    const timer = setTimeout(() => setLocalSent([]), 30_000);
+    const timer = setTimeout(() => setLocalSent([]), 15_000);
     return () => clearTimeout(timer);
   }, [localSent]);
 
+  // Also clear pending when session transitions to 'working' or 'thinking' —
+  // that means the server received the message and Claude started processing it.
+  // This handles the case where the message text never appears in the feed
+  // (e.g. injected before the feed is populated) but injection clearly succeeded.
+  const prevSessionStateRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const currentState = selectedSession?.state;
+    const prevState = prevSessionStateRef.current;
+    prevSessionStateRef.current = currentState;
+    if (
+      localSent.length > 0 &&
+      (currentState === 'working' || currentState === 'thinking') &&
+      prevState === 'waiting'
+    ) {
+      // Session transitioned from waiting → working/thinking: injection was received
+      setLocalSent([]);
+      realCountAtFirstSend.current = null;
+    }
+  }, [selectedSession?.state, localSent.length]);
+
   // Build merged activityFeed: real feed + optimistic locally-sent messages
-  // Count-based: track how many new user messages appeared since we started sending
+  // Content-based: pending messages stay until their content appears in the real feed
   const realFeed = selectedSession?.activityFeed ?? [];
-  const currentRealUserCount = realFeed.filter(i => i.role === 'user').length;
-  const confirmed = realCountAtFirstSend.current !== null
-    ? Math.max(0, currentRealUserCount - realCountAtFirstSend.current)
-    : 0;
-  const pendingMessages = localSent.slice(confirmed);
-  // If all confirmed, reset tracking
-  if (confirmed >= localSent.length && localSent.length > 0) {
-    // Use queueMicrotask to avoid setState during render
+  const realUserContents = new Set(
+    realFeed.filter(i => i.role === 'user').map(i => i.content?.slice(0, 200))
+  );
+  const dedupedPending = localSent.filter(t => !realUserContents.has(t.slice(0, 200)));
+  // Once all locally-sent messages are confirmed, reset tracking
+  if (dedupedPending.length === 0 && localSent.length > 0) {
     queueMicrotask(() => {
       setLocalSent([]);
       realCountAtFirstSend.current = null;
     });
   }
-  // Content-based dedup: don't show pending messages that already appear in the real feed
-  const realUserContents = new Set(
-    realFeed.filter(i => i.role === 'user').map(i => i.content?.slice(0, 200))
-  );
-  const dedupedPending = pendingMessages.filter(t => !realUserContents.has(t.slice(0, 200)));
   const mergedFeed: ActivityItem[] = [
     ...realFeed,
     ...dedupedPending.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200), pending: true })),
@@ -1332,13 +1345,18 @@ export function DetailPanel({
                       })()}
                     />
                     {(() => { const l = getLaunchInfo(selectedSession, isPty); return (
-                      <span className={styles.launchBadge} data-category={l.category} title={`Session type: ${l.name}`}>{l.name}</span>
+                      <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
                     ); })()}
                     {selectedSession.permissionMode && (
                       <span
                         className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
                         data-mode={selectedSession.permissionMode}
-                        title="Click to cycle permission mode (shift+tab)"
+                        data-tooltip={
+                          selectedSession.permissionMode === 'bypassPermissions' ? 'Bypass all permissions — click to change' :
+                          selectedSession.permissionMode === 'acceptEdits' ? 'Auto-accept edits — click to change' :
+                          selectedSession.permissionMode === 'plan' ? 'Plan mode only — click to change' :
+                          'Default permissions — click to change'
+                        }
                         role="button"
                         tabIndex={0}
                         onClick={async () => {
@@ -1355,8 +1373,8 @@ export function DetailPanel({
                          'default'}
                       </span>
                     )}
-                    <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} title={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
-                    {selectedSession.model && <span className={styles.summaryMeta} title={`Model: ${selectedSession.model}`}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
+                    <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
+                    {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
                   </div>
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
@@ -1471,7 +1489,7 @@ export function DetailPanel({
                               <>
                                 <button
                                   className={styles.interruptBtnSmall}
-                                  title="Interrupt (Esc)"
+                                  data-tooltip="Interrupt (Esc)"
                                   onClick={async () => {
                                     try {
                                       await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
@@ -1488,7 +1506,7 @@ export function DetailPanel({
                                 </button>
                                 <button
                                   className={styles.forceStopBtnSmall}
-                                  title="Force Stop (Ctrl+C)"
+                                  data-tooltip="Force Stop (Ctrl+C)"
                                   onClick={async () => {
                                     try {
                                       await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {

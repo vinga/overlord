@@ -2,6 +2,8 @@
 
 Architecture diagrams, known issues, and quick symptom lookup for session diagnostics.
 
+> **For a full explanation of how /clear detection works, what gets preserved, and why some cases fail, see [`session-cleanups.md`](./session-cleanups.md) in this directory.**
+
 ---
 
 ## Known Issues & Patterns
@@ -64,7 +66,7 @@ See "Name-first spawn flow (CURRENT APPROACH)" below for full details. Summary: 
 ### Empty ghost sessions from /clear detection (FIXED)
 When `/clear` fires, the old session is replaced by a new one. Previously, the old session was always marked `closed` and kept in the UI. But if the old session had no transcript (e.g., it was a brief interim session), it appeared as an empty ghost — no conversation, no useful data.
 
-**Fix (implemented):** `closeOrRemoveReplaced()` helper checks if the old session has a transcript via `findTranscriptPathAnywhere()`. If yes, marks closed (preserves conversation history). If no, removes entirely. Applied to all 5 `/clear` detection paths: PID-based, CWD-based, in-place (changed handler), transcript-based, and stale transcript.
+**Fix (implemented):** `closeOrRemoveReplaced()` helper checks if the old session has a transcript via `findTranscriptPathAnywhere()`. If yes, marks closed (preserves conversation history). If no, removes entirely. Applied to all 3 `/clear` detection paths: PID-based, in-place (changed handler), and stale transcript.
 
 ### Name-first spawn flow (CURRENT APPROACH)
 The UI flow for spawning new embedded sessions is name-first:
@@ -166,14 +168,14 @@ The PTY process dies after ~2.7s (exit code 1), triggers ConPTY retry logic (up 
 **Fix (implemented):** The PTY resume handler now passes `'continue'` as a prompt argument: `['--resume', rootSessionId, 'continue']`. This satisfies Claude CLI's requirement for a prompt when no deferred tool marker exists.
 
 ### False /clear detection during PTY resume (FIXED)
-When a PTY resume spawns Claude and it fails/retries, each attempt creates temporary session files. The CWD-based and transcript-based /clear detection paths incorrectly match these interim sessions to unrelated sessions in the same CWD, causing session merging (one session's transcript gets assigned to another).
+When a PTY resume spawns Claude and it fails/retries, each attempt creates temporary session files. Previously, CWD-based /clear detection incorrectly matched these interim sessions to unrelated sessions in the same CWD, causing session merging. **CWD-based detection has since been fully removed** (see Architecture section), eliminating this class of bugs entirely.
 
-**Symptoms:**
+**Historical symptoms (no longer possible):**
 - Session conversation shows messages from a different session
 - Session names/transcripts get swapped after resume attempt
 - Multiple sessions in same CWD get marked as "replaced"
 
-**Fix (implemented):** All three /clear detection paths (PID-based, CWD-based, transcript-based) now check `hasActiveResumeInProgress()` (which returns `pendingPtyByResumeId.size > 0`). If a PTY resume is in flight, /clear detection is suppressed to prevent false matches.
+**Fix:** CWD-based /clear detection removed from both `sessionEventHandlers.ts` (added handler) and `transcriptWatcher.ts` (handleTranscriptAdded). The remaining PID-based and in-place detection paths also check `hasActiveResumeInProgress()` as a safety guard.
 
 ### Blank PTY terminal after resume — missing client notification (FIXED)
 `migratePtyMaps()` updates server-side PTY routing maps when a session UUID changes (e.g., interim → real ID), but did NOT notify the client. The client's output handlers remained registered under the old session ID while the server sent output under the new ID. Result: blank terminal.
@@ -337,27 +339,30 @@ claude.exe (ConPTY) → node-pty → ptyManager.emit('output') → index.ts hand
 
 ## Architecture: /clear Detection Paths
 ```
-5 independent detection paths, all using closeOrRemoveReplaced():
+3 independent detection paths, all using closeOrRemoveReplaced():
 
-1. PID-based (added handler):
+IMPORTANT: CWD-based matching was REMOVED — multiple sessions share the same CWD,
+making CWD matching unreliable and prone to false replacements (e.g., closing an
+active PTY terminal session because a new session appeared in the same directory).
+
+1. PID-based (added handler in sessionEventHandlers.ts):
    New session file with same PID as existing session → replacement
    Guard: !linkedToPty && !hasActiveResumeInProgress()
 
-2. CWD-based (added handler):
-   New session in same CWD as recently-removed session (within 30s)
-   Guard: !linkedToPty && !replacedByPid && !hasPendingResume(cwd) && !hasActiveResumeInProgress()
-
-3. In-place (changed handler):
+2. In-place (changed handler in sessionEventHandlers.ts):
    Session file's sessionId changed (same PID file, new UUID)
    Guard: startupComplete
 
-4. Transcript-based (transcript watcher, handleTranscriptAdded):
-   New transcript file appears for unknown session in CWD with existing active sessions
-   Guard: !hasActiveResumeInProgress()
+3. Stale transcript (3s interval in transcriptWatcher.ts):
+   Session in working/thinking with unchanged lastActivity for 3 consecutive polls (9+ seconds).
+   Re-reads session file — if sessionId differs, it's a /clear replacement.
+   Guard: staleCount >= 3 (resets after triggering, so fires once per stale period)
+   Note: NOT heavy — only triggers for stuck sessions, reads a tiny JSON file, fires once.
 
-5. Stale transcript (60s interval):
-   Active session's session file has different sessionId than expected → re-read detected change
-   Guard: staleCount >= 3 (consecutive polls with unchanged lastActivity)
+Additionally, startup orphan scan (runs once 3s after boot):
+   For sessions >1h stale with alive PIDs, scans transcript directory for orphan .jsonl files.
+   Uses CONTENT-BASED matching (reads first 4KB, checks if it references a known stale sessionId).
+   Does NOT use CWD matching.
 
 All paths:
   - Call closeOrRemoveReplaced(oldSessionId) — removes if no transcript, closes if has one
@@ -387,6 +392,27 @@ Only works on Windows (returns null/no-op on other platforms).
 ```
 
 ---
+
+## Permission Detection: Long-Running Tools False Positive (FIXED)
+
+**Symptom:** Session shows "Waiting for approval" with Yes/No/Allow buttons when a tool (e.g. `Bash`) is legitimately running for >8 seconds. No actual permission prompt exists.
+
+**Root cause:** `transcriptReader.ts` uses a time-based heuristic: if the last transcript event is a `tool_use` and >8 seconds old with no `tool_result`, it assumes a permission prompt is blocking. This is wrong for tools that legitimately run long (Bash commands, Agent spawns, web fetches).
+
+**Fix:** Tools known to run long are assigned `stateHint = 'tool_result'` instead of `'tool_use'`. This shows them as working/thinking (like MCP tools) and never sets `needsPermission` from the transcript heuristic. Real permission prompts for these tools are caught by the screen-based `permissionChecker`.
+
+**Long-running tools list** (in `transcriptReader.ts`):
+`Bash`, `execute_command`, `RunCommand`, `Agent`, `WebFetch`, `WebSearch`
+
+**All `needsPermission = true` sources:**
+
+| Source | File | Condition |
+|--------|------|-----------|
+| Screen reader | `permissionChecker.ts` | Real prompt detected on console (primary + secondary pattern match) |
+| Transcript heuristic | `transcriptReader.ts` | Non-long-running `tool_use` pending >8s |
+| Transcript re-eval | `transcriptReader.ts` | Same, from `reEvalStateFromCache` (stateHint `'tool_use'` only) |
+
+**Suppression:** After user approves a permission prompt, `permissionApprovedAt` timestamp suppresses re-detection for 30 seconds.
 
 ## Architecture: AskUserQuestion Detection & UI
 

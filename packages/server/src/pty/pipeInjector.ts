@@ -155,6 +155,17 @@ class BridgeConnectionManager extends EventEmitter {
     this.reconnectTimers.set(sessionId, timer);
   }
 
+  /** Migrate all state from oldId to newId without closing the socket */
+  migrateSession(oldId: string, newId: string): void {
+    const socket = this.connections.get(oldId);
+    if (socket) { this.connections.set(newId, socket); this.connections.delete(oldId); }
+    const addr = this.pipeAddrs.get(oldId);
+    if (addr) { this.pipeAddrs.set(newId, addr); this.pipeAddrs.delete(oldId); }
+    if (this.autoReconnect.has(oldId)) { this.autoReconnect.add(newId); this.autoReconnect.delete(oldId); }
+    const timer = this.reconnectTimers.get(oldId);
+    if (timer) { this.reconnectTimers.set(newId, timer); this.reconnectTimers.delete(oldId); }
+  }
+
   /** Clean up everything */
   destroy(): void {
     for (const [id] of this.connections) {

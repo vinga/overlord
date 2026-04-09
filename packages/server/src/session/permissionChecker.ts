@@ -41,6 +41,9 @@ function cleanText(text: string): string {
     .trim();
 }
 
+// Rate-limit prompt: Claude CLI blocks on Enter when the usage limit is hit
+const RATE_LIMIT_PATTERN = /you'?ve hit your limit/i;
+
 // Detect permission mode from the CLI status bar text
 const PERMISSION_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
   { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
@@ -57,7 +60,7 @@ function detectPermissionMode(text: string): string | undefined {
 
 export interface PermissionCheckable {
   getAllSessionIds(): string[];
-  getSession(id: string): { pid: number; state: string; permissionMode?: string } | undefined;
+  getSession(id: string): { pid: number; state: string; permissionMode?: string; permissionModeLockedUntil?: number } | undefined;
   setNeedsPermission(sessionId: string, value: boolean, promptText?: string): void;
   setPermissionMode(sessionId: string, mode: string | undefined): void;
 }
@@ -65,6 +68,7 @@ export interface PermissionCheckable {
 export function startPermissionChecker(
   stateManager: PermissionCheckable,
   getScreenText?: (sessionId: string, pid: number) => Promise<string | null>,
+  injectIntoSession?: (sessionId: string, text: string) => Promise<void>,
 ): (() => void) | undefined {
   if (!IS_WINDOWS) return undefined;
 
@@ -80,6 +84,8 @@ export function startPermissionChecker(
 
   // Hysteresis: only clear needsPermission after 3 consecutive misses
   const missCount = new Map<string, number>();
+  // Cooldown: don't auto-dismiss rate-limit more than once per 30s per session
+  const rateLimitDismissedAt = new Map<string, number>();
 
   let stopped = false;
 
@@ -117,19 +123,33 @@ export function startPermissionChecker(
           // owns clearing. Screen reader only CONFIRMS/ENHANCES, never removes.
           missCount.set(id, (missCount.get(id) ?? 0) + 1);
         }
+        // Auto-dismiss rate-limit prompt: Claude CLI blocks on Enter when usage limit is hit
+        if (text && RATE_LIMIT_PATTERN.test(text) && injectIntoSession) {
+          const lastDismissed = rateLimitDismissedAt.get(id) ?? 0;
+          if (Date.now() - lastDismissed > 30_000) {
+            rateLimitDismissedAt.set(id, Date.now());
+            console.log(`[permCheck] rate-limit detected for ${id.slice(0, 8)}, auto-dismissing`);
+            injectIntoSession(id, '\r').catch(() => {});
+          }
+        }
         // Detect permission mode from status bar
         if (text) {
           const screenMode = detectPermissionMode(text);
-          const current = stateManager.getSession(id)?.permissionMode;
-          console.log(`[permCheck] ${id.slice(0,8)} pid=${session.pid} screenMode=${screenMode} current=${current} textLen=${text.length}`);
+          const currentSession = stateManager.getSession(id);
+          const current = currentSession?.permissionMode;
+          // REVERT NOTE: original code didn't check the lock here:
+          //   if (screenMode && screenMode !== current) { setPermissionMode(id, screenMode); }
+          //   else if (!screenMode && current && current !== 'default') { setPermissionMode(id, 'default'); }
+          // CHANGE: Only reset to 'default' if the repaint-based lock has expired.
+          // Without this check, permissionChecker resets to 'default' 3s after a repaint
+          // even though the repaint confirmed the session is still in a non-default mode.
+          const locked = currentSession?.permissionModeLockedUntil !== undefined && Date.now() < currentSession.permissionModeLockedUntil;
           if (screenMode && screenMode !== current) {
             stateManager.setPermissionMode(id, screenMode);
-          } else if (!screenMode && current && current !== 'default') {
-            // Status bar doesn't show a mode → back to default
+          } else if (!screenMode && current && current !== 'default' && !locked) {
+            // Status bar doesn't show a mode and lock has expired → back to default
             stateManager.setPermissionMode(id, 'default');
           }
-        } else {
-          console.log(`[permCheck] ${id.slice(0,8)} pid=${session.pid} readScreen=null`);
         }
       } catch (err) {
         console.log(`[permCheck] ${id.slice(0,8)} error: ${err}`);

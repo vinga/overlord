@@ -122,8 +122,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
         </div>
       )}
       <svg
-        width="70"
-        height="92"
+        width="60"
+        height="79"
         viewBox="0 0 40 52"
         xmlns="http://www.w3.org/2000/svg"
         className={styles.svg}

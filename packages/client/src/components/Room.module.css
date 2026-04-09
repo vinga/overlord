@@ -15,12 +15,82 @@
   border-color: rgba(255, 255, 255, 0.11);
 }
 
+.roomCollapsed {
+  padding: 0 16px;
+}
+
+.roomCollapsed .titleBar {
+  padding: 8px 0;
+  border-bottom: none;
+}
+
 .titleBar {
   display: flex;
   align-items: center;
   gap: 8px;
   padding-bottom: 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.collapseBtn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.collapseBtn:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.collapsedChips {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  margin-left: 2px;
+}
+
+.stateChip {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  line-height: 1.6;
+  position: relative;
+  cursor: default;
+}
+
+
+.stateChip_working {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.stateChip_thinking {
+  background: rgba(167, 139, 250, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(167, 139, 250, 0.3);
+}
+
+.stateChip_waiting {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.stateChip_closed {
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .spawnButton {
@@ -77,6 +147,7 @@
   align-items: flex-start;
   justify-content: center;
   min-width: 110px;
+  max-width: 160px;
   position: relative;
   transition: background 0.15s, border-color 0.15s;
 }

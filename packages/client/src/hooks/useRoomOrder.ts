@@ -38,5 +38,27 @@ export function useRoomOrder() {
     });
   }, []);
 
-  return { getOrder, setOrder };
+  // Replace oldId with newId across all room order arrays (called on /clear)
+  const migrateSession = useCallback((oldId: string, newId: string) => {
+    setOrderMap(prev => {
+      let changed = false;
+      const next: RoomOrderMap = {};
+      for (const [slug, ids] of Object.entries(prev)) {
+        const idx = ids.indexOf(oldId);
+        if (idx !== -1) {
+          const newIds = [...ids];
+          newIds[idx] = newId;
+          next[slug] = newIds;
+          changed = true;
+        } else {
+          next[slug] = ids;
+        }
+      }
+      if (!changed) return prev;
+      writeStorage(next);
+      return next;
+    });
+  }, []);
+
+  return { getOrder, setOrder, migrateSession };
 }

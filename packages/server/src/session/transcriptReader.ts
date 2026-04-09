@@ -168,28 +168,54 @@ export function findTranscriptPathAnywhere(sessionId: string): string | null {
 }
 
 /**
- * Read only the tail of a file (last ~TAIL_BYTES bytes).
- * Returns the lines from the tail portion, dropping the first (potentially partial) line.
- * This avoids reading entire multi-MB transcript files into memory every 3 seconds.
+ * Read the tail of a file, guaranteeing at least TARGET_LINES complete JSONL lines.
+ *
+ * Problem with a fixed byte window: a single tool_result line can be 3MB+, so a 2MB
+ * window captures nothing but the middle of that one line — user messages before it vanish.
+ *
+ * Fix: start with INITIAL_TAIL_BYTES; if we get fewer than TARGET_LINES complete lines,
+ * double the window and retry. Cap at MAX_TAIL_BYTES or the full file size.
+ * Fast path (small file or normal line sizes) is unchanged — only one read.
  */
-const TAIL_BYTES = 2 * 1024 * 1024; // 2MB — large tool outputs (Read, Write) can be 200KB+ per line
+const INITIAL_TAIL_BYTES = 2 * 1024 * 1024;  // 2MB first attempt
+const MAX_TAIL_BYTES     = 32 * 1024 * 1024; // 32MB hard cap
+const TARGET_LINES = 500; // minimum complete lines before we stop expanding
 
 function readFileTail(filePath: string, fileSize: number): string[] {
-  if (fileSize <= TAIL_BYTES) {
-    // Small file — just read it all
+  if (fileSize <= INITIAL_TAIL_BYTES) {
+    // Small file — read it all, every line is complete
     const content = fs.readFileSync(filePath, 'utf-8');
     return content.split('\n').filter((l) => l.trim().length > 0);
   }
-  // Large file — read only the tail
+
   const fd = fs.openSync(filePath, 'r');
   try {
-    const buf = Buffer.alloc(TAIL_BYTES);
-    const bytesRead = fs.readSync(fd, buf, 0, TAIL_BYTES, fileSize - TAIL_BYTES);
-    const raw = buf.toString('utf-8', 0, bytesRead);
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-    // Drop first line — it's likely a partial line from mid-read
-    if (lines.length > 1) lines.shift();
-    return lines;
+    let windowSize = INITIAL_TAIL_BYTES;
+
+    while (true) {
+      const offset   = Math.max(0, fileSize - windowSize);
+      const readSize = fileSize - offset;
+      const buf      = Buffer.alloc(readSize);
+      const bytesRead = fs.readSync(fd, buf, 0, readSize, offset);
+      const raw   = buf.toString('utf-8', 0, bytesRead);
+      const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+
+      if (offset === 0) {
+        // Read the entire file — all lines are complete, return as-is
+        return lines;
+      }
+
+      // Drop first line — it started mid-file so it may be a partial record
+      const completeLines = lines.length > 1 ? lines.slice(1) : [];
+
+      if (completeLines.length >= TARGET_LINES || windowSize >= MAX_TAIL_BYTES) {
+        // Enough lines, or hit the cap — return what we have
+        return completeLines;
+      }
+
+      // Too few complete lines (giant lines dominate the window) — double and retry
+      windowSize = Math.min(windowSize * 2, MAX_TAIL_BYTES, fileSize);
+    }
   } finally {
     fs.closeSync(fd);
   }
@@ -577,6 +603,10 @@ export function readTranscriptState(filePath: string): {
         const isMcpTool = toolName.startsWith('mcp__');
         // AskUserQuestion is an interactive question — shown as its own UI, not a permission prompt
         const isAskUser = toolName === 'AskUserQuestion';
+        // Tools that legitimately run for a long time — don't flag as permission prompt from transcript.
+        // The screen-based permissionChecker handles real prompts for these.
+        const LONG_RUNNING_TOOLS = new Set(['Bash', 'execute_command', 'RunCommand', 'Agent', 'WebFetch', 'WebSearch']);
+        const isLongRunning = LONG_RUNNING_TOOLS.has(toolName);
 
         if (isAskUser) {
           // Extract ALL questions from tool input
@@ -600,7 +630,7 @@ export function readTranscriptState(filePath: string): {
           stateHint = 'ask_user_question';
           state = ageSec < 5 ? 'working' : 'waiting';
         } else {
-          stateHint = isMcpTool ? 'tool_result' : 'tool_use';
+          stateHint = (isMcpTool || isLongRunning) ? 'tool_result' : 'tool_use';
           // Always compute permissionPromptText when a tool_use is pending, so it's
           // available in the cache when reEvalStateFromCache later sets needsPermission.
           // (The full parse may run when ageSec < 5, but re-eval fires when ageSec > 8.)
@@ -609,8 +639,9 @@ export function readTranscriptState(filePath: string): {
             const desc = toolInput ? describeInput(toolInput) : '';
             permissionPromptText = desc ? `${toolName}: ${desc}` : toolName;
           }
-          if (isMcpTool) {
-            // MCP tools are long-running external calls — treat like tool_result (working/thinking)
+          if (isMcpTool || isLongRunning) {
+            // MCP tools and known long-running tools — show working/thinking, never flag as permission.
+            // Real permission prompts are detected by the screen-based permissionChecker.
             state = ageSec < 8 ? 'working' : 'thinking';
           } else if (ageSec < 5) {
             state = 'working';

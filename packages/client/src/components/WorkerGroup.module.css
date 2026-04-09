@@ -23,9 +23,9 @@
 }
 
 .subagentWrapper {
-  transform: scale(0.65);
+  transform: scale(0.56);
   transform-origin: top center;
-  margin: 20px -18px -55px;
+  margin: 18px -22px -62px;
 }
 
 .extraBadge {

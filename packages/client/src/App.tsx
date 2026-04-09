@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { useOfficeData } from './hooks/useOfficeData';
 import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
+import { useRoomOrder } from './hooks/useRoomOrder';
 
 import type { Session, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
@@ -36,7 +37,8 @@ export function App() {
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
-  const { customNames, rename } = useCustomNames();
+  const { customNames, rename, migrateSession: migrateNames } = useCustomNames();
+  const { migrateSession: migrateRoomOrder } = useRoomOrder();
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = localStorage.getItem('overlord:panelWidth');
@@ -53,10 +55,10 @@ export function App() {
   const handleSessionReplaced = useCallback((oldId: string, newId: string) => {
     // If we're currently viewing the old session, auto-follow to the new one
     setSelectedSessionId(prev => prev === oldId ? newId : prev);
-    // Migrate custom name from old session to new one
-    const oldName = customNames[oldId];
-    if (oldName) rename(newId, oldName);
-  }, [customNames, rename]);
+    // Transfer custom name, auto name, and room order to the new session ID
+    migrateNames(oldId, newId);
+    migrateRoomOrder(oldId, newId);
+  }, [migrateNames, migrateRoomOrder]);
 
   const { snapshot, connected, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
   const terminal = useTerminal(sendMessage, (id) => setActivePtySessionId(id));

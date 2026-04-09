@@ -18,6 +18,8 @@ export interface SessionEventContext {
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
   recentlyRemovedByCwd: Map<string, { sessionId: string; removedAt: number }>;
+  bridgeSessions: Set<string>;
+  migrateBridgeSession?: (oldId: string, newId: string) => void;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   isStartupComplete: () => boolean;
@@ -60,6 +62,10 @@ export function migratePtyMaps(ctx: SessionEventContext, oldSessionId: string, n
     ctx.ptyToClaudeId.set(oldPtyId, newSessionId);
     ctx.stateManager.setSessionType(newSessionId, 'embedded');
     ctx.broadcastRaw({ type: 'terminal:session-replaced', oldSessionId, newSessionId });
+  }
+  // Migrate bridge session (input socket, output rerouting, buffers, registry)
+  if (ctx.bridgeSessions.has(oldSessionId)) {
+    ctx.migrateBridgeSession?.(oldSessionId, newSessionId);
   }
 }
 
@@ -104,6 +110,16 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
       console.log(`[marker-check] added: marker=${marker} ptyAlive=${ptyAlive}`);
       if (marker && ptyAlive) {
         linkedToPty = true;
+        // If this PTY was already linked to a different session → /clear inside a Terminal tab.
+        // The PID/CWD detection is skipped when linkedToPty=true, so we detect it here instead.
+        const prevClaudeId = ctx.ptyToClaudeId.get(marker);
+        if (prevClaudeId && prevClaudeId !== raw.sessionId) {
+          closeOrRemoveReplaced(ctx, prevClaudeId);
+          ctx.stateManager.transferName(prevClaudeId, raw.sessionId);
+          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: prevClaudeId, newSessionId: raw.sessionId });
+          log('clear:detected', 'Clear detected in embedded PTY session', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: prevClaudeId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
+          ctx.claudeToPtyId.delete(prevClaudeId);
+        }
         ctx.ptyToClaudeId.set(marker, raw.sessionId);
         ctx.claudeToPtyId.set(raw.sessionId, marker);
         // Find the WS that owns this PTY
@@ -275,6 +291,15 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
       const ptyAlive = ctx.ptyManager.has(marker);
       console.log(`[marker-check] changed: sid=${raw.sessionId.slice(0,8)} marker=${marker} ptyAlive=${ptyAlive} alreadyLinked=${ctx.claudeToPtyId.has(raw.sessionId)}`);
       if (marker && ptyAlive) {
+        // If this PTY was already linked to a different session → /clear inside a Terminal tab
+        const prevClaudeId = ctx.ptyToClaudeId.get(marker);
+        if (prevClaudeId && prevClaudeId !== raw.sessionId) {
+          closeOrRemoveReplaced(ctx, prevClaudeId);
+          ctx.stateManager.transferName(prevClaudeId, raw.sessionId);
+          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: prevClaudeId, newSessionId: raw.sessionId });
+          log('clear:detected', 'Clear detected in embedded PTY session (changed)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: prevClaudeId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
+          ctx.claudeToPtyId.delete(prevClaudeId);
+        }
         ctx.ptyToClaudeId.set(marker, raw.sessionId);
         ctx.claudeToPtyId.set(raw.sessionId, marker);
         let ownerWs: WebSocket | null = null;

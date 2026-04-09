@@ -82,6 +82,11 @@ export class StateManager {
   /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
   private processSnapshot = new Map<number, { parentPid: number; name: string }>();
   private processSnapshotAge = 0;
+  /** Sessions awaiting /clear replacement — transcript refresh is suppressed until replaced. */
+  private pendingClearSessions = new Set<string>();
+  private colorOverrides = new Map<string, string>(); // sessionId → color preserved across /clear
+  /** Sessions that had /clear injected via UI — maps cwd → { sessionId, timestamp } for the next new transcript. */
+  private pendingClearReplacements = new Map<string, { sessionId: string; timestamp: number }>();
   readonly bridgePath: string;
 
   constructor(onChange: () => void) {
@@ -180,6 +185,12 @@ export class StateManager {
           dirty = true;
           continue; // remove from file
         }
+        // Purge <local-command-caveat> ghost sessions
+        if ((entry.proposedName ?? entry.name ?? '').startsWith('<local-command-caveat')) {
+          this.deletedSessionIds.add(entry.sessionId);
+          dirty = true;
+          continue;
+        }
         cleaned.push(entry);
         // Pre-populate as closed; SessionWatcher will update active ones
         const color = this.sessionColor(entry.sessionId);
@@ -247,7 +258,7 @@ export class StateManager {
     try {
       fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
       const entries = [...this.sessions.values()]
-        .filter(s => !s.isWorker)
+        .filter(s => !s.isWorker && !s.cwd.toLowerCase().replace(/\\/g, '/').includes('/.claude/'))
         .map(s => ({
           sessionId: s.sessionId,
           cwd: s.cwd,
@@ -262,6 +273,10 @@ export class StateManager {
         }));
       fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
     } catch { /* ignore */ }
+  }
+
+  isDeleted(sessionId: string): boolean {
+    return this.deletedSessionIds.has(sessionId);
   }
 
   undelete(sessionId: string): void {
@@ -280,6 +295,7 @@ export class StateManager {
       fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
     } catch { /* ignore */ }
     clearProposedNameCache(sessionId);
+    this.colorOverrides.delete(sessionId);
     this.sessions.delete(sessionId);
     this.saveKnownSessions();
     this.onChange();
@@ -332,6 +348,7 @@ export class StateManager {
     if (this.deletedSessionIds.has(sessionId)) {
       return { isNewWaiting: false };
     }
+
 
     const existingSession = this.sessions.get(sessionId);
 
@@ -407,10 +424,12 @@ export class StateManager {
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
     if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
-    const proposedName = (rawName || undefined)
+    const resolvedName = (rawName || undefined)
       ?? existingSession?.proposedName
       ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
       ?? (resumedFrom ? this.sessions.get(resumedFrom)?.proposedName : undefined);
+    // Strip <local-command-caveat> prefix — treat it as no name so transferName can override
+    const proposedName = resolvedName?.startsWith('<local-command-caveat') ? undefined : resolvedName;
 
     const subagents = readSubagents(cwd, sessionId);
     const color = this.sessionColor(sessionId);
@@ -513,6 +532,8 @@ export class StateManager {
   }
 
   remove(sessionId: string): void {
+    this.pendingClearSessions.delete(sessionId);
+    this.colorOverrides.delete(sessionId);
     if (this.sessions.has(sessionId)) {
       this.sessions.delete(sessionId);
       clearProposedNameCache(sessionId);
@@ -522,6 +543,7 @@ export class StateManager {
   }
 
   markClosed(sessionId: string): void {
+    this.pendingClearSessions.delete(sessionId);
     const session = this.sessions.get(sessionId);
     if (session && session.state !== 'closed') {
       session.state = 'closed';
@@ -537,13 +559,34 @@ export class StateManager {
     }
   }
 
+  /**
+   * Revive a bridge session that was loaded as 'closed' from known-sessions on restart.
+   * Called when the bridge pipe successfully reconnects — the process is still alive,
+   * so we re-open the session to 'idle' and let transcriptWatcher/processChecker take over.
+   */
+  reviveClosedSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session && session.state === 'closed') {
+      session.state = 'waiting';
+      this.onChange();
+      console.log(`[stateManager] revived closed session ${sessionId.slice(0, 8)} → waiting`);
+    }
+  }
+
   transferName(oldSessionId: string, newSessionId: string): void {
     const oldSession = this.sessions.get(oldSessionId);
     const newSession = this.sessions.get(newSessionId);
     if (!oldSession || !newSession) return;
-    if (!newSession.proposedName && oldSession.proposedName) {
+    // Treat <local-command-caveat> as a blank name — the old session's name should always win
+    const newHasRealName = newSession.proposedName && !newSession.proposedName.startsWith('<local-command-caveat');
+    if (!newHasRealName && oldSession.proposedName) {
       newSession.proposedName = oldSession.proposedName;
     }
+    // Preserve color: carry over the old session's color (override or computed)
+    const oldColor = this.colorOverrides.get(oldSessionId) ?? this.sessionColor(oldSessionId);
+    this.colorOverrides.set(newSessionId, oldColor);
+    // Also update the already-baked color field on the session object (addOrUpdate set it before transferName ran)
+    if (newSession) newSession.color = oldColor;
   }
 
   setPid(sessionId: string, pid: number): void {
@@ -557,6 +600,8 @@ export class StateManager {
   refreshTranscript(sessionId: string): { becameWaiting: boolean; lastMessage?: string; becameWorking: boolean; leftWorking: boolean; transcriptStale: boolean } {
     const session = this.sessions.get(sessionId);
     if (!session || session.state === 'closed') return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
+    // Suppress re-read until /clear replacement is detected (prevents old transcript re-populating feed)
+    if (this.pendingClearSessions.has(sessionId)) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     let transcriptPath = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
     // Forked sessions (clones) may not have their own transcript yet — fall back to parent's
@@ -769,6 +814,37 @@ export class StateManager {
     }
   }
 
+  /** Called when /clear is injected. Immediately wipes the activity feed and blocks
+   *  refreshTranscript from re-reading the old transcript until replacement is detected. */
+  clearActivityFeed(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.pendingClearSessions.add(sessionId);
+    session.activityFeed = [];
+    session.pendingQuestion = undefined;
+    session.lastMessage = undefined;
+    this.onChange();
+  }
+
+  /** Record that /clear was injected into sessionId (via UI). The next new transcript
+   *  in the same cwd will be linked as replacement. */
+  markPendingClearReplacement(sessionId: string, cwd: string): void {
+    const key = normalizePath(cwd);
+    console.log(`[pending-clear] marked: ${sessionId.slice(0, 8)} key="${key}"`);
+    this.pendingClearReplacements.set(key, { sessionId, timestamp: Date.now() });
+  }
+
+  /** Consume the pending clear replacement for cwd if it exists and is fresh (<60s). */
+  consumePendingClearReplacement(cwd: string): { sessionId: string } | null {
+    const key = normalizePath(cwd);
+    const entry = this.pendingClearReplacements.get(key);
+    console.log(`[pending-clear] consume key="${key}" found=${!!entry} keys=[${[...this.pendingClearReplacements.keys()].join(',')}]`);
+    if (!entry) return null;
+    this.pendingClearReplacements.delete(key);
+    if (Date.now() - entry.timestamp > 60_000) return null;
+    return { sessionId: entry.sessionId };
+  }
+
   setCompletionSummaries(sessionId: string, summaries: TaskSummary[]): void {
     const session = this.sessions.get(sessionId);
     if (session) {
@@ -787,10 +863,18 @@ export class StateManager {
 
   setPermissionMode(sessionId: string, mode: string | undefined): void {
     const session = this.sessions.get(sessionId);
-    if (session && session.permissionMode !== mode) {
-      session.permissionMode = mode;
-      // Lock for 15s so transcript events can't overwrite a screen-detected mode change
+    if (!session) return;
+    // REVERT NOTE: original code only entered this block when mode changed:
+    //   if (session && session.permissionMode !== mode) { session.permissionMode = mode; session.permissionModeLockedUntil = ...; this.onChange(); }
+    //
+    // CHANGE: For non-default modes, always refresh the lock — even if mode is unchanged.
+    // This keeps the lock alive while repaints keep confirming the same mode,
+    // preventing permissionChecker from flipping to 'default' between repaints.
+    if (mode && mode !== 'default') {
       session.permissionModeLockedUntil = Date.now() + 15_000;
+    }
+    if (session.permissionMode !== mode) {
+      session.permissionMode = mode;
       this.onChange();
     }
   }
@@ -827,6 +911,36 @@ export class StateManager {
     if (anyChanged) {
       this.onChange();
     }
+  }
+
+  /**
+   * Periodic GC: remove internal haiku-worker sessions (pid=0, cwd inside ~/.claude)
+   * and close sessions that have been closed and inactive for >30 minutes.
+   */
+  cleanupStaleSessions(): void {
+    const now = Date.now();
+    const thirtyMin = 30 * 60 * 1000;
+    let anyChanged = false;
+    for (const [sessionId, session] of this.sessions) {
+      // Remove haiku/internal worker sessions — they have pid=0 and cwd inside ~/.claude
+      const cwdNorm = session.cwd.toLowerCase().replace(/\\/g, '/');
+      if (cwdNorm.includes('/.claude/') && session.pid === 0) {
+        this.sessions.delete(sessionId);
+        this.colorOverrides.delete(sessionId);
+        anyChanged = true;
+        continue;
+      }
+      // Remove old closed sessions with no activity for >30 minutes
+      if (session.state === 'closed' && session.pid === 0) {
+        const lastActivityAge = now - new Date(session.lastActivity ?? session.startedAt).getTime();
+        if (lastActivityAge > thirtyMin) {
+          this.sessions.delete(sessionId);
+          this.colorOverrides.delete(sessionId);
+          anyChanged = true;
+        }
+      }
+    }
+    if (anyChanged) this.onChange();
   }
 
   removePtySession(_sessionId: string): void {
@@ -911,6 +1025,7 @@ export class StateManager {
   }
 
   sessionColor(sessionId: string): string {
+    if (this.colorOverrides.has(sessionId)) return this.colorOverrides.get(sessionId)!;
     let hash = 0;
     for (let i = 0; i < sessionId.length; i++) {
       hash = (hash * 31 + sessionId.charCodeAt(i)) >>> 0;
