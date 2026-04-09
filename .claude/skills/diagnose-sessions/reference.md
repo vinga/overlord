@@ -9,7 +9,7 @@ Architecture diagrams, known issues, and quick symptom lookup for session diagno
 ## Known Issues & Patterns
 
 ### IntelliJ /clear doesn't update session file
-When `/clear` is run in an IntelliJ terminal, the session file (named by PID) sometimes doesn't update its `sessionId` field, and no new transcript file appears. The process stays alive. Overlord continues tracking the old session with stale data. **Detection approach:** if a session's transcript stopped being updated >5min ago and the process is alive, it may be a silent /clear. **Mitigation (implemented):** `refreshTranscript()` now tracks a `staleCount` — consecutive polls where `lastActivity` hasn't changed for `working`/`thinking` sessions. After 3 stale checks (~9 seconds), it re-reads the session file to check if the sessionId changed. If it did, the full replacement flow fires (markClosed → session:replaced → transferSessionIdentity).
+When `/clear` is run in an IntelliJ terminal, the session file (named by PID) sometimes doesn't update its `sessionId` field, and no new transcript file appears. The process stays alive. Overlord continues tracking the old session with stale data. **Mitigation (implemented):** The periodic stale transcript poll (3s interval in `transcriptWatcher.ts`) detects this — when transcript is stale but PID is alive, it re-reads `{pid}.json` to check if the sessionId changed. If it did, the full replacement flow fires via `transferSessionState()`. See `session-cleanups.md` for the unified /clear detection architecture.
 
 ### `overlord-resume` hides sessions with dead successors (FIXED)
 `transferSessionIdentity()` sets `launchMethod = 'overlord-resume'` on old sessions after `/clear` detection. `getSnapshot()` was filtering ALL `overlord-resume` sessions, even when their successor had died or been closed. This caused old/closed sessions to vanish from the UI after a server restart when the successor was no longer alive. **Fix:** only hide `overlord-resume` sessions when their successor session is still alive (not closed).
@@ -66,7 +66,7 @@ See "Name-first spawn flow (CURRENT APPROACH)" below for full details. Summary: 
 ### Empty ghost sessions from /clear detection (FIXED)
 When `/clear` fires, the old session is replaced by a new one. Previously, the old session was always marked `closed` and kept in the UI. But if the old session had no transcript (e.g., it was a brief interim session), it appeared as an empty ghost — no conversation, no useful data.
 
-**Fix (implemented):** `closeOrRemoveReplaced()` helper checks if the old session has a transcript via `findTranscriptPathAnywhere()`. If yes, marks closed (preserves conversation history). If no, removes entirely. Applied to all 3 `/clear` detection paths: PID-based, in-place (changed handler), and stale transcript.
+**Fix (implemented):** `closeOrRemoveReplaced()` helper marks old session as deleted (added to blocklist) so it doesn't survive server restart. The `transferSessionState()` function copies all relevant state before deletion. Applied to all /clear detection paths (see `session-cleanups.md` for current architecture).
 
 ### Name-first spawn flow (CURRENT APPROACH)
 The UI flow for spawning new embedded sessions is name-first:

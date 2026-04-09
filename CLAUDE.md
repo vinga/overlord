@@ -187,12 +187,23 @@ overlord/
 
 ## Session Matching Rules
 
-**NEVER use CWD-based matching** to link sessions to PTY/bridge connections. Multiple sessions can share the same CWD, making CWD-based matching unreliable and prone to linking the wrong session. Instead:
+**NEVER use CWD-based matching** for anything — not session linking, not /clear detection, not replacement fallbacks. Multiple sessions share the same CWD, making CWD-based matching unreliable. Instead:
 - Use **name markers** embedded in `--name` flags (e.g., `___OVR:ptyId`, `___BRG:marker`) for deterministic matching
 - Use **PID matching** when the spawner knows the child PID
 - Use **sessionId matching** (e.g., `pendingPtyByResumeId`) when the target session ID is known upfront
 
 This has been a recurring source of bugs. Always match by a unique identifier, never by CWD.
+
+## /clear Detection
+
+When Claude Code's `/clear` command runs, it creates a new transcript + sessionId but the PID stays the same and the session file (`{pid}.json`) updates in-place. Detection uses **only PID-based mechanisms** (spec: `specs/clear-detection-simplification.md`):
+
+1. **Live — session file `changed` event** (`sessionEventHandlers.ts`): PID matches existing session with different sessionId → `transferSessionState()`
+2. **Periodic — stale transcript poll** (`transcriptWatcher.ts`, 3s interval): if transcript is stale, re-reads `{pid}.json` and detects sessionId mismatch
+3. **Startup — PID file comparison** (`stateManager.detectClearOnStartup()`): compares known-sessions' stored sessionId with actual `{pid}.json` files, called after `sessionWatcher.start()`
+4. **UI-injected /clear** (`transcriptWatcher.ts` pending clear): explicit mechanism when /clear is injected via Overlord UI — not guessing, uses `consumePendingClearReplacement()`
+
+**Do NOT add** new /clear detection mechanisms (CWD matching, transcript content scanning, orphan scans, bridge marker suffix matching). These were all removed because they raced, overlapped, and caused cascading bugs. If /clear is missed, fix the existing 3 paths instead of adding a 4th.
 
 ## Development Approach: Spec Driven Development
 

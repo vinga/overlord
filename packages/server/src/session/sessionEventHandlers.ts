@@ -17,7 +17,6 @@ export interface SessionEventContext {
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
-  recentlyRemovedByCwd: Map<string, { sessionId: string; removedAt: number }>;
   migrateBridgeSession?: (oldId: string, newId: string) => void;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
@@ -31,16 +30,11 @@ export function hasActiveResumeInProgress(ctx: SessionEventContext): boolean {
 }
 
 // Helper: close or remove a replaced session during /clear detection.
-// If the old session has no own transcript, it's an empty shell — remove entirely.
-// If it has a transcript, keep it as closed (it has conversation history worth preserving).
+// Always mark as deleted so it doesn't survive server restart as a ghost.
+// The transcript file stays on disk (markDeleted only removes the session from the registry).
 export function closeOrRemoveReplaced(ctx: SessionEventContext, oldSessionId: string): void {
-  const hasTranscript = !!findTranscriptPathAnywhere(oldSessionId);
-  if (hasTranscript) {
-    ctx.stateManager.markClosed(oldSessionId);
-  } else {
-    ctx.stateManager.remove(oldSessionId);
-    log('session:removed', 'Removed empty replaced session', { sessionId: oldSessionId, sessionName: oldSessionId.slice(0, 8) });
-  }
+  ctx.stateManager.markDeleted(oldSessionId);
+  log('session:removed', 'Removed replaced session', { sessionId: oldSessionId, sessionName: oldSessionId.slice(0, 8) });
 }
 
 // Migrate PTY routing maps when a session UUID changes (e.g. /clear)
@@ -244,20 +238,6 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         replacedByPid = true;
       }
     }
-    // Fallback: CWD-based replacement detection for /clear (creates new PID)
-    if (ctx.isStartupComplete() && !linkedToPty && !replacedByPid && !ctx.pendingPtyByPid.has(raw.pid) && !ctx.stateManager.hasPendingResume(raw.cwd) && !hasActiveResumeInProgress(ctx)) {
-      const recent = ctx.recentlyRemovedByCwd.get(raw.cwd);
-      const isCaveatSession = lastMessage?.startsWith('<local-command-caveat') ?? false;
-      if (recent && recent.sessionId !== raw.sessionId && (Date.now() - recent.removedAt < 30000 || isCaveatSession)) {
-        ctx.recentlyRemovedByCwd.delete(raw.cwd);
-        closeOrRemoveReplaced(ctx, recent.sessionId);
-        ctx.stateManager.transferName(recent.sessionId, raw.sessionId);
-        migratePtyMaps(ctx, recent.sessionId, raw.sessionId, raw.pid);
-        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: recent.sessionId, newSessionId: raw.sessionId });
-        const clearName2 = raw.proposedName ?? raw.sessionId.slice(0, 8);
-        log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName2, extra: recent.sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
-      }
-    }
     // Link pending bridge sessions (opened via "Open in Terminal" with bridge binary)
     if (!linkedToPty && ctx.linkPendingBridge) {
       ctx.linkPendingBridge(raw.sessionId, raw.cwd, raw.name);
@@ -370,15 +350,6 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
       ctx.stateManager.remove(sessionId);
     } else {
       ctx.stateManager.markClosed(sessionId);
-      // Track for CWD-based replacement detection (/clear creates new PID)
-      if (session) {
-        const now = Date.now();
-        // Prune stale entries (older than 30s) to keep the map bounded
-        for (const [cwd, entry] of ctx.recentlyRemovedByCwd) {
-          if (now - entry.removedAt > 30000) ctx.recentlyRemovedByCwd.delete(cwd);
-        }
-        ctx.recentlyRemovedByCwd.set(session.cwd, { sessionId, removedAt: now });
-      }
     }
   });
 }

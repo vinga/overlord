@@ -237,8 +237,11 @@ export class StateManager {
         });
 
         // Load transcript for closed sessions so conversation history is visible after restart
-        const transcriptPath = findTranscriptPath(entry.cwd, entry.sessionId)
+        let transcriptPath = findTranscriptPath(entry.cwd, entry.sessionId)
           ?? findTranscriptPathAnywhere(entry.sessionId);
+        if (!transcriptPath && entry.resumedFrom) {
+          transcriptPath = findTranscriptPath(entry.cwd, entry.resumedFrom) ?? findTranscriptPathAnywhere(entry.resumedFrom);
+        }
         if (transcriptPath) {
           try {
             const result = readTranscriptState(transcriptPath);
@@ -271,6 +274,41 @@ export class StateManager {
         if (migrated) console.log('[stateManager] migrated bridge pipe names from old registry');
       }
     } catch { /* ignore */ }
+  }
+
+  /**
+   * Detect /clear that happened while the server was down.
+   * Compares known sessions' stored sessionId with the actual session file (keyed by PID).
+   * If the PID file has a different sessionId, a /clear occurred — transfer state to the new session.
+   * Must be called AFTER sessionWatcher.start() has loaded all session files via addOrUpdate.
+   */
+  detectClearOnStartup(): void {
+    const sessionsDir = path.join(os.homedir(), '.claude', 'sessions');
+    for (const [oldSessionId, session] of this.sessions) {
+      if (session.pid <= 0 || session.state === 'closed') continue;
+      if (session.replacedBy) continue;
+      // Read the actual session file for this PID
+      const filePath = path.join(sessionsDir, `${session.pid}.json`);
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const currentSessionId = raw.sessionId as string;
+        if (!currentSessionId || currentSessionId === oldSessionId) continue;
+        if (this.deletedSessionIds.has(currentSessionId)) continue;
+        // The PID file has a different sessionId — /clear happened while we were down
+        const newSession = this.sessions.get(currentSessionId);
+        if (!newSession) continue; // new session not yet registered (shouldn't happen after sessionWatcher.start)
+        console.log(`[clear:startup] PID ${session.pid} changed: ${oldSessionId.slice(0, 8)} → ${currentSessionId.slice(0, 8)}`);
+        this.transferSessionState(oldSessionId, currentSessionId);
+        // Mark old session as replaced
+        const old = this.sessions.get(oldSessionId);
+        if (old) {
+          old.state = 'closed';
+          this.deletedSessionIds.add(oldSessionId);
+        }
+        this.onChange();
+      } catch { /* ignore read errors */ }
+    }
   }
 
   private saveKnownSessions(): void {
@@ -371,28 +409,12 @@ export class StateManager {
       return { isNewWaiting: false };
     }
 
-
     const existingSession = this.sessions.get(sessionId);
-
-    let state: WorkerState = existingSession?.state ?? 'waiting';
-    let lastActivity = new Date().toISOString();
-    let lastMessage: string | undefined;
-    let activityFeed: import('../types.js').ActivityItem[] | undefined;
-    let slug: string | undefined;
-    let model: string | undefined;
-    let inputTokens: number | undefined;
-    let compactCount: number | undefined;
-    let isCompacting: boolean | undefined;
-    let needsPermission: boolean | undefined;
-    let permissionPromptText: string | undefined;
-    let permissionMode: string | undefined;
-    let pendingQuestion: import('../types.js').PendingQuestionSet | undefined;
 
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
     let resumedFrom: string | undefined;
     if (existingSession?.resumedFrom) {
-      // Preserve already-linked resumedFrom on subsequent updates
       resumedFrom = existingSession.resumedFrom;
     } else {
       const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
@@ -403,46 +425,17 @@ export class StateManager {
       }
     }
 
+    // Read transcript — own first, then fall back to resumed-from (for --resume which appends to parent)
     let transcriptPath = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
-    if (transcriptPath) {
-      const result = readTranscriptState(transcriptPath);
-      state = result.state;
-      lastActivity = result.lastActivity;
-      lastMessage = result.lastMessage;
-      activityFeed = result.activityFeed;
-      model = result.model;
-      inputTokens = result.inputTokens;
-      compactCount = result.compactCount;
-      isCompacting = result.isCompacting;
-      needsPermission = result.needsPermission;
-      permissionPromptText = result.permissionPromptText;
-      permissionMode = result.permissionMode;
-      pendingQuestion = result.pendingQuestion;
-      slug = readSlug(transcriptPath);
-    } else if (resumedFrom) {
-      // claude --resume appends to the original transcript rather than creating a new one.
-      // Fall back to reading the original session's transcript so the resumed session shows the
-      // correct state instead of defaulting to "waiting".
-      const fallbackPath = findTranscriptPath(cwd, resumedFrom) ?? findTranscriptPathAnywhere(resumedFrom);
-      if (fallbackPath) {
-        const result = readTranscriptState(fallbackPath);
-        state = result.state;
-        lastActivity = result.lastActivity;
-        lastMessage = result.lastMessage;
-        activityFeed = result.activityFeed;
-        model = result.model;
-        inputTokens = result.inputTokens;
-        compactCount = result.compactCount;
-        isCompacting = result.isCompacting;
-        needsPermission = result.needsPermission;
-        permissionPromptText = result.permissionPromptText;
-        permissionMode = result.permissionMode;
-        pendingQuestion = result.pendingQuestion;
-        slug = readSlug(fallbackPath);
-        // Use the fallback path for proposedName resolution below
-        transcriptPath = fallbackPath;
-      }
+    if (!transcriptPath && resumedFrom) {
+      transcriptPath = findTranscriptPath(cwd, resumedFrom) ?? findTranscriptPathAnywhere(resumedFrom);
     }
+
+    const transcript = transcriptPath ? readTranscriptState(transcriptPath) : undefined;
+    const slug = transcriptPath ? readSlug(transcriptPath) : undefined;
+
+    const state = transcript?.state ?? existingSession?.state ?? 'waiting';
+    const lastActivity = transcript?.lastActivity ?? new Date().toISOString();
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
     if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
@@ -523,22 +516,22 @@ export class StateManager {
       cwd,
       state,
       lastActivity,
-      lastMessage,
-      activityFeed,
-      model,
-      inputTokens,
-      compactCount,
-      isCompacting,
+      lastMessage: transcript?.lastMessage,
+      activityFeed: transcript?.activityFeed,
+      model: transcript?.model,
+      inputTokens: transcript?.inputTokens,
+      compactCount: transcript?.compactCount,
+      isCompacting: transcript?.isCompacting,
       ideName,
       sessionType,
       color,
       subagents,
       resumedFrom,
-      needsPermission: needsPermission || existingSession?.needsPermission,
-      permissionPromptText: permissionPromptText || existingSession?.permissionPromptText,
-      permissionMode: permissionMode || existingSession?.permissionMode,
+      needsPermission: transcript?.needsPermission || existingSession?.needsPermission,
+      permissionPromptText: transcript?.permissionPromptText || existingSession?.permissionPromptText,
+      permissionMode: transcript?.permissionMode || existingSession?.permissionMode,
       permissionApprovedAt: existingSession?.permissionApprovedAt,
-      pendingQuestion: pendingQuestion ?? existingSession?.pendingQuestion,
+      pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       completionSummaries,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
@@ -553,7 +546,7 @@ export class StateManager {
       this.saveKnownSessions();
     }
     this.onChange();
-    return { isNewWaiting: isNew && state === 'waiting', lastMessage };
+    return { isNewWaiting: isNew && state === 'waiting', lastMessage: transcript?.lastMessage };
   }
 
   remove(sessionId: string): void {
@@ -621,12 +614,15 @@ export class StateManager {
     if (oldSession.bridgeMarker) newSession.bridgeMarker = oldSession.bridgeMarker;
     if (oldSession.ptySessionId) newSession.ptySessionId = oldSession.ptySessionId;
     if (oldSession.sessionType !== 'plain') newSession.sessionType = oldSession.sessionType;
+    // Link to parent so transcript fallback, name resolution, and summaries carry over
+    newSession.resumedFrom = oldSessionId;
     // Mark old session as replaced and clear its bridge/PTY state so it doesn't
     // appear in deriveBridgeRegistry() or cause pipe collisions on reconnect.
     oldSession.replacedBy = newSessionId;
     oldSession.bridgePipeName = undefined;
     oldSession.bridgeMarker = undefined;
     oldSession.ptySessionId = undefined;
+    this.saveKnownSessions();
   }
 
   setBridgePipe(sessionId: string, pipeName: string, marker?: string): void {
@@ -634,6 +630,7 @@ export class StateManager {
     if (!session) return;
     session.bridgePipeName = pipeName;
     if (marker !== undefined) session.bridgeMarker = marker;
+    this.saveKnownSessions();
     this.onChange();
   }
 
@@ -674,7 +671,6 @@ export class StateManager {
     if (this.pendingClearSessions.has(sessionId)) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     let transcriptPath = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
-    // Forked sessions (clones) may not have their own transcript yet — fall back to parent's
     if (!transcriptPath && session.resumedFrom) {
       transcriptPath = findTranscriptPath(session.cwd, session.resumedFrom) ?? findTranscriptPathAnywhere(session.resumedFrom);
     }

@@ -107,7 +107,79 @@ for (const f of fs.readdirSync(sessDir).filter(f => f.endsWith('.json'))) {
 
 ---
 
-## Step 5 — Find /clear Artifacts (Orphaned Transcripts)
+## Step 5 — Diagnose /clear Detection
+
+/clear detection uses 3 PID-based paths (no CWD matching). This step checks if any /clear was missed.
+
+**5a. Compare known-sessions with actual session files on disk:**
+
+```bash
+node -e "
+const fs = require('fs');
+const path = require('path');
+const home = require('os').homedir();
+const sessDir = path.join(home, '.claude', 'sessions');
+const knownPath = path.join(home, '.claude', 'overlord', 'known-sessions.json');
+if (!fs.existsSync(knownPath)) { console.log('No known-sessions.json found.'); process.exit(0); }
+const known = JSON.parse(fs.readFileSync(knownPath, 'utf8'));
+console.log('Known sessions:', known.length);
+for (const ks of known) {
+  if (!ks.pid || ks.pid <= 0) continue;
+  const filePath = path.join(sessDir, ks.pid + '.json');
+  if (!fs.existsSync(filePath)) {
+    console.log('  ', ks.sessionId.slice(0,8), '| PID', ks.pid, '| FILE MISSING');
+    continue;
+  }
+  const disk = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const match = disk.sessionId === ks.sessionId;
+  const flag = match ? 'OK' : 'MISMATCH — /clear missed!';
+  console.log('  ', ks.sessionId.slice(0,8), '| PID', ks.pid, '| disk:', disk.sessionId.slice(0,8), '|', flag);
+  if (!match) {
+    console.log('    known says:', ks.sessionId);
+    console.log('    disk  says:', disk.sessionId);
+    console.log('    -> detectClearOnStartup should have caught this');
+  }
+}
+"
+```
+
+**Red flags:**
+- `MISMATCH` → `detectClearOnStartup()` didn't run or failed. Check server logs for `[clear:startup]`
+- `FILE MISSING` → session file was deleted but session still in known-sessions (PID died and file was cleaned up)
+
+**5b. Check server logs for /clear detection events:**
+
+```bash
+grep -E 'clear:detected|clear:startup|session:replaced|transferSession' C:/tmp/overlord-server.log | tail -20
+```
+
+If no `clear:detected` lines appear but Step 5a shows mismatches, the detection is broken.
+
+**5c. Check known-sessions for bridge metadata integrity:**
+
+```bash
+node -e "
+const fs = require('fs');
+const path = require('path');
+const home = require('os').homedir();
+const knownPath = path.join(home, '.claude', 'overlord', 'known-sessions.json');
+if (!fs.existsSync(knownPath)) { console.log('No known-sessions.json found.'); process.exit(0); }
+const known = JSON.parse(fs.readFileSync(knownPath, 'utf8'));
+const bridges = known.filter(k => k.bridgePipeName);
+console.log('Bridge sessions in known-sessions:', bridges.length);
+for (const b of bridges) {
+  console.log('  ', b.sessionId.slice(0,8), '| pipe:', b.bridgePipeName, '| marker:', b.bridgeMarker || 'none', '| name:', b.proposedName || 'unnamed');
+}
+"
+```
+
+**Red flags:**
+- `bridgePipeName` is empty or wrong format → `transferSessionState` or `setBridgePipe` didn't persist
+- Session has `bridgeMarker` but no `bridgePipeName` → pipe derivation failed
+
+---
+
+## Step 6 — Find Orphaned Transcripts
 
 ```bash
 node -e "
@@ -149,7 +221,7 @@ if (orphanCount === 0) console.log('No recent orphaned transcripts found.');
 
 ---
 
-## Step 6 — Check Transcript Freshness
+## Step 7 — Check Transcript Freshness
 
 For every active (non-closed) session, check if its transcript is being updated:
 
@@ -189,7 +261,7 @@ http.get('http://localhost:3000/api/debug/state', (res) => {
 
 ---
 
-## Step 7 — Read Console Screen Buffer
+## Step 8 — Read Console Screen Buffer
 
 For non-PTY sessions, read the actual console screen content via the screen-read endpoint. This shows what the user would see in the terminal — including permission prompts, TUI state, and tool output that may NOT appear in the transcript.
 
@@ -210,7 +282,7 @@ curl -s http://localhost:3000/api/sessions/SESSION_ID/screen | node -e "process.
 
 ---
 
-## Step 8 — Check PTY State (Indirect)
+## Step 9 — Check PTY State (Indirect)
 
 The debug endpoint does not expose the PTY map or `wsSessionMap` directly. To check PTY state indirectly:
 
@@ -226,7 +298,7 @@ If deeper PTY diagnostics are needed, suggest adding a temporary debug log to `p
 
 ---
 
-## Step 9 — Check Bridge Sessions
+## Step 10 — Check Bridge Sessions
 
 Check the bridge registry and verify bridge pipe connectivity:
 
@@ -269,7 +341,7 @@ cat $(echo $TEMP)/overlord-bridge.log | tail -30
 
 ---
 
-## Step 10 — Summary Report
+## Step 11 — Summary Report
 
 After running all checks, produce this summary table:
 
@@ -283,7 +355,8 @@ After running all checks, produce this summary table:
 | Dead PIDs (non-closed sessions) | N | list any |
 | Orphaned transcripts (<2h old) | N | list any |
 | Stale transcripts (active but >5m old) | N | list any |
-| /clear detection failures | N | session file unchanged but transcript stale |
+| /clear detection failures | N | known-sessions vs disk mismatches |
+| Bridge metadata integrity | pass/fail | bridgePipeName present for all bridge sessions |
 | Suspected PTY leaks | N | list any |
 | Bridge registry entries | N | list any dead pipes |
 | Bridge sockets connected | pass/fail | input + output per session |

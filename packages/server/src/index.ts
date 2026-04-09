@@ -123,9 +123,6 @@ function checkBridgePermission(sessionId: string): void {
   stateManager.setNeedsPermission(sessionId, hasPrompt, hasPrompt ? extractBridgePromptBlock(text) : undefined);
 }
 
-// Track recently removed sessions for CWD-based /clear detection (new PID case)
-const recentlyRemovedByCwd = new Map<string, { sessionId: string; removedAt: number }>();
-
 // Flag to skip clear detection during startup (loadKnownSessions + initial file scan)
 let startupComplete = false;
 
@@ -276,11 +273,10 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
   inputSocket.on('close', () => {
     bridgeManager.disconnect(sessionId);
     if (inputConnectFailed) {
-      console.log(`[bridge] input pipe dead for ${sessionId.slice(0, 8)}, removing from registry`);
-      stateManager.setBridgePipe(sessionId, '');
+      console.log(`[bridge] input pipe dead for ${sessionId.slice(0, 8)}`);
       bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
-      // Mark session idle immediately — bridge process has exited
-      stateManager.markClosed(sessionId);
+      // Don't clear bridgePipeName — it's metadata for reconnection, not a live indicator.
+      // Don't markClosed — processChecker will handle that if the PID is truly dead.
     }
   });
 
@@ -411,46 +407,30 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
 
   if (bridgeManager.isConnected(sessionId)) return; // already connected
 
+  // If we already know this session's pipe (e.g. restored from known-sessions after restart),
+  // use it directly instead of re-deriving from the marker.
+  const existingPipe = stateManager.getSession(sessionId)?.bridgePipeName;
+  if (existingPipe) {
+    console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to known pipe ${existingPipe} via marker ${marker}`);
+    stateManager.setSessionType(sessionId, 'bridge');
+    connectBridgePipe(sessionId, existingPipe);
+    return;
+  }
+
   const pending = pendingBridgeByMarker.get(marker);
 
   // Derive pipe name: Overlord-spawned sessions register a pending entry with the
   // exact pipe name; manually-started bridges use the convention overlord-<marker>.
-  // On restart after /clear, the marker changed (e.g., brg-X) but the pipe kept its
-  // original name (e.g., overlord-new-X). Check the derived registry for a matching pipe.
   let pipeName: string;
   if (pending) {
-    pipeName = pending.pipeName;
-  } else {
-    // Check derived registry for a pipe whose suffix matches this marker's suffix.
-    // This handles /clear while server was down: the old session registered the pipe,
-    // the new session has a new marker (brg-X) but shares the suffix (X).
-    const markerSuffix = marker.replace(/^brg-/, '');
-    const reg = stateManager.deriveBridgeRegistry();
-    const regMatch = Object.entries(reg).find(([, pName]) => pName.replace(/^overlord-(new-)?/, '') === markerSuffix);
-    if (regMatch && regMatch[0] !== sessionId) {
-      // Transfer all state from old sessionId to new one (name, color, bridge pipe, etc.)
-      const [oldRegId, matchedPipe] = regMatch;
-      console.log(`[bridge] state transfer in linkPendingBridge: ${oldRegId.slice(0, 8)} → ${sessionId.slice(0, 8)}`);
-      stateManager.transferSessionState(oldRegId, sessionId);
-      closeOrRemoveReplaced(sessionCtx, oldRegId);
-      broadcastRaw({ type: 'session:replaced', oldSessionId: oldRegId, newSessionId: sessionId });
-      log('clear:detected', 'Bridge /clear detected via marker match', {
-        sessionId, sessionName: stateManager.getSession(sessionId)?.proposedName ?? sessionId.slice(0, 8),
-        extra: oldRegId.slice(0, 8) + ' → ' + sessionId.slice(0, 8),
-      });
-      pipeName = matchedPipe;
-    } else {
-      pipeName = regMatch ? regMatch[1] : `overlord-${marker}`;
-    }
-  }
-
-  if (pending) {
-    // Only match recent entries (< 30s)
     if (Date.now() - pending.timestamp > 30_000) {
       pendingBridgeByMarker.delete(marker);
       return;
     }
+    pipeName = pending.pipeName;
     pendingBridgeByMarker.delete(marker);
+  } else {
+    pipeName = `overlord-${marker}`;
   }
 
   console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (manual spawn)'}`);
@@ -466,9 +446,8 @@ function reconnectBridgePipes(): void {
 
   console.log(`[bridge] reconnecting to ${entries.length} known bridge pipes...`);
   for (const [sessionId, pipeName] of entries) {
-    // Skip closed sessions and already-connected sessions
-    const session = stateManager.getSession(sessionId);
-    if (session?.state === 'closed' || bridgeManager.isConnected(sessionId)) continue;
+    // Skip already-connected sessions; attempt closed bridge sessions so reviveClosedSession() fires on success
+    if (bridgeManager.isConnected(sessionId)) continue;
     connectBridgePipe(sessionId, pipeName);
   }
 }
@@ -553,7 +532,6 @@ const sessionCtx: SessionEventContext = {
   pendingPtyByResumeId,
   pendingCloneInfo,
   ptyOutputBuffer,
-  recentlyRemovedByCwd,
   migrateBridgeSession,
   broadcastRaw,
   sendToClient,
@@ -566,6 +544,9 @@ const sessionWatcher = new SessionWatcher();
 registerSessionEventHandlers(sessionWatcher, sessionCtx);
 sessionWatcher.start();
 startupComplete = true;
+
+// Detect /clear that happened while server was down (PID file comparison)
+stateManager.detectClearOnStartup();
 
 // Clean up old haiku-worker transcript files (>15 min)
 cleanupOldWorkerTranscripts();
