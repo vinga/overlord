@@ -232,6 +232,8 @@ export class StateManager {
           resumedFrom: entry.resumedFrom,
           completionSummaries: entry.completionSummaries,
           userAccepted: entry.userAccepted,
+          bridgePipeName: entry.bridgePipeName,
+          bridgeMarker: entry.bridgeMarker,
         });
 
         // Load transcript for closed sessions so conversation history is visible after restart
@@ -252,6 +254,23 @@ export class StateManager {
         fs.writeFileSync(this.knownSessionsFile, JSON.stringify(cleaned, null, 2));
       }
     } catch { /* ignore */ }
+
+    // Migration: populate bridgePipeName from old registry file for sessions that don't have it yet
+    try {
+      const registryPath = path.join(os.tmpdir(), 'overlord-bridge-registry.json');
+      if (fs.existsSync(registryPath)) {
+        const oldRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, string>;
+        let migrated = false;
+        for (const [sessionId, pipeName] of Object.entries(oldRegistry)) {
+          const session = this.sessions.get(sessionId);
+          if (session && session.sessionType === 'bridge' && !session.bridgePipeName && pipeName) {
+            session.bridgePipeName = pipeName;
+            migrated = true;
+          }
+        }
+        if (migrated) console.log('[stateManager] migrated bridge pipe names from old registry');
+      }
+    } catch { /* ignore */ }
   }
 
   private saveKnownSessions(): void {
@@ -270,8 +289,11 @@ export class StateManager {
           resumedFrom: s.resumedFrom,
           completionSummaries: s.completionSummaries,
           userAccepted: s.userAccepted,
+          bridgePipeName: s.bridgePipeName,
+          bridgeMarker: s.bridgeMarker,
         }));
       fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
+      this.saveBridgeRegistry();
     } catch { /* ignore */ }
   }
 
@@ -521,6 +543,9 @@ export class StateManager {
       completionSummaries,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
       isWorker: raw.kind === 'haiku-worker',
+      bridgePipeName: existingSession?.bridgePipeName,
+      bridgeMarker: existingSession?.bridgeMarker,
+      ptySessionId: existingSession?.ptySessionId,
     };
 
     this.sessions.set(sessionId, session);
@@ -574,6 +599,10 @@ export class StateManager {
   }
 
   transferName(oldSessionId: string, newSessionId: string): void {
+    this.transferSessionState(oldSessionId, newSessionId);
+  }
+
+  transferSessionState(oldSessionId: string, newSessionId: string): void {
     const oldSession = this.sessions.get(oldSessionId);
     const newSession = this.sessions.get(newSessionId);
     if (!oldSession || !newSession) return;
@@ -585,8 +614,49 @@ export class StateManager {
     // Preserve color: carry over the old session's color (override or computed)
     const oldColor = this.colorOverrides.get(oldSessionId) ?? this.sessionColor(oldSessionId);
     this.colorOverrides.set(newSessionId, oldColor);
-    // Also update the already-baked color field on the session object (addOrUpdate set it before transferName ran)
+    // Also update the already-baked color field on the session object (addOrUpdate set it before transferSessionState ran)
     if (newSession) newSession.color = oldColor;
+    // Transfer bridge/PTY connection metadata
+    if (oldSession.bridgePipeName) newSession.bridgePipeName = oldSession.bridgePipeName;
+    if (oldSession.bridgeMarker) newSession.bridgeMarker = oldSession.bridgeMarker;
+    if (oldSession.ptySessionId) newSession.ptySessionId = oldSession.ptySessionId;
+    if (oldSession.sessionType !== 'plain') newSession.sessionType = oldSession.sessionType;
+    // Mark old session as replaced and clear its bridge/PTY state so it doesn't
+    // appear in deriveBridgeRegistry() or cause pipe collisions on reconnect.
+    oldSession.replacedBy = newSessionId;
+    oldSession.bridgePipeName = undefined;
+    oldSession.bridgeMarker = undefined;
+    oldSession.ptySessionId = undefined;
+  }
+
+  setBridgePipe(sessionId: string, pipeName: string, marker?: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.bridgePipeName = pipeName;
+    if (marker !== undefined) session.bridgeMarker = marker;
+    this.onChange();
+  }
+
+  isBridge(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.sessionType === 'bridge';
+  }
+
+  deriveBridgeRegistry(): Record<string, string> {
+    const registry: Record<string, string> = {};
+    for (const session of this.sessions.values()) {
+      if (session.sessionType === 'bridge' && session.bridgePipeName) {
+        registry[session.sessionId] = session.bridgePipeName;
+      }
+    }
+    return registry;
+  }
+
+  private saveBridgeRegistry(): void {
+    try {
+      const registry = this.deriveBridgeRegistry();
+      const registryPath = path.join(os.tmpdir(), 'overlord-bridge-registry.json');
+      fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    } catch { /* ignore */ }
   }
 
   setPid(sessionId: string, pid: number): void {

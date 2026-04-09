@@ -16,7 +16,6 @@ export interface WsHandlerContext {
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
-  bridgeSessions: Set<string>;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void;
@@ -37,7 +36,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     pendingPtyByResumeId,
     pendingCloneInfo,
     ptyOutputBuffer,
-    bridgeSessions,
     broadcastRaw,
     sendToClient,
     deleteSession,
@@ -77,7 +75,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
     }
     // Replay active bridge session links (bridge sessions don't use ptyManager)
-    for (const bridgeSessionId of bridgeSessions) {
+    for (const [bridgeSessionId] of Object.entries(stateManager.deriveBridgeRegistry())) {
       sendToClient(ws, { type: 'terminal:linked', ptySessionId: `bridge-${bridgeSessionId}`, claudeSessionId: bridgeSessionId, replay: true });
       // Don't send historical buffer — terminal:replay will trigger a fresh nudge instead
     }
@@ -248,7 +246,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             return;
           }
           // Try bridge pipe first, fall back to ConPTY injection
-          (bridgeSessions.has(sessionId)
+          (stateManager.isBridge(sessionId)
             ? injectViaPipe(sessionId, data).then(ok => { if (!ok) return injectText(pid, data, false, true); })
             : injectText(pid, data, false, true)
           ).catch((err: Error) => {
@@ -289,7 +287,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           return;
         }
 
-        const isBridge = bridgeSessions.has(sessionId);
+        const isBridge = stateManager.isBridge(sessionId);
         // PTY: \r — line discipline converts it to newline for the app.
         // Bridge: relays to ConPTY, so \r is also correct.
         const ptyTextToSend = text + (extraEnter ? '\r' : '');
@@ -315,16 +313,10 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
         // Try bridge pipe first, fall back to ConPTY injection.
-        // For bridge+extraEnter: mirror the ConPTY path — send a delayed second \r
-        // so that @-image autocomplete has time to settle before Enter is processed.
+        // bridgeTextToSend already includes \r — one Enter, no delay needed.
         (isBridge
           ? injectViaPipe(sessionId, bridgeTextToSend).then(ok => {
               if (!ok) return injectText(targetPid, text, extraEnter);
-              if (extraEnter) {
-                setTimeout(() => injectViaPipe(sessionId, '\r').then(ok2 => {
-                  if (!ok2) injectText(targetPid, '', false);
-                }), 600);
-              }
             })
           : injectText(targetPid, text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))
@@ -353,7 +345,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // Bridge sessions: stale buffer contains incremental frames that cause artifacts.
         // Clear the buffer, tell the client to reset xterm, then nudge the bridge for a
         // fresh full-screen repaint which flows through the live OUTPT channel.
-        if (bridgeSessions.has(sessionId)) {
+        if (stateManager.isBridge(sessionId)) {
           ptyOutputBuffer.set(sessionId, []);
           sendToClient(ws, { type: 'terminal:clear', sessionId });
           const cols = Number(msg.cols || 0);

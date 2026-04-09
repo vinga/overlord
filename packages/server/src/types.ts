@@ -79,6 +79,13 @@ export interface Session {
   currentTaskLabel?: string;
   isWorker?: boolean;
   staleCount?: number;
+
+  // Bridge connection metadata (populated when sessionType === 'bridge')
+  bridgePipeName?: string;   // e.g. "overlord-new-mnqs8m2f" — the named pipe identifier
+  bridgeMarker?: string;     // e.g. "brg-mnqs8m2f" — the ___BRG: marker from session name
+
+  // PTY/embedded connection metadata (populated when sessionType === 'embedded')
+  ptySessionId?: string;     // e.g. "pty-abc123" — the PTY manager's session ID
 }
 
 export interface Room {

@@ -26,7 +26,6 @@ export function registerApiRoutes(
   stateManager: StateManager,
   ptyManager: PtyManager,
   ptyMaps: PtyMaps,
-  bridgeSessions: Set<string>,
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void,
   generateCompletionSummary: (sessionId: string, forMessage: string) => Promise<void>,
   ptyOutputBuffer: Map<string, Buffer[]>,
@@ -79,8 +78,8 @@ export function registerApiRoutes(
       claudeToPtyId: Object.fromEntries(claudeToPtyId),
       pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
       pendingPtyByResumeId: Object.fromEntries([...pendingPtyByResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
-      bridgeSessions: [...bridgeSessions],
-      bridgeConnected: [...bridgeSessions].map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),
+      bridgeSessions: Object.keys(stateManager.deriveBridgeRegistry()),
+      bridgeConnected: Object.keys(stateManager.deriveBridgeRegistry()).map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),
     });
   });
 
@@ -105,7 +104,7 @@ export function registerApiRoutes(
       try {
         // Try bridge pipe first, fall back to ConPTY injection
         let injected = false;
-        if (bridgeSessions.has(sessionId)) {
+        if (stateManager.isBridge(sessionId)) {
           injected = await injectViaPipe(sessionId, text);
           if (injected) console.log(`[approve] pipe inject done session=${sessionId}`);
         }
@@ -132,7 +131,7 @@ export function registerApiRoutes(
 
       try {
         // Inject Shift+Tab to cycle the mode
-        if (bridgeSessions.has(sessionId)) {
+        if (stateManager.isBridge(sessionId)) {
           await injectViaPipe(sessionId, '\x1b[Z');
         } else {
           await injectText(session.pid, '\x1b[Z', false, true);
@@ -142,7 +141,7 @@ export function registerApiRoutes(
         await new Promise(r => setTimeout(r, 500));
         let text: string | null = null;
         const { claudeToPtyId } = ptyMaps;
-        const bufKey = bridgeSessions.has(sessionId) ? sessionId : (claudeToPtyId.get(sessionId) ?? null);
+        const bufKey = stateManager.isBridge(sessionId) ? sessionId : (claudeToPtyId.get(sessionId) ?? null);
         if (bufKey) {
           const chunks = ptyOutputBuffer.get(bufKey);
           if (chunks && chunks.length > 0) {
@@ -258,7 +257,7 @@ export function registerApiRoutes(
       return;
     }
     // Bridge sessions: serve from ptyOutputBuffer (ANSI-stripped)
-    if (bridgeSessions.has(sessionId)) {
+    if (stateManager.isBridge(sessionId)) {
       const chunks = ptyOutputBuffer.get(sessionId);
       if (!chunks || chunks.length === 0) {
         res.json({ text: '', sessionId });

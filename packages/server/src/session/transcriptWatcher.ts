@@ -147,7 +147,7 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           const normalCwd = cwd.replace(/\\/g, '/').toLowerCase();
 
           // Bridge sessions: replace only when unambiguous (exactly 1 bridge in same CWD)
-          const bridgeMatches = [...ctx.sessionCtx.bridgeSessions].filter(id => {
+          const bridgeMatches = Object.keys(ctx.stateManager.deriveBridgeRegistry()).filter(id => {
             if (id === newSessionId) return false;
             const s = ctx.stateManager.getSession(id);
             return s && s.state !== 'closed' && s.cwd.replace(/\\/g, '/').toLowerCase() === normalCwd;

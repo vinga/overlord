@@ -18,7 +18,6 @@ export interface SessionEventContext {
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
   recentlyRemovedByCwd: Map<string, { sessionId: string; removedAt: number }>;
-  bridgeSessions: Set<string>;
   migrateBridgeSession?: (oldId: string, newId: string) => void;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
@@ -64,7 +63,7 @@ export function migratePtyMaps(ctx: SessionEventContext, oldSessionId: string, n
     ctx.broadcastRaw({ type: 'terminal:session-replaced', oldSessionId, newSessionId });
   }
   // Migrate bridge session (input socket, output rerouting, buffers, registry)
-  if (ctx.bridgeSessions.has(oldSessionId)) {
+  if (ctx.stateManager.isBridge(oldSessionId)) {
     ctx.migrateBridgeSession?.(oldSessionId, newSessionId);
   }
 }

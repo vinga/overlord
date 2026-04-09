@@ -135,55 +135,23 @@ let startupComplete = false;
 // so the transcript fallback in stateManager shows the parent's conversation.
 const pendingCloneInfo = new Map<string, { name: string; originalSessionId: string }>();
 
-// Track sessions opened via bridge (have named pipe for injection)
-const bridgeSessions = new Set<string>();
 // Tracks sessions currently mid-connection (async connect in progress).
 // Prevents the session watcher and reconnectBridgePipes from both connecting.
 const pendingBridgeConnect = new Set<string>();
 
-// Persistent bridge pipe registry — survives server restarts
-const BRIDGE_REGISTRY_PATH = join(os.tmpdir(), 'overlord-bridge-registry.json');
-
-function loadBridgeRegistry(): Record<string, string> {
-  try {
-    return JSON.parse(fs.readFileSync(BRIDGE_REGISTRY_PATH, 'utf-8'));
-  } catch { return {}; }
-}
-
-function saveBridgeRegistry(registry: Record<string, string>): void {
-  fs.writeFileSync(BRIDGE_REGISTRY_PATH, JSON.stringify(registry, null, 2));
-}
-
-function registerBridgePipe(sessionId: string, pipeName: string): void {
-  const reg = loadBridgeRegistry();
-  reg[sessionId] = pipeName;
-  saveBridgeRegistry(reg);
-}
-
-function unregisterBridgePipe(sessionId: string): void {
-  const reg = loadBridgeRegistry();
-  delete reg[sessionId];
-  saveBridgeRegistry(reg);
-}
-
 /** Migrate all bridge state from oldId to newId (used after /clear replacement). */
 function migrateBridgeSession(oldId: string, newId: string): void {
-  if (!bridgeSessions.has(oldId)) return;
+  if (!stateManager.isBridge(oldId)) return;
   // Reroute output socket output (handler is closed over oldId)
   bridgeIdOverrides.set(oldId, newId);
   // Migrate input socket and pipe address
   bridgeManager.migrateSession(oldId, newId);
-  // Migrate pipe registry
-  const reg = loadBridgeRegistry();
-  if (reg[oldId]) { reg[newId] = reg[oldId]; delete reg[oldId]; saveBridgeRegistry(reg); }
+  // Registry migration is handled by stateManager.transferSessionState
   // Migrate buffered output and permission state
   const buf = ptyOutputBuffer.get(oldId);
   if (buf) { ptyOutputBuffer.set(newId, buf); ptyOutputBuffer.delete(oldId); }
   const pt = bridgePermText.get(oldId); if (pt) { bridgePermText.set(newId, pt); bridgePermText.delete(oldId); }
   const pm = bridgePermMode.get(oldId); if (pm) { bridgePermMode.set(newId, pm); bridgePermMode.delete(oldId); }
-  bridgeSessions.delete(oldId);
-  bridgeSessions.add(newId);
-  stateManager.setSessionType(newId, 'bridge');
   // Tell clients the bridge terminal is now under newId
   broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${newId}`, claudeSessionId: newId, replay: true });
   // Nudge the bridge so the fresh screen state flows into newId's buffer before xterm mounts
@@ -213,7 +181,7 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       const safeBridge = bridgePath.replace(/\//g, '\\');
 
       if (sessionId) {
-        bridgeSessions.add(sessionId);
+        stateManager.setSessionType(sessionId, 'bridge');
         bridgeManager.enableReconnect(sessionId);
         setTimeout(() => bridgeManager.connect(sessionId), 3000);
       } else {
@@ -270,18 +238,16 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
   // If another session is already connected to this pipe, disconnect it first.
   // This happens when a session is replaced (e.g., /clear) and the new session
   // picks up the same bridge marker → same pipe name.
-  for (const existingId of bridgeSessions) {
+  for (const [existingId] of Object.entries(stateManager.deriveBridgeRegistry())) {
     if (existingId !== sessionId && bridgeManager.getPipeAddr(existingId) === pipeAddr) {
       console.log(`[bridge] pipe collision: disconnecting stale ${existingId.slice(0, 8)} (replaced by ${sessionId.slice(0, 8)}) on ${pipeName}`);
-      bridgeSessions.delete(existingId);
       bridgeManager.disconnect(existingId);
-      unregisterBridgePipe(existingId);
+      stateManager.setBridgePipe(existingId, '');
       bridgePermText.delete(existingId); bridgePermMode.delete(existingId);
     }
   }
 
-  bridgeSessions.add(sessionId);
-  registerBridgePipe(sessionId, pipeName);
+  stateManager.setBridgePipe(sessionId, pipeName);
   // Store pipe addr immediately (synchronously) so nudge/resize one-shot connections
   // use the correct path even if terminal:replay arrives before the async connect fires.
   bridgeManager.setPipeAddr(sessionId, pipeAddr);
@@ -311,8 +277,7 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
     bridgeManager.disconnect(sessionId);
     if (inputConnectFailed) {
       console.log(`[bridge] input pipe dead for ${sessionId.slice(0, 8)}, removing from registry`);
-      bridgeSessions.delete(sessionId);
-      unregisterBridgePipe(sessionId);
+      stateManager.setBridgePipe(sessionId, '');
       bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
       // Mark session idle immediately — bridge process has exited
       stateManager.markClosed(sessionId);
@@ -348,8 +313,7 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       const healthTimer = setTimeout(() => {
         if (!receivedOutput) {
           console.log(`[bridge] DEAD: no output from ${sessionId.slice(0, 8)} after 10s — bridge process likely exited`);
-          bridgeSessions.delete(sessionId);
-          unregisterBridgePipe(sessionId);
+          stateManager.setBridgePipe(sessionId, '');
           bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
           outputSocket.destroy();
           bridgeManager.disconnect(sessionId);
@@ -430,7 +394,7 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       // which reflects only the input socket, and would block this reconnect.
       let currentId = sessionId;
       for (let i = 0; i < 10 && bridgeIdOverrides.has(currentId); i++) currentId = bridgeIdOverrides.get(currentId)!;
-      if (bridgeSessions.has(currentId)) {
+      if (stateManager.isBridge(currentId)) {
         console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
         setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 2000);
       }
@@ -445,51 +409,29 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
   const marker = rawName.split('___BRG:')[1];
   if (!marker) return;
 
-  if (bridgeSessions.has(sessionId)) return; // already connected
+  if (bridgeManager.isConnected(sessionId)) return; // already connected
 
   const pending = pendingBridgeByMarker.get(marker);
 
   // Derive pipe name: Overlord-spawned sessions register a pending entry with the
   // exact pipe name; manually-started bridges use the convention overlord-<marker>.
   // On restart after /clear, the marker changed (e.g., brg-X) but the pipe kept its
-  // original name (e.g., overlord-new-X). Check the registry for a matching pipe.
+  // original name (e.g., overlord-new-X). Check the derived registry for a matching pipe.
   let pipeName: string;
   if (pending) {
     pipeName = pending.pipeName;
   } else {
-    // Check registry for a pipe whose suffix matches this marker's suffix.
+    // Check derived registry for a pipe whose suffix matches this marker's suffix.
     // This handles /clear while server was down: the old session registered the pipe,
     // the new session has a new marker (brg-X) but shares the suffix (X).
     const markerSuffix = marker.replace(/^brg-/, '');
-    const reg = loadBridgeRegistry();
+    const reg = stateManager.deriveBridgeRegistry();
     const regMatch = Object.entries(reg).find(([, pName]) => pName.replace(/^overlord-(new-)?/, '') === markerSuffix);
     if (regMatch && regMatch[0] !== sessionId) {
-      // Migrate registry from old sessionId to new one
+      // Transfer all state from old sessionId to new one (name, color, bridge pipe, etc.)
       const [oldRegId, matchedPipe] = regMatch;
-      console.log(`[bridge] registry migration in linkPendingBridge: ${oldRegId.slice(0, 8)} → ${sessionId.slice(0, 8)}`);
-      delete reg[oldRegId];
-      reg[sessionId] = matchedPipe;
-      saveBridgeRegistry(reg);
-      // Undelete and re-register the new session if it was previously deleted
-      // (addOrUpdate silently skips deleted sessions, so it may not be in the stateManager yet)
-      stateManager.undelete(sessionId);
-      if (!stateManager.getSession(sessionId)) {
-        // Re-read the session file to register it
-        const sessionsDir = join(os.homedir(), '.claude', 'sessions');
-        for (const file of fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'))) {
-          try {
-            const raw = JSON.parse(fs.readFileSync(join(sessionsDir, file), 'utf-8')) as {
-              sessionId: string; pid: number; cwd: string; startedAt: number; name?: string;
-            };
-            if (raw.sessionId === sessionId) {
-              stateManager.addOrUpdate(raw);
-              break;
-            }
-          } catch { /* skip */ }
-        }
-      }
-      // Transfer name and close old session
-      stateManager.transferName(oldRegId, sessionId);
+      console.log(`[bridge] state transfer in linkPendingBridge: ${oldRegId.slice(0, 8)} → ${sessionId.slice(0, 8)}`);
+      stateManager.transferSessionState(oldRegId, sessionId);
       closeOrRemoveReplaced(sessionCtx, oldRegId);
       broadcastRaw({ type: 'session:replaced', oldSessionId: oldRegId, newSessionId: sessionId });
       log('clear:detected', 'Bridge /clear detected via marker match', {
@@ -518,89 +460,15 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
 
 // Reconnect to all known bridge pipes on startup
 function reconnectBridgePipes(): void {
-  const registry = loadBridgeRegistry();
+  const registry = stateManager.deriveBridgeRegistry();
   const entries = Object.entries(registry);
   if (entries.length === 0) return;
 
-  // Deduplicate: if multiple sessions point to the same pipe, keep only the most recent
-  const pipeToSessions = new Map<string, string[]>();
+  console.log(`[bridge] reconnecting to ${entries.length} known bridge pipes...`);
   for (const [sessionId, pipeName] of entries) {
-    const arr = pipeToSessions.get(pipeName) ?? [];
-    arr.push(sessionId);
-    pipeToSessions.set(pipeName, arr);
-  }
-  // Clean up stale duplicates
-  let cleaned = false;
-  for (const [pipeName, sessionIds] of pipeToSessions) {
-    if (sessionIds.length > 1) {
-      // Keep only the session whose ID appears in the pipe name (canonical owner)
-      const canonical = sessionIds.find(id => pipeName.includes(id.slice(0, 8)));
-      const stale = sessionIds.filter(id => id !== canonical);
-      for (const id of stale) {
-        console.log(`[bridge] registry cleanup: removing stale ${id.slice(0, 8)} (duplicate pipe ${pipeName})`);
-        delete registry[id];
-        cleaned = true;
-      }
-    }
-  }
-  if (cleaned) saveBridgeRegistry(registry);
-
-  // Migrate registry entries whose sessionId changed (e.g., /clear while server was down).
-  // The session file now has a new sessionId but the bridge pipe is still alive under the old one.
-  // The old session may NOT be in the stateManager (session watcher loaded the new ID from the
-  // session file). We find the replacement by scanning session files for matching bridge markers.
-  let migrated = false;
-  const sessionsDir = join(os.homedir(), '.claude', 'sessions');
-  for (const [oldId, pipeName] of Object.entries(registry)) {
-    // Already known and alive — no migration needed
-    if (stateManager.getSession(oldId)) continue;
-
-    // Extract the unique suffix from the pipe name (e.g., "mnqs8m2f" from "overlord-new-mnqs8m2f")
-    const pipeSuffix = pipeName.replace(/^overlord-(new-)?/, '');
-
-    // Scan session files for one whose ___BRG: marker shares this suffix
-    let sessionFiles: string[];
-    try { sessionFiles = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json')); } catch { continue; }
-
-    for (const file of sessionFiles) {
-      try {
-        const raw = JSON.parse(fs.readFileSync(join(sessionsDir, file), 'utf-8')) as {
-          sessionId: string; pid: number; cwd: string; startedAt: number; name?: string;
-        };
-        if (!raw.name?.includes('___BRG:')) continue;
-        const marker = raw.name.split('___BRG:')[1];
-        if (!marker) continue;
-        // Match: marker "brg-mnqs8m2f" shares suffix "mnqs8m2f" with pipe "overlord-new-mnqs8m2f"
-        const markerSuffix = marker.replace(/^brg-/, '');
-        if (markerSuffix !== pipeSuffix) continue;
-        if (raw.sessionId === oldId) break; // same ID, no migration needed
-
-        const newId = raw.sessionId;
-        const newSession = stateManager.getSession(newId);
-        const oldName = newSession?.proposedName ?? oldId.slice(0, 8);
-        console.log(`[bridge] registry migration: ${oldId.slice(0, 8)} → ${newId.slice(0, 8)} (session file changed while server was down)`);
-        registry[newId] = pipeName;
-        delete registry[oldId];
-        stateManager.addOrUpdate(raw);
-        stateManager.transferName(oldId, newId);
-        // Remove old session if it still exists (e.g., loaded from known-sessions as closed)
-        closeOrRemoveReplaced(sessionCtx, oldId);
-        broadcastRaw({ type: 'session:replaced', oldSessionId: oldId, newSessionId: newId });
-        log('clear:detected', 'Bridge registry clear detected on startup', {
-          sessionId: newId, sessionName: oldName, extra: oldId.slice(0, 8) + ' → ' + newId.slice(0, 8),
-        });
-        migrated = true;
-        break;
-      } catch { /* skip unreadable */ }
-    }
-  }
-  if (migrated) saveBridgeRegistry(registry);
-
-  const validEntries = Object.entries(registry);
-  console.log(`[bridge] reconnecting to ${validEntries.length} known bridge pipes...`);
-  for (const [sessionId, pipeName] of validEntries) {
-    // Try to connect — if bridge is dead, the error handler will clean up
-    stateManager.setSessionType(sessionId, 'bridge');
+    // Skip closed sessions and already-connected sessions
+    const session = stateManager.getSession(sessionId);
+    if (session?.state === 'closed' || bridgeManager.isConnected(sessionId)) continue;
     connectBridgePipe(sessionId, pipeName);
   }
 }
@@ -646,7 +514,7 @@ function bufferToText(chunks: Buffer[]): string | null {
 // Screen text reader for permissionChecker — handles bridge, embedded PTY, and plain sessions
 async function getScreenText(sessionId: string, pid: number): Promise<string | null> {
   // Bridge sessions: use ptyOutputBuffer keyed by sessionId
-  if (bridgeSessions.has(sessionId)) {
+  if (stateManager.isBridge(sessionId)) {
     return bufferToText(ptyOutputBuffer.get(sessionId) ?? []);
   }
   // Embedded PTY sessions: ptyOutputBuffer is keyed by the PTY session ID
@@ -664,7 +532,7 @@ async function getScreenText(sessionId: string, pid: number): Promise<string | n
 async function injectIntoSession(sessionId: string, text: string): Promise<void> {
   const session = stateManager.getSession(sessionId);
   if (!session) return;
-  if (bridgeSessions.has(sessionId)) {
+  if (stateManager.isBridge(sessionId)) {
     const ok = await injectViaPipe(sessionId, text);
     if (ok) return;
   }
@@ -686,7 +554,6 @@ const sessionCtx: SessionEventContext = {
   pendingCloneInfo,
   ptyOutputBuffer,
   recentlyRemovedByCwd,
-  bridgeSessions,
   migrateBridgeSession,
   broadcastRaw,
   sendToClient,
@@ -863,10 +730,9 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
   }
 
   // 6b. Clean up bridge state
-  if (bridgeSessions.has(sessionId)) {
-    bridgeSessions.delete(sessionId);
+  if (stateManager.isBridge(sessionId)) {
     bridgeManager.disconnect(sessionId);
-    unregisterBridgePipe(sessionId);
+    stateManager.setBridgePipe(sessionId, '');
     bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
     console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }
@@ -887,7 +753,6 @@ setupWebSocketHandler(wss, {
   pendingPtyByResumeId,
   pendingCloneInfo,
   ptyOutputBuffer,
-  bridgeSessions,
   broadcastRaw,
   sendToClient,
   deleteSession,
@@ -903,7 +768,6 @@ registerApiRoutes(
   stateManager,
   ptyManager,
   { ptyToClaudeId, claudeToPtyId, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo },
-  bridgeSessions,
   deleteSession,
   aiClassifier.generateCompletionSummary.bind(aiClassifier),
   ptyOutputBuffer,
