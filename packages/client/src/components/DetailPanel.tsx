@@ -1009,7 +1009,13 @@ export function DetailPanel({
     setKilling(false);
     setConfirmKill(false);
     setResuming(false);
-    setActiveTab('conversation');
+    // Auto-switch to Terminal tab for active PTY/bridge sessions
+    const sessionId = selectedSession?.sessionId;
+    if (sessionId && (isPtySession(sessionId) || isBridgeSession?.(sessionId))) {
+      setActiveTab('terminal');
+    } else {
+      setActiveTab('conversation');
+    }
     setSubagentActiveTab('conversation');
     return () => cancelAnimationFrame(raf);
   }, [selectedSession?.sessionId, selectedSubagentId]);
@@ -1422,14 +1428,14 @@ export function DetailPanel({
                       Subagents
                     </button>
                   )}
-                  {(isPty || selectedSession.sessionType === 'embedded') && (
+                  {(isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(selectedSession.sessionId)) && (
                     <button
                       className={`${styles.tab} ${activeTab === 'terminal' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('terminal')}
                     >
                       Terminal
-                      {isPty ? (
-                        <span className={styles.tabPtyBadge}>PTY</span>
+                      {(isPty || isBridgeSession?.(selectedSession.sessionId)) ? (
+                        <span className={styles.tabPtyBadge}>{isBridgeSession?.(selectedSession.sessionId) && !isPty ? 'Bridge' : 'PTY'}</span>
                       ) : (
                         <>
                           <span className={styles.tabPtyBadgeEnded}>PTY</span>
@@ -1601,7 +1607,7 @@ export function DetailPanel({
                           <textarea
                             className={`${styles.sendTextarea} ${selectedSession.state === 'closed' ? styles.sendTextareaClosed : ''}`}
                             value={sendInput2}
-                            disabled={!!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
+                            disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
                             onChange={e => setSendInput2(e.target.value)}
                             onKeyDown={e => {
                               if (selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded') { e.preventDefault(); return; }
@@ -1660,7 +1666,6 @@ export function DetailPanel({
                               reader.readAsDataURL(blob);
                             }}
                             placeholder={selectedSession.state === 'closed' ? 'Session exited — click to resume' : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected')}
-                            disabled={!connected}
                             rows={2}
                           />
                           <button
@@ -1686,8 +1691,8 @@ export function DetailPanel({
                 )}
 
                 {/* Tab: Terminal */}
-                {activeTab === 'terminal' && (isPty || selectedSession.sessionType === 'embedded') && (
-                  isPty ? (
+                {activeTab === 'terminal' && (isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(selectedSession.sessionId)) && (
+                  (isPty || isBridgeSession?.(selectedSession.sessionId)) ? (
                     <div className={styles.terminalContent}>
                       <XtermTerminal
                         sessionId={selectedSession.sessionId}

@@ -80,6 +80,8 @@ export function XtermTerminal({
     if (fitAddon) term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
+    // xterm.js grabs focus on open — prevent that from stealing OS focus
+    term.blur();
 
     // Fit after panel slide-in animation completes (200ms)
     const fitTimer = setTimeout(() => {
@@ -106,7 +108,7 @@ export function XtermTerminal({
     const makeHandler = () => registerOutputHandler(sessionId, (data) => {
       hasContent.current = true;
       term.write(data);
-    }, fixedSize?.cols, fixedSize?.rows);
+    }, fixedSize?.cols ?? term.cols, fixedSize?.rows ?? term.rows);
 
     let unregister = makeHandler();
 

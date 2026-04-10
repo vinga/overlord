@@ -366,12 +366,23 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           return;
         }
 
-        // Non-bridge: send buffered output as before
+        // Non-bridge PTY: send buffered output, then nudge the PTY with SIGWINCH so the
+        // TUI repaints. This ensures the terminal isn't blank even if the buffer is stale
+        // or empty (same pattern as the bridge nudge above).
         const ptySessionId = claudeToPtyId.get(sessionId);
+        const nudgeId = ptySessionId ?? (ptyManager.has(sessionId) ? sessionId : null);
         const buf = ptyOutputBuffer.get(ptySessionId ?? sessionId) ?? ptyOutputBuffer.get(sessionId);
+        const cols = Number(msg.cols || 0);
+        const rows = Number(msg.rows || 0);
+        console.log(`[terminal:replay] pty sid=${sessionId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} cols=${cols} rows=${rows}`);
         if (buf && buf.length > 0) {
           const encoded = Buffer.concat(buf).toString('base64');
           sendToClient(ws, { type: 'terminal:output', sessionId, data: encoded });
+        }
+        // SIGWINCH nudge: causes the TUI to emit a fresh full-screen repaint
+        if (nudgeId) {
+          ptyManager.resize(nudgeId, cols > 0 ? cols : 80, rows > 0 ? rows : 24);
+          console.log(`[terminal:replay] nudged ${nudgeId.slice(0, 8)}`);
         }
         return;
       }
