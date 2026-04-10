@@ -1061,42 +1061,32 @@ export function DetailPanel({
   const sessionError = selectedSession ? getError(selectedSession.sessionId) : undefined;
 
 
-  // Clear stale pending messages after 15s (safety net — content de-duplication handles normal flow)
+  // Clear stale pending messages after 30s (safety net — count-based clearing handles normal flow)
   useEffect(() => {
     if (localSent.length === 0) return;
-    const timer = setTimeout(() => setLocalSent([]), 15_000);
+    const timer = setTimeout(() => {
+      setLocalSent([]);
+      realCountAtFirstSend.current = null;
+    }, 30_000);
     return () => clearTimeout(timer);
   }, [localSent]);
 
-  // Also clear pending when session transitions to 'working' or 'thinking' —
-  // that means the server received the message and Claude started processing it.
-  // This handles the case where the message text never appears in the feed
-  // (e.g. injected before the feed is populated) but injection clearly succeeded.
+  // State-transition-based clearing removed: it raced with the transcript update.
+  // Content-based deduplication (below) handles the normal path seamlessly.
+  // The 5s timeout below is the only fallback for edge cases (injection failed, etc.).
   const prevSessionStateRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const currentState = selectedSession?.state;
-    const prevState = prevSessionStateRef.current;
-    prevSessionStateRef.current = currentState;
-    if (
-      localSent.length > 0 &&
-      (currentState === 'working' || currentState === 'thinking') &&
-      prevState === 'waiting'
-    ) {
-      // Session transitioned from waiting → working/thinking: injection was received
-      setLocalSent([]);
-      realCountAtFirstSend.current = null;
-    }
-  }, [selectedSession?.state, localSent.length]);
+    prevSessionStateRef.current = selectedSession?.state;
+  }, [selectedSession?.state]);
 
-  // Build merged activityFeed: real feed + optimistic locally-sent messages
-  // Content-based: pending messages stay until their content appears in the real feed
+  // Build merged activityFeed: real feed + optimistic locally-sent messages.
+  // Count-based: show all pending until the real feed has more user messages than when we sent.
+  // This avoids content-matching false positives (duplicate messages, long transcripts, etc.).
   const realFeed = selectedSession?.activityFeed ?? [];
-  const realUserContents = new Set(
-    realFeed.filter(i => i.role === 'user').map(i => i.content?.slice(0, 200))
-  );
-  const dedupedPending = localSent.filter(t => !realUserContents.has(t.slice(0, 200)));
-  // Once all locally-sent messages are confirmed, reset tracking
-  if (dedupedPending.length === 0 && localSent.length > 0) {
+  const currentUserCount = realFeed.filter(i => i.role === 'user').length;
+  const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
+  const confirmed = currentUserCount > prevUserCount;
+  if (confirmed && localSent.length > 0) {
     queueMicrotask(() => {
       setLocalSent([]);
       realCountAtFirstSend.current = null;
@@ -1104,7 +1094,7 @@ export function DetailPanel({
   }
   const mergedFeed: ActivityItem[] = [
     ...realFeed,
-    ...dedupedPending.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t.slice(0, 200), pending: true })),
+    ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
   ];
 
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
