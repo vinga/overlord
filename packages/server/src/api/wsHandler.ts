@@ -318,10 +318,13 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
         // Try bridge pipe first, fall back to macOS Terminal.app injection, then ConPTY.
-        // bridgeTextToSend already includes \r — one Enter, no delay needed.
+        // bridgeTextToSend includes \r to submit. When extraEnter=true (e.g. image paste with
+        // @mention), Claude TUI shows an autocomplete overlay that the first \r dismisses —
+        // a second \r after a short delay then submits the message.
         (isBridge
           ? injectViaPipe(sessionId, bridgeTextToSend).then(async (ok): Promise<void> => {
-              if (!ok) await (process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter));
+              if (!ok) { await (process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter)); return; }
+              if (extraEnter) setTimeout(() => injectViaPipe(sessionId, '\r'), 200);
             })
           : process.platform === 'darwin'
             ? injectViaMac(targetPid, text, extraEnter)
