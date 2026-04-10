@@ -38,6 +38,10 @@ function formatDuration(startedAt: number): string {
   return parts.join(' ');
 }
 
+function formatModel(model: string): string {
+  return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+}
+
 interface PtyTerminalPanelProps {
   sessionId: string;
   session?: Session;
@@ -208,7 +212,7 @@ export function PtyTerminalPanel({
             {session.model && (
               <>
                 <span className={styles.detailLabel}>Model</span>
-                <span className={styles.detailValue}>{session.model.replace('claude-', '')}</span>
+                <span className={styles.detailValue}>{formatModel(session.model)}</span>
               </>
             )}
 

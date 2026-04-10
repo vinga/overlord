@@ -1,4 +1,5 @@
 export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
+export type SessionProvider = 'claude' | 'codex';
 
 export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
 
@@ -46,6 +47,7 @@ export interface PendingQuestionSet {
 
 export interface Session {
   sessionId: string;
+  provider?: SessionProvider;
   slug?: string;
   proposedName?: string;
   pid: number;
@@ -86,6 +88,7 @@ export interface Session {
 
   // PTY/embedded connection metadata (populated when sessionType === 'embedded')
   ptySessionId?: string;     // e.g. "pty-abc123" — the PTY manager's session ID
+  transcriptPath?: string;
 }
 
 export interface Room {

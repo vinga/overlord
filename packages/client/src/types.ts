@@ -1,4 +1,5 @@
 type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
+type SessionProvider = 'claude' | 'codex';
 
 /** How a new terminal session should be spawned */
 type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain';
@@ -49,6 +50,7 @@ interface PendingQuestionSet {
 
 interface Session {
   sessionId: string;
+  provider?: SessionProvider;
   slug?: string;
   proposedName?: string;
   pid: number;
@@ -211,6 +213,7 @@ interface LogEntryMessage {
 
 export type {
   WorkerState,
+  SessionProvider,
   ActivityItemKind,
   ActivityItem,
   Subagent,

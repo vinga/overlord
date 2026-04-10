@@ -103,7 +103,7 @@ export function InjectionInput({
       handleSend();
     } else if (e.key === 'Escape') {
       e.preventDefault();
-      setText('');
+      setInputValue('');
     }
   }
 

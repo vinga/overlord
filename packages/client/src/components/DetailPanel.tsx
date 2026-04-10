@@ -25,6 +25,14 @@ function renderMarkdown(text: string): string {
   return result;
 }
 
+function formatModel(model: string): string {
+  return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+}
+
+function assistantLabel(provider?: Session['provider']): string {
+  return provider === 'codex' ? 'codex' : 'claude';
+}
+
 /** Renders user message content, replacing @<path> image references with clickable thumbnails */
 function UserMessageContent({ content, styles, expandedImages, onToggleImage }: {
   content: string;
@@ -1234,7 +1242,7 @@ export function DetailPanel({
                         <div className={styles.transcript}>
                           <FeedSegments
                             feed={selectedSubagent.activityFeed}
-                            roleLabel={(role) => role === 'user' ? 'parent' : 'claude'}
+                            roleLabel={(role) => role === 'user' ? 'parent' : assistantLabel(selectedSession.provider)}
                             styles={styles as Record<string, string>}
                             ideName={selectedSession.ideName}
                             sessionState={selectedSubagent.state}
@@ -1268,7 +1276,7 @@ export function DetailPanel({
                         {selectedSubagent.model && (
                           <div className={styles.field}>
                             <span className={styles.fieldLabel}>Model</span>
-                            <span className={styles.fieldValue}>{selectedSubagent.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                            <span className={styles.fieldValue}>{formatModel(selectedSubagent.model)}</span>
                           </div>
                         )}
                         <div className={styles.field}>
@@ -1376,7 +1384,7 @@ export function DetailPanel({
                       </span>
                     )}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
-                    {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{selectedSession.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>}
+                    {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
@@ -1441,7 +1449,7 @@ export function DetailPanel({
                               <div className={styles.transcript}>
                                 <FeedSegments
                                   feed={mergedFeed}
-                                  roleLabel={(role) => role === 'user' ? 'you' : 'claude'}
+                                  roleLabel={(role) => role === 'user' ? 'you' : assistantLabel(selectedSession.provider)}
                                   styles={styles as Record<string, string>}
                                   ideName={selectedSession.ideName}
                                   sessionState={selectedSession.state}
@@ -1789,7 +1797,7 @@ export function DetailPanel({
                       {selectedSession.model && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Model</span>
-                          <span className={styles.fieldValue}>{selectedSession.model.replace('claude-', '')}</span>
+                          <span className={styles.fieldValue}>{formatModel(selectedSession.model)}</span>
                         </div>
                       )}
                       {selectedSession.inputTokens !== undefined && (() => {

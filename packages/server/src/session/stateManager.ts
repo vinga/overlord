@@ -65,6 +65,22 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').toLowerCase();
 }
 
+function resolveTranscriptPath(session: {
+  cwd: string;
+  sessionId: string;
+  resumedFrom?: string;
+  transcriptPath?: string;
+}): string | null {
+  if (session.transcriptPath && fs.existsSync(session.transcriptPath)) {
+    return session.transcriptPath;
+  }
+  let transcriptPath = findTranscriptPath(session.cwd, session.sessionId) ?? findTranscriptPathAnywhere(session.sessionId);
+  if (!transcriptPath && session.resumedFrom) {
+    transcriptPath = findTranscriptPath(session.cwd, session.resumedFrom) ?? findTranscriptPathAnywhere(session.resumedFrom);
+  }
+  return transcriptPath;
+}
+
 export class StateManager {
   private sessions: Map<string, Session> = new Map();
   private onChangeCallback: () => void;
@@ -208,6 +224,7 @@ export class StateManager {
         const color = this.sessionColor(entry.sessionId);
         this.sessions.set(entry.sessionId, {
           sessionId: entry.sessionId,
+          provider: entry.provider ?? 'claude',
           cwd: entry.cwd,
           pid: entry.pid ?? 0,
           startedAt: entry.startedAt ?? Date.now(),
@@ -246,14 +263,16 @@ export class StateManager {
           userAccepted: entry.userAccepted,
           bridgePipeName: entry.bridgePipeName,
           bridgeMarker: entry.bridgeMarker,
+          transcriptPath: entry.transcriptPath,
         });
 
         // Load transcript for closed sessions so conversation history is visible after restart
-        let transcriptPath = findTranscriptPath(entry.cwd, entry.sessionId)
-          ?? findTranscriptPathAnywhere(entry.sessionId);
-        if (!transcriptPath && entry.resumedFrom) {
-          transcriptPath = findTranscriptPath(entry.cwd, entry.resumedFrom) ?? findTranscriptPathAnywhere(entry.resumedFrom);
-        }
+        const transcriptPath = resolveTranscriptPath({
+          cwd: entry.cwd,
+          sessionId: entry.sessionId,
+          resumedFrom: entry.resumedFrom,
+          transcriptPath: entry.transcriptPath,
+        });
         if (transcriptPath) {
           try {
             const result = readTranscriptState(transcriptPath);
@@ -330,6 +349,7 @@ export class StateManager {
         .filter(s => !s.isWorker && !s.cwd.toLowerCase().replace(/\\/g, '/').includes('/.claude/'))
         .map(s => ({
           sessionId: s.sessionId,
+          provider: s.provider,
           cwd: s.cwd,
           sessionType: s.sessionType,
           replacedBy: s.replacedBy,
@@ -341,6 +361,7 @@ export class StateManager {
           userAccepted: s.userAccepted,
           bridgePipeName: s.bridgePipeName,
           bridgeMarker: s.bridgeMarker,
+          transcriptPath: s.transcriptPath,
         }));
       fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
       this.saveBridgeRegistry();
@@ -438,10 +459,12 @@ export class StateManager {
     }
 
     // Read transcript — own first, then fall back to resumed-from (for --resume which appends to parent)
-    let transcriptPath = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
-    if (!transcriptPath && resumedFrom) {
-      transcriptPath = findTranscriptPath(cwd, resumedFrom) ?? findTranscriptPathAnywhere(resumedFrom);
-    }
+    const transcriptPath = raw.transcriptPath ?? resolveTranscriptPath({
+      cwd,
+      sessionId,
+      resumedFrom,
+      transcriptPath: existingSession?.transcriptPath,
+    });
 
     const transcript = transcriptPath ? readTranscriptState(transcriptPath) : undefined;
     const slug = transcriptPath ? readSlug(transcriptPath) : undefined;
@@ -521,6 +544,7 @@ export class StateManager {
 
     const session: Session = {
       sessionId,
+      provider: raw.provider ?? existingSession?.provider ?? 'claude',
       slug,
       proposedName,
       pid,
@@ -551,6 +575,7 @@ export class StateManager {
       bridgePipeName: existingSession?.bridgePipeName,
       bridgeMarker: existingSession?.bridgeMarker,
       ptySessionId: existingSession?.ptySessionId,
+      transcriptPath: transcriptPath ?? undefined,
     };
 
     this.sessions.set(sessionId, session);
@@ -682,10 +707,7 @@ export class StateManager {
     // Suppress re-read until /clear replacement is detected (prevents old transcript re-populating feed)
     if (this.pendingClearSessions.has(sessionId)) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
-    let transcriptPath = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
-    if (!transcriptPath && session.resumedFrom) {
-      transcriptPath = findTranscriptPath(session.cwd, session.resumedFrom) ?? findTranscriptPathAnywhere(session.resumedFrom);
-    }
+    const transcriptPath = resolveTranscriptPath(session);
     if (!transcriptPath) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     const prevState = session.state;
@@ -764,6 +786,7 @@ export class StateManager {
       session.slug = slug;
       session.proposedName = proposedName;
       session.subagents = subagents;
+      session.transcriptPath = transcriptPath;
     }
 
     // Clear manuallyDone when session is no longer in waiting state
@@ -967,6 +990,7 @@ export class StateManager {
   updateAlivePids(pids: Set<number>): void {
     let anyChanged = false;
     for (const session of this.sessions.values()) {
+      if (session.provider === 'codex' || session.pid <= 0) continue;
       if (!pids.has(session.pid) && session.state !== 'closed') {
         // Don't override transcript-based state if the session was recently active.
         // This prevents process-checker from fighting refreshTranscript when the PID
@@ -977,8 +1001,7 @@ export class StateManager {
           // Guard for ALL sessions: check transcript file mtime before closing.
           // The PID in the session file may belong to a shell/wrapper rather than
           // the actual node process, so verify the transcript isn't being written to.
-          const transcriptPath = findTranscriptPath(session.cwd, session.sessionId)
-            ?? findTranscriptPathAnywhere(session.sessionId);
+          const transcriptPath = resolveTranscriptPath(session);
           if (transcriptPath) {
             try {
               const stat = fs.statSync(transcriptPath);
@@ -1200,6 +1223,7 @@ export class StateManager {
 
           const session: Session = {
             sessionId,
+            provider: 'claude',
             pid: 0,
             cwd,
             startedAt,
@@ -1217,6 +1241,7 @@ export class StateManager {
             color,
             subagents,
             needsPermission: false,
+            transcriptPath,
           };
 
           this.sessions.set(sessionId, session);

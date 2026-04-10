@@ -9,7 +9,7 @@ interface TranscriptCache {
   fileModifiedMs: number; // raw mtime for age calculation
   lastCheckedAt: number; // wall-clock time of last stat() call
   /** Which state-determination branch to use when re-evaluating from time alone */
-  stateHint: 'tool_use' | 'ask_user_question' | 'assistant_text' | 'tool_result' | 'user_input' | 'none';
+  stateHint: 'tool_use' | 'ask_user_question' | 'assistant_text' | 'tool_result' | 'user_input' | 'none' | 'codex_reasoning';
   result: ReturnType<typeof readTranscriptState>;
   dirty: boolean; // set by markDirty() when chokidar fires
 }
@@ -77,8 +77,13 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
     case 'assistant_text': return { state: ageSec < 3 ? 'working' : 'waiting' };
     case 'tool_result':  return { state: ageSec < 8 ? 'working' : 'thinking' };
     case 'user_input':   return { state: ageSec < 8 ? 'working' : 'thinking' };
+    case 'codex_reasoning': return { state: ageSec < 6 ? 'thinking' : 'working' };
     case 'none':         return { state: 'waiting' };
   }
+}
+
+function isCodexTranscript(filePath: string): boolean {
+  return filePath.replace(/\\/g, '/').includes('/.codex/sessions/');
 }
 
 export function clearProposedNameCache(sessionId: string): void {
@@ -369,6 +374,9 @@ export function readTranscriptState(filePath: string): {
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
 } {
+  if (isCodexTranscript(filePath)) {
+    return readCodexTranscriptState(filePath);
+  }
   try {
     const now = Date.now();
     const cached = transcriptCache.get(filePath);
@@ -707,7 +715,216 @@ export function readTranscriptState(filePath: string): {
   }
 }
 
+function readCodexTranscriptState(filePath: string): {
+  state: WorkerState;
+  lastActivity: string;
+  lastMessage?: string;
+  activityFeed?: ActivityItem[];
+  model?: string;
+  inputTokens?: number;
+  compactCount?: number;
+  isCompacting?: boolean;
+  needsPermission?: boolean;
+  permissionPromptText?: string;
+  lastUserIsDone?: boolean;
+  permissionMode?: string;
+  pendingQuestion?: PendingQuestionSet;
+} {
+  try {
+    const now = Date.now();
+    const cached = transcriptCache.get(filePath);
+    if (cached && !cached.dirty && (now - cached.lastCheckedAt) < MIN_STAT_INTERVAL_MS) {
+      const reEval = reEvalStateFromCache(cached);
+      if (reEval.state !== cached.result.state || reEval.needsPermission !== cached.result.needsPermission) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission };
+      }
+      return cached.result;
+    }
+
+    const stat = fs.statSync(filePath);
+    const fileModifiedMs = stat.mtimeMs;
+    if (cached && !cached.dirty && cached.mtimeMs === fileModifiedMs && cached.fileSize === stat.size) {
+      cached.lastCheckedAt = now;
+      cached.fileModifiedMs = fileModifiedMs;
+      const reEval = reEvalStateFromCache(cached);
+      if (reEval.state !== cached.result.state || reEval.needsPermission !== cached.result.needsPermission) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission };
+      }
+      return cached.result;
+    }
+
+    const ageSec = (now - fileModifiedMs) / 1000;
+    const MAX_FEED_MESSAGES = 100;
+    const MAX_CONTENT_LENGTH = 10000;
+    const tailLines = readFileTail(filePath, stat.size);
+    const last30 = tailLines.slice(-(MAX_FEED_MESSAGES * 20));
+
+    let lastMessage: string | undefined;
+    const activityFeed: ActivityItem[] = [];
+    let model: string | undefined;
+    let inputTokens: number | undefined;
+    let lastUserIsDone = false;
+    let stateHint: TranscriptCache['stateHint'] = 'none';
+    let state: WorkerState = 'waiting';
+
+    const callDurations = new Map<string, number>();
+    for (const line of last30) {
+      try {
+        const parsed = JSON.parse(line) as {
+          type?: string;
+          payload?: {
+            type?: string;
+            call_id?: string;
+            duration?: { secs?: number; nanos?: number };
+            info?: { last_token_usage?: { input_tokens?: number; cached_input_tokens?: number } };
+          };
+        };
+        if (parsed.type === 'event_msg' && parsed.payload?.type === 'exec_command_end' && parsed.payload.call_id) {
+          const secs = parsed.payload.duration?.secs ?? 0;
+          const nanos = parsed.payload.duration?.nanos ?? 0;
+          callDurations.set(parsed.payload.call_id, Math.round((secs * 1000) + (nanos / 1_000_000)));
+        }
+        if (parsed.type === 'event_msg' && parsed.payload?.type === 'token_count' && inputTokens === undefined) {
+          const usage = parsed.payload.info?.last_token_usage;
+          if (usage) inputTokens = (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
+        }
+        if (parsed.type === 'session_meta' && model === undefined) {
+          const payload = parsed.payload as { model?: string } | undefined;
+          model = payload?.model;
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    for (let i = last30.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(last30[i]) as {
+          timestamp?: string;
+          type?: string;
+          payload?: {
+            type?: string;
+            role?: string;
+            phase?: string;
+            message?: string;
+            name?: string;
+            arguments?: string;
+            call_id?: string;
+            output?: string;
+          };
+        };
+
+        if (parsed.type === 'response_item' && parsed.payload?.type === 'message') {
+          const role = parsed.payload.role;
+          if (role !== 'user' && role !== 'assistant') continue;
+          const blocks = Array.isArray((parsed.payload as { content?: Array<{ type?: string; text?: string }> }).content)
+            ? ((parsed.payload as { content?: Array<{ type?: string; text?: string }> }).content ?? [])
+            : [];
+          const text = blocks
+            .map(block => block.text ?? '')
+            .join('\n')
+            .trim();
+          if (!text) continue;
+          if (role === 'assistant' && lastMessage === undefined) lastMessage = text.slice(0, 300);
+          if (role === 'user' && /^done[.!\s]*$/i.test(text.trim())) lastUserIsDone = true;
+          activityFeed.unshift({
+            kind: 'message',
+            role: role as 'user' | 'assistant',
+            content: text.slice(0, MAX_CONTENT_LENGTH),
+            timestamp: parsed.timestamp,
+          });
+        } else if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call' && parsed.payload.name) {
+          const item: ActivityItem = {
+            kind: 'tool',
+            toolName: parsed.payload.name,
+            content: parsed.payload.name,
+            timestamp: parsed.timestamp,
+          };
+          if (parsed.payload.arguments) {
+            item.inputJson = parsed.payload.arguments;
+            try {
+              const args = JSON.parse(parsed.payload.arguments) as Record<string, unknown>;
+              item.content = describeInput(args);
+            } catch {
+              item.content = parsed.payload.arguments.slice(0, 300);
+            }
+          }
+          const durationMs = parsed.payload.call_id ? callDurations.get(parsed.payload.call_id) : undefined;
+          if (durationMs !== undefined) item.durationMs = durationMs;
+          activityFeed.unshift(item);
+        } else if (parsed.type === 'event_msg' && parsed.payload?.type === 'agent_message' && parsed.payload.message && lastMessage === undefined) {
+          lastMessage = parsed.payload.message.slice(0, 300);
+        }
+
+        const messageCount = activityFeed.filter(item => item.kind === 'message').length;
+        if (messageCount >= MAX_FEED_MESSAGES) break;
+      } catch {
+        // skip
+      }
+    }
+
+    for (let i = last30.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(last30[i]) as {
+          type?: string;
+          payload?: { type?: string; role?: string; phase?: string };
+        };
+        if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call') {
+          stateHint = 'tool_use';
+          state = ageSec < 8 ? 'working' : 'thinking';
+          break;
+        }
+        if (parsed.type === 'response_item' && parsed.payload?.type === 'reasoning') {
+          stateHint = 'codex_reasoning';
+          state = ageSec < 6 ? 'thinking' : 'working';
+          break;
+        }
+        if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call_output') {
+          stateHint = 'tool_result';
+          state = ageSec < 8 ? 'working' : 'thinking';
+          break;
+        }
+        if (parsed.type === 'response_item' && parsed.payload?.type === 'message') {
+          if (parsed.payload.role === 'user') {
+            stateHint = 'user_input';
+            state = ageSec < 8 ? 'working' : 'thinking';
+          } else if (parsed.payload.role === 'assistant') {
+            stateHint = 'assistant_text';
+            state = 'waiting';
+          }
+          break;
+        }
+        if (parsed.type === 'event_msg' && parsed.payload?.type === 'task_complete') {
+          stateHint = 'assistant_text';
+          state = 'waiting';
+          break;
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    const result = {
+      state,
+      lastActivity: new Date(fileModifiedMs).toISOString(),
+      lastMessage,
+      activityFeed: activityFeed.length > 0 ? activityFeed : undefined,
+      model,
+      inputTokens,
+      lastUserIsDone: lastUserIsDone || undefined,
+    };
+    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
+    return result;
+  } catch {
+    return {
+      state: 'closed',
+      lastActivity: new Date().toISOString(),
+    };
+  }
+}
+
 export function readSlug(filePath: string): string | undefined {
+  if (isCodexTranscript(filePath)) return undefined;
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     const lines = content.split('\n').filter((l) => l.trim().length > 0);
@@ -730,6 +947,42 @@ export function readSlug(filePath: string): string | undefined {
 export function readProposedName(sessionId: string, transcriptPath: string): string | undefined {
   const cached = proposedNameCache.get(sessionId);
   if (cached !== undefined) return cached;
+
+  if (isCodexTranscript(transcriptPath)) {
+    try {
+      const fd = fs.openSync(transcriptPath, 'r');
+      let content = '';
+      try {
+        const stat = fs.fstatSync(fd);
+        const readSize = Math.min(stat.size, 64 * 1024);
+        const buf = Buffer.alloc(readSize);
+        fs.readSync(fd, buf, 0, readSize, 0);
+        content = buf.toString('utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      const lines = content.split('\n').filter((line) => line.trim().length > 0);
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line) as {
+            type?: string;
+            payload?: { type?: string; role?: string; content?: Array<{ text?: string }> };
+          };
+          if (parsed.type !== 'response_item' || parsed.payload?.type !== 'message' || parsed.payload.role !== 'user') continue;
+          const text = (parsed.payload.content ?? []).map(block => block.text ?? '').join(' ').replace(/\s+/g, ' ').trim();
+          if (!text || text.startsWith('<environment_context>')) continue;
+          const result = text.slice(0, 50);
+          proposedNameCache.set(sessionId, result);
+          return result;
+        } catch {
+          // skip
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return undefined;
+  }
 
   // Strategy 1: first meaningful task subject from ~/.claude/tasks/{sessionId}/
   const tasksDir = path.join(os.homedir(), '.claude', 'tasks', sessionId);
@@ -812,6 +1065,7 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
 }
 
 export function readSubagents(cwd: string, sessionId: string): Subagent[] {
+  if (cwd.replace(/\\/g, '/').includes('/.codex/')) return [];
   const slug = cwdToSlug(cwd);
   const subagentsDir = path.join(
     os.homedir(),

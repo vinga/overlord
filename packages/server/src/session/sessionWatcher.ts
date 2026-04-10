@@ -1,3 +1,4 @@
+import type { SessionProvider } from '../types.js';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -8,10 +9,19 @@ import { HAIKU_WORKER_CWD } from '../ai/claudeQuery.js';
 export interface RawSession {
   pid: number;
   sessionId: string;
+  provider?: SessionProvider;
   cwd: string;
   startedAt: number;
   kind?: string;
   name?: string;
+  proposedName?: string;
+  transcriptPath?: string;
+}
+
+export interface SessionSource {
+  on(event: 'added', listener: (raw: RawSession) => void): this;
+  on(event: 'changed', listener: (raw: RawSession) => void): this;
+  on(event: 'removed', listener: (sessionId: string) => void): this;
 }
 
 export class SessionWatcher extends EventEmitter {
@@ -88,9 +98,9 @@ export class SessionWatcher extends EventEmitter {
       const content = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content) as RawSession;
       if (data.cwd && path.normalize(data.cwd) === path.normalize(HAIKU_WORKER_CWD)) {
-        return { ...data, kind: 'haiku-worker' };
+        return { ...data, provider: 'claude', kind: 'haiku-worker' };
       }
-      return data;
+      return { ...data, provider: 'claude' };
     } catch {
       return null;
     }

@@ -2,7 +2,7 @@ import type { WebSocket } from 'ws';
 import type { StateManager } from './stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import type { AiClassifier } from '../ai/aiClassifier.js';
-import type { SessionWatcher } from './sessionWatcher.js';
+import type { SessionSource } from './sessionWatcher.js';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
 import { log } from '../logger.js';
 
@@ -62,7 +62,7 @@ export function migratePtyMaps(ctx: SessionEventContext, oldSessionId: string, n
   }
 }
 
-export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx: SessionEventContext): void {
+export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx: SessionEventContext): void {
 
   function applyPendingCloneInfo(ptySessionId: string, claudeSessionId: string): void {
     const info = ctx.pendingCloneInfo.get(ptySessionId);

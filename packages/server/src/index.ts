@@ -9,6 +9,7 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { StateManager } from './session/stateManager.js';
 import { SessionWatcher } from './session/sessionWatcher.js';
+import { CodexSessionWatcher } from './session/codexSessionWatcher.js';
 import { ProcessChecker } from './session/processChecker.js';
 import { PtyManager } from './pty/ptyManager.js';
 import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
@@ -541,8 +542,11 @@ const sessionCtx: SessionEventContext = {
 
 // Setup session watcher
 const sessionWatcher = new SessionWatcher();
+const codexSessionWatcher = new CodexSessionWatcher();
 registerSessionEventHandlers(sessionWatcher, sessionCtx);
+registerSessionEventHandlers(codexSessionWatcher, sessionCtx);
 sessionWatcher.start();
+codexSessionWatcher.start();
 startupComplete = true;
 
 // Detect /clear that happened while server was down (PID file comparison)
@@ -782,4 +786,3 @@ function shutdown() {
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-
