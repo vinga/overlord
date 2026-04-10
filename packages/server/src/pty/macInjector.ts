@@ -65,3 +65,28 @@ export async function injectViaMacTerminal(
 
   return result === 'ok';
 }
+
+/**
+ * Walk the process tree upward to identify the owning terminal application.
+ * Returns a human-readable name like "IntelliJ IDEA", "Terminal", "iTerm2", or "unknown".
+ */
+export function detectTerminalApp(pid: number): string {
+  let cur = pid;
+  for (let i = 0; i < 10; i++) {
+    try {
+      const ppid = execFileSync('ps', ['-p', String(cur), '-o', 'ppid='], { encoding: 'utf8' }).trim();
+      const comm = execFileSync('ps', ['-p', String(ppid), '-o', 'comm='], { encoding: 'utf8' }).trim();
+      if (comm.includes('idea')) return 'IntelliJ IDEA';
+      if (comm.includes('Terminal')) return 'Terminal';
+      if (comm.includes('iTerm')) return 'iTerm2';
+      if (comm.includes('WezTerm')) return 'WezTerm';
+      if (comm.includes('Alacritty')) return 'Alacritty';
+      if (comm.includes('kitty')) return 'kitty';
+      if (ppid === '1' || ppid === cur.toString()) break;
+      cur = parseInt(ppid, 10);
+    } catch {
+      break;
+    }
+  }
+  return 'unknown';
+}

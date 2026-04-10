@@ -4,7 +4,7 @@ import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath } from '../pty/pipeInjector.js';
-import { injectViaMacTerminal } from '../pty/macInjector.js';
+import { injectViaMacTerminal, detectTerminalApp } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 
 export interface WsHandlerContext {
@@ -321,7 +321,13 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             })
           : process.platform === 'darwin'
             ? injectViaMacTerminal(targetPid, text, extraEnter).then(ok => {
-                if (!ok) throw new Error('Session not found in Terminal.app. Injection is only supported for sessions running in Terminal.app.');
+                if (!ok) {
+                  const app = detectTerminalApp(targetPid);
+                  const detail = app !== 'unknown' && app !== 'Terminal'
+                    ? `This session is running in ${app}, which doesn't support injection. Start it from Overlord's terminal instead.`
+                    : 'Session not found in Terminal.app. Start it from Overlord\'s terminal to enable injection.';
+                  throw new Error(detail);
+                }
               })
             : injectText(targetPid, text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))

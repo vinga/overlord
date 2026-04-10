@@ -51,13 +51,18 @@ export class PtyManager extends EventEmitter {
     });
     this.sessions.set(sessionId, ptyProcess);
     this.emit('pid-ready', sessionId, ptyProcess.pid);
-    ptyProcess.onData((data) => this.emit('output', sessionId, data));
+    let outputSnippet = '';
+    ptyProcess.onData((data) => {
+      if (outputSnippet.length < 500) outputSnippet += data;
+      this.emit('output', sessionId, data);
+    });
     ptyProcess.onExit(({ exitCode }) => {
       this.sessions.delete(sessionId);
       const aliveMs = Date.now() - spawnedAt;
       // If PTY died within 3s, likely a ConPTY AttachConsole race — retry
       if (aliveMs < 3000 && _retryCount < MAX_RETRIES) {
         console.warn(`[PtyManager] PTY ${sessionId.slice(0, 12)} exited after ${aliveMs}ms (code ${exitCode}), retrying (${_retryCount + 1}/${MAX_RETRIES})...`);
+        console.warn(`[PtyManager] output snippet: ${JSON.stringify(outputSnippet.slice(0, 200))}`);
         setTimeout(() => this.spawn(sessionId, cwd, cols, rows, args, _retryCount + 1), 500 * (_retryCount + 1));
         return;
       }
