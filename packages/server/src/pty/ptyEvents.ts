@@ -43,6 +43,12 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     const encoded = Buffer.from(data).toString('base64');
     ctx.broadcastRaw({ type: 'terminal:output', sessionId: effectiveId, data: encoded });
 
+    // Detect "Compacting conversation" in PTY output — set isCompacting immediately,
+    // before the compact_boundary event lands in the transcript.
+    if (data.includes('Compacting conversation')) {
+      ctx.stateManager.setCompacting(effectiveId);
+    }
+
     // On repaint, detect permission mode and update immediately
     if (isRepaint) {
       const text = data.replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')

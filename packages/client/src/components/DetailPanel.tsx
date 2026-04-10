@@ -1168,11 +1168,23 @@ export function DetailPanel({
         )}
         {selectedSession && (
           <>
-            {/* Color strip */}
-            <div
-              className={styles.colorStrip}
-              style={{ background: selectedSession.color }}
-            />
+            {/* Context progress strip */}
+            {selectedSession.inputTokens !== undefined ? (() => {
+              const contextWindow = 200_000;
+              const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
+              const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
+              const totalK = (contextWindow / 1000).toFixed(0);
+              const fillColor = pct >= 80 ? '#ef4444' : pct >= 50 ? '#f59e0b' : selectedSession.color;
+              const compactCount = selectedSession.compactCount ?? 0;
+              const tooltip = `Context: ${usedK}k / ${totalK}k · ${pct.toFixed(0)}%${compactCount > 0 ? ` · ${compactCount}× compacted` : ''}${selectedSession.isCompacting ? ' · compacting…' : ''}`;
+              return (
+                <div className={styles.contextStrip} title={tooltip}>
+                  <div className={styles.contextStripFill} style={{ width: `${pct}%`, background: fillColor }} />
+                </div>
+              );
+            })() : (
+              <div className={styles.colorStrip} style={{ background: selectedSession.color }} />
+            )}
 
             {/* Close button */}
             <button className={styles.closeButton} onClick={onClose} aria-label="Close panel">

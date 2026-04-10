@@ -939,6 +939,13 @@ export class StateManager {
     }
   }
 
+  setCompacting(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.isCompacting) return;
+    session.isCompacting = true;
+    this.onChange();
+  }
+
   setPermissionMode(sessionId: string, mode: string | undefined): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
