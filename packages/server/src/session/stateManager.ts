@@ -69,6 +69,7 @@ export class StateManager {
   private sessions: Map<string, Session> = new Map();
   private onChangeCallback: () => void;
   private onChangePending = false;
+  private broadcastSuppressed = false;
   private pendingResumes = new Map<string, { resumeSessionId: string; timestamp: number }>();
   private pendingPtySpawns: Map<string, number> = new Map(); // cwd → timestamp
   private acceptedSessions: Set<string> = new Set();
@@ -115,8 +116,19 @@ export class StateManager {
     this.onChangePending = true;
     setImmediate(() => {
       this.onChangePending = false;
+      if (this.broadcastSuppressed) return;
       this.onChangeCallback();
     });
+  }
+
+  /** Suppress snapshot broadcasts. Call resumeBroadcast() when done to fire one consolidated snapshot. */
+  suppressBroadcast(): void {
+    this.broadcastSuppressed = true;
+  }
+
+  resumeBroadcast(): void {
+    this.broadcastSuppressed = false;
+    this.onChange();
   }
 
   private loadAccepted(): void {

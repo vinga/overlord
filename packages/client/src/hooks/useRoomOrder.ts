@@ -1,8 +1,12 @@
-import { useState, useCallback } from 'react';
+import { useSyncExternalStore, useCallback } from 'react';
 
 const STORAGE_KEY = 'overlord:roomOrder';
 
 type RoomOrderMap = Record<string, string[]>;
+
+// Shared store — all useRoomOrder() instances see the same state
+let currentMap: RoomOrderMap = readStorage();
+const listeners = new Set<() => void>();
 
 function readStorage(): RoomOrderMap {
   try {
@@ -22,8 +26,29 @@ function writeStorage(map: RoomOrderMap): void {
   }
 }
 
+function notify(): void {
+  for (const fn of listeners) fn();
+}
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
+function getSnapshot(): RoomOrderMap {
+  return currentMap;
+}
+
+function updateMap(fn: (prev: RoomOrderMap) => RoomOrderMap): void {
+  const next = fn(currentMap);
+  if (next === currentMap) return;
+  currentMap = next;
+  writeStorage(next);
+  notify();
+}
+
 export function useRoomOrder() {
-  const [orderMap, setOrderMap] = useState<RoomOrderMap>(readStorage);
+  const orderMap = useSyncExternalStore(subscribe, getSnapshot);
 
   const getOrder = useCallback(
     (roomSlug: string): string[] => orderMap[roomSlug] ?? [],
@@ -31,16 +56,12 @@ export function useRoomOrder() {
   );
 
   const setOrder = useCallback((roomSlug: string, sessionIds: string[]) => {
-    setOrderMap((prev) => {
-      const next = { ...prev, [roomSlug]: sessionIds };
-      writeStorage(next);
-      return next;
-    });
+    updateMap(prev => ({ ...prev, [roomSlug]: sessionIds }));
   }, []);
 
   // Replace oldId with newId across all room order arrays (called on /clear)
   const migrateSession = useCallback((oldId: string, newId: string) => {
-    setOrderMap(prev => {
+    updateMap(prev => {
       let changed = false;
       const next: RoomOrderMap = {};
       for (const [slug, ids] of Object.entries(prev)) {
@@ -55,7 +76,6 @@ export function useRoomOrder() {
         }
       }
       if (!changed) return prev;
-      writeStorage(next);
       return next;
     });
   }, []);

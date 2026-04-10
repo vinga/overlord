@@ -107,9 +107,9 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         // The PID/CWD detection is skipped when linkedToPty=true, so we detect it here instead.
         const prevClaudeId = ctx.ptyToClaudeId.get(marker);
         if (prevClaudeId && prevClaudeId !== raw.sessionId) {
-          closeOrRemoveReplaced(ctx, prevClaudeId);
           ctx.stateManager.transferName(prevClaudeId, raw.sessionId);
           ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: prevClaudeId, newSessionId: raw.sessionId });
+          closeOrRemoveReplaced(ctx, prevClaudeId);
           log('clear:detected', 'Clear detected in embedded PTY session', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: prevClaudeId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
           ctx.claudeToPtyId.delete(prevClaudeId);
         }
@@ -229,10 +229,13 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
     if (ctx.isStartupComplete() && !linkedToPty && raw.pid && raw.pid > 0 && !ctx.pendingPtyByPid.has(raw.pid) && !hasActiveResumeInProgress(ctx)) {
       const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId);
       if (oldSession) {
-        closeOrRemoveReplaced(ctx, oldSession.sessionId);
+        // Suppress intermediate snapshots so client receives session:replaced before any snapshot
+        ctx.stateManager.suppressBroadcast();
         ctx.stateManager.transferName(oldSession.sessionId, raw.sessionId);
         migratePtyMaps(ctx, oldSession.sessionId, raw.sessionId, raw.pid);
         ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
+        closeOrRemoveReplaced(ctx, oldSession.sessionId);
+        ctx.stateManager.resumeBroadcast();
         const clearName1 = raw.proposedName ?? raw.sessionId.slice(0, 8);
         log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName1, extra: oldSession.sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
         replacedByPid = true;
@@ -250,17 +253,19 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
     if (raw.pid && raw.pid > 0) {
       const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId);
       if (oldSession && oldSession.sessionId !== raw.sessionId) {
-        // If the old session was an interim resume phantom (resumedFrom === new sessionId), remove entirely
+        // Suppress intermediate snapshots so client receives session:replaced before any snapshot
+        ctx.stateManager.suppressBroadcast();
+        ctx.stateManager.addOrUpdate(raw);
+        ctx.stateManager.transferName(oldSession.sessionId, raw.sessionId);
+        migratePtyMaps(ctx, oldSession.sessionId, raw.sessionId);
+        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
         if (oldSession.resumedFrom === raw.sessionId) {
           ctx.stateManager.remove(oldSession.sessionId);
         } else {
           closeOrRemoveReplaced(ctx, oldSession.sessionId);
         }
-        ctx.stateManager.addOrUpdate(raw);
-        ctx.stateManager.transferName(oldSession.sessionId, raw.sessionId);
-        migratePtyMaps(ctx, oldSession.sessionId, raw.sessionId);
-        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
-        return; // already called addOrUpdate above
+        ctx.stateManager.resumeBroadcast();
+        return;
       }
     }
     ctx.stateManager.addOrUpdate(raw);
@@ -273,9 +278,9 @@ export function registerSessionEventHandlers(sessionWatcher: SessionWatcher, ctx
         // If this PTY was already linked to a different session → /clear inside a Terminal tab
         const prevClaudeId = ctx.ptyToClaudeId.get(marker);
         if (prevClaudeId && prevClaudeId !== raw.sessionId) {
-          closeOrRemoveReplaced(ctx, prevClaudeId);
           ctx.stateManager.transferName(prevClaudeId, raw.sessionId);
           ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: prevClaudeId, newSessionId: raw.sessionId });
+          closeOrRemoveReplaced(ctx, prevClaudeId);
           log('clear:detected', 'Clear detected in embedded PTY session (changed)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: prevClaudeId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
           ctx.claudeToPtyId.delete(prevClaudeId);
         }

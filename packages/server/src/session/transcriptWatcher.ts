@@ -108,6 +108,8 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           if (clearSession) {
             const clearName = clearSession.proposedName ?? pending.sessionId.slice(0, 8);
             console.log(`[transcript:add] pending-clear replacement: ${pending.sessionId.slice(0, 8)} → ${newSessionId.slice(0, 8)}`);
+            // Suppress intermediate snapshots — client must receive session:replaced before any snapshot
+            ctx.stateManager.suppressBroadcast();
             ctx.stateManager.undelete(newSessionId);
             const existingNew = ctx.stateManager.getSession(newSessionId);
             if (existingNew && existingNew.pid === 0) ctx.stateManager.remove(newSessionId);
@@ -121,6 +123,7 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
             ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: pending.sessionId, newSessionId });
             // markDeleted (not just remove) so session watcher won't re-register old session from stale {pid}.json
             ctx.stateManager.markDeleted(pending.sessionId);
+            ctx.stateManager.resumeBroadcast();
             log('clear:detected', 'Live clear detected via UI Clear button', { sessionId: newSessionId, sessionName: clearName, extra: pending.sessionId.slice(0, 8) + ' → ' + newSessionId.slice(0, 8) });
             handleTranscriptFile(filePath);
             return;
@@ -180,11 +183,13 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
               const raw = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8')) as { pid: number; sessionId: string; cwd: string; startedAt: number };
               if (raw.sessionId !== sessionId && !ctx.stateManager.isDeleted(raw.sessionId)) {
                 const clearName = sess2.proposedName ?? sessionId.slice(0, 8);
-                closeOrRemoveReplaced(ctx.sessionCtx, sessionId);
+                ctx.stateManager.suppressBroadcast();
                 ctx.stateManager.addOrUpdate(raw);
                 ctx.stateManager.transferName(sessionId, raw.sessionId);
                 migratePtyMaps(ctx.sessionCtx, sessionId, raw.sessionId, sess2.pid);
                 ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: sessionId, newSessionId: raw.sessionId });
+                closeOrRemoveReplaced(ctx.sessionCtx, sessionId);
+                ctx.stateManager.resumeBroadcast();
                 log('clear:detected', 'Stale transcript clear detected', { sessionId: raw.sessionId, sessionName: clearName, extra: sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
               }
             }
