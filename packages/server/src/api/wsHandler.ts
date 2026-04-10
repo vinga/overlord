@@ -248,8 +248,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           }
           // Try bridge pipe first, fall back to macOS Terminal / ConPTY injection
           (stateManager.isBridge(sessionId)
-            ? injectViaPipe(sessionId, data).then(ok => { if (!ok) return process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true); })
-            : process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true)
+            ? injectViaPipe(sessionId, data).then(async (ok): Promise<void> => { if (!ok) await (process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true)); })
+            : process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true).then(() => {})
           ).catch((err: Error) => {
               sendToClient(ws, {
                 type: 'terminal:error',
@@ -316,12 +316,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // Try bridge pipe first, fall back to macOS Terminal.app injection, then ConPTY.
         // bridgeTextToSend already includes \r — one Enter, no delay needed.
         (isBridge
-          ? injectViaPipe(sessionId, bridgeTextToSend).then(ok => {
-              if (!ok) return process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter);
+          ? injectViaPipe(sessionId, bridgeTextToSend).then(async (ok): Promise<void> => {
+              if (!ok) await (process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter));
             })
           : process.platform === 'darwin'
             ? injectViaMac(targetPid, text, extraEnter)
-            : injectText(targetPid, text, extraEnter)
+            : injectText(targetPid, text, extraEnter).then(() => {})
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))
           .catch((err: Error) => {
           sendToClient(ws, {

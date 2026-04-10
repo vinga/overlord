@@ -30,6 +30,7 @@ export function XtermTerminal({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const [showResumePrompt, setShowResumePrompt] = useState(false);
+  const [bridgeDisconnected, setBridgeDisconnected] = useState(false);
   const isExitedRef = useRef(isExited);
   const onResumeRef = useRef(onResume);
 
@@ -83,14 +84,6 @@ export function XtermTerminal({
     // xterm.js grabs focus on open — prevent that from stealing OS focus
     term.blur();
 
-    // Fit after panel slide-in animation completes (200ms)
-    const fitTimer = setTimeout(() => {
-      if (fitAddon) {
-        fitAddon.fit();
-      }
-      onResize(term.cols, term.rows);
-    }, 250);
-
     termRef.current = term;
 
     // Forward keyboard input to server
@@ -105,12 +98,33 @@ export function XtermTerminal({
     // Register handler for incoming PTY output.
     // Pass cols/rows for bridge sessions so the server can resize the ConPTY to match.
     const hasContent = { current: false };
+    setBridgeDisconnected(false);
     const makeHandler = () => registerOutputHandler(sessionId, (data) => {
       hasContent.current = true;
+      setBridgeDisconnected(false);
       term.write(data);
     }, fixedSize?.cols ?? term.cols, fixedSize?.rows ?? term.rows);
 
-    let unregister = makeHandler();
+    // For bridge sessions (fixedSize): register immediately — size is known upfront.
+    // For PTY sessions: delay registration until after fitAddon.fit() so the terminal:replay
+    // request is sent with the correct cols/rows. Without this, replay sends 80×24 (xterm
+    // defaults), the server resizes the PTY to 80×24, Claude repaints at the wrong size,
+    // and the terminal shows a fragment until a second SIGWINCH at the correct size arrives.
+    let unregister: () => void = () => {};
+    if (fixedSize) {
+      unregister = makeHandler();
+    }
+
+    // Fit using rAF so layout is resolved (faster than 250ms timer, avoids wrong-size replay).
+    // For PTY sessions, also register the output handler here (after fit) with correct cols/rows.
+    let fitRaf = requestAnimationFrame(() => {
+      fitRaf = 0;
+      if (fitAddon) fitAddon.fit();
+      onResize(term.cols, term.rows);
+      if (!fixedSize) {
+        unregister = makeHandler();
+      }
+    });
 
     // If no content arrives within 1.5s, re-register to trigger another terminal:replay nudge.
     // This recovers from timing issues where the bridge nudge fires before the WS handler is ready.
@@ -120,6 +134,12 @@ export function XtermTerminal({
         unregister = makeHandler();
       }
     }, 1500);
+
+    // Only for fixed-size (bridge) terminals: if still no content after 8s, the bridge
+    // pipe is likely dead. Show a disconnected overlay instead of a blank black screen.
+    const disconnectTimer = fixedSize ? setTimeout(() => {
+      if (!hasContent.current) setBridgeDisconnected(true);
+    }, 8000) : null;
 
     // Observe container size changes and fit/resize (skip for fixed-size bridge terminals)
     let observer: ResizeObserver | null = null;
@@ -132,8 +152,9 @@ export function XtermTerminal({
     }
 
     return () => {
-      clearTimeout(fitTimer);
+      if (fitRaf) cancelAnimationFrame(fitRaf);
       clearTimeout(retryTimer);
+      if (disconnectTimer) clearTimeout(disconnectTimer);
       onDataDispose.dispose();
       unregister();
       observer?.disconnect();
@@ -172,6 +193,17 @@ export function XtermTerminal({
                 Dismiss
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {bridgeDisconnected && (
+        <div className={styles.resumeOverlay}>
+          <div className={styles.resumePrompt}>
+            <span className={styles.resumePromptText}>Bridge disconnected</span>
+            <span style={{ fontSize: 12, color: '#6e7681', textAlign: 'center' }}>
+              The IntelliJ bridge process is no longer running.<br />
+              Re-run the session from IntelliJ to reconnect.
+            </span>
           </div>
         </div>
       )}

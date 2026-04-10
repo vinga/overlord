@@ -9,7 +9,7 @@ interface UseOfficeDataOptions {
 interface UseOfficeDataResult {
   snapshot: OfficeSnapshot | null;
   connected: boolean;
-  sendMessage: (msg: object) => void;
+  sendMessage: (msg: object) => boolean;
 }
 
 export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void, options?: UseOfficeDataOptions): UseOfficeDataResult {
@@ -23,10 +23,12 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
   const onSessionReplacedRef = useRef(options?.onSessionReplaced);
   onSessionReplacedRef.current = options?.onSessionReplaced;
 
-  const sendMessage = useCallback((msg: object) => {
+  const sendMessage = useCallback((msg: object): boolean => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
+      return true;
     }
+    return false;
   }, []);
 
   useEffect(() => {

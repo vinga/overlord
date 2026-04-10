@@ -88,7 +88,7 @@ function UserMessageContent({ content, styles, expandedImages, onToggleImage }: 
 
 interface PtyHandlers {
   sendInput: (sessionId: string, data: string) => void;
-  injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
+  injectText: (sessionId: string, text: string, extraEnter?: boolean) => boolean;
   resizePty: (sessionId: string, cols: number, rows: number) => void;
   registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => (() => void);
   exitedSessions: Set<string>;
@@ -930,6 +930,8 @@ export function DetailPanel({
   const realCountAtFirstSend = useRef<number | null>(null);
   const [sendInput2, setSendInput2] = useState('');
   const draftPerSession = useRef<Map<string, string>>(new Map());
+  const localSentPerSession = useRef<Map<string, string[]>>(new Map());
+  const realCountPerSession = useRef<Map<string, number | null>>(new Map());
   const prevSessionIdRef = useRef<string | undefined>(undefined);
   const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
@@ -981,12 +983,21 @@ export function DetailPanel({
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
-    // Save current draft before switching
+    // Save current draft and pending messages before switching
     const prevId = prevSessionIdRef.current;
     if (prevId && sendInput2.trim()) {
       draftPerSession.current.set(prevId, sendInput2);
     } else if (prevId) {
       draftPerSession.current.delete(prevId);
+    }
+    if (prevId) {
+      if (localSent.length > 0) {
+        localSentPerSession.current.set(prevId, localSent);
+        realCountPerSession.current.set(prevId, realCountAtFirstSend.current);
+      } else {
+        localSentPerSession.current.delete(prevId);
+        realCountPerSession.current.delete(prevId);
+      }
     }
     prevSessionIdRef.current = selectedSession?.sessionId;
 
@@ -1001,21 +1012,19 @@ export function DetailPanel({
     });
     setIsEditing(false);
     setEditValue('');
-    setLocalSent([]);
+    // Restore pending messages for the new session (or clear if none)
+    const newId = selectedSession?.sessionId;
+    const savedPending = newId ? (localSentPerSession.current.get(newId) ?? []) : [];
+    setLocalSent(savedPending);
+    realCountAtFirstSend.current = newId ? (realCountPerSession.current.get(newId) ?? null) : null;
     // Restore draft for the new session
-    setSendInput2(selectedSession?.sessionId ? (draftPerSession.current.get(selectedSession.sessionId) ?? '') : '');
+    setSendInput2(newId ? (draftPerSession.current.get(newId) ?? '') : '');
     setConfirmDelete(false);
     setPastedImage(null);
     setKilling(false);
     setConfirmKill(false);
     setResuming(false);
-    // Auto-switch to Terminal tab for active PTY/bridge sessions
-    const sessionId = selectedSession?.sessionId;
-    if (sessionId && (isPtySession(sessionId) || isBridgeSession?.(sessionId))) {
-      setActiveTab('terminal');
-    } else {
-      setActiveTab('conversation');
-    }
+    setActiveTab('conversation');
     setSubagentActiveTab('conversation');
     return () => cancelAnimationFrame(raf);
   }, [selectedSession?.sessionId, selectedSubagentId]);
@@ -1050,8 +1059,8 @@ export function DetailPanel({
     // During compaction, preserve the draft — injection will be queued but may be swallowed
     if (selectedSession.isCompacting) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-    injectText(selectedSession.sessionId, full, true);
-    if (full) {
+    const sent = injectText(selectedSession.sessionId, full, true);
+    if (sent && full) {
       // Snapshot real user message count on first pending send
       if (realCountAtFirstSend.current === null) {
         const feed = selectedSession.activityFeed ?? [];
@@ -1080,12 +1089,17 @@ export function DetailPanel({
   // Clear stale pending messages after 30s (safety net — count-based clearing handles normal flow)
   useEffect(() => {
     if (localSent.length === 0) return;
+    const sessionId = selectedSession?.sessionId;
     const timer = setTimeout(() => {
       setLocalSent([]);
       realCountAtFirstSend.current = null;
-    }, 30_000);
+      if (sessionId) {
+        localSentPerSession.current.delete(sessionId);
+        realCountPerSession.current.delete(sessionId);
+      }
+    }, 60_000);
     return () => clearTimeout(timer);
-  }, [localSent]);
+  }, [localSent, selectedSession?.sessionId]);
 
   // State-transition-based clearing removed: it raced with the transcript update.
   // Content-based deduplication (below) handles the normal path seamlessly.
@@ -1103,9 +1117,14 @@ export function DetailPanel({
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
   const confirmed = currentUserCount > prevUserCount;
   if (confirmed && localSent.length > 0) {
+    const sessionId = selectedSession?.sessionId;
     queueMicrotask(() => {
       setLocalSent([]);
       realCountAtFirstSend.current = null;
+      if (sessionId) {
+        localSentPerSession.current.delete(sessionId);
+        realCountPerSession.current.delete(sessionId);
+      }
     });
   }
   const mergedFeed: ActivityItem[] = [

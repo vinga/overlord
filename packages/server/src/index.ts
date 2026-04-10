@@ -13,6 +13,7 @@ import { CodexSessionWatcher } from './session/codexSessionWatcher.js';
 import { ProcessChecker } from './session/processChecker.js';
 import { PtyManager } from './pty/ptyManager.js';
 import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
+import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
 import { initLogger, log, getBuffer } from './logger.js';
@@ -63,6 +64,11 @@ const PTY_BUFFER_MAX_CHUNKS = 500;
 // When a bridge session is replaced (e.g. /clear), maps old sessionId → new sessionId.
 // The existing output socket is closed over the old ID, so we reroute its output here.
 const bridgeIdOverrides = new Map<string, string>();
+
+// Track bridge sessions that have already been linked to the client at least once.
+// Subsequent terminal:linked broadcasts (from reconnects) use replay:true so the client
+// does not auto-select the session and steal OS focus.
+const linkedBridgeSessions = new Set<string>();
 
 // Rolling text buffer for bridge permission detection (last 8KB per session, plain text after ANSI strip)
 const bridgePermText = new Map<string, string>();
@@ -150,6 +156,7 @@ function migrateBridgeSession(oldId: string, newId: string): void {
   if (buf) { ptyOutputBuffer.set(newId, buf); ptyOutputBuffer.delete(oldId); }
   const pt = bridgePermText.get(oldId); if (pt) { bridgePermText.set(newId, pt); bridgePermText.delete(oldId); }
   const pm = bridgePermMode.get(oldId); if (pm) { bridgePermMode.set(newId, pm); bridgePermMode.delete(oldId); }
+  if (linkedBridgeSessions.has(oldId)) { linkedBridgeSessions.add(newId); linkedBridgeSessions.delete(oldId); }
   // Tell clients the bridge terminal is now under newId
   broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${newId}`, claudeSessionId: newId, replay: true });
   // Nudge the bridge so the fresh screen state flows into newId's buffer before xterm mounts
@@ -249,6 +256,14 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
 // Opens TWO connections: one for reading output, one for writing input.
 // This prevents output backpressure from blocking input delivery.
 function connectBridgePipe(sessionId: string, pipeName: string): void {
+  // Normalise legacy "overlord-brg-{x}" pipe names to "overlord-new-{x}".
+  // Normalize legacy pipe names (overlord-brg-{x} → overlord-new-{x})
+  const normalized = normalizePipeName(pipeName);
+  if (normalized !== pipeName) {
+    pipeName = normalized;
+    stateManager.setBridgePipe(sessionId, pipeName);
+  }
+
   // Guard against concurrent calls (async connect in progress) and already-connected sessions
   if (bridgeManager.isConnected(sessionId) || pendingBridgeConnect.has(sessionId)) return;
   pendingBridgeConnect.add(sessionId);
@@ -322,28 +337,37 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       // Without this, replay sends historical output + redraw = garbled display.
       ptyOutputBuffer.delete(sessionId);
       console.log(`[bridge] output socket connected for ${sessionId.slice(0, 8)}`);
-      broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId });
+      const isOutputReconnect = computeIsReconnect(linkedBridgeSessions, sessionId);
+      broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId, ...(isOutputReconnect ? { replay: true } : {}) });
       // The bridge auto-nudges at IntelliJ's terminal size (not Overlord's 120×30 xterm).
       // Tell clients to clear immediately, then send RSNUD after the wrong-size repaint
       // arrives so the ConPTY is resized before the next repaint.
       broadcastRaw({ type: 'terminal:clear', sessionId });
-      // Health check: if no output arrives within 10s after nudge, the bridge's
-      // ConPTY reader is dead (broken pipe). Clean up so the UI doesn't show a
-      // phantom terminal tab that never renders anything.
+      // Health check: only on the very first connection (not reconnects) — if no output
+      // arrives within 10s, the bridge's ConPTY reader is dead. On reconnects the bridge
+      // is known-alive, and an idle Claude session may legitimately produce no output.
       let receivedOutput = false;
-      const healthTimer = setTimeout(() => {
-        if (!receivedOutput) {
-          console.log(`[bridge] DEAD: no output from ${sessionId.slice(0, 8)} after 10s — bridge process likely exited`);
-          stateManager.setBridgePipe(sessionId, '');
-          bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
-          outputSocket.destroy();
-          bridgeManager.disconnect(sessionId);
-          // Do NOT markClosed here — processChecker owns session lifecycle based on PID.
-          // The bridge may be alive but Claude inside just hasn't rendered yet (slow startup).
-        }
-      }, 10_000);
-      healthTimer.unref();
-      outputSocket.once('data', () => { receivedOutput = true; clearTimeout(healthTimer); });
+      if (!isOutputReconnect) {
+        const healthTimer = setTimeout(() => {
+          if (!receivedOutput) {
+            console.log(`[bridge] DEAD: no output from ${sessionId.slice(0, 8)} after 10s — bridge process likely exited`);
+            stateManager.setBridgePipe(sessionId, '');
+            bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
+            // Only destroy the output socket — do NOT tear down the input socket via
+            // bridgeManager.disconnect(), which would also break injection for sessions
+            // that are alive but idle (e.g. Claude done, terminal showing a prompt).
+            outputSocket.destroy();
+            // Do NOT markClosed here — processChecker owns session lifecycle based on PID.
+          }
+        }, 10_000);
+        healthTimer.unref();
+      }
+      outputSocket.once('data', () => { receivedOutput = true; });
+      // Pin the pipe address to the one we just successfully connected to.
+      // Without this, RSNUD may use a stale/wrong address written by a parallel
+      // bridgeManager.connect() call, causing RSNUD to fail → health check fires →
+      // input socket gets torn down → injection silently fails.
+      bridgeManager.setPipeAddr(sessionId, pipeAddr);
       setTimeout(() => {
         const addr = bridgeManager.getPipeAddr(sessionId);
         console.log(`[bridge] RSNUD: sending 120x30 to ${sessionId.slice(0, 8)} via ${addr}`);
@@ -407,18 +431,17 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
   });
 
   outputSocket.on('close', () => {
+    let currentId = sessionId;
+    for (let i = 0; i < 10 && bridgeIdOverrides.has(currentId); i++) currentId = bridgeIdOverrides.get(currentId)!;
+    if (!stateManager.isBridge(currentId)) return; // session gone, stop retrying
     if (outputConnectFailed) {
-      console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}`);
+      // Pipe didn't exist yet (bridge not running) — retry after 3s in case it comes up.
+      console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}, will retry...`);
+      setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 3000);
     } else {
-      // Only reconnect if this session is still tracked (bridge window still alive).
-      // Do NOT call connectBridgePipe — that guard checks bridgeManager.isConnected()
-      // which reflects only the input socket, and would block this reconnect.
-      let currentId = sessionId;
-      for (let i = 0; i < 10 && bridgeIdOverrides.has(currentId); i++) currentId = bridgeIdOverrides.get(currentId)!;
-      if (stateManager.isBridge(currentId)) {
-        console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
-        setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 2000);
-      }
+      // Clean disconnect — reconnect quickly.
+      console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
+      setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 2000);
     }
   });
 }
@@ -443,20 +466,12 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
   }
 
   const pending = pendingBridgeByMarker.get(marker);
-
-  // Derive pipe name: Overlord-spawned sessions register a pending entry with the
-  // exact pipe name; manually-started bridges use the convention overlord-<marker>.
-  let pipeName: string;
-  if (pending) {
-    if (Date.now() - pending.timestamp > 30_000) {
-      pendingBridgeByMarker.delete(marker);
-      return;
-    }
-    pipeName = pending.pipeName;
+  const pipeName = resolvePipeName(marker, pending, Date.now());
+  if (!pipeName) {
     pendingBridgeByMarker.delete(marker);
-  } else {
-    pipeName = `overlord-${marker}`;
+    return;
   }
+  if (pending) pendingBridgeByMarker.delete(marker);
 
   console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (manual spawn)'}`);
   stateManager.setSessionType(sessionId, 'bridge');
@@ -635,8 +650,9 @@ wirePtyEvents({
 
 // Bridge pipe events → broadcast to clients (same flow as PTY output)
 bridgeManager.on('connected', (sessionId: string) => {
-  console.log(`[bridge] connected event for ${sessionId.slice(0, 8)}, broadcasting terminal:linked`);
-  broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId });
+  const isReconnect = computeIsReconnect(linkedBridgeSessions, sessionId);
+  console.log(`[bridge] connected event for ${sessionId.slice(0, 8)}, broadcasting terminal:linked${isReconnect ? ' (reconnect/replay)' : ''}`);
+  broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId, ...(isReconnect ? { replay: true } : {}) });
 });
 
 bridgeManager.on('output', (sessionId: string, data: Buffer) => {
@@ -743,6 +759,7 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     bridgeManager.disconnect(sessionId);
     stateManager.setBridgePipe(sessionId, '');
     bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
+    linkedBridgeSessions.delete(sessionId);
     console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }
 

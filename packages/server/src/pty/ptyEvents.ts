@@ -94,7 +94,14 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         if (pId === sessionId) { ctx.claudeToPtyId.delete(cId); break; }
       }
     }
-    // Clean up PTY output buffer
+    // Migrate output buffer from ptyId → claudeId so the last repaint stays
+    // accessible after the PTY mapping is cleaned up (terminal:replay for closed sessions).
+    if (claudeId) {
+      const buf = ctx.ptyOutputBuffer.get(sessionId);
+      if (buf && buf.length > 0) {
+        ctx.ptyOutputBuffer.set(claudeId, buf);
+      }
+    }
     ctx.ptyOutputBuffer.delete(sessionId);
     // Broadcast exit to all clients so any tab can update its state
     ctx.broadcastRaw({ type: 'terminal:exit', sessionId: effectiveId, code });

@@ -13,7 +13,7 @@ export interface UseTerminalResult {
   spawnSession: (cwd: string, cols?: number, rows?: number, name?: string) => void;
   resumeSession: (resumeSessionId: string, cwd: string, cols?: number, rows?: number) => void;
   sendInput: (sessionId: string, data: string) => void;
-  injectText: (sessionId: string, text: string, extraEnter?: boolean) => void;
+  injectText: (sessionId: string, text: string, extraEnter?: boolean) => boolean;
   resizePty: (sessionId: string, cols: number, rows: number) => void;
   registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => () => void;
   isPtySession: (sessionId: string) => boolean;
@@ -28,7 +28,7 @@ export interface UseTerminalResult {
 }
 
 export function useTerminal(
-  sendMessage: (msg: object) => void,
+  sendMessage: (msg: object) => boolean,
   onSpawned?: (sessionId: string) => void
 ): UseTerminalResult {
   const outputHandlers = useRef(new Map<string, (data: Uint8Array) => void>());
@@ -189,14 +189,22 @@ export function useTerminal(
   );
 
   const injectText = useCallback(
-    (sessionId: string, text: string, extraEnter = false) => {
+    (sessionId: string, text: string, extraEnter = false): boolean => {
       // Clear previous error for this session when sending
       setSessionErrors((prev) => {
         const next = new Map(prev);
         next.delete(sessionId);
         return next;
       });
-      sendMessage({ type: 'terminal:inject', sessionId, text, extraEnter });
+      const sent = sendMessage({ type: 'terminal:inject', sessionId, text, extraEnter });
+      if (!sent) {
+        setSessionErrors((prev) => {
+          const next = new Map(prev);
+          next.set(sessionId, 'Not connected – message not sent. Try again.');
+          return next;
+        });
+      }
+      return sent;
     },
     [sendMessage]
   );
