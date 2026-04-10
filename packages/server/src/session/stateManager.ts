@@ -755,7 +755,29 @@ export class StateManager {
       session.state = result.state;
       session.lastActivity = result.lastActivity;
       session.lastMessage = result.lastMessage;
-      session.activityFeed = result.activityFeed;
+      // Merge PTY-sourced compact items into the transcript feed.
+      // PTY items carry timing info ("2m 1s · ↑ 698 tokens") that compact_boundary lacks.
+      // Keep a PTY item if no transcript compact item is within 60 seconds of it.
+      let mergedFeed = result.activityFeed ?? [];
+      if (session.ptyCompactItems && session.ptyCompactItems.length > 0) {
+        const transcriptCompactTimes = mergedFeed
+          .filter(i => i.kind === 'compact' && i.timestamp)
+          .map(i => new Date(i.timestamp!).getTime());
+        const orphanPtyItems = session.ptyCompactItems.filter(ptyItem => {
+          if (!ptyItem.timestamp) return true;
+          const t = new Date(ptyItem.timestamp).getTime();
+          return !transcriptCompactTimes.some(tc => Math.abs(tc - t) < 60_000);
+        });
+        if (orphanPtyItems.length > 0) {
+          // Insert PTY compact items in chronological position
+          mergedFeed = [...mergedFeed, ...orphanPtyItems].sort((a, b) => {
+            const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+            const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+            return tb - ta; // newest first (feed uses unshift order)
+          });
+        }
+      }
+      session.activityFeed = mergedFeed.length > 0 ? mergedFeed : undefined;
       session.model = result.model;
       session.inputTokens = result.inputTokens;
       session.compactCount = result.compactCount;
@@ -965,6 +987,23 @@ export class StateManager {
   setCompacting(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.isCompacting) return;
+    session.isCompacting = true;
+    this.onChange();
+  }
+
+  addPtyCompact(sessionId: string, text: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const item: import('../types.js').ActivityItem = {
+      kind: 'compact',
+      content: text,
+      timestamp: new Date().toISOString(),
+    };
+    if (!session.ptyCompactItems) session.ptyCompactItems = [];
+    session.ptyCompactItems.push(item);
+    // Immediately prepend to activityFeed so it shows in Conversation Tab right away
+    if (!session.activityFeed) session.activityFeed = [];
+    session.activityFeed.unshift(item);
     session.isCompacting = true;
     this.onChange();
   }

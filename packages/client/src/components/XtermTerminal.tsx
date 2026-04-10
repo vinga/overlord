@@ -13,8 +13,8 @@ interface XtermTerminalProps {
   isExited?: boolean;
   onResume?: () => void;
   fillHeight?: boolean;
-  /** Fixed terminal size (disables auto-fit). Used for bridge sessions where ConPTY size is predetermined. */
-  fixedSize?: { cols: number; rows: number };
+  /** Whether this is a bridge session — used to show disconnect overlay if no content arrives. */
+  isBridge?: boolean;
 }
 
 export function XtermTerminal({
@@ -25,7 +25,7 @@ export function XtermTerminal({
   isExited,
   onResume,
   fillHeight,
-  fixedSize,
+  isBridge,
 }: XtermTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -45,7 +45,7 @@ export function XtermTerminal({
       theme: {
         background: '#0d1117',
         foreground: '#e6edf3',
-        cursor: fixedSize ? '#0d1117' : 'transparent',
+        cursor: 'transparent',
         cursorAccent: '#0d1117',
         selectionBackground: 'rgba(88, 166, 255, 0.25)',
         black: '#0d1117',
@@ -66,19 +66,18 @@ export function XtermTerminal({
         brightWhite: '#f0f6fc',
       },
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", "Consolas", monospace',
-      fontSize: fixedSize ? 11 : 13,
+      fontSize: 13,
       lineHeight: 1.4,
       cursorBlink: false,
       cursorStyle: 'block',
       scrollback: 5000,
       allowTransparency: false,
-      ...(fixedSize ? { cols: fixedSize.cols, rows: fixedSize.rows } : {}),
     });
 
-    const fitAddon = fixedSize ? null : new FitAddon();
+    const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
 
-    if (fitAddon) term.loadAddon(fitAddon);
+    term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
     // xterm.js grabs focus on open — prevent that from stealing OS focus
@@ -95,69 +94,67 @@ export function XtermTerminal({
       }
     });
 
-    // Register handler for incoming PTY output.
-    // Pass cols/rows for bridge sessions so the server can resize the ConPTY to match.
+    // Register handler for incoming PTY output immediately — even if the terminal
+    // tab isn't visible yet. Output accumulates in xterm's scrollback buffer so
+    // switching to the terminal tab shows the full history.
     const hasContent = { current: false };
     setBridgeDisconnected(false);
-    const makeHandler = () => registerOutputHandler(sessionId, (data) => {
+    let fitted = false;
+    const makeHandler = (cols?: number, rows?: number) => registerOutputHandler(sessionId, (data) => {
       hasContent.current = true;
       setBridgeDisconnected(false);
       term.write(data);
-    }, fixedSize?.cols ?? term.cols, fixedSize?.rows ?? term.rows);
+    }, cols ?? term.cols, rows ?? term.rows);
 
-    // For bridge sessions (fixedSize): register immediately — size is known upfront.
-    // For PTY sessions: delay registration until after fitAddon.fit() so the terminal:replay
-    // request is sent with the correct cols/rows. Without this, replay sends 80×24 (xterm
-    // defaults), the server resizes the PTY to 80×24, Claude repaints at the wrong size,
-    // and the terminal shows a fragment until a second SIGWINCH at the correct size arrives.
-    let unregister: () => void = () => {};
-    if (fixedSize) {
-      unregister = makeHandler();
-    }
+    // Register immediately with current (possibly 80×24) dimensions so output starts
+    // flowing into the scrollback. We'll re-register after fit to send the right size.
+    let unregister = makeHandler();
 
-    // Fit using rAF so layout is resolved (faster than 250ms timer, avoids wrong-size replay).
-    // For PTY sessions, also register the output handler here (after fit) with correct cols/rows.
-    let fitRaf = requestAnimationFrame(() => {
-      fitRaf = 0;
-      if (fitAddon) fitAddon.fit();
-      onResize(term.cols, term.rows);
-      if (!fixedSize) {
-        unregister = makeHandler();
+    // Fit once dimensions are positive (element visible). ResizeObserver handles both:
+    //   1. Initial case — container already visible on mount (terminal tab is active)
+    //   2. Tab-switch case — container goes display:none → flex, observer fires
+    const tryFit = () => {
+      const el = containerRef.current;
+      if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
+      fitAddon.fit();
+      if (!fitted) {
+        // First fit: re-register with correct dimensions so terminal:replay uses real size
+        fitted = true;
+        unregister();
+        unregister = makeHandler(term.cols, term.rows);
+      } else {
+        onResize(term.cols, term.rows);
       }
-    });
+    };
 
-    // If no content arrives within 1.5s, re-register to trigger another terminal:replay nudge.
-    // This recovers from timing issues where the bridge nudge fires before the WS handler is ready.
+    // Also try immediately in case the container is already visible
+    requestAnimationFrame(tryFit);
+
+    // If no content arrives within 800ms, re-register to trigger another terminal:replay nudge.
     const retryTimer = setTimeout(() => {
       if (!hasContent.current) {
         unregister();
-        unregister = makeHandler();
+        unregister = makeHandler(fitted ? term.cols : undefined, fitted ? term.rows : undefined);
       }
-    }, 1500);
+    }, 800);
 
-    // Only for fixed-size (bridge) terminals: if still no content after 8s, the bridge
-    // pipe is likely dead. Show a disconnected overlay instead of a blank black screen.
-    const disconnectTimer = fixedSize ? setTimeout(() => {
+    // For bridge sessions: if still no content after 8s, show disconnected overlay.
+    const disconnectTimer = isBridge ? setTimeout(() => {
       if (!hasContent.current) setBridgeDisconnected(true);
     }, 8000) : null;
 
-    // Observe container size changes and fit/resize (skip for fixed-size bridge terminals)
-    let observer: ResizeObserver | null = null;
-    if (fitAddon) {
-      observer = new ResizeObserver(() => {
-        fitAddon.fit();
-        onResize(term.cols, term.rows);
-      });
-      observer.observe(containerRef.current);
-    }
+    // Observe container size changes — handles tab-switch visibility changes and resizes
+    const observer = new ResizeObserver(() => {
+      tryFit();
+    });
+    observer.observe(containerRef.current);
 
     return () => {
-      if (fitRaf) cancelAnimationFrame(fitRaf);
       clearTimeout(retryTimer);
       if (disconnectTimer) clearTimeout(disconnectTimer);
       onDataDispose.dispose();
       unregister();
-      observer?.disconnect();
+      observer.disconnect();
       term.dispose();
       termRef.current = null;
     };

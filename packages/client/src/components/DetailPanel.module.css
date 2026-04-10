@@ -194,6 +194,10 @@
   z-index: 1;
 }
 
+.panelHeaderHidden {
+  display: none;
+}
+
 .headerWithAvatar {
   display: flex;
   align-items: flex-start;

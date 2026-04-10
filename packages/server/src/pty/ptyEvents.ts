@@ -46,7 +46,17 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // Detect "Compacting conversation" in PTY output — set isCompacting immediately,
     // before the compact_boundary event lands in the transcript.
     if (data.includes('Compacting conversation')) {
-      ctx.stateManager.setCompacting(effectiveId);
+      // Strip ANSI escape codes to get clean text
+      const cleanText = data
+        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+        .replace(/\x1b[^[\]]/g, '')
+        .replace(/\x1b/g, '')
+        .replace(/[^\x20-\x7e\n\t\r]/g, '');
+      // Extract the compacting line (may include timing like "Compacting conversation… (2m 1s · ↑ 698 tokens)")
+      const match = cleanText.match(/Compacting conversation[^\n]*/);
+      const compactLine = match ? match[0].trim() : 'Compacting conversation…';
+      ctx.stateManager.addPtyCompact(effectiveId, compactLine);
     }
 
     // On repaint, detect permission mode and update immediately

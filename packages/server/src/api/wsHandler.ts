@@ -26,6 +26,10 @@ export interface WsHandlerContext {
   bridgeInjectQueue: Map<string, Array<{ text: string; resolve: () => void }>>;
 }
 
+function stripInternalMarkers(name: string): string {
+  return name.replace(/___(?:BRG|OVR):[A-Za-z0-9_-]*/g, '').replace(/[-_\s]+$/, '').trim();
+}
+
 export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContext): void {
   const {
     stateManager,
@@ -172,7 +176,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const cwd = String(msg.cwd ?? process.cwd());
         const session = stateManager.getSession(sessionId);
-        const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
+        const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
         console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
         stateManager.setSessionType(sessionId, 'plain');
         const safeName = sessionName.replace(/"/g, '');
@@ -189,7 +193,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const cwd = String(msg.cwd ?? process.cwd());
         const session = stateManager.getSession(sessionId);
-        const sessionName = session?.proposedName ?? sessionId.slice(0, 8);
+        const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
         const marker = sessionId.slice(0, 8);
         const safeName = sessionName.replace(/["\s]/g, '-');
         const bridgePath = getBridgePath();
@@ -337,7 +341,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
-        ptyManager.resize(claudeToPtyId.get(sessionId) ?? sessionId, cols, rows);
+        if (stateManager.isBridge(sessionId)) {
+          void resizeAndNudgeBridgePipe(sessionId, cols, rows);
+        } else {
+          ptyManager.resize(claudeToPtyId.get(sessionId) ?? sessionId, cols, rows);
+        }
         return;
       }
 
@@ -345,15 +353,20 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // Client requests replay of buffered output (e.g. after terminal remount on view switch)
         const sessionId = String(msg.sessionId ?? '');
 
-        // Bridge sessions: stale buffer contains incremental frames that cause artifacts.
-        // Clear the buffer, tell the client to reset xterm, then nudge the bridge for a
-        // fresh full-screen repaint which flows through the live OUTPT channel.
+        // Bridge sessions: send buffered output first for immediate display (buffer is
+        // trimmed to start at the last full repaint frame via \x1b[?2026h detection, so
+        // replaying it is safe). Then nudge the bridge for a fresh repaint.
+        // This matches the non-bridge PTY flow (send buffer + SIGWINCH) and avoids the
+        // blank-screen gap that occurred when we cleared first and waited for the nudge.
         if (stateManager.isBridge(sessionId)) {
-          ptyOutputBuffer.set(sessionId, []);
-          sendToClient(ws, { type: 'terminal:clear', sessionId });
           const cols = Number(msg.cols || 0);
           const rows = Number(msg.rows || 0);
-          console.log(`[terminal:replay] bridge nudge for ${sessionId.slice(0, 8)} cols=${cols} rows=${rows}`);
+          const buf = ptyOutputBuffer.get(sessionId);
+          if (buf && buf.length > 0) {
+            const encoded = Buffer.concat(buf).toString('base64');
+            sendToClient(ws, { type: 'terminal:output', sessionId, data: encoded });
+          }
+          console.log(`[terminal:replay] bridge nudge for ${sessionId.slice(0, 8)} cols=${cols} rows=${rows} bufChunks=${buf?.length ?? 0}`);
           if (cols > 0 && rows > 0) {
             void resizeAndNudgeBridgePipe(sessionId, cols, rows).then(ok => {
               console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ${sessionId.slice(0, 8)}`);

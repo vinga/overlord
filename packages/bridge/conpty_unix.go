@@ -3,6 +3,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"sync"
 
@@ -14,8 +15,13 @@ import (
 func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
 	cmd := exec.Command(args[0], args[1:]...)
 
-	// Initial size matches the Overlord bridge default (120×30)
-	initialSize := &pty.Winsize{Cols: 120, Rows: 30}
+	// Inherit the parent terminal's window size so the bridge PTY starts at the
+	// same dimensions as the terminal it was launched from (Terminal.app, IntelliJ, etc.).
+	// Fall back to a comfortable default if stdin is not a TTY.
+	initialSize := &pty.Winsize{Cols: 220, Rows: 50}
+	if ws, err := unix.IoctlGetWinsize(int(os.Stdin.Fd()), unix.TIOCGWINSZ); err == nil && ws.Col > 0 && ws.Row > 0 {
+		initialSize = &pty.Winsize{Cols: ws.Col, Rows: ws.Row}
+	}
 	ptmx, err := pty.StartWithSize(cmd, initialSize)
 	if err != nil {
 		return nil, nil, 0, nil, nil, nil, err

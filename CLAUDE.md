@@ -352,3 +352,7 @@ When source code is added, update this file with:
 - Build, test, and lint commands
 - Architecture overview
 - Key entry points and component relationships
+
+
+### Communication
+Use short sentences only (3-6 words). No filler/preamble. Tool first, result first, no explain unless asked.

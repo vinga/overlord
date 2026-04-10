@@ -140,6 +140,22 @@ On Windows, `node-pty` spawns processes through ConPTY, which creates a wrapper 
 
 **Cleanup:** Stale `pendingPtyByResumeId` entries cleaned up every 60s and on PTY exit. Name marker linking has no cleanup needed — it's stateless (checks `ptyManager.has()` at match time).
 
+### "Compacting conversation" never visible in Conversation Tab (FIXED)
+
+**Root cause:** Two separate sources exist for compaction state:
+1. **PTY output** — Claude prints `Compacting conversation… (2m 1s · ↑ 698 tokens)` to the terminal. This is the only source with timing and token-delta info. `ptyEvents.ts` detected this string and called `setCompacting()`, which only set the `isCompacting` flag — it did NOT add an activity feed item.
+2. **Transcript `compact_boundary` event** — `transcriptReader.ts` creates a `kind: 'compact'` `ActivityItem` when it finds `compact_boundary` in the `.jsonl`. This has `preTokens` but NOT timing.
+
+For bridge sessions (attached terminals), the transcript may not be linked quickly enough, so the `compact_boundary` item may never appear. Even when it does appear, it lacks the timing info the user sees in the terminal.
+
+**Fix (implemented):**
+- `ptyEvents.ts`: when "Compacting conversation" is detected, ANSI codes are stripped, the line (including the parenthesized timing) is extracted and passed to `stateManager.addPtyCompact(sessionId, text)`
+- `stateManager.addPtyCompact()`: creates an `ActivityItem { kind: 'compact', content: text, timestamp }`, stores it in `session.ptyCompactItems`, immediately prepends it to `session.activityFeed`, and sets `isCompacting = true`
+- `stateManager.refreshTranscript()`: after rebuilding `activityFeed` from transcript, merges any `ptyCompactItems` whose timestamp has no matching transcript compact within 60 seconds
+- `DetailPanel.tsx`: compact divider renderer now extracts the parenthesized metadata from `content` (e.g. `2m 1s · ↑ 698 tokens`) when `compactMeta` is absent, showing `✦ Compacted · 2m 1s · ↑ 698 tokens`
+
+**Key files:** `packages/server/src/pty/ptyEvents.ts:48`, `packages/server/src/session/stateManager.ts` (`addPtyCompact`, `refreshTranscript`), `packages/client/src/components/DetailPanel.tsx` (compact segment renderer)
+
 ### Interim phantom from `claude --resume` (FIXED)
 When `claude --resume <targetId>` starts, it first creates a session file (`{pid}.json`) with a TEMPORARY UUID, then rewrites it to the target session ID. The session watcher catches both states: `added` (temp UUID) then `changed` (real UUID). Without mitigation, the temp UUID creates a phantom session visible in the UI for a brief moment, which also gets persisted to `known-sessions.json`.
 

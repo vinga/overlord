@@ -640,10 +640,14 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
         if (seg.type === 'compact') {
           const meta = seg.item.compactMeta;
           const tokens = meta?.preTokens ? meta.preTokens.toLocaleString() : null;
+          // For PTY-sourced items, extract the parenthesized info from content (e.g. "2m 1s · ↑ 698 tokens")
+          const ptyMeta = !meta && seg.item.content
+            ? seg.item.content.match(/\(([^)]+)\)/)?.[1] ?? null
+            : null;
           return (
             <div key={segIdx} className={styles.compactDivider}>
               <span className={styles.compactDividerLabel}>
-                ✦ Compacted{meta?.trigger === 'manual' ? ' (manual)' : ''}{tokens ? ` · ${tokens} tokens` : ''}
+                ✦ Compacted{meta?.trigger === 'manual' ? ' (manual)' : ''}{tokens ? ` · ${tokens} tokens` : ''}{ptyMeta ? ` · ${ptyMeta}` : ''}
               </span>
             </div>
           );
@@ -693,7 +697,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const isRaw = rawSegments.has(segIdx);
           return (
             <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
-              {seg.item.pending && <span className={isPty ? styles.pendingBadge : styles.pendingBadgeConsole}>{isPty ? 'queued' : 'injecting'}</span>}
+              {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
               <div className={styles.transcriptBubble}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
                   <>
@@ -1012,11 +1016,19 @@ export function DetailPanel({
     });
     setIsEditing(false);
     setEditValue('');
-    // Restore pending messages for the new session (or clear if none)
+    // Restore pending messages for the new session (or clear if none).
+    // Check if messages were already confirmed while we were away — if so, discard them.
     const newId = selectedSession?.sessionId;
     const savedPending = newId ? (localSentPerSession.current.get(newId) ?? []) : [];
-    setLocalSent(savedPending);
-    realCountAtFirstSend.current = newId ? (realCountPerSession.current.get(newId) ?? null) : null;
+    const savedRealCount = newId ? (realCountPerSession.current.get(newId) ?? null) : null;
+    const currentCount = (selectedSession?.activityFeed ?? []).filter(i => i.role === 'user').length;
+    const alreadyConfirmed = savedPending.length > 0 && savedRealCount !== null && currentCount > savedRealCount;
+    if (alreadyConfirmed && newId) {
+      localSentPerSession.current.delete(newId);
+      realCountPerSession.current.delete(newId);
+    }
+    setLocalSent(alreadyConfirmed ? [] : savedPending);
+    realCountAtFirstSend.current = alreadyConfirmed ? null : savedRealCount;
     // Restore draft for the new session
     setSendInput2(newId ? (draftPerSession.current.get(newId) ?? '') : '');
     setConfirmDelete(false);
@@ -1116,17 +1128,20 @@ export function DetailPanel({
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
   const confirmed = currentUserCount > prevUserCount;
-  if (confirmed && localSent.length > 0) {
+
+  // Clear pending messages via useEffect (not queueMicrotask during render) to avoid
+  // a race where the session-switch effect saves stale localSent before the microtask fires.
+  useEffect(() => {
+    if (!confirmed || localSent.length === 0) return;
     const sessionId = selectedSession?.sessionId;
-    queueMicrotask(() => {
-      setLocalSent([]);
-      realCountAtFirstSend.current = null;
-      if (sessionId) {
-        localSentPerSession.current.delete(sessionId);
-        realCountPerSession.current.delete(sessionId);
-      }
-    });
-  }
+    setLocalSent([]);
+    realCountAtFirstSend.current = null;
+    if (sessionId) {
+      localSentPerSession.current.delete(sessionId);
+      realCountPerSession.current.delete(sessionId);
+    }
+  }, [confirmed, localSent.length, selectedSession?.sessionId]);
+
   const mergedFeed: ActivityItem[] = [
     ...realFeed,
     ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
@@ -1709,40 +1724,42 @@ export function DetailPanel({
                   </>
                 )}
 
-                {/* Tab: Terminal */}
-                {activeTab === 'terminal' && (isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(selectedSession.sessionId)) && (
-                  (isPty || isBridgeSession?.(selectedSession.sessionId)) ? (
-                    <div className={styles.terminalContent}>
-                      <XtermTerminal
-                        sessionId={selectedSession.sessionId}
-                        onInput={(data) => sendInput(selectedSession.sessionId, data)}
-                        onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
-                        registerOutputHandler={registerOutputHandler}
-                        isExited={isExited && !isPty}
-                        onResume={
-                          onResumeSession
-                            ? () => onResumeSession(selectedSession.sessionId, selectedSession.cwd)
-                            : undefined
-                        }
-                        fillHeight
-                        fixedSize={isBridgeSession?.(selectedSession.sessionId) ? { cols: 120, rows: 30 } : undefined}
-                      />
-                    </div>
-                  ) : (
-                    <div className={styles.terminalEndedNotice}>
-                      <span className={styles.terminalEndedIcon}>⊘</span>
-                      <span>PTY session has ended</span>
-                      <span className={styles.terminalEndedHint}>This session was launched from Overlord but the terminal connection is no longer active.</span>
-                      {onResumeSession && (
-                        <button
-                          className={styles.reattachBtn}
-                          onClick={() => onResumeSession(selectedSession.sessionId, selectedSession.cwd)}
-                        >
-                          Resume in new PTY
-                        </button>
-                      )}
-                    </div>
-                  )
+                {/* Tab: Terminal — always mounted when live to preserve scrollback buffer */}
+                {(isPty || isBridgeSession?.(selectedSession.sessionId)) && (
+                  <div
+                    className={styles.terminalContent}
+                    style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }}
+                  >
+                    <XtermTerminal
+                      sessionId={selectedSession.sessionId}
+                      onInput={(data) => sendInput(selectedSession.sessionId, data)}
+                      onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
+                      registerOutputHandler={registerOutputHandler}
+                      isExited={isExited && !isPty}
+                      onResume={
+                        onResumeSession
+                          ? () => onResumeSession(selectedSession.sessionId, selectedSession.cwd)
+                          : undefined
+                      }
+                      fillHeight
+                      isBridge={isBridgeSession?.(selectedSession.sessionId)}
+                    />
+                  </div>
+                )}
+                {activeTab === 'terminal' && !isPty && !isBridgeSession?.(selectedSession.sessionId) && selectedSession.sessionType === 'embedded' && (
+                  <div className={styles.terminalEndedNotice}>
+                    <span className={styles.terminalEndedIcon}>⊘</span>
+                    <span>PTY session has ended</span>
+                    <span className={styles.terminalEndedHint}>This session was launched from Overlord but the terminal connection is no longer active.</span>
+                    {onResumeSession && (
+                      <button
+                        className={styles.reattachBtn}
+                        onClick={() => onResumeSession(selectedSession.sessionId, selectedSession.cwd)}
+                      >
+                        Resume in new PTY
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {/* Tab: Details */}

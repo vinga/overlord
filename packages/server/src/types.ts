@@ -57,6 +57,7 @@ export interface Session {
   lastActivity: string;
   lastMessage?: string;
   activityFeed?: ActivityItem[];
+  ptyCompactItems?: ActivityItem[];  // compact items sourced from PTY output, merged into activityFeed
   model?: string;
   inputTokens?: number;
   compactCount?: number;

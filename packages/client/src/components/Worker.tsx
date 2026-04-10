@@ -26,9 +26,10 @@ interface WaitingIndicatorProps {
   userAccepted?: boolean;
   needsPermission?: boolean;
   styles: Record<string, string>;
+  onWaitingClick?: (e: React.MouseEvent) => void;
 }
 
-function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermission, styles }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermission, styles, onWaitingClick }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
   if (userAccepted) {
     return <span className={styles.bubbleDone}>done</span>;
@@ -37,7 +38,15 @@ function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermi
     return <span className={styles.bubbleDonePending}>review</span>;
   }
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
-  return <span className={styles.bubble}>waiting</span>;
+  return (
+    <span
+      className={styles.bubble}
+      onClick={onWaitingClick}
+      style={onWaitingClick ? { cursor: 'pointer' } : undefined}
+    >
+      waiting
+    </span>
+  );
 }
 
 function lightenHsl(color: string, amount: number): string {
@@ -58,6 +67,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(label);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [showDoneMenu, setShowDoneMenu] = useState(false);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -73,6 +85,34 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
     }
     setIsEditing(false);
   }, [editValue, label, onRename]);
+
+  useEffect(() => {
+    if (!showDoneMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowDoneMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showDoneMenu]);
+
+  const handleWaitingBubbleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setMenuPos({ x: rect.left + rect.width / 2, y: rect.bottom + 6 });
+    setShowDoneMenu(true);
+  }, []);
+
+  const handleMarkDone = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowDoneMenu(false);
+    await fetch(`/api/sessions/${sessionId}/inject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'done\r' }),
+    });
+  }, [sessionId]);
 
   const handleLabelDoubleClick = useCallback((e: React.MouseEvent) => {
     if (!onRename || isSubagent) return;
@@ -117,6 +157,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
               userAccepted={userAccepted}
               needsPermission={needsPermission}
               styles={styles}
+              onWaitingClick={!isSubagent && !userAccepted && !needsPermission && completionHint !== 'done' ? handleWaitingBubbleClick : undefined}
             />
           )}
         </div>
@@ -178,6 +219,18 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       )}
       {!minimal && completionSummaries && completionSummaries.length > 0 && completionHint === 'done' && !isSubagent && (
         <span className={styles.completionSummary}>{completionSummaries[completionSummaries.length - 1].summary}</span>
+      )}
+      {showDoneMenu && (
+        <div
+          ref={menuRef}
+          className={styles.doneMenu}
+          style={{ position: 'fixed', left: menuPos.x, top: menuPos.y, transform: 'translateX(-50%)' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button className={styles.doneMenuItem} onClick={handleMarkDone}>
+            ✓ Set to Done
+          </button>
+        </div>
       )}
     </div>
   );

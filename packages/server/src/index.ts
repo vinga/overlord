@@ -12,7 +12,7 @@ import { SessionWatcher } from './session/sessionWatcher.js';
 import { CodexSessionWatcher } from './session/codexSessionWatcher.js';
 import { ProcessChecker } from './session/processChecker.js';
 import { PtyManager } from './pty/ptyManager.js';
-import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
+import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
 import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
@@ -160,7 +160,7 @@ function migrateBridgeSession(oldId: string, newId: string): void {
   // Tell clients the bridge terminal is now under newId
   broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${newId}`, claudeSessionId: newId, replay: true });
   // Nudge the bridge so the fresh screen state flows into newId's buffer before xterm mounts
-  setTimeout(() => void resizeAndNudgeBridgePipe(newId, 120, 30), 300);
+  setTimeout(() => void nudgeBridgePipe(newId), 300);
 }
 
 // Pending bridge connections for new sessions (marker → temp pipe name)
@@ -211,8 +211,18 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       }
       // Escape double-quotes for embedding inside an AppleScript string literal
       const safeForAS = bashCmd.replace(/"/g, '\\"');
-      const script = `tell application "Terminal" to do script "${safeForAS}"`;
-      console.log('[open-terminal] osascript:', script);
+      // Open window, set it to a comfortable size (220×50), and bring Terminal to front
+      const script = [
+        'tell application "Terminal"',
+        `  set w to do script "${safeForAS}"`,
+        '  tell window 1',
+        '    set number of columns to 160',
+        '    set number of rows to 50',
+        '  end tell',
+        '  activate',
+        'end tell',
+      ].join('\n');
+      console.log('[open-terminal] osascript:', script.split('\n')[0]);
       child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
     } else {
       // Windows: use cmd.exe start command
@@ -332,49 +342,18 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
   // Send "OUTPT\n" handshake so bridge adds this socket to the broadcast list
   const outputSocket = net.connect(pipeAddr, () => {
     outputSocket.write('OUTPT\n', () => {
-      // Clear stale buffer — nudgeRedraw on the bridge side will immediately
-      // produce a fresh full-screen repaint that fills the buffer from scratch.
-      // Without this, replay sends historical output + redraw = garbled display.
+      // Clear stale buffer — the bridge auto-nudges (SIGWINCH) when OUTPT connects,
+      // producing a fresh full-screen repaint that fills the buffer from scratch.
       ptyOutputBuffer.delete(sessionId);
       console.log(`[bridge] output socket connected for ${sessionId.slice(0, 8)}`);
       const isOutputReconnect = computeIsReconnect(linkedBridgeSessions, sessionId);
       broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId, ...(isOutputReconnect ? { replay: true } : {}) });
-      // The bridge auto-nudges at IntelliJ's terminal size (not Overlord's 120×30 xterm).
-      // Tell clients to clear immediately, then send RSNUD after the wrong-size repaint
-      // arrives so the ConPTY is resized before the next repaint.
-      broadcastRaw({ type: 'terminal:clear', sessionId });
-      // Health check: only on the very first connection (not reconnects) — if no output
-      // arrives within 10s, the bridge's ConPTY reader is dead. On reconnects the bridge
-      // is known-alive, and an idle Claude session may legitimately produce no output.
-      let receivedOutput = false;
-      if (!isOutputReconnect) {
-        const healthTimer = setTimeout(() => {
-          if (!receivedOutput) {
-            console.log(`[bridge] DEAD: no output from ${sessionId.slice(0, 8)} after 10s — bridge process likely exited`);
-            stateManager.setBridgePipe(sessionId, '');
-            bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
-            // Only destroy the output socket — do NOT tear down the input socket via
-            // bridgeManager.disconnect(), which would also break injection for sessions
-            // that are alive but idle (e.g. Claude done, terminal showing a prompt).
-            outputSocket.destroy();
-            // Do NOT markClosed here — processChecker owns session lifecycle based on PID.
-          }
-        }, 10_000);
-        healthTimer.unref();
-      }
-      outputSocket.once('data', () => { receivedOutput = true; });
+      // No server-side health check: idle sessions (blank prompt after /clear, waiting for input)
+      // legitimately produce no output for long periods. Dead bridges are handled by:
+      //   1. XtermTerminal client-side overlay (8s timeout with no content)
+      //   2. processChecker — marks session closed when PID dies
       // Pin the pipe address to the one we just successfully connected to.
-      // Without this, RSNUD may use a stale/wrong address written by a parallel
-      // bridgeManager.connect() call, causing RSNUD to fail → health check fires →
-      // input socket gets torn down → injection silently fails.
       bridgeManager.setPipeAddr(sessionId, pipeAddr);
-      setTimeout(() => {
-        const addr = bridgeManager.getPipeAddr(sessionId);
-        console.log(`[bridge] RSNUD: sending 120x30 to ${sessionId.slice(0, 8)} via ${addr}`);
-        void resizeAndNudgeBridgePipe(sessionId, 120, 30).then(ok => {
-          console.log(`[bridge] RSNUD result: ${ok ? 'ok' : 'failed'} for ${sessionId.slice(0, 8)}`);
-        });
-      }, 400);
     });
   });
 
