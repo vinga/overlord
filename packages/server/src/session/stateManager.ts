@@ -1112,6 +1112,7 @@ export class StateManager {
       rooms,
       updatedAt: new Date().toISOString(),
       bridgePath: this.bridgePath,
+      platform: process.platform,
     };
   }
 

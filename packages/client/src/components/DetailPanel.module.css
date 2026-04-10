@@ -1778,6 +1778,29 @@
   position: relative;
 }
 
+.sendAreaDisabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.ideInjectNotice {
+  padding: 7px 14px;
+  font-size: 11px;
+  color: #888;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  text-align: center;
+}
+
+.ideInjectNotice code {
+  font-family: 'SF Mono', 'Fira Mono', monospace;
+  font-size: 10.5px;
+  color: #aaa;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
 .sendTextareaClosed {
   border-color: rgba(255, 123, 114, 0.45) !important;
   box-shadow: 0 0 0 1px rgba(255, 123, 114, 0.1), inset 0 0 12px rgba(255, 123, 114, 0.03);

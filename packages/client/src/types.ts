@@ -91,6 +91,7 @@ interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
   bridgePath?: string;
+  platform: string;  // 'darwin' | 'win32' | 'linux'
 }
 
 // Terminal message types (server → client)

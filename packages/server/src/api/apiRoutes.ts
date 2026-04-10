@@ -9,7 +9,7 @@ import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager } from '../pty/pipeInjector.js';
-import { injectViaMacTerminal, detectTerminalApp } from '../pty/macInjector.js';
+import { injectViaMac } from '../pty/macInjector.js';
 import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { log } from '../logger.js';
@@ -110,16 +110,8 @@ export function registerApiRoutes(
           if (injected) console.log(`[approve] pipe inject done session=${sessionId}`);
         }
         if (!injected && process.platform === 'darwin') {
-          injected = await injectViaMacTerminal(session.pid, text, false);
-          if (injected) {
-            console.log(`[approve] mac terminal inject done pid=${session.pid}`);
-          } else {
-            const app = detectTerminalApp(session.pid);
-            const detail = app !== 'unknown' && app !== 'Terminal'
-              ? `This session is running in ${app}, which doesn't support injection. Start it from Overlord's terminal instead.`
-              : "Session not found in Terminal.app. Start it from Overlord's terminal to enable injection.";
-            throw new Error(detail);
-          }
+          injected = await injectViaMac(session.pid, text, false);
+          if (injected) console.log(`[approve] mac inject done pid=${session.pid}`);
         }
         if (!injected && process.platform !== 'darwin') {
           await injectText(session.pid, text, false, raw === true);
@@ -146,6 +138,8 @@ export function registerApiRoutes(
         // Inject Shift+Tab to cycle the mode
         if (stateManager.isBridge(sessionId)) {
           await injectViaPipe(sessionId, '\x1b[Z');
+        } else if (process.platform === 'darwin') {
+          await injectViaMac(session.pid, '\x1b[Z', false);
         } else {
           await injectText(session.pid, '\x1b[Z', false, true);
         }

@@ -21,7 +21,8 @@ const __dirname = dirname(__filename);
 
 export function getBridgePath(): string {
   const ext = process.platform === 'win32' ? '.exe' : '';
-  return path.join(__dirname, '..', '..', '..', 'bridge', `overlord-bridge${ext}`);
+  // __dirname = packages/server/src/pty → ../../../../ = project root
+  return path.join(__dirname, '..', '..', '..', '..', 'bridge', `overlord-bridge${ext}`);
 }
 
 export function getPipeName(sessionId: string): string {

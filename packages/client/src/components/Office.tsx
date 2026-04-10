@@ -26,6 +26,7 @@ interface OfficeProps {
   onCloneSession?: (sessionId: string) => void;
   isPtySession?: (sessionId: string) => boolean;
   onOpenDirectoryPicker?: () => void;
+  platform?: string;
 }
 
 function formatUpdatedAt(updatedAt: string): string {
@@ -37,7 +38,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
 
@@ -130,6 +131,7 @@ export const Office = React.memo(function Office({ snapshot, connected, onSelect
                   onRenameSession={onRenameSession}
                   onCloneSession={onCloneSession}
                   isPtySession={isPtySession}
+                  platform={platform}
                   onRoomDragStart={e => handleDragStart(e, room.id)}
                   onRoomDragEnd={handleDragEnd}
                 />

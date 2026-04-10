@@ -67,6 +67,7 @@ interface RoomProps {
   terminalSpawnCwd?: string | null;
   onTerminalSpawnCommit?: (name: string | null) => void;
   isPtySession?: (sessionId: string) => boolean;
+  platform?: string;
   onRoomDragStart?: (e: React.DragEvent) => void;
   onRoomDragEnd?: () => void;
 }
@@ -186,7 +187,7 @@ function DeskMenu({ onDelete, onRename, onClone, onClear, currentName }: { onDel
   );
 }
 
-function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onSpawnEmbedded: () => void; onSpawnTerminal?: (mode?: TerminalSpawnMode) => void }) {
+function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' }: { cwd: string; onSpawnEmbedded: () => void; onSpawnTerminal?: (mode?: TerminalSpawnMode) => void; platform?: string }) {
   const [open, setOpen] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
 
@@ -235,13 +236,13 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onS
               onClick={() => { setOpen(false); onSpawnTerminal('bridge'); }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >New Terminal (bridge)</button>
+            >{platform === 'win32' ? 'New Terminal (bridge)' : 'New Terminal.app (bridge)'}</button>
             <button
               style={itemStyle}
               onClick={() => { setOpen(false); onSpawnTerminal('plain'); }}
               onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >New Terminal (direct)</button>
+            >{platform === 'win32' ? 'New Terminal (direct)' : 'New Terminal.app (direct)'}</button>
           </>)}
         </div>
       )}
@@ -249,7 +250,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onS
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -427,6 +428,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
               cwd={room.cwd}
               onSpawnEmbedded={() => onSpawnSession?.(room.cwd)}
               onSpawnTerminal={onNewTerminalSession ? (mode?: TerminalSpawnMode) => { setTerminalMode(mode || 'bridge'); onNewTerminalSession(room.cwd, mode); } : undefined}
+              platform={platform}
             />
             {(isSpawning || isTerminalSpawning) && (
               <div className={styles.spawnPopup}>

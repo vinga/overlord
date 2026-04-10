@@ -296,6 +296,7 @@ export function App() {
         onCloneSession={handleCloneSession}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
+        platform={snapshot?.platform ?? 'darwin'}
         onOpenDirectoryPicker={() => {
           const usedNames = new Set([
             ...Object.values(customNames),
@@ -358,6 +359,7 @@ export function App() {
         onSelectSession={(s) => handleSelectSession(s)}
         customNames={displayNames}
         bridgePath={snapshot?.bridgePath}
+        platform={snapshot?.platform ?? 'darwin'}
       />}
       {selectedRoom && (
         <TaskListPanel

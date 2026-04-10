@@ -102,4 +102,5 @@ export interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
   bridgePath?: string;
+  platform: string;  // process.platform: 'darwin' | 'win32' | 'linux'
 }

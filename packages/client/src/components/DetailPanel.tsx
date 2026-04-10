@@ -124,6 +124,7 @@ interface DetailPanelProps {
   panelWidth: number;
   onPanelWidthChange?: (width: number) => void;
   bridgePath?: string;
+  platform?: string;
 }
 
 function isFilePath(s: string): boolean {
@@ -862,6 +863,7 @@ export function DetailPanel({
   panelWidth,
   onPanelWidthChange,
   bridgePath,
+  platform = 'darwin',
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onMarkDone, onAcceptSession, onAcceptTask } = actions;
@@ -1553,7 +1555,16 @@ export function DetailPanel({
                           )}
                         </>
                       )}
-                      <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''}`}>
+                      {selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' && (
+                        <div className={styles.ideInjectNotice}>
+                          <span>
+                            Injection unavailable — run{' '}
+                            <code>{platform === 'win32' ? 'overlord-bridge.exe -- claude' : 'overlord-bridge -- claude'}</code>
+                            {' '}in your IDE terminal to enable sending.
+                          </span>
+                        </div>
+                      )}
+                      <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''} ${selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' ? styles.sendAreaDisabled : ''}`}>
                         {sessionError && (
                           <div className={styles.sendError}>{sessionError}</div>
                         )}
@@ -1590,8 +1601,10 @@ export function DetailPanel({
                           <textarea
                             className={`${styles.sendTextarea} ${selectedSession.state === 'closed' ? styles.sendTextareaClosed : ''}`}
                             value={sendInput2}
+                            disabled={!!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
                             onChange={e => setSendInput2(e.target.value)}
                             onKeyDown={e => {
+                              if (selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded') { e.preventDefault(); return; }
                               if (selectedSession.state === 'closed') {
                                 e.preventDefault();
                                 if (onResumeSession) setShowConvoResumePrompt(true);

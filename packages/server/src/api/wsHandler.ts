@@ -4,7 +4,7 @@ import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath } from '../pty/pipeInjector.js';
-import { injectViaMacTerminal, detectTerminalApp } from '../pty/macInjector.js';
+import { injectViaMac } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 
 export interface WsHandlerContext {
@@ -246,10 +246,10 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             });
             return;
           }
-          // Try bridge pipe first, fall back to ConPTY injection
+          // Try bridge pipe first, fall back to macOS Terminal / ConPTY injection
           (stateManager.isBridge(sessionId)
-            ? injectViaPipe(sessionId, data).then(ok => { if (!ok) return injectText(pid, data, false, true); })
-            : injectText(pid, data, false, true)
+            ? injectViaPipe(sessionId, data).then(ok => { if (!ok) return process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true); })
+            : process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true)
           ).catch((err: Error) => {
               sendToClient(ws, {
                 type: 'terminal:error',
@@ -317,18 +317,10 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // bridgeTextToSend already includes \r — one Enter, no delay needed.
         (isBridge
           ? injectViaPipe(sessionId, bridgeTextToSend).then(ok => {
-              if (!ok) return injectText(targetPid, text, extraEnter);
+              if (!ok) return process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter);
             })
           : process.platform === 'darwin'
-            ? injectViaMacTerminal(targetPid, text, extraEnter).then(ok => {
-                if (!ok) {
-                  const app = detectTerminalApp(targetPid);
-                  const detail = app !== 'unknown' && app !== 'Terminal'
-                    ? `This session is running in ${app}, which doesn't support injection. Start it from Overlord's terminal instead.`
-                    : 'Session not found in Terminal.app. Start it from Overlord\'s terminal to enable injection.';
-                  throw new Error(detail);
-                }
-              })
+            ? injectViaMac(targetPid, text, extraEnter)
             : injectText(targetPid, text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))
           .catch((err: Error) => {

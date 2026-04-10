@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "concurrently -n server,client -c cyan,magenta \"npm run dev --workspace=packages/server\" \"npm run dev --workspace=packages/client\"",
     "build": "npm run build --workspace=packages/server && npm run build --workspace=packages/client",
+    "build:bridge": "cd bridge && go build -o overlord-bridge .",
     "install:all": "npm install"
   },
   "devDependencies": {
