@@ -32,6 +32,30 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+.dragHandle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 24px;
+  margin-right: 2px;
+  color: rgba(255, 255, 255, 0.18);
+  cursor: grab;
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  user-select: none;
+}
+
+.dragHandle:hover {
+  color: rgba(212, 175, 55, 0.6);
+  background: rgba(212, 175, 55, 0.06);
+}
+
+.dragHandle:active {
+  cursor: grabbing;
+}
+
 .collapseBtn {
   background: none;
   border: none;

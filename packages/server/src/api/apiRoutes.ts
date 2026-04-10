@@ -9,6 +9,7 @@ import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager } from '../pty/pipeInjector.js';
+import { injectViaMacTerminal } from '../pty/macInjector.js';
 import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { log } from '../logger.js';
@@ -102,11 +103,15 @@ export function registerApiRoutes(
         if (sess) stateManager.markPendingClearReplacement(sessionId, sess.cwd);
       }
       try {
-        // Try bridge pipe first, fall back to ConPTY injection
+        // Try bridge pipe first, then macOS Terminal.app, then ConPTY injection
         let injected = false;
         if (stateManager.isBridge(sessionId)) {
           injected = await injectViaPipe(sessionId, text);
           if (injected) console.log(`[approve] pipe inject done session=${sessionId}`);
+        }
+        if (!injected && process.platform === 'darwin') {
+          injected = await injectViaMacTerminal(session.pid, text, false);
+          if (injected) console.log(`[approve] mac terminal inject done pid=${session.pid}`);
         }
         if (!injected) {
           await injectText(session.pid, text, false, raw === true);

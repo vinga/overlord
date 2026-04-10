@@ -1,7 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import type { OfficeSnapshot, Session } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
+import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
 import styles from './Office.module.css';
 
 interface OfficeProps {
@@ -38,13 +39,53 @@ function formatUpdatedAt(updatedAt: string): string {
 
 export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
+  const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
 
-  const visibleRooms = useMemo(() =>
-    rooms.filter(room => room.sessions.length > 0),
-    [rooms]
-  );
+  const visibleRooms = useMemo(() => {
+    const filtered = rooms.filter(room => room.sessions.length > 0);
+    return sortRooms(filtered);
+  }, [rooms, sortRooms]);
+
+  // Register any room IDs not yet in persisted order (side-effect free from render)
+  useEffect(() => {
+    registerRooms(visibleRooms.map(r => r.id));
+  }, [visibleRooms, registerRooms]);
 
   const hasRooms = visibleRooms.length > 0;
+
+  // Drag-and-drop state
+  const draggedId = useRef<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  const handleDragStart = useCallback((e: React.DragEvent, roomId: string) => {
+    draggedId.current = roomId;
+    e.dataTransfer.effectAllowed = 'move';
+    // Use the room wrapper as the drag image so the user sees the full card
+    const wrapper = (e.currentTarget as HTMLElement).closest('[data-room-id]') as HTMLElement | null;
+    if (wrapper) e.dataTransfer.setDragImage(wrapper, 20, 20);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, roomId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedId.current && roomId !== draggedId.current) {
+      setDragOverId(roomId);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (draggedId.current && draggedId.current !== targetId) {
+      moveRoom(draggedId.current, targetId);
+    }
+    draggedId.current = null;
+    setDragOverId(null);
+  }, [moveRoom]);
+
+  const handleDragEnd = useCallback(() => {
+    draggedId.current = null;
+    setDragOverId(null);
+  }, []);
 
   return (
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
@@ -65,25 +106,34 @@ export const Office = React.memo(function Office({ snapshot, connected, onSelect
         ) : (
           <div className={styles.grid}>
             {visibleRooms.map((room) => (
-              <Room
+              <div
                 key={room.id}
-                room={room}
-                onSelectSession={onSelectSession}
-                customNames={customNames}
-                onSpawnSession={onSpawnSession}
-                onNewTerminalSession={onNewTerminalSession}
-                selectedSessionId={selectedSessionId}
-                onRoomClick={onRoomClick}
-                isSpawning={spawnCwd === room.cwd}
-                onSpawnNameChange={onSpawnNameChange}
-                onSpawnCommit={onSpawnCommit}
-                terminalSpawnCwd={terminalSpawnCwd}
-                onTerminalSpawnCommit={onTerminalSpawnCommit}
-                onDeleteSession={onDeleteSession}
-                onRenameSession={onRenameSession}
-                onCloneSession={onCloneSession}
-                isPtySession={isPtySession}
-              />
+                data-room-id={room.id}
+                className={`${styles.roomWrapper} ${dragOverId === room.id ? styles.dragOver : ''}`}
+                onDragOver={e => handleDragOver(e, room.id)}
+                onDrop={e => handleDrop(e, room.id)}
+              >
+                <Room
+                  room={room}
+                  onSelectSession={onSelectSession}
+                  customNames={customNames}
+                  onSpawnSession={onSpawnSession}
+                  onNewTerminalSession={onNewTerminalSession}
+                  selectedSessionId={selectedSessionId}
+                  onRoomClick={onRoomClick}
+                  isSpawning={spawnCwd === room.cwd}
+                  onSpawnNameChange={onSpawnNameChange}
+                  onSpawnCommit={onSpawnCommit}
+                  terminalSpawnCwd={terminalSpawnCwd}
+                  onTerminalSpawnCommit={onTerminalSpawnCommit}
+                  onDeleteSession={onDeleteSession}
+                  onRenameSession={onRenameSession}
+                  onCloneSession={onCloneSession}
+                  isPtySession={isPtySession}
+                  onRoomDragStart={e => handleDragStart(e, room.id)}
+                  onRoomDragEnd={handleDragEnd}
+                />
+              </div>
             ))}
           </div>
         )}

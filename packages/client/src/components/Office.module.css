@@ -50,6 +50,15 @@
   align-items: start;
 }
 
+.roomWrapper {
+  border-radius: 12px;
+  transition: box-shadow 0.15s;
+}
+
+.roomWrapper.dragOver {
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.55), 0 0 18px rgba(212, 175, 55, 0.15);
+}
+
 .empty {
   position: absolute;
   top: 50%;

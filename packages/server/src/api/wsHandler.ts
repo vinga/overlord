@@ -4,6 +4,7 @@ import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath } from '../pty/pipeInjector.js';
+import { injectViaMacTerminal } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 
 export interface WsHandlerContext {
@@ -312,13 +313,17 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
-        // Try bridge pipe first, fall back to ConPTY injection.
+        // Try bridge pipe first, fall back to macOS Terminal.app injection, then ConPTY.
         // bridgeTextToSend already includes \r — one Enter, no delay needed.
         (isBridge
           ? injectViaPipe(sessionId, bridgeTextToSend).then(ok => {
               if (!ok) return injectText(targetPid, text, extraEnter);
             })
-          : injectText(targetPid, text, extraEnter)
+          : process.platform === 'darwin'
+            ? injectViaMacTerminal(targetPid, text, extraEnter).then(ok => {
+                if (!ok) throw new Error('Session not found in Terminal.app. Injection is only supported for sessions running in Terminal.app.');
+              })
+            : injectText(targetPid, text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))
           .catch((err: Error) => {
           sendToClient(ws, {

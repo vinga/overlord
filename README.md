@@ -21,7 +21,7 @@ Real-time visualization of your active [Claude Code](https://claude.ai/code) ses
 npm install
 
 # Start both server and client
-npm run dev
+npm run dev[CLAUDE.md](../../.claude/CLAUDE.md)
 ```
 
 - **Client:** http://localhost:5173

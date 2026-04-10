@@ -169,14 +169,13 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
     const windowTitle = (title ?? 'Claude').replace(/"/g, '');
     const bridgePath = getBridgePath();
     const bridgeExists = useBridge && fs.existsSync(bridgePath);
+    let pipeName: string | undefined;
 
-    let fullCmd: string;
+    // Platform-independent bridge setup: configure pipe name and session state
     if (bridgeExists) {
-      // Use bridge for reliable named-pipe injection
-      const pipeName = sessionId
+      pipeName = sessionId
         ? getPipeName(sessionId)
         : `overlord-new-${Date.now().toString(36)}`;
-      const safeBridge = bridgePath.replace(/\//g, '\\');
 
       if (sessionId) {
         stateManager.setSessionType(sessionId, 'bridge');
@@ -188,24 +187,49 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
         pendingBridgeByMarker.set(bridgeMarker, { pipeName, timestamp: Date.now() });
         command = command.replace(/--name "([^"]*)"/, `--name "$1___BRG:${bridgeMarker}"`);
       }
-
-      // Run bridge directly (no cmd.exe /K) so it owns the console from row 0.
-      fullCmd = `start "${windowTitle}" /D "${cwd}" ${safeBridge} --pipe ${pipeName} -- ${command}`;
-      console.log(`[open-terminal] using bridge, pipe=${pipeName}`);
-    } else {
-      // Direct spawn — run command in a new terminal window.
-      // If command starts with a quoted exe path, use start directly (no cmd.exe /K wrapper)
-      // to avoid nested quote parsing issues. Otherwise wrap in cmd.exe /K.
-      if (command.startsWith('"')) {
-        fullCmd = `start "${windowTitle}" /D "${cwd}" ${command}`;
-      } else {
-        fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K ${command}`;
-      }
-      console.log('[open-terminal] direct spawn');
     }
 
-    console.log('[open-terminal] running:', fullCmd);
-    const child = spawn(fullCmd, [], { shell: true, stdio: 'ignore' });
+    let child: ReturnType<typeof spawn>;
+
+    if (process.platform === 'darwin') {
+      // macOS: build a bash command and run it in Terminal.app via osascript
+      const safeCwd = cwd.replace(/"/g, '\\"');
+      let bashCmd: string;
+      if (bridgeExists && pipeName) {
+        bashCmd = `cd "${safeCwd}" && "${bridgePath}" --pipe "${pipeName}" -- ${command}`;
+        console.log(`[open-terminal] macOS bridge, pipe=${pipeName}`);
+      } else {
+        bashCmd = `cd "${safeCwd}" && ${command}`;
+        console.log('[open-terminal] macOS direct');
+      }
+      // Escape double-quotes for embedding inside an AppleScript string literal
+      const safeForAS = bashCmd.replace(/"/g, '\\"');
+      const script = `tell application "Terminal" to do script "${safeForAS}"`;
+      console.log('[open-terminal] osascript:', script);
+      child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
+    } else {
+      // Windows: use cmd.exe start command
+      const safeBridge = bridgePath.replace(/\//g, '\\');
+      let fullCmd: string;
+      if (bridgeExists && pipeName) {
+        // Run bridge directly (no cmd.exe /K) so it owns the console from row 0.
+        fullCmd = `start "${windowTitle}" /D "${cwd}" ${safeBridge} --pipe ${pipeName} -- ${command}`;
+        console.log(`[open-terminal] using bridge, pipe=${pipeName}`);
+      } else {
+        // Direct spawn — run command in a new terminal window.
+        // If command starts with a quoted exe path, use start directly (no cmd.exe /K wrapper)
+        // to avoid nested quote parsing issues. Otherwise wrap in cmd.exe /K.
+        if (command.startsWith('"')) {
+          fullCmd = `start "${windowTitle}" /D "${cwd}" ${command}`;
+        } else {
+          fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K ${command}`;
+        }
+        console.log('[open-terminal] direct spawn');
+      }
+      console.log('[open-terminal] running:', fullCmd);
+      child = spawn(fullCmd, [], { shell: true, stdio: 'ignore' });
+    }
+
     child.on('error', (err) => {
       console.log('[open-terminal] error:', err.message);
       reject(err);
@@ -215,7 +239,7 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
         console.log('[open-terminal] success');
         resolve();
       } else {
-        reject(new Error(`start exited with code ${code}`));
+        reject(new Error(`terminal open exited with code ${code}`));
       }
     });
   });

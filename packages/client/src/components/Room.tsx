@@ -67,6 +67,8 @@ interface RoomProps {
   terminalSpawnCwd?: string | null;
   onTerminalSpawnCommit?: (name: string | null) => void;
   isPtySession?: (sessionId: string) => boolean;
+  onRoomDragStart?: (e: React.DragEvent) => void;
+  onRoomDragEnd?: () => void;
 }
 
 function DeskMenu({ onDelete, onRename, onClone, onClear, currentName }: { onDelete: () => void; onRename?: (name: string) => void; onClone?: () => void; onClear?: () => void; currentName?: string }) {
@@ -247,7 +249,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal }: { cwd: string; onS
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -370,6 +372,21 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
   return (
     <div className={`${styles.room} ${collapsed ? styles.roomCollapsed : ''}`}>
       <div className={styles.titleBar}>
+        {onRoomDragStart && (
+          <div
+            className={styles.dragHandle}
+            draggable
+            onDragStart={onRoomDragStart}
+            onDragEnd={onRoomDragEnd}
+            title="Drag to reorder room"
+          >
+            <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+              <circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/>
+              <circle cx="3" cy="7" r="1.2"/><circle cx="7" cy="7" r="1.2"/>
+              <circle cx="3" cy="11.5" r="1.2"/><circle cx="7" cy="11.5" r="1.2"/>
+            </svg>
+          </div>
+        )}
         <button
           className={styles.collapseBtn}
           onClick={() => toggle(room.id)}

@@ -9,10 +9,12 @@ let claudeBinCache: string | null = null;
 
 function resolveClaude(): string {
   if (claudeBinCache) return claudeBinCache;
+  const whichCmd = process.platform === 'win32' ? 'where claude' : 'which claude';
   try {
-    claudeBinCache = execSync('where claude', { encoding: 'utf8' }).trim().split('\n')[0].trim();
+    claudeBinCache = execSync(whichCmd, { encoding: 'utf8' }).trim().split('\n')[0].trim();
   } catch {
-    claudeBinCache = os.homedir() + '/.local/bin/claude.exe';
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    claudeBinCache = os.homedir() + `/.local/bin/claude${ext}`;
   }
   return claudeBinCache;
 }

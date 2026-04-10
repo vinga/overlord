@@ -86,6 +86,9 @@ function ensureDaemon(): Promise<void> {
 // ── Public API: Injection (high priority, goes directly to daemon) ───────────
 
 export async function injectText(pid: number, text: string, extraEnter = false, raw = false): Promise<void> {
+  if (process.platform !== 'win32') {
+    throw new Error('Text injection via ConPTY is only supported on Windows. Use the macOS Terminal.app injector instead.');
+  }
   await ensureDaemon();
 
   return new Promise<void>((resolve, reject) => {
