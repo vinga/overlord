@@ -27,6 +27,7 @@ export function App() {
     return m ? m[1] : undefined;
   });
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string } | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => {
     const m = window.location.hash.match(/^#room\/(.+)/);
     return m ? m[1] : null;
@@ -166,10 +167,11 @@ export function App() {
       ? (snapshot?.rooms.find(r => r.id === selectedRoomId) ?? null)
       : null;
 
-  function handleSelectSession(session: Session, subagentId?: string) {
+  function handleSelectSession(session: Session, subagentId?: string, timestamp?: string) {
     setSelectedSessionId(session.sessionId);
     setSelectedSubagentId(subagentId);
     setSelectedRoomId(null);
+    setScrollTarget(timestamp ? { sessionId: session.sessionId, timestamp } : null);
   }
 
   function handleRoomClick(roomId: string) {
@@ -336,12 +338,14 @@ export function App() {
         customNames={displayNames}
         bridgePath={snapshot?.bridgePath}
         platform={snapshot?.platform ?? 'darwin'}
+        scrollTarget={scrollTarget && scrollTarget.sessionId === selectedSession?.sessionId ? scrollTarget.timestamp : undefined}
+        onScrollTargetConsumed={() => setScrollTarget(null)}
       />}
       {selectedRoom && (
         <TaskListPanel
           room={selectedRoom}
           customNames={displayNames}
-          onSelectSession={handleSelectSession}
+          onSelectSession={(s, timestamp) => handleSelectSession(s, undefined, timestamp)}
           onClose={handleRoomDetailClose}
           panelWidth={panelWidth}
           onPanelWidthChange={(w) => {

@@ -126,6 +126,9 @@ interface DetailPanelProps {
   onPanelWidthChange?: (width: number) => void;
   bridgePath?: string;
   platform?: string;
+  /** Timestamp of an ActivityItem to scroll to (from search) */
+  scrollTarget?: string;
+  onScrollTargetConsumed?: () => void;
 }
 
 function isFilePath(s: string): boolean {
@@ -720,7 +723,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             ? seg.item.content.match(/\(([^)]+)\)/)?.[1] ?? null
             : null;
           return (
-            <div key={segIdx} className={styles.compactDivider}>
+            <div key={segIdx} className={styles.compactDivider} data-ts={seg.item.timestamp}>
               <span className={styles.compactDividerLabel}>
                 ✦ Compacted{meta?.trigger === 'manual' ? ' (manual)' : ''}{tokens ? ` · ${tokens} tokens` : ''}{ptyMeta ? ` · ${ptyMeta}` : ''}
               </span>
@@ -731,13 +734,13 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const isExpanded = expandedThinking.has(segIdx);
           if (seg.item.isRedacted) {
             return (
-              <div key={segIdx} className={styles.thinkingBlock}>
+              <div key={segIdx} className={styles.thinkingBlock} data-ts={seg.item.timestamp}>
                 <span className={styles.thinkingRedacted}>🔒 Thinking redacted</span>
               </div>
             );
           }
           return (
-            <div key={segIdx} className={styles.thinkingBlock}>
+            <div key={segIdx} className={styles.thinkingBlock} data-ts={seg.item.timestamp}>
               <button
                 className={styles.thinkingToggle}
                 onClick={() => setExpandedThinking(prev => {
@@ -771,7 +774,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           }
           const isRaw = rawSegments.has(segIdx);
           return (
-            <div key={segIdx} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
+            <div key={segIdx} data-ts={seg.item.timestamp} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
               {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
               <div className={styles.transcriptBubble}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
@@ -849,7 +852,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             return next;
           }) : undefined;
           return (
-            <React.Fragment key={segIdx}>
+            <div key={segIdx} data-ts={tool.timestamp} style={{ display: 'contents' }}>
               <ToolEntry
                 tool={tool}
                 diffKey={diffKey}
@@ -883,7 +886,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                   )}
                 </div>
               )}
-            </React.Fragment>
+            </div>
           );
         }
         // Multi-tool group — collapsible, expanded only if in the set
@@ -899,7 +902,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
         const groupTotalMs = seg.items.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
         const hasGroupDuration = seg.items.some(t => t.durationMs !== undefined);
         return (
-          <div key={segIdx} className={styles.toolGroup}>
+          <div key={segIdx} className={styles.toolGroup} data-ts={seg.items[0]?.timestamp}>
             <button
               className={styles.toolGroupHeader}
               onClick={() => {
@@ -1030,6 +1033,8 @@ export function DetailPanel({
   onPanelWidthChange,
   bridgePath,
   platform = 'darwin',
+  scrollTarget,
+  onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession, onAcceptTask } = actions;
@@ -1146,6 +1151,54 @@ const currentDisplayName =
       });
     });
   }, [localSent.length]);
+
+  // Clear extraFeed when session changes
+  useEffect(() => {
+    setExtraFeed([]);
+  }, [selectedSession?.sessionId]);
+
+  // When scrollTarget is set: switch to conversation tab, fetch older messages if needed, then scroll
+  useEffect(() => {
+    if (!scrollTarget || !selectedSession) return;
+
+    // Switch to conversation tab so the feed is visible
+    setActiveTab('conversation');
+
+    const feed = selectedSession.activityFeed ?? [];
+    const targetIdx = feed.findIndex(item => item.timestamp === scrollTarget);
+    const isNearTop = targetIdx >= 0 && targetIdx < 10;
+
+    // Load earlier messages if target is near the top of the trimmed feed
+    if (isNearTop && feed.length > 0 && feed[0].timestamp) {
+      const firstTs = feed[0].timestamp;
+      fetch(`/api/sessions/${selectedSession.sessionId}/activity-before?timestamp=${encodeURIComponent(firstTs)}&limit=50`)
+        .then(r => r.json())
+        .then((data: { items?: ActivityItem[] }) => {
+          if (data.items && data.items.length > 0) setExtraFeed(data.items);
+        })
+        .catch(() => { /* ignore */ });
+    }
+
+    // Scroll after a short delay to allow render
+    const tid = setTimeout(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const container = transcriptRef.current;
+          if (!container) return;
+          const el = container.querySelector<HTMLElement>(`[data-ts="${CSS.escape(scrollTarget)}"]`);
+          if (el) {
+            isAtBottomRef.current = false;
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('searchHighlight');
+            setTimeout(() => el.classList.remove('searchHighlight'), 2000);
+          }
+          onScrollTargetConsumed?.();
+        });
+      });
+    }, 80);
+    return () => clearTimeout(tid);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollTarget]);
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
@@ -1286,6 +1339,9 @@ const currentDisplayName =
   // Build merged activityFeed: real feed + optimistic locally-sent messages.
   // Count-based: show all pending until the real feed has more user messages than when we sent.
   // This avoids content-matching false positives (duplicate messages, long transcripts, etc.).
+  // Extra feed items loaded from server when scrollTarget is near the top of the trimmed feed
+  const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
+
   const realFeed = selectedSession?.activityFeed ?? [];
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
@@ -1305,6 +1361,7 @@ const currentDisplayName =
   }, [confirmed, localSent.length, selectedSession?.sessionId]);
 
   const mergedFeed: ActivityItem[] = [
+    ...extraFeed,
     ...realFeed,
     ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
   ];

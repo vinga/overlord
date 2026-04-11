@@ -10,7 +10,7 @@ import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { injectViaMac } from '../pty/macInjector.js';
-import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
+import { findTranscriptPathAnywhere, readActivityBefore } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { log } from '../logger.js';
 
@@ -399,6 +399,27 @@ export function registerApiRoutes(
       } else {
         res.status(500).json({ error: (err as Error).message });
       }
+    }
+  });
+
+  // Return activity feed items before a given timestamp (for search "load context" feature)
+  app.get('/api/sessions/:sessionId/activity-before', (req, res) => {
+    const { sessionId } = req.params;
+    const { timestamp, limit } = req.query;
+    if (!timestamp || typeof timestamp !== 'string') {
+      res.status(400).json({ error: 'timestamp query param required' });
+      return;
+    }
+    const transcriptPath = findTranscriptPathAnywhere(sessionId);
+    if (!transcriptPath) {
+      res.json({ items: [] });
+      return;
+    }
+    try {
+      const items = readActivityBefore(transcriptPath, timestamp, Number(limit) || 50);
+      res.json({ items });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
     }
   });
 }

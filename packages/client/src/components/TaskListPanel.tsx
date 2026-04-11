@@ -21,7 +21,7 @@ interface AgentSearchResult {
   isSubagent: boolean;
   parentName?: string;
   matches: SearchMatch[];
-  onSelect: () => void;
+  onSelect: (timestamp?: string) => void;
 }
 
 function buildCorpus(item: ActivityItem): string {
@@ -71,7 +71,7 @@ function BoldExcerpt({ text, ranges }: { text: string; ranges: [number, number][
 interface TaskListPanelProps {
   room: Room;
   customNames: Record<string, string>;
-  onSelectSession: (session: Session) => void;
+  onSelectSession: (session: Session, timestamp?: string) => void;
   onClose: () => void;
   panelWidth: number;
   onPanelWidthChange: (w: number) => void;
@@ -202,7 +202,7 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
           sessionType: session.sessionType,
           isSubagent: false,
           matches,
-          onSelect: () => onSelectSession(session),
+          onSelect: (ts?: string) => onSelectSession(session, ts),
         });
       }
 
@@ -217,7 +217,7 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
             isSubagent: true,
             parentName: getSessionDisplayName(session, customNames),
             matches: subMatches,
-            onSelect: () => onSelectSession(session),
+            onSelect: (ts?: string) => onSelectSession(session, ts),
           });
         }
       }
@@ -474,12 +474,20 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                   {/* Agent header */}
                   <div
                     className={styles.searchGroupHeader}
-                    onClick={result.onSelect}
+                    onClick={() => result.onSelect()}
                     role="button"
                     tabIndex={0}
                     onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') result.onSelect(); }}
                   >
                     <span className={styles.searchDot} style={{ color: dotColor }}>{icon}</span>
+                    {/* Agent icon */}
+                    <svg className={styles.searchAgentIcon} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <rect x="2" y="6" width="12" height="8" rx="2" stroke="currentColor" strokeWidth="1.3"/>
+                      <circle cx="5.5" cy="10" r="1" fill="currentColor"/>
+                      <circle cx="10.5" cy="10" r="1" fill="currentColor"/>
+                      <path d="M6 3.5C6 2.67 6.67 2 7.5 2h1C9.33 2 10 2.67 10 3.5V6H6V3.5z" stroke="currentColor" strokeWidth="1.3"/>
+                      <path d="M8 2V1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    </svg>
                     <span className={styles.searchAgentName}>{result.displayName}</span>
                     {result.isSubagent && result.parentName && (
                       <span className={styles.searchParentBadge}>{result.parentName}</span>
@@ -499,10 +507,10 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                       <div
                         key={i}
                         className={styles.searchFragment}
-                        onClick={result.onSelect}
+                        onClick={() => result.onSelect(match.item.timestamp)}
                         role="button"
                         tabIndex={0}
-                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') result.onSelect(); }}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') result.onSelect(match.item.timestamp); }}
                       >
                         <span className={`${styles.searchRole} ${styles[`searchRole_${match.item.role ?? match.item.kind}`]}`}>
                           {roleLabel}

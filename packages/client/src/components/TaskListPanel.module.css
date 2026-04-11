@@ -397,6 +397,13 @@
   text-align: center;
 }
 
+.searchAgentIcon {
+  width: 13px;
+  height: 13px;
+  color: rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+}
+
 .searchAgentName {
   font-size: 13px;
   font-weight: 600;

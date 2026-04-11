@@ -656,6 +656,17 @@
   border-bottom-right-radius: 5px;
 }
 
+/* Search scroll highlight — applied via JS classList, uses global class so no CSS Modules hashing */
+:global(.searchHighlight) {
+  animation: searchPulse 2s ease-out forwards;
+}
+
+@keyframes searchPulse {
+  0%   { background: rgba(212, 175, 55, 0.18); box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.25); border-radius: 6px; }
+  60%  { background: rgba(212, 175, 55, 0.10); }
+  100% { background: transparent; box-shadow: none; }
+}
+
 .pendingMessage {
   opacity: 0.6;
 }

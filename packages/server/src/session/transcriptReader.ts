@@ -1211,3 +1211,96 @@ export function readSubagents(cwd: string, sessionId: string, transcriptPath?: s
     return age < TEN_MINUTES_MS;
   });
 }
+
+/**
+ * Read activity items from a transcript JSONL that occurred BEFORE a given timestamp.
+ * Used by the search tab to load earlier conversation context when the feed is trimmed.
+ */
+export function readActivityBefore(filePath: string, beforeTimestamp: string, limit = 50): ActivityItem[] {
+  let content: string;
+  try {
+    // Cap read at 32MB to avoid stalling on huge transcripts
+    const stat = fs.statSync(filePath);
+    const MAX_BYTES = 32 * 1024 * 1024;
+    if (stat.size > MAX_BYTES) {
+      const buf = Buffer.alloc(MAX_BYTES);
+      const fd = fs.openSync(filePath, 'r');
+      fs.readSync(fd, buf, 0, MAX_BYTES, 0); // read from start
+      fs.closeSync(fd);
+      content = buf.toString('utf8');
+    } else {
+      content = fs.readFileSync(filePath, 'utf8');
+    }
+  } catch { return []; }
+
+  const allLines = content.split('\n').filter(l => l.trim());
+
+  // Collect lines with timestamp < beforeTimestamp (forward scan, stop at first match)
+  const beforeLines: string[] = [];
+  for (const line of allLines) {
+    try {
+      const parsed = JSON.parse(line) as { timestamp?: string };
+      if (parsed.timestamp && parsed.timestamp >= beforeTimestamp) break;
+    } catch { /* keep line, can't parse */ }
+    beforeLines.push(line);
+  }
+
+  if (beforeLines.length === 0) return [];
+
+  // Parse the tail of beforeLines (reverse scan, same logic as readTranscriptState)
+  const window = beforeLines.slice(-(limit * 20));
+  const MAX_CONTENT = 10000;
+  const activityFeed: ActivityItem[] = [];
+  let messageCount = 0;
+
+  for (let i = window.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(window[i]) as {
+        type?: string;
+        timestamp?: string;
+        message?: {
+          content?: string | Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
+        };
+      };
+
+      if (parsed.type === 'user') {
+        const rawContent = parsed.message?.content;
+        let text: string | undefined;
+        if (typeof rawContent === 'string') text = rawContent;
+        else if (Array.isArray(rawContent)) {
+          const tb = rawContent.find(b => b.type === 'text');
+          text = (tb as { text?: string })?.text;
+        }
+        if (text) {
+          activityFeed.unshift({ kind: 'message', role: 'user', content: text.slice(0, MAX_CONTENT), timestamp: parsed.timestamp });
+          messageCount++;
+        }
+      } else if (parsed.type === 'assistant') {
+        const rawContent = parsed.message?.content;
+        const contentBlocks = Array.isArray(rawContent) ? rawContent as Array<{ type?: string; text?: string; name?: string; input?: unknown }> : undefined;
+        let text: string | undefined;
+        if (typeof rawContent === 'string') text = rawContent;
+        else if (contentBlocks) {
+          const tb = contentBlocks.find(b => b.type === 'text');
+          text = (tb as { text?: string })?.text;
+        }
+        if (text) {
+          activityFeed.unshift({ kind: 'message', role: 'assistant', content: text.slice(0, MAX_CONTENT), timestamp: parsed.timestamp });
+          messageCount++;
+        }
+        if (contentBlocks) {
+          for (let j = contentBlocks.length - 1; j >= 0; j--) {
+            const block = contentBlocks[j] as { type?: string; name?: string; input?: unknown };
+            if (block.type === 'tool_use' && block.name) {
+              activityFeed.unshift({ kind: 'tool', toolName: block.name as string, content: block.name as string, timestamp: parsed.timestamp });
+            }
+          }
+        }
+      }
+
+      if (messageCount >= limit) break;
+    } catch { /* skip malformed */ }
+  }
+
+  return activityFeed;
+}
