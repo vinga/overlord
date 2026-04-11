@@ -69,11 +69,21 @@ func main() {
 	setRawInputMode()
 
 	pipeName := flag.String("pipe", "", "Pipe/socket name (e.g. overlord-{sessionId})")
+	titleFlag := flag.String("title", "", "Short display name to set as terminal window title")
 	flag.Parse()
 
 	if *pipeName == "" {
-		fmt.Fprintln(os.Stderr, "Usage: overlord-bridge --pipe <name> -- <command> [args...]")
+		fmt.Fprintln(os.Stderr, "Usage: overlord-bridge --pipe <name> [--title <name>] -- <command> [args...]")
 		os.Exit(1)
+	}
+
+	// Set a clean terminal title and suppress child's own title escape sequences.
+	// The child (Claude) embeds bridge marker suffixes in its --name flag which it
+	// broadcasts via OSC title sequences — this keeps the host terminal title short.
+	var titleFilter *stdoutTitleFilter
+	if *titleFlag != "" {
+		fmt.Printf("\033]0;%s\007", *titleFlag)
+		titleFilter = newStdoutTitleFilter()
 	}
 
 	args := flag.Args()
@@ -96,7 +106,7 @@ func main() {
 
 	// Start child via ConPTY (Windows) or plain pty (Unix)
 	// Returns: write-to-child func, wait func, child PID, nudge func, resize+nudge func, reader-dead channel
-	writeToChild, waitForChild, childPid, nudgeRedraw, resizeAndNudge, readerDead, err := startChildWithPty(args, clients)
+	writeToChild, waitForChild, childPid, nudgeRedraw, resizeAndNudge, readerDead, err := startChildWithPty(args, clients, titleFilter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start child: %v\n", err)
 		os.Exit(1)

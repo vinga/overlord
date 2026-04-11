@@ -66,6 +66,18 @@ packages/
 For deep dives, see `docs/`.
 ```
 
+## Bridge Binary
+
+Source lives in `packages/bridge/` (Go). The server resolves the binary via `getBridgePath()` in `packages/server/src/pty/pipeInjector.ts`, which points to **`bridge/overlord-bridge`** at the project root.
+
+After any change to Go source, rebuild and copy:
+
+```bash
+cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../bridge/overlord-bridge
+```
+
+The binary in `bridge/` is what actually runs — editing `packages/bridge/` without copying has no effect.
+
 ## Session Matching Rules
 
 **NEVER use CWD-based matching** for anything — not session linking, not /clear detection, not replacement fallbacks. Multiple sessions share the same CWD, making CWD-based matching unreliable. Instead:

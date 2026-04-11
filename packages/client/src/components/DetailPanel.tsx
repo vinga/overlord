@@ -1808,12 +1808,14 @@ const currentDisplayName =
                           </div>
                         ) : null}
                       </div>
-                      <ConsolePreview
-                        sessionId={selectedSession.sessionId}
-                        sessionState={selectedSession.state}
-                        isPty={isPty}
-                        sessionType={selectedSession.sessionType}
-                      />
+                      {selectedSession.sessionType !== 'bridge' && (
+                        <ConsolePreview
+                          sessionId={selectedSession.sessionId}
+                          sessionState={selectedSession.state}
+                          isPty={isPty}
+                          sessionType={selectedSession.sessionType}
+                        />
+                      )}
                       {selectedSession && selectedSession.state !== 'closed' && !selectedSession.userAccepted && (
                         <>
                           <div className={`${styles.stateBar} ${stateBarClass}`}>

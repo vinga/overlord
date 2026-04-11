@@ -233,11 +233,13 @@ export function registerApiRoutes(
     }
   });
 
-  // Delete a session from state (removes from UI; does not kill the process)
+  // Delete a session from state (removes from UI; kills the process for bridge sessions)
   app.delete('/api/sessions/:sessionId', (req, res) => {
     const { sessionId } = req.params;
-    if (!stateManager.getSession(sessionId)) { res.status(404).json({ error: 'Session not found' }); return; }
-    deleteSession(sessionId, undefined, 'session:delete (REST)');
+    const session = stateManager.getSession(sessionId);
+    if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+    const pidToKill = session.sessionType === 'bridge' ? session.pid : undefined;
+    deleteSession(sessionId, pidToKill, 'session:delete (REST)');
     res.json({ ok: true });
   });
 

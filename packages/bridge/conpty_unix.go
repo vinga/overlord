@@ -28,7 +28,9 @@ func getBridgeTTY() string {
 }
 
 // startChildWithPty on Unix/macOS: allocate a real PTY so SIGWINCH triggers repaints.
-func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
+// titleFilter, if non-nil, strips OSC title sequences from PTY output before writing
+// to the host terminal's stdout. OUTPT pipe clients always receive unfiltered output.
+func startChildWithPty(args []string, clients *clientRegistry, titleFilter *stdoutTitleFilter) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
 	cmd := exec.Command(args[0], args[1:]...)
 
 	// Inherit the parent terminal's window size so the bridge PTY starts at the
@@ -61,8 +63,15 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
-				os.Stdout.Write(chunk)
+				// Pipe clients (xterm.js) receive unfiltered output
 				clients.broadcast(chunk)
+				// Strip title escape sequences before writing to host terminal
+				if titleFilter != nil {
+					chunk = titleFilter.filter(chunk)
+				}
+				if len(chunk) > 0 {
+					os.Stdout.Write(chunk)
+				}
 			}
 			if err != nil {
 				break

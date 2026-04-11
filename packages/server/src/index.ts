@@ -177,6 +177,9 @@ const bridgeInjectQueue = new Map<string, Array<{ text: string; resolve: () => v
 async function openTerminalWindow(cwd: string, command: string, title?: string, sessionId?: string, useBridge: boolean = true): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const windowTitle = (title ?? 'Claude').replace(/"/g, '');
+    // Compute clean display name once — used for both --title flag and AppleScript custom title
+    const displayTitle = windowTitle.replace(/___[A-Z]+:[^\s"]+/g, '').trim() || 'Claude';
+    const safeTitle = displayTitle.replace(/"/g, '');
     const bridgePath = getBridgePath();
     const bridgeExists = useBridge && fs.existsSync(bridgePath);
     let pipeName: string | undefined;
@@ -206,7 +209,7 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       const safeCwd = cwd.replace(/"/g, '\\"');
       let bashCmd: string;
       if (bridgeExists && pipeName) {
-        bashCmd = `cd "${safeCwd}" && "${bridgePath}" --pipe "${pipeName}" -- ${command}`;
+        bashCmd = `cd "${safeCwd}" && "${bridgePath}" --pipe "${pipeName}" --title "${safeTitle}" -- ${command}`;
         console.log(`[open-terminal] macOS bridge, pipe=${pipeName}`);
       } else {
         bashCmd = `cd "${safeCwd}" && ${command}`;
@@ -214,17 +217,28 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       }
       // Escape double-quotes for embedding inside an AppleScript string literal
       const safeForAS = bashCmd.replace(/"/g, '\\"');
-      // Open window, set it to a comfortable size (220×50), and bring Terminal to front
-      // Strip internal marker suffix (e.g. ___BRG:brg-xxx) for display
-      const displayTitle = windowTitle.replace(/___[A-Z]+:[^\s"]+/g, '').trim() || 'Claude';
-      const safeTitle = displayTitle.replace(/"/g, '');
+      // Open window, set it to a comfortable size (160×50), and bring Terminal to front.
+      // Creates (once) an "Overlord Bridge" settings set that shows only the custom title —
+      // no process name, no arguments, no window size — keeping the title bar short.
       const script = [
         'tell application "Terminal"',
-        `  set w to do script "${safeForAS}"`,
+        '  -- Create/update the Overlord Bridge profile to show only custom title',
+        '  if not (exists settings set "Overlord Bridge") then',
+        '    make new settings set with properties {name:"Overlord Bridge"}',
+        '  end if',
+        '  tell settings set "Overlord Bridge"',
+        '    set title displays custom title to true',
+        '    set title displays shell path to false',
+        '    set title displays device name to false',
+        '    set title displays window size to false',
+        '    set title displays settings name to false',
+        '  end tell',
+        `  set t to do script "${safeForAS}"`,
+        '  set current settings of t to settings set "Overlord Bridge"',
+        `  set custom title of t to "${safeTitle}"`,
         '  tell window 1',
         '    set number of columns to 160',
         '    set number of rows to 50',
-        `    set custom title to "${safeTitle}"`,
         '  end tell',
         '  activate',
         'end tell',

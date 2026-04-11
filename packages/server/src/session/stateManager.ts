@@ -477,9 +477,11 @@ export class StateManager {
     const transcriptState = transcript?.state ?? existingSession?.state ?? 'waiting';
     // If transcript says 'waiting' but PTY was active within the last 5s, the session is still
     // working — transcript just hasn't been updated yet (e.g. between tool calls).
+    // Only apply this override when a transcript exists; new sessions with no transcript
+    // should start as 'waiting' even though the PTY emits an initial prompt.
     const lastPtyAt = this.lastPtyActivityAt.get(sessionId);
     const ptyIsRecent = lastPtyAt != null && Date.now() - lastPtyAt < 5000;
-    const state: WorkerState = (transcriptState === 'waiting' && ptyIsRecent) ? 'working' : transcriptState;
+    const state: WorkerState = (transcriptState === 'waiting' && ptyIsRecent && transcript !== undefined) ? 'working' : transcriptState;
     const lastActivity = transcript?.lastActivity ?? new Date().toISOString();
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name

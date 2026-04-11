@@ -12,7 +12,7 @@ import (
 	"github.com/UserExistsError/conpty"
 )
 
-func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
+func startChildWithPty(args []string, clients *clientRegistry, _ *stdoutTitleFilter) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
 	cmdLine := buildCommandLine(args)
 
 	cols, rows := getConsoleSize()
