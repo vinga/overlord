@@ -135,22 +135,6 @@
   mask-image: linear-gradient(to bottom, transparent 0px, black 40px, black 100%);
 }
 
-.logContainer::-webkit-scrollbar {
-  width: 4px;
-}
-
-.logContainer::-webkit-scrollbar-track {
-  background: #111111;
-}
-
-.logContainer::-webkit-scrollbar-thumb {
-  background: #333333;
-  border-radius: 2px;
-}
-
-.logContainer::-webkit-scrollbar-thumb:hover {
-  background: #444444;
-}
 
 /* ── Log Row ─────────────────────────────────────────────── */
 

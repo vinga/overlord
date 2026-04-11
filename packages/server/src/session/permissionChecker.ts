@@ -45,21 +45,27 @@ function cleanText(text: string): string {
 const RATE_LIMIT_PATTERN = /you'?ve hit your limit/i;
 
 // Detect permission mode from the CLI status bar text
+// No >> prefix required — the (shift+tab to cycle) sentinel already ensures we're on the status bar line.
 const PERMISSION_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-  { pattern: />>\s+bypass permissions on/i, mode: 'bypassPermissions' },
-  { pattern: />>\s+accept edits on/i, mode: 'acceptEdits' },
-  { pattern: />>\s+plan mode on/i, mode: 'plan' },
+  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
+  { pattern: /accept edits on/i, mode: 'acceptEdits' },
+  { pattern: /plan mode on/i, mode: 'plan' },
 ];
 
 function detectPermissionMode(text: string): string | undefined {
-  // Scan lines from the bottom — the status bar is always at the end of the
-  // terminal repaint, so the last matching line reflects the current mode.
+  // Scan lines from the bottom looking for the status bar sentinel
+  // "(shift+tab to cycle)" — this is always present on the Claude CLI status bar
+  // and avoids false matches on ">>" appearing in terminal content output.
   const lines = text.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
+    if (!/\(shift\+tab to cycle\)/i.test(line)) continue;
+    // Found the status bar line — check for mode keyword
     for (const { pattern, mode } of PERMISSION_MODE_PATTERNS) {
       if (pattern.test(line)) return mode;
     }
+    // Status bar found but no mode keyword → default mode
+    return undefined;
   }
   return undefined;
 }
@@ -148,8 +154,14 @@ export function startPermissionChecker(
             // transcript can never overwrite it while the mode is visible in terminal.
             stateManager.setPermissionMode(id, screenMode);
           } else if (!screenMode && current && current !== 'default' && !locked) {
-            // Status bar doesn't show a mode and lock has expired → back to default
-            stateManager.setPermissionMode(id, 'default');
+            // Only reset to default when we have positive evidence: the sentinel is
+            // present but no mode keyword (confirmed default). Do NOT reset when the
+            // sentinel is absent — that just means the screen text is partial/stale
+            // (e.g. ptyOutputBuffer cleared after a repaint, only showing tail output).
+            const hasSentinel = /\(shift\+tab to cycle\)/i.test(text);
+            if (hasSentinel && currentSession?.state === 'waiting') {
+              stateManager.setPermissionMode(id, 'default');
+            }
           }
         }
       } catch (err) {

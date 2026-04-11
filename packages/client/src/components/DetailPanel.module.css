@@ -249,8 +249,6 @@
   margin-top: 8px;
   max-height: 40vh;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
 }
 
 .detailsSubsection {
@@ -266,21 +264,6 @@
   flex: 1;
   overflow-y: auto;
   padding: 16px 24px 28px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.1) #0e0e18;
-}
-
-.scrollArea::-webkit-scrollbar {
-  width: 6px;
-}
-
-.scrollArea::-webkit-scrollbar-track {
-  background: #0e0e18;
-}
-
-.scrollArea::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
 }
 
 .section {
@@ -450,17 +433,6 @@
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
-}
-
-.messageBox::-webkit-scrollbar {
-  width: 4px;
-}
-
-.messageBox::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
 }
 
 /* Subagent tree connector */
@@ -610,17 +582,6 @@
   flex-direction: column;
   gap: 6px;
   overflow-y: visible;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
-}
-
-.transcript::-webkit-scrollbar {
-  width: 4px;
-}
-
-.transcript::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
 }
 
 .transcriptEntry {
@@ -654,6 +615,11 @@
   color: #c4c8d0;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-bottom-right-radius: 5px;
+}
+
+.transcriptBubbleCompact {
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 /* Search scroll highlight — applied via JS classList, uses global class so no CSS Modules hashing */
@@ -1536,6 +1502,44 @@
   border: 1px solid rgba(255, 255, 255, 0.07);
   color: rgba(255, 255, 255, 0.65);
   white-space: pre;
+}
+
+.resultToggle {
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.25);
+  border-radius: 4px;
+  color: #6ee7b7;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+.resultToggle:hover {
+  background: rgba(52, 211, 153, 0.22);
+}
+.resultToggleError {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 4px;
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+.resultToggleError:hover {
+  background: rgba(239, 68, 68, 0.22);
+}
+.resultView {
+  border-color: rgba(52, 211, 153, 0.15) !important;
+  background: rgba(52, 211, 153, 0.04) !important;
+}
+.resultViewError {
+  border-color: rgba(239, 68, 68, 0.2) !important;
+  background: rgba(239, 68, 68, 0.05) !important;
+  color: #fca5a5 !important;
 }
 
 .diffView {

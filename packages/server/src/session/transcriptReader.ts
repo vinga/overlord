@@ -381,6 +381,49 @@ function buildToolDurations(lines: string[]): Map<string, number> {
   return durationMs;
 }
 
+const MAX_RESULT_LENGTH = 2000;
+
+function buildToolResults(lines: string[]): Map<string, { content: string; isError: boolean }> {
+  const results = new Map<string, { content: string; isError: boolean }>();
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as {
+        type?: string;
+        message?: {
+          content?: Array<{
+            type?: string;
+            tool_use_id?: string;
+            content?: string | Array<{ type?: string; text?: string }>;
+            is_error?: boolean;
+          }>;
+        };
+      };
+      if (parsed.type === 'user' && Array.isArray(parsed.message?.content)) {
+        for (const block of parsed.message!.content!) {
+          if (block.type === 'tool_result' && block.tool_use_id) {
+            let text = '';
+            if (typeof block.content === 'string') {
+              text = block.content;
+            } else if (Array.isArray(block.content)) {
+              text = block.content
+                .filter(b => b.type === 'text' && typeof b.text === 'string')
+                .map(b => b.text!)
+                .join('\n');
+            }
+            if (text.length > MAX_RESULT_LENGTH) {
+              text = text.slice(0, MAX_RESULT_LENGTH) + '…';
+            }
+            results.set(block.tool_use_id, { content: text, isError: block.is_error === true });
+          }
+        }
+      }
+    } catch {
+      // skip malformed lines
+    }
+  }
+  return results;
+}
+
 function detectLastUserIsDone(last30: string[]): boolean {
   for (let i = last30.length - 1; i >= 0; i--) {
     try {
@@ -484,6 +527,8 @@ export function readTranscriptState(filePath: string): {
 
     // Pre-pass: build tool_use_id → duration map
     const toolDurations = buildToolDurations(last30);
+    // Pre-pass: build tool_use_id → result map
+    const toolResults = buildToolResults(last30);
 
     // Build unified activityFeed (messages + tools in chronological order) and extract lastMessage
     let lastMessage: string | undefined;
@@ -588,11 +633,16 @@ export function readTranscriptState(filePath: string): {
                     }
                     item.inputJson = JSON.stringify(trimmed, null, 2);
                   }
-                  // Compute duration from pre-pass map
+                  // Compute duration and result from pre-pass maps
                   const blockId = (block as Record<string, unknown>).id as string | undefined;
                   if (blockId) {
                     const dur = toolDurations.get(blockId);
                     if (dur !== undefined) item.durationMs = dur;
+                    const res = toolResults.get(blockId);
+                    if (res !== undefined && res.content.length > 0) {
+                      item.resultJson = res.content;
+                      if (res.isError) item.isError = true;
+                    }
                   }
                   if (parsed.timestamp) item.timestamp = parsed.timestamp;
                   activityFeed.unshift(item);

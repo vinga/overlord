@@ -50,20 +50,6 @@
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
-/* Scrollbar styling */
-.consoleContent::-webkit-scrollbar {
-  width: 4px;
-}
-
-.consoleContent::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.consoleContent::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
-}
-
 .consoleDisclaimer {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 9px;

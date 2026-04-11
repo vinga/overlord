@@ -80,7 +80,21 @@ export function registerApiRoutes(
     const sessions = snapshot.rooms.flatMap(r => r.sessions);
     res.json({
       sessionCount: sessions.length,
-      sessions: sessions.map(s => ({ sessionId: s.sessionId, name: s.proposedName ?? '', cwd: s.cwd, state: s.state, isWorker: s.isWorker, pid: s.pid, sessionType: s.sessionType, replacedBy: s.replacedBy })),
+      sessions: sessions.map(s => ({
+        sessionId: s.sessionId,
+        name: s.proposedName ?? '',
+        cwd: s.cwd,
+        state: s.state,
+        isWorker: s.isWorker,
+        pid: s.pid,
+        sessionType: s.sessionType,
+        replacedBy: s.replacedBy,
+        permissionMode: s.permissionMode,
+        permissionModeLockedUntil: s.permissionModeLockedUntil,
+        needsPermission: s.needsPermission,
+        resumedFrom: s.resumedFrom,
+        lastActivity: s.lastActivity,
+      })),
       ptyToClaudeId: Object.fromEntries(ptyToClaudeId),
       claudeToPtyId: Object.fromEntries(claudeToPtyId),
       pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
@@ -400,6 +414,68 @@ export function registerApiRoutes(
         res.status(500).json({ error: (err as Error).message });
       }
     }
+  });
+
+  // Return skills and agents from .claude/skills and .claude/agents in a workspace cwd
+  app.get('/api/skills-agents', (req, res) => {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    if (!cwd) { res.status(400).json({ error: 'cwd query param required' }); return; }
+
+    function extractDescription(raw: string): string {
+      // Try YAML frontmatter description field first
+      const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (fmMatch) {
+        const descMatch = fmMatch[1].match(/^description:\s*(.+)$/m);
+        if (descMatch) return descMatch[1].trim();
+      }
+      // Fall back to first non-empty non-frontmatter/non-heading paragraph line
+      const body = raw.replace(/^---[\s\S]*?---\r?\n?/, '');
+      const lines = body.split('\n');
+      // Skip h1 headings, return first content line
+      const h1 = lines.find(l => /^#\s/.test(l));
+      if (h1) {
+        const after = lines.slice(lines.indexOf(h1) + 1);
+        const first = after.find(l => l.trim().length > 0 && !/^#/.test(l));
+        if (first) return first.replace(/^\*\*/, '').replace(/\*\*$/, '').trim().slice(0, 120);
+      }
+      const first = lines.find(l => l.trim().length > 0 && !/^#/.test(l));
+      return (first ?? '').trim().slice(0, 120);
+    }
+
+    function parseMdFile(filePath: string, name: string): { name: string; description: string; content: string } {
+      try {
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        return { name, description: extractDescription(raw), content: raw };
+      } catch { return { name, description: '', content: '' }; }
+    }
+
+    function readDir(dir: string): { name: string; description: string }[] {
+      if (!fs.existsSync(dir)) return [];
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const results: { name: string; description: string }[] = [];
+        for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+          if (entry.isDirectory()) {
+            // Skill/agent as a directory — look for SKILL.md, AGENT.md, or README.md
+            const candidates = ['SKILL.md', 'AGENT.md', 'README.md'];
+            for (const candidate of candidates) {
+              const mdPath = join(dir, entry.name, candidate);
+              if (fs.existsSync(mdPath)) {
+                results.push(parseMdFile(mdPath, entry.name));
+                break;
+              }
+            }
+          } else if (entry.isFile() && entry.name.endsWith('.md')) {
+            results.push(parseMdFile(join(dir, entry.name), basename(entry.name, '.md')));
+          }
+        }
+        return results;
+      } catch { return []; }
+    }
+
+    const skills = readDir(join(cwd, '.claude', 'skills'));
+    const agents = readDir(join(cwd, '.claude', 'agents'));
+    res.json({ skills, agents });
   });
 
   // Return activity feed items before a given timestamp (for search "load context" feature)

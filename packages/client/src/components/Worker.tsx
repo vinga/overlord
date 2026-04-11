@@ -91,15 +91,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showDoneMenu]);
 
-  // Re-render every second while pending input exists, to cross the 5s threshold.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!ptyInputPendingSince) return;
-    const id = setInterval(() => setTick(n => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [ptyInputPendingSince]);
-  const hasPendingInput = ptyInputPendingSince != null && Date.now() - ptyInputPendingSince >= 5000;
-
   const handleIndicatorClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -137,9 +128,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
       aria-label={`Worker ${label}`}
     >
-      {!minimal && hasPendingInput && !isSubagent && (
-        <div className={styles.pendingInputBadge}>✎ typing…</div>
-      )}
       {!minimal && needsPermission && !isSubagent && (
         <div className={styles.permissionBadge}>⚠ approval</div>
       )}

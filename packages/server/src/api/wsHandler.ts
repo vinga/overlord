@@ -64,9 +64,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
     // Register this client in the session map
     wsSessionMap.set(ws, new Set());
-    // Per-connection virtual input buffer: tracks typed-but-not-submitted chars per session
-    // so backspace-to-empty correctly clears the "has input" indicator.
-    const ptyInputBuffers = new Map<string, string>();
 
     const snapshot = stateManager.getSnapshot();
     ws.send(JSON.stringify({ type: 'snapshot', ...snapshot }));
@@ -236,30 +233,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const data = String(msg.data ?? '');
         stateManager.clearHintOnInput(sessionId);
-        // Strip focus-tracking sequences (ESC[I focus-in, ESC[O focus-out) before
-        // evaluating pending-input state. xterm.js can emit these when the browser
-        // window gains/loses focus — they must not trigger the "typing…" badge.
-        const dataForPending = data.replace(/\x1b\[I|\x1b\[O/g, '');
-        // Track pending input using a virtual buffer so backspace-to-empty clears the indicator.
-        if (dataForPending.includes('\r') || dataForPending.includes('\n')) {
-          ptyInputBuffers.set(sessionId, '');
-          stateManager.clearPtyInputPending(sessionId);
-        } else if (dataForPending.length > 0) {
-          let buf = ptyInputBuffers.get(sessionId) ?? '';
-          for (const ch of dataForPending) {
-            if (ch === '\x7f' || ch === '\b') {
-              buf = buf.slice(0, -1);
-            } else {
-              buf += ch;
-            }
-          }
-          ptyInputBuffers.set(sessionId, buf);
-          if (buf.length > 0) {
-            stateManager.setPtyInputPending(sessionId);
-          } else {
-            stateManager.clearPtyInputPending(sessionId);
-          }
-        }
         const wrote = ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
         if (!wrote) {
           // No PTY session — fall back to ConPTY injection
@@ -324,22 +297,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         const isBridge = stateManager.isBridge(sessionId);
-
-        // Track pending input: if injected text won't submit Enter, mark pending; otherwise clear.
-        // Bridge sessions always append \r when extraEnter=false (pipe sends text+'\r').
-        // Non-bridge: Enter is only sent if text contains \r/\n or extraEnter is true.
-        {
-          const injectHasEnter = isBridge
-            ? !extraEnter  // bridge: Enter appended unless extraEnter=true (autocomplete deferral)
-            : extraEnter || text.includes('\r') || text.includes('\n');
-          if (injectHasEnter) {
-            ptyInputBuffers.set(sessionId, '');
-            stateManager.clearPtyInputPending(sessionId);
-          } else if (text.length > 0) {
-            ptyInputBuffers.set(sessionId, (ptyInputBuffers.get(sessionId) ?? '') + text);
-            stateManager.setPtyInputPending(sessionId);
-          }
-        }
 
         // Mark pending clear so the replacement transcript gets linked to this session
         if (text.trimStart().startsWith('/clear')) {

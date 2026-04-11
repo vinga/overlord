@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import type { Room, Session, Task, ActivityItem } from '../types';
 import styles from './TaskListPanel.module.css';
 
-type Tab = 'agents' | 'tasks' | 'search';
+type Tab = 'agents' | 'tasks' | 'search' | 'skills';
 type Filter = 'done' | 'awaiting';
 
 // ── Search helpers ──────────────────────────────────────────────────────────
@@ -103,11 +103,17 @@ const STATE_ICON: Record<string, string> = {
   idle: '○',
 };
 
+interface SkillItem { name: string; description: string; content: string; }
+interface SkillsData { skills: SkillItem[]; agents: SkillItem[]; }
+
 export function TaskListPanel({ room, customNames, onSelectSession, onClose, panelWidth, onPanelWidthChange }: TaskListPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>('search');
   const [filters, setFilters] = useState<Set<Filter>>(new Set(['done', 'awaiting']));
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [skillsData, setSkillsData] = useState<SkillsData | null>(null);
+  const [copiedSkill, setCopiedSkill] = useState<string | null>(null);
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const searchInputRef = useRef<HTMLInputElement>(null);
   const isResizingRef = useRef(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -117,6 +123,14 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
       setTimeout(() => searchInputRef.current?.focus(), 50);
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'skills') return;
+    fetch(`/api/skills-agents?cwd=${encodeURIComponent(room.cwd)}`)
+      .then(r => r.json())
+      .then(data => setSkillsData(data))
+      .catch(() => setSkillsData({ skills: [], agents: [] }));
+  }, [activeTab, room.cwd]);
 
   function toggleFilter(f: Filter) {
     setFilters(prev => {
@@ -275,6 +289,12 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
           onClick={() => setActiveTab('search')}
         >
           Search
+        </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'skills' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('skills')}
+        >
+          Skills
         </button>
       </div>
 
@@ -538,6 +558,115 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                 </div>
               );
             })}
+          </div>
+        )}
+        {/* ── SKILLS TAB ── */}
+        {activeTab === 'skills' && (
+          <div className={styles.skillsPane}>
+            {!skillsData && <div className={styles.skillsLoading}>Loading…</div>}
+            {skillsData && skillsData.skills.length === 0 && skillsData.agents.length === 0 && (
+              <div className={styles.empty}>No skills or agents found in <code>.claude/skills</code> or <code>.claude/agents</code></div>
+            )}
+            {skillsData && skillsData.skills.length > 0 && (
+              <section className={styles.skillSection}>
+                <div className={styles.skillSectionTitle}>Skills</div>
+                {skillsData.skills.map(skill => {
+                  const isExpanded = expandedSkills.has(skill.name);
+                  return (
+                    <div
+                      key={skill.name}
+                      className={`${styles.skillCard} ${isExpanded ? styles.skillCardExpanded : ''}`}
+                    >
+                      <div
+                        className={styles.skillCardHeader}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setExpandedSkills(prev => {
+                          const next = new Set(prev);
+                          if (next.has(skill.name)) next.delete(skill.name); else next.add(skill.name);
+                          return next;
+                        })}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            setExpandedSkills(prev => {
+                              const next = new Set(prev);
+                              if (next.has(skill.name)) next.delete(skill.name); else next.add(skill.name);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <span className={styles.skillCardChevron}>{isExpanded ? '▾' : '▸'}</span>
+                        <span className={styles.skillCardName}>/{skill.name}</span>
+                        <button
+                          className={`${styles.skillCardCopy} ${copiedSkill === skill.name ? styles.skillCardCopied : ''}`}
+                          title={`Copy /${skill.name}`}
+                          onClick={e => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(`/${skill.name}`).catch(() => {});
+                            setCopiedSkill(skill.name);
+                            setTimeout(() => setCopiedSkill(null), 1500);
+                          }}
+                        >
+                          {copiedSkill === skill.name ? 'Copied!' : 'Copy'}
+                        </button>
+                      </div>
+                      {!isExpanded && skill.description && (
+                        <div className={styles.skillCardDesc}>{skill.description}</div>
+                      )}
+                      {isExpanded && skill.content && (
+                        <pre className={styles.skillCardContent}>{skill.content}</pre>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
+            )}
+            {skillsData && skillsData.agents.length > 0 && (
+              <section className={styles.skillSection}>
+                <div className={styles.skillSectionTitle}>Agents</div>
+                {skillsData.agents.map(agent => {
+                  const isExpanded = expandedSkills.has(`agent:${agent.name}`);
+                  return (
+                    <div
+                      key={agent.name}
+                      className={`${styles.skillCard} ${isExpanded ? styles.skillCardExpanded : ''}`}
+                    >
+                      <div
+                        className={styles.skillCardHeader}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setExpandedSkills(prev => {
+                          const next = new Set(prev);
+                          const k = `agent:${agent.name}`;
+                          if (next.has(k)) next.delete(k); else next.add(k);
+                          return next;
+                        })}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            setExpandedSkills(prev => {
+                              const next = new Set(prev);
+                              const k = `agent:${agent.name}`;
+                              if (next.has(k)) next.delete(k); else next.add(k);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <span className={styles.skillCardChevron}>{isExpanded ? '▾' : '▸'}</span>
+                        <span className={styles.skillCardName}>{agent.name}</span>
+                      </div>
+                      {!isExpanded && agent.description && (
+                        <div className={styles.skillCardDesc}>{agent.description}</div>
+                      )}
+                      {isExpanded && agent.content && (
+                        <pre className={styles.skillCardContent}>{agent.content}</pre>
+                      )}
+                    </div>
+                  );
+                })}
+              </section>
+            )}
           </div>
         )}
       </div>

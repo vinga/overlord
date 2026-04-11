@@ -1143,10 +1143,7 @@ export class StateManager {
   setPermissionMode(sessionId: string, mode: string | undefined): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    // REVERT NOTE: original code only entered this block when mode changed:
-    //   if (session && session.permissionMode !== mode) { session.permissionMode = mode; session.permissionModeLockedUntil = ...; this.onChange(); }
-    //
-    // CHANGE: For non-default modes, always refresh the lock — even if mode is unchanged.
+    // For non-default modes, always refresh the lock — even if mode is unchanged.
     // This keeps the lock alive while repaints keep confirming the same mode,
     // preventing permissionChecker from flipping to 'default' between repaints.
     if (mode && mode !== 'default') {

@@ -63,11 +63,17 @@ export class AiClassifier {
     }
   }
 
-  async generateTaskTitle(_sessionId: string, _taskId: string): Promise<void> {
-    // disabled — too costly
-    return;
-    if (this.activeTaskTitleGenerations.has(_taskId)) return;
-    this.activeTaskTitleGenerations.add(_taskId);
+  async generateTaskTitle(sessionId: string, taskId: string): Promise<void> {
+    if (this.activeTaskTitleGenerations.has(taskId)) return;
+
+    // Skip if title already generated (persisted across restarts)
+    const existing = this.stateManager.getSession(sessionId);
+    const existingTask = existing?.currentTask?.taskId === taskId
+      ? existing.currentTask
+      : existing?.completionSummaries?.find(t => t.taskId === taskId);
+    if (existingTask?.title) return;
+
+    this.activeTaskTitleGenerations.add(taskId);
     try {
       const session = this.stateManager.getSession(sessionId);
       if (!session || session.isWorker) return;

@@ -585,6 +585,9 @@ function ToolEntry({
   const isDiffExpanded = expandedDiffs.has(diffKey);
   const isArgsExpanded = expandedArgs.has(argsKey);
   const isResultExpanded = expandedResults.has(resultKey);
+  const skillName = tool.toolName === 'Skill' && tool.inputJson
+    ? (() => { try { return (JSON.parse(tool.inputJson) as { skill?: string }).skill ?? null; } catch { return null; } })()
+    : null;
   return (
     <div className={styles.toolEntry}>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
@@ -663,6 +666,7 @@ function ToolEntry({
             ? <button className={styles.toolDescLink} title={tool.content} onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{trimPath(tool.content, cwd)}</button>
             : <span className={styles.toolDesc}>{tool.content}</span>
         )}
+        {skillName && <span className={styles.toolDesc}>{skillName}</span>}
       </div>
       {isArgsExpanded && tool.inputJson && (
         <pre className={styles.argsView}>{tool.inputJson}</pre>

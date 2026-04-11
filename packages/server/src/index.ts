@@ -215,12 +215,16 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       // Escape double-quotes for embedding inside an AppleScript string literal
       const safeForAS = bashCmd.replace(/"/g, '\\"');
       // Open window, set it to a comfortable size (220×50), and bring Terminal to front
+      // Strip internal marker suffix (e.g. ___BRG:brg-xxx) for display
+      const displayTitle = windowTitle.replace(/___[A-Z]+:[^\s"]+/g, '').trim() || 'Claude';
+      const safeTitle = displayTitle.replace(/"/g, '');
       const script = [
         'tell application "Terminal"',
         `  set w to do script "${safeForAS}"`,
         '  tell window 1',
         '    set number of columns to 160',
         '    set number of rows to 50',
+        `    set custom title to "${safeTitle}"`,
         '  end tell',
         '  activate',
         'end tell',
