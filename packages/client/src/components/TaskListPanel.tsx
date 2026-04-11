@@ -104,7 +104,7 @@ const STATE_ICON: Record<string, string> = {
 };
 
 export function TaskListPanel({ room, customNames, onSelectSession, onClose, panelWidth, onPanelWidthChange }: TaskListPanelProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('tasks');
+  const [activeTab, setActiveTab] = useState<Tab>('search');
   const [filters, setFilters] = useState<Set<Filter>>(new Set(['done', 'awaiting']));
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());

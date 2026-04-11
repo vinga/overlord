@@ -1088,7 +1088,10 @@ export function DetailPanel({
     const el = transcriptRef.current;
     if (!el) return;
     const threshold = 40; // px from bottom counts as "at bottom"
-    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    isAtBottomRef.current = atBottom;
+    // Once the user scrolls back to the bottom, release the scroll target
+    if (atBottom && scrollTarget) onScrollTargetConsumed?.();
   }
 
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal'>('conversation');
@@ -1220,9 +1223,9 @@ const currentDisplayName =
     }
     prevSessionIdRef.current = selectedSession?.sessionId;
 
-    isAtBottomRef.current = true;
-    // Double rAF: wait for React render + browser layout/paint before scrolling
-    const raf = requestAnimationFrame(() => {
+    // Don't scroll to bottom if we have a scroll target (search result click)
+    isAtBottomRef.current = !scrollTarget;
+    const raf = scrollTarget ? undefined : requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (transcriptRef.current) {
           transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
@@ -1251,9 +1254,10 @@ const currentDisplayName =
     setKilling(false);
     setConfirmKill(false);
     setResuming(false);
-    setActiveTab('conversation');
+    // Don't reset to conversation tab if a scroll target will switch us there
+    if (!scrollTarget) setActiveTab('conversation');
     setSubagentActiveTab('conversation');
-    return () => cancelAnimationFrame(raf);
+    return () => { if (raf !== undefined) cancelAnimationFrame(raf); };
   }, [selectedSession?.sessionId, selectedSubagentId]);
 
   function startEdit() {
