@@ -8,9 +8,11 @@ import styles from './Office.module.css';
 interface OfficeProps {
   snapshot: OfficeSnapshot | null;
   connected: boolean;
+  connecting?: boolean;
   onSelectSession: (session: Session, subagentId?: string) => void;
   customNames: Record<string, string>;
   onSpawnSession?: (cwd: string) => void;
+  onSpawnDirect?: (cwd: string, name: string, mode: import('../types').TerminalSpawnMode) => void;
   onNewTerminalSession?: (cwd: string) => void;
 
   selectedSessionId?: string | null;
@@ -26,6 +28,7 @@ interface OfficeProps {
   onCloneSession?: (sessionId: string) => void;
   isPtySession?: (sessionId: string) => boolean;
   onOpenDirectoryPicker?: () => void;
+  onLogsClick?: () => void;
   platform?: string;
 }
 
@@ -38,7 +41,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, onSelectSession, customNames, onSpawnSession, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
 
@@ -97,12 +100,26 @@ export const Office = React.memo(function Office({ snapshot, connected, onSelect
             + New Session
           </button>
         )}
+        {onLogsClick && (
+          <button className={styles.logsBtn} onClick={onLogsClick}>
+            Logs
+          </button>
+        )}
       </header>
       <div className={styles.content}>
         {!hasRooms ? (
           <div className={styles.empty}>
-            <span className={styles.emptyText}>No active sessions</span>
-            <span className={styles.cursor} aria-hidden="true">_</span>
+            {connecting ? (
+              <>
+                <span className={styles.emptyText}>Connecting to server</span>
+                <span className={styles.cursor} aria-hidden="true">_</span>
+              </>
+            ) : (
+              <>
+                <span className={styles.emptyText}>No active sessions</span>
+                <span className={styles.cursor} aria-hidden="true">_</span>
+              </>
+            )}
           </div>
         ) : (
           <div className={styles.grid}>
@@ -119,6 +136,7 @@ export const Office = React.memo(function Office({ snapshot, connected, onSelect
                   onSelectSession={onSelectSession}
                   customNames={customNames}
                   onSpawnSession={onSpawnSession}
+                  onSpawnDirect={onSpawnDirect}
                   onNewTerminalSession={onNewTerminalSession}
                   selectedSessionId={selectedSessionId}
                   onRoomClick={onRoomClick}

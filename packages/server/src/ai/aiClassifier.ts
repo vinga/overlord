@@ -1,13 +1,13 @@
 import * as fs from 'fs';
 import { StateManager } from '../session/stateManager.js';
 import { runClaudeQuery } from './claudeQuery.js';
-import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
-import { appendTaskSummary } from './taskStorage.js';
+import { findTranscriptPathAnywhere, readFirstUserMessage } from '../session/transcriptReader.js';
 
 export class AiClassifier {
   // Per-session debounce timers for active task label generation
   private activeTaskTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activeLabelGenerations = new Set<string>();
+  private activeTaskTitleGenerations = new Set<string>();
 
   constructor(private stateManager: StateManager) {}
 
@@ -63,6 +63,39 @@ export class AiClassifier {
     }
   }
 
+  async generateTaskTitle(sessionId: string, taskId: string): Promise<void> {
+    if (this.activeTaskTitleGenerations.has(taskId)) return;
+    this.activeTaskTitleGenerations.add(taskId);
+    try {
+      const session = this.stateManager.getSession(sessionId);
+      if (!session || session.isWorker) return;
+
+      const transcriptPath = session.transcriptPath ?? findTranscriptPathAnywhere(sessionId);
+      const firstUserMsg = transcriptPath ? readFirstUserMessage(transcriptPath) : '';
+      if (!firstUserMsg) {
+        console.warn(`[task-title] ${sessionId.slice(0, 8)} no transcript content found (path=${transcriptPath ?? 'none'})`);
+        return;
+      }
+
+      const prompt = `Summarize what the user wants from this conversation in 5-8 words. Be specific and concrete about the actual task. Ignore filler words like "continue" or "ok". No punctuation at end. No preamble.\n\nConversation opening:\n${firstUserMsg}\n\n5-8 word summary:`;
+      console.log(`[task-title] ${sessionId.slice(0, 8)} generating...`);
+      try {
+        const raw = await runClaudeQuery(prompt, 30_000);
+        const title = raw.trim().replace(/^["']|["']$/g, '').replace(/\.$/, '').slice(0, 60);
+        const current = this.stateManager.getSession(sessionId);
+        if (current) {
+          console.log(`[task-title] ${sessionId.slice(0, 8)} → "${title}"`);
+          this.stateManager.setTaskTitle(sessionId, taskId, title);
+        }
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (msg !== 'invalidated') console.warn(`[task-title] ${sessionId.slice(0, 8)} failed:`, msg);
+      }
+    } finally {
+      this.activeTaskTitleGenerations.delete(taskId);
+    }
+  }
+
   classifyByHeuristic(message: string): 'done' | 'awaiting' | null {
     const text = message.trim();
     const lower = text.toLowerCase();
@@ -102,6 +135,7 @@ export class AiClassifier {
       console.log(`[classify] ${sessionId.slice(0, 8)} → ${heuristic} (heuristic)`);
       this.stateManager.setCompletionHint(sessionId, heuristic, lastMessage);
       if (heuristic === 'done') {
+        this.stateManager.completeActiveTask(sessionId, new Date().toISOString());
         setTimeout(() => { void this.generateCompletionSummary(sessionId, lastMessage); }, 2_000);
       }
       return;
@@ -117,6 +151,7 @@ export class AiClassifier {
       console.log(`[classify] ${sessionId.slice(0, 8)} → ${hint} (raw: "${result.trim()}")`);
       this.stateManager.setCompletionHint(sessionId, hint, lastMessage.slice(0, 300));
       if (hint === 'done') {
+        this.stateManager.completeActiveTask(sessionId, new Date().toISOString());
         // Wait 2s to confirm state is stable, then generate a one-line summary
         setTimeout(() => { void this.generateCompletionSummary(sessionId, lastMessage); }, 2_000);
       }
@@ -161,13 +196,16 @@ export class AiClassifier {
       }
       const clean = summary.trim().replace(/^["']|["']$/g, '');
       console.log(`[summary] ${sessionId.slice(0, 8)} → "${clean}"`);
-      const updated = await appendTaskSummary(sessionId, clean);
-      this.stateManager.setCompletionSummaries(sessionId, updated);
-      // If manually marked done, auto-accept the generated summary
-      const currentSession = this.stateManager.getSession(sessionId);
-      if (currentSession?.completionHintByUser && updated.length > 0) {
-        const latest = updated[updated.length - 1];
-        this.stateManager.acceptTask(sessionId, latest.completedAt);
+      // Find the most recently completed task
+      const sessForUpdate = this.stateManager.getSession(sessionId);
+      const latestDoneTask = sessForUpdate?.completionSummaries?.[0];
+      if (latestDoneTask) {
+        this.stateManager.setTaskSummary(sessionId, latestDoneTask.taskId, clean);
+      }
+      // Auto-accept if manually marked done
+      const sessionAfter = this.stateManager.getSession(sessionId);
+      if (sessionAfter?.completionHintByUser && latestDoneTask) {
+        this.stateManager.acceptTask(sessionId, latestDoneTask.completedAt ?? '');
       }
     } catch (err) {
       const msg = (err as Error).message;

@@ -46,14 +46,20 @@ const RATE_LIMIT_PATTERN = /you'?ve hit your limit/i;
 
 // Detect permission mode from the CLI status bar text
 const PERMISSION_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
-  { pattern: /accept edits on/i, mode: 'acceptEdits' },
-  { pattern: /plan mode on/i, mode: 'plan' },
+  { pattern: />>\s+bypass permissions on/i, mode: 'bypassPermissions' },
+  { pattern: />>\s+accept edits on/i, mode: 'acceptEdits' },
+  { pattern: />>\s+plan mode on/i, mode: 'plan' },
 ];
 
 function detectPermissionMode(text: string): string | undefined {
-  for (const { pattern, mode } of PERMISSION_MODE_PATTERNS) {
-    if (pattern.test(text)) return mode;
+  // Scan lines from the bottom — the status bar is always at the end of the
+  // terminal repaint, so the last matching line reflects the current mode.
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    for (const { pattern, mode } of PERMISSION_MODE_PATTERNS) {
+      if (pattern.test(line)) return mode;
+    }
   }
   return undefined;
 }
@@ -61,7 +67,7 @@ function detectPermissionMode(text: string): string | undefined {
 export interface PermissionCheckable {
   getAllSessionIds(): string[];
   getSession(id: string): { pid: number; state: string; permissionMode?: string; permissionModeLockedUntil?: number } | undefined;
-  setNeedsPermission(sessionId: string, value: boolean, promptText?: string): void;
+  setNeedsPermission(sessionId: string, value: boolean, promptText?: string, isLimitPrompt?: boolean): void;
   setPermissionMode(sessionId: string, mode: string | undefined): void;
 }
 
@@ -70,29 +76,29 @@ export function startPermissionChecker(
   getScreenText?: (sessionId: string, pid: number) => Promise<string | null>,
   injectIntoSession?: (sessionId: string, text: string) => Promise<void>,
 ): (() => void) | undefined {
-  if (!IS_WINDOWS) return undefined;
+  // On non-Windows, only proceed if a cross-platform screen reader is provided
+  if (!IS_WINDOWS && !getScreenText) return undefined;
 
   // Lazy import to avoid loading on non-Windows
   let readScreen: ((pid: number) => Promise<string | null>) | undefined;
 
-  const load = async () => {
-    const mod = await import('../pty/consoleInjector.js');
-    readScreen = mod.readScreen;
-  };
-
-  load().catch(() => { /* ignore — runCycle will retry */ });
+  if (IS_WINDOWS) {
+    const load = async () => {
+      const mod = await import('../pty/consoleInjector.js');
+      readScreen = mod.readScreen;
+    };
+    load().catch(() => { /* ignore — runCycle will retry */ });
+  }
 
   // Hysteresis: only clear needsPermission after 3 consecutive misses
   const missCount = new Map<string, number>();
-  // Cooldown: don't auto-dismiss rate-limit more than once per 30s per session
-  const rateLimitDismissedAt = new Map<string, number>();
 
   let stopped = false;
 
   const runCycle = async () => {
     if (stopped) return;
-    if (!readScreen) {
-      // Module not loaded yet — retry soon
+    if (!readScreen && !getScreenText) {
+      // Windows console reader not loaded yet and no custom screen reader — retry soon
       setTimeout(runCycle, 1000);
       return;
     }
@@ -123,13 +129,11 @@ export function startPermissionChecker(
           // owns clearing. Screen reader only CONFIRMS/ENHANCES, never removes.
           missCount.set(id, (missCount.get(id) ?? 0) + 1);
         }
-        // Auto-dismiss rate-limit prompt: Claude CLI blocks on Enter when usage limit is hit
-        if (text && RATE_LIMIT_PATTERN.test(text) && injectIntoSession) {
-          const lastDismissed = rateLimitDismissedAt.get(id) ?? 0;
-          if (Date.now() - lastDismissed > 30_000) {
-            rateLimitDismissedAt.set(id, Date.now());
-            console.log(`[permCheck] rate-limit detected for ${id.slice(0, 8)}, auto-dismissing`);
-            injectIntoSession(id, '\r').catch(() => {});
+        // Rate-limit prompt: surface it in the UI so the user can dismiss manually
+        if (text && RATE_LIMIT_PATTERN.test(text)) {
+          if (!hasPrompt) {
+            // Not already flagged as a normal permission prompt — flag as limit prompt
+            stateManager.setNeedsPermission(id, true, cleanText(extractPromptBlock(text)), true);
           }
         }
         // Detect permission mode from status bar
@@ -137,14 +141,11 @@ export function startPermissionChecker(
           const screenMode = detectPermissionMode(text);
           const currentSession = stateManager.getSession(id);
           const current = currentSession?.permissionMode;
-          // REVERT NOTE: original code didn't check the lock here:
-          //   if (screenMode && screenMode !== current) { setPermissionMode(id, screenMode); }
-          //   else if (!screenMode && current && current !== 'default') { setPermissionMode(id, 'default'); }
-          // CHANGE: Only reset to 'default' if the repaint-based lock has expired.
-          // Without this check, permissionChecker resets to 'default' 3s after a repaint
-          // even though the repaint confirmed the session is still in a non-default mode.
           const locked = currentSession?.permissionModeLockedUntil !== undefined && Date.now() < currentSession.permissionModeLockedUntil;
-          if (screenMode && screenMode !== current) {
+          if (screenMode) {
+            // Always call setPermissionMode when screen confirms a non-default mode —
+            // even if unchanged — so the lock is refreshed every 3s cycle and the
+            // transcript can never overwrite it while the mode is visible in terminal.
             stateManager.setPermissionMode(id, screenMode);
           } else if (!screenMode && current && current !== 'default' && !locked) {
             // Status bar doesn't show a mode and lock has expired → back to default

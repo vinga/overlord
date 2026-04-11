@@ -184,6 +184,16 @@ func main() {
 					return
 				}
 
+				if n == 6 && string(header[:6]) == "GETTY\n" {
+					// GETTY: respond with this bridge's controlling TTY path, then close.
+					// The server uses the path to find the right Terminal.app tab via AppleScript.
+					ttyPath := getBridgeTTY()
+					fmt.Fprintf(os.Stderr, "[bridge] GETTY: %q\n", ttyPath)
+					conn.Write([]byte(ttyPath + "\n"))
+					conn.Close()
+					return
+				}
+
 				if n == 6 && string(header[:6]) == "INPUT\n" {
 					// Input-only connection: forward pipe→child, no broadcast
 					fmt.Fprintf(os.Stderr, "[bridge] Input-only client connected\n")

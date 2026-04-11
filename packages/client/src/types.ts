@@ -48,6 +48,18 @@ interface PendingQuestionSet {
   questions: PendingQuestion[];
 }
 
+interface Task {
+  taskId: string;
+  sessionId: string;
+  sessionName?: string;   // display name of the session at task creation time
+  title?: string;
+  summary?: string;
+  state: 'active' | 'done';
+  createdAt: string;
+  completedAt?: string;
+  accepted?: boolean;
+}
+
 interface Session {
   sessionId: string;
   provider?: SessionProvider;
@@ -69,15 +81,19 @@ interface Session {
   isCompacting?: boolean;
   resumedFrom?: string;
   sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide';
+  bridgeTty?: string;         // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
   needsPermission?: boolean;
   permissionPromptText?: string;
+  isLimitPrompt?: boolean;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   completionHint?: 'done' | 'awaiting';
-  completionSummaries?: Array<{ summary: string; completedAt: string; accepted?: boolean }>;
+  completionSummaries?: Task[];
   userAccepted?: boolean;
   currentTaskLabel?: string;
+  currentTask?: Task;
   isWorker?: boolean;
+  ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter
 }
 
 interface Room {
@@ -218,6 +234,7 @@ export type {
   ActivityItemKind,
   ActivityItem,
   Subagent,
+  Task,
   Session,
   PendingQuestion,
   PendingQuestionSet,

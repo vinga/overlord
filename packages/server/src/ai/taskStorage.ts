@@ -1,112 +1,93 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { runClaudeQuery } from './claudeQuery.js';
+import type { Task } from '../types.js';
 
-export interface TaskSummary {
-  summary: string;
-  completedAt: string; // ISO timestamp
-  accepted?: boolean;
+/** Convert a cwd path to a stable filesystem-safe slug for the room tasks file. */
+function cwdToRoomSlug(cwd: string): string {
+  return cwd
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 200);
 }
 
-function getStoragePath(sessionId: string): string {
-  return path.join(os.homedir(), '.claude', 'overlord', 'tasks', `${sessionId}.json`);
+function getRoomTasksPath(cwd: string): string {
+  return path.join(os.homedir(), '.claude', 'overlord', 'rooms', `${cwdToRoomSlug(cwd)}.tasks.json`);
 }
 
-export function readTaskSummaries(sessionId: string): TaskSummary[] {
+/** Read all tasks for a room (all sessions in that cwd). Newest-first. */
+export function readRoomTasks(cwd: string): Task[] {
   try {
-    const p = getStoragePath(sessionId);
-    if (!fs.existsSync(p)) return [];
-    return JSON.parse(fs.readFileSync(p, 'utf-8')) as TaskSummary[];
+    const p = getRoomTasksPath(cwd);
+    if (fs.existsSync(p)) {
+      return JSON.parse(fs.readFileSync(p, 'utf-8')) as Task[];
+    }
+    return [];
   } catch {
     return [];
   }
 }
 
-function writeSummaries(sessionId: string, summaries: TaskSummary[]): void {
+/** Read tasks for a specific session within a room. */
+export function readTasks(cwd: string, sessionId: string): Task[] {
+  return readRoomTasks(cwd).filter(t => t.sessionId === sessionId);
+}
+
+export function writeRoomTasks(cwd: string, tasks: Task[]): void {
   try {
-    const p = getStoragePath(sessionId);
+    const p = getRoomTasksPath(cwd);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(summaries, null, 2), 'utf-8');
-  } catch {
-    // ignore write errors
-  }
+    fs.writeFileSync(p, JSON.stringify(tasks, null, 2), 'utf-8');
+  } catch { /* silently swallow */ }
 }
 
-export async function appendTaskSummary(sessionId: string, summary: string): Promise<TaskSummary[]> {
-  const existing = readTaskSummaries(sessionId);
-
-  // No existing summaries — always append directly, no Haiku call needed
-  if (existing.length === 0) {
-    const entry: TaskSummary = { summary, completedAt: new Date().toISOString() };
-    const updated = [entry];
-    writeSummaries(sessionId, updated);
-    return updated;
-  }
-
-  // Build context from last 3 summaries for the Haiku prompt
-  const last3 = existing.slice(-3);
-  const numberedList = last3
-    .map((s, i) => `${i + 1}. ${s.summary}`)
-    .join('\n');
-
-  try {
-    const prompt =
-      `You are a task summary deduplication assistant. Given a new task summary and recent previous summaries, decide what to do.\n\n` +
-      `Previous summaries (most recent last):\n${numberedList}\n\n` +
-      `New summary: "${summary}"\n\n` +
-      `Choose exactly one action:\n` +
-      `- "skip" — the new summary conveys the same meaning as an existing one\n` +
-      `- "update_previous: <text>" — the new summary supersedes/extends the most recent; replace it with <text>\n` +
-      `- "append" — this is a distinct new task; add it\n\n` +
-      `Reply with just the action on one line.`;
-
-    const response = (await runClaudeQuery(prompt, 30_000)).trim();
-    const lower = response.toLowerCase();
-
-    if (lower.startsWith('skip')) {
-      return existing;
-    }
-
-    if (lower.startsWith('update_previous:')) {
-      const newText = response.slice('update_previous:'.length).trim();
-      const updated = [...existing];
-      updated[updated.length - 1] = {
-        summary: newText,
-        completedAt: existing[existing.length - 1].completedAt,
-      };
-      writeSummaries(sessionId, updated);
-      return updated;
-    }
-
-    // 'append' or any unrecognised response — fall through to append
-  } catch {
-    // Fallback: simple exact case-insensitive match against last entry only
-    const last = existing[existing.length - 1];
-    if (last && last.summary.trim().toLowerCase() === summary.trim().toLowerCase()) {
-      return existing;
-    }
-  }
-
-  // Append new entry
-  const entry: TaskSummary = { summary, completedAt: new Date().toISOString() };
-  const updated = [...existing, entry];
-  writeSummaries(sessionId, updated);
-  return updated;
+/** Creates a new active task for a session, prepends to room storage, returns the task. */
+export function createTask(cwd: string, sessionId: string, sessionName: string | undefined, createdAt: string): Task {
+  const existing = readRoomTasks(cwd);
+  const sessionTaskCount = existing.filter(t => t.sessionId === sessionId).length;
+  const task: Task = {
+    taskId: `${sessionId}-${sessionTaskCount + 1}`,
+    sessionId,
+    sessionName,
+    state: 'active',
+    createdAt,
+  };
+  writeRoomTasks(cwd, [task, ...existing]);
+  return task;
 }
 
-export function acceptTaskSummary(sessionId: string, completedAt: string): TaskSummary[] | null {
-  const summaries = readTaskSummaries(sessionId);
-  const idx = summaries.findIndex(s => s.completedAt === completedAt);
+/** Updates a task by taskId in the room file, returns the full updated array. */
+export function updateTask(cwd: string, taskId: string, patch: Partial<Task>): Task[] {
+  const tasks = readRoomTasks(cwd);
+  const idx = tasks.findIndex(t => t.taskId === taskId);
+  if (idx === -1) return tasks;
+  tasks[idx] = { ...tasks[idx], ...patch };
+  writeRoomTasks(cwd, tasks);
+  return tasks;
+}
+
+/** Accept a done task by completedAt timestamp. Returns updated session tasks or null if not found. */
+export function acceptTaskByCompletedAt(cwd: string, sessionId: string, completedAt: string): Task[] | null {
+  const tasks = readRoomTasks(cwd);
+  const idx = tasks.findIndex(t => t.sessionId === sessionId && t.completedAt === completedAt);
   if (idx === -1) return null;
-  summaries[idx] = { ...summaries[idx], accepted: true };
-  writeSummaries(sessionId, summaries);
-  return summaries;
+  tasks[idx] = { ...tasks[idx], accepted: true };
+  writeRoomTasks(cwd, tasks);
+  return tasks.filter(t => t.sessionId === sessionId && t.state === 'done');
+}
+
+// ── Completion hint (per-session, unchanged) ─────────────────────────────────
+
+function getHintPath(sessionId: string): string {
+  return path.join(os.homedir(), '.claude', 'overlord', 'tasks', `${sessionId}.hint`);
 }
 
 export function saveCompletionHint(sessionId: string, hint: 'done'): void {
   try {
-    const p = getStoragePath(sessionId).replace('.json', '.hint');
+    const p = getHintPath(sessionId);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, hint, 'utf-8');
   } catch { /* ignore */ }
@@ -114,16 +95,19 @@ export function saveCompletionHint(sessionId: string, hint: 'done'): void {
 
 export function loadCompletionHint(sessionId: string): 'done' | undefined {
   try {
-    const p = getStoragePath(sessionId).replace('.json', '.hint');
-    const content = fs.readFileSync(p, 'utf-8').trim();
+    const content = fs.readFileSync(getHintPath(sessionId), 'utf-8').trim();
     if (content === 'done') return 'done';
   } catch { /* not found */ }
   return undefined;
 }
 
 export function clearCompletionHint(sessionId: string): void {
-  try {
-    const p = getStoragePath(sessionId).replace('.json', '.hint');
-    fs.unlinkSync(p);
-  } catch { /* ignore */ }
+  try { fs.unlinkSync(getHintPath(sessionId)); } catch { /* ignore */ }
+}
+
+// ── Legacy stubs ──────────────────────────────────────────────────────────────
+
+/** @deprecated Request summaries are replaced by Task.title. No-op kept for compat. */
+export function saveRequestSummary(_sessionId: string, _summary: string): void {
+  // no-op
 }

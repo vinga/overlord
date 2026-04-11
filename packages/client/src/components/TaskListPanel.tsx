@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import type { Room, Session } from '../types';
+import type { Room, Session, Task } from '../types';
 import styles from './TaskListPanel.module.css';
 
 type Tab = 'agents' | 'tasks';
@@ -87,10 +87,11 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
   // "Done" = completionSummaries entries
   const doneTasks = filters.has('done')
     ? allSessions.flatMap(({ session }) =>
-        (session.completionSummaries ?? []).map(s => ({
+        (session.completionSummaries ?? []).map((task: Task) => ({
           session,
-          text: s.summary,
-          completedAt: s.completedAt,
+          task,
+          text: task.title ?? task.summary ?? '',
+          completedAt: task.completedAt ?? task.createdAt,
           kind: 'done' as const,
         }))
       ).sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()).slice(0, 50)
@@ -257,16 +258,16 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
             {doneTasks.length > 0 && (
               <section className={styles.section}>
                 <div className={styles.sectionLabel}>Done</div>
-                {doneTasks.map(({ session, text, completedAt }, i) => {
-                  const summary = (session.completionSummaries ?? []).find(s => s.completedAt === completedAt);
-                  const isAccepted = summary?.accepted ?? false;
+                {doneTasks.map(({ session, task, text, completedAt }, i) => {
+                  const isAccepted = task.accepted ?? false;
                   return (
                   <div key={`${session.sessionId}-${i}`} className={`${styles.row} ${styles.rowDone}`} onClick={() => handleSelect(session)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') handleSelect(session); }}>
                     <span className={styles.rowIcon} style={{ color: isAccepted ? '#22c55e' : '#f59e0b' }}>✓</span>
                     <div className={styles.rowBody}>
-                      <div className={styles.rowText}>{text}</div>
+                      <div className={styles.rowTitle}>{text || getSessionDisplayName(session, customNames)}</div>
+                      {task.summary && task.title && <div className={styles.rowText}>{task.summary}</div>}
                       <div className={styles.rowMeta}>
-                        <span className={styles.metaSession}>{getSessionDisplayName(session, customNames)}</span>
+                        <span className={styles.metaSession}>{task.sessionName ?? getSessionDisplayName(session, customNames)}</span>
                         <span className={styles.metaDot}>·</span>
                         <span className={styles.metaTime}>{relativeTime(completedAt)}</span>
                         {!isAccepted && (
@@ -282,7 +283,7 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                           fetch(`/api/sessions/${session.sessionId}/accept-task`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ completedAt }),
+                            body: JSON.stringify({ completedAt: task.completedAt }),
                           }).catch(console.error);
                         }}
                       >

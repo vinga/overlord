@@ -43,4 +43,50 @@
   font-weight: 600;
   align-self: center;
   margin-left: 4px;
+  cursor: pointer;
+}
+
+.collapseToggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 9px;
+  cursor: pointer;
+  align-self: center;
+  margin-left: 2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.collapseToggle:hover {
+  color: rgba(255, 255, 255, 0.55);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.collapsedBadge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: transparent;
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  color: rgba(212, 175, 55, 0.5);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.collapsedBadge:hover {
+  color: rgba(212, 175, 55, 0.85);
+  border-color: rgba(212, 175, 55, 0.5);
 }

@@ -5,11 +5,27 @@ package main
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
+
+// getBridgeTTY returns the TTY device path of the terminal that launched this bridge
+// (e.g. "/dev/ttys003"). Uses the `tty` command which reads stdin's controlling terminal.
+// Returns "" if stdin is not a TTY or the command fails.
+func getBridgeTTY() string {
+	out, err := exec.Command("tty").Output()
+	if err != nil {
+		return ""
+	}
+	result := strings.TrimSpace(string(out))
+	if result == "not a tty" {
+		return ""
+	}
+	return result
+}
 
 // startChildWithPty on Unix/macOS: allocate a real PTY so SIGWINCH triggers repaints.
 func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), func() int, int, func(), func(int, int), <-chan struct{}, error) {
@@ -45,6 +61,7 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 			if n > 0 {
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
+				os.Stdout.Write(chunk)
 				clients.broadcast(chunk)
 			}
 			if err != nil {

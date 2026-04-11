@@ -29,11 +29,17 @@ static void post_char(pid_t pid, UniChar c) {
 }
 
 static void post_return(pid_t pid) {
+    /* Set both the physical key code AND the unicode CR character.
+     * Some terminal emulators (Terminal.app) require the unicode string to be
+     * set on synthetic CGEvents to correctly route the keystroke to the PTY. */
+    UniChar cr = 0x0D;
     CGEventRef down = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_Return, true);
+    CGEventKeyboardSetUnicodeString(down, 1, &cr);
     CGEventPostToPid(pid, down);
     CFRelease(down);
 
     CGEventRef up = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)kVK_Return, false);
+    CGEventKeyboardSetUnicodeString(up, 1, &cr);
     CGEventPostToPid(pid, up);
     CFRelease(up);
 }
@@ -56,7 +62,19 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    const char *text = argv[2];
+    /* Support "-" as text argument: read from stdin instead */
+    static char stdinbuf[131072];
+    const char *text;
+    if (strcmp(argv[2], "-") == 0) {
+        size_t total = 0;
+        int ch;
+        while ((ch = getchar()) != EOF && total < sizeof(stdinbuf) - 1)
+            stdinbuf[total++] = (char)ch;
+        stdinbuf[total] = '\0';
+        text = stdinbuf;
+    } else {
+        text = argv[2];
+    }
     size_t len = strlen(text);
 
     /* Decode UTF-8 to Unicode codepoints and post each */

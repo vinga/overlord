@@ -157,6 +157,57 @@ export function findFresherTranscript(cwd: string, excludeSessionId: string, kno
   } catch { return null; }
 }
 
+/**
+ * Read the first few substantive user messages from the start of a transcript.
+ * Returns them joined so Haiku can infer the real task even if the first message
+ * is trivial ("continue", "ok", etc.).
+ */
+export function readFirstUserMessage(transcriptPath: string): string {
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    let content = '';
+    try {
+      const buf = Buffer.alloc(96 * 1024);
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
+      content = buf.slice(0, bytesRead).toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = content.split('\n');
+    const collected: string[] = [];
+    for (const line of lines) {
+      if (!line.trim() || collected.length >= 4) break;
+      try {
+        const parsed = JSON.parse(line) as {
+          type?: string;
+          message?: { role?: string; content?: unknown };
+          payload?: { role?: string; content?: Array<{ text?: string }> };
+        };
+        let text = '';
+        // Claude format
+        if (parsed.type === 'user') {
+          const c = parsed.message?.content;
+          const arr = Array.isArray(c) ? c : [];
+          const textBlock = arr.find((b: { type?: string; text?: string }) => b.type === 'text');
+          text = (typeof textBlock?.text === 'string' ? textBlock.text : typeof c === 'string' ? c : '').trim();
+          if (text.startsWith('<environment_details') || text.startsWith('<local-command') || text.startsWith('<command-name>')) text = '';
+          // Strip trailing environment/system blocks appended to user messages
+          const envIdx = text.indexOf('<environment_details');
+          if (envIdx > 0) text = text.slice(0, envIdx).trim();
+        }
+        // Codex format
+        if (parsed.type === 'response_item' && parsed.payload?.role === 'user') {
+          const raw = (parsed.payload.content ?? []).map((b) => b.text ?? '').join(' ').trim();
+          if (!raw.startsWith('<environment_context>')) text = raw;
+        }
+        if (text.length >= 8) collected.push(text.slice(0, 300));
+      } catch { /* skip malformed lines */ }
+    }
+    return collected.join('\n\n---\n\n');
+  } catch { /* ignore */ }
+  return '';
+}
+
 export function findTranscriptPathAnywhere(sessionId: string): string | null {
   const projectsDir = path.join(os.homedir(), '.claude', 'projects');
   try {
@@ -234,9 +285,12 @@ function detectCompactionIncremental(filePath: string, fileSize: number): { comp
   const cached = compactCountCache.get(filePath);
   const now = Date.now();
 
-  let compactCount = cached?.compactCount ?? 0;
-  let lastCompactTimestamp = cached?.lastCompactTimestamp;
-  const scanFrom = cached?.fileSize ?? 0;
+  // If the file shrank (transcript replaced during compaction), reset the cache
+  // so we re-scan from the beginning of the new file.
+  const fileShrank = cached && fileSize < cached.fileSize;
+  let compactCount = fileShrank ? 0 : (cached?.compactCount ?? 0);
+  let lastCompactTimestamp = fileShrank ? undefined : cached?.lastCompactTimestamp;
+  const scanFrom = fileShrank ? 0 : (cached?.fileSize ?? 0);
 
   if (scanFrom < fileSize) {
     // Read only the new portion of the file
@@ -1064,17 +1118,13 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
   return undefined;
 }
 
-export function readSubagents(cwd: string, sessionId: string): Subagent[] {
+export function readSubagents(cwd: string, sessionId: string, transcriptPath?: string | null): Subagent[] {
   if (cwd.replace(/\\/g, '/').includes('/.codex/')) return [];
-  const slug = cwdToSlug(cwd);
-  const subagentsDir = path.join(
-    os.homedir(),
-    '.claude',
-    'projects',
-    slug,
-    sessionId,
-    'subagents'
-  );
+  // Prefer deriving the path from the already-resolved transcriptPath (avoids cwdToSlug
+  // stripping the leading dash that Claude Code uses in project directory names).
+  const subagentsDir = transcriptPath
+    ? path.join(path.dirname(transcriptPath), sessionId, 'subagents')
+    : path.join(os.homedir(), '.claude', 'projects', cwdToSlug(cwd), sessionId, 'subagents');
 
   const TEN_MINUTES_MS = 10 * 60 * 1000;
   const subagents: Subagent[] = [];

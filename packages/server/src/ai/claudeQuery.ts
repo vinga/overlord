@@ -1,9 +1,9 @@
 import { execSync, spawn } from 'child_process';
 import { join } from 'path';
-import { mkdirSync, unlinkSync, readdirSync, statSync } from 'fs';
+import { mkdirSync, unlinkSync } from 'fs';
 import * as os from 'os';
 
-export const HAIKU_WORKER_CWD = join(os.homedir(), '.claude', 'overlord', 'haiku-worker');
+const WORKER_CWD = join(os.homedir(), '.claude', 'overlord', 'query-worker');
 
 let claudeBinCache: string | null = null;
 
@@ -19,37 +19,9 @@ function resolveClaude(): string {
   return claudeBinCache;
 }
 
-/** Delete the session file created by a haiku-worker process (named after its PID). */
 function deleteWorkerSessionFile(pid: number): void {
   const filePath = join(os.homedir(), '.claude', 'sessions', `${pid}.json`);
   try { unlinkSync(filePath); } catch { /* already gone */ }
-}
-
-/** Delete haiku-worker transcript files older than 15 minutes on startup. */
-export function cleanupOldWorkerTranscripts(): void {
-  const projectsDir = join(os.homedir(), '.claude', 'projects');
-  const maxAge = 15 * 60_000; // 15 minutes
-  const now = Date.now();
-  // Find any directory containing 'haiku-worker' (Claude's slug may differ from ours)
-  let dirs: string[];
-  try { dirs = readdirSync(projectsDir); } catch { return; }
-  for (const dir of dirs) {
-    if (!dir.includes('haiku-worker')) continue;
-    const transcriptDir = join(projectsDir, dir);
-    let removed = 0;
-    try {
-      const files = readdirSync(transcriptDir);
-      for (const file of files) {
-        if (!file.endsWith('.jsonl')) continue;
-        const full = join(transcriptDir, file);
-        try {
-          const st = statSync(full);
-          if (now - st.mtimeMs > maxAge) { unlinkSync(full); removed++; }
-        } catch { /* skip */ }
-      }
-    } catch { continue; }
-    if (removed > 0) console.log(`[worker:cleanup] removed ${removed} old transcripts from ${dir}`);
-  }
 }
 
 interface QueueItem {
@@ -89,13 +61,13 @@ function processNext(): void {
   }
 
   const bin = resolveClaude();
-  try { mkdirSync(HAIKU_WORKER_CWD, { recursive: true }); } catch { /* ignore */ }
+  try { mkdirSync(WORKER_CWD, { recursive: true }); } catch { /* ignore */ }
 
   console.log(`[worker] new query — queue remaining: ${queue.length}`);
 
   const child = spawn(bin, ['-p', item.prompt, '--model', 'claude-haiku-4-5-20251001'], {
     encoding: 'utf-8',
-    cwd: HAIKU_WORKER_CWD,
+    cwd: WORKER_CWD,
   } as Parameters<typeof spawn>[2]);
   activeChild = child;
 

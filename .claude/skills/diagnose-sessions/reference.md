@@ -193,6 +193,36 @@ When a PTY resume spawns Claude and it fails/retries, each attempt creates tempo
 
 **Fix:** CWD-based /clear detection removed from both `sessionEventHandlers.ts` (added handler) and `transcriptWatcher.ts` (handleTranscriptAdded). The remaining PID-based and in-place detection paths also check `hasActiveResumeInProgress()` as a safety guard.
 
+### Bridge session marked closed after /clear — health check too aggressive (FIXED)
+
+**Symptom:** A bridge session (e.g. "Ulyana") shows as `closed` even though its PID is alive and the bridge process is running. Happens specifically after `/clear` is run inside the session.
+
+**Root cause:** `/clear` inside a bridge session changes the session file's `sessionId` (e.g. `9eba6dc7` → `72ccd9d6`). The server correctly detects this via the `changed` handler, marks the old session closed, and links the new ID to the bridge pipe. The bridge output socket connects successfully. However, a 10-second health check timer then fires — because after `/clear`, Claude shows a blank idle prompt with no output — and destroys the output socket, leaving the new session without a terminal feed.
+
+**Why the RSNUD didn't help:** The resize-and-nudge (`RSNUD`) is sent after 500ms to trigger a repaint. For a blank idle prompt, the repaint output may be minimal ANSI escape codes that arrive within 10s, but in practice the health check was firing before or at the same time as the repaint.
+
+**Diagnosis pattern:**
+```
+[session:created] Session created | PID 71856 name=Ulyana___BRG:...
+[bridge] linking session 72ccd9d6 to pipe overlord-new-xxx via marker brg-xxx
+[bridge] input socket connected for 72ccd9d6
+[bridge] output socket connected for 72ccd9d6
+[bridge] DEAD: no output from 72ccd9d6 after 10s — bridge process likely exited   ← false positive
+```
+The session then shows as `closed` in server state while PID is alive.
+
+**Fix (implemented):** Removed the server-side health check entirely (`packages/server/src/index.ts`). Dead bridges are now detected by:
+1. **Client-side:** `XtermTerminal` shows a "Bridge disconnected" overlay after 8s with no content
+2. **Server-side:** `processChecker` marks the session `closed` when the PID dies
+
+**Diagnostic check if this reappears:**
+```bash
+grep -E "DEAD: no output|bridge.*DEAD|output socket connected" /tmp/overlord-server.log | tail -10
+```
+If you see "DEAD: no output" after "output socket connected" for the same session within 30s → health check false positive. Check if the session PID is actually alive (`kill -0 <pid>`).
+
+---
+
 ### Blank PTY terminal after resume — missing client notification (FIXED)
 `migratePtyMaps()` updates server-side PTY routing maps when a session UUID changes (e.g., interim → real ID), but did NOT notify the client. The client's output handlers remained registered under the old session ID while the server sent output under the new ID. Result: blank terminal.
 

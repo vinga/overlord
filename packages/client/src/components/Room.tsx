@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import type { Room as RoomType, Session, TerminalSpawnMode } from '../types';
 import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
+import { SessionCommands } from './SessionCommands';
 import styles from './Room.module.css';
+import dialogStyles from './DirectoryPickerDialog.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 
@@ -38,6 +41,37 @@ export const SESSION_NAMES = [
   'Olexa','Pascal','Reverie','Simone','Tamsin','Ulyana','Viktor','Waverly','Xaldin','Yasmin',
   'Zephyra','Archer','Bellamy','Cedric','Dulcie','Esmera','Fabian','Gemma','Harper','Ignace',
   'Jorah','Atlas','Isolde','Cinder','Thalia','Oriel','Ronan','Sable','Lyra','Ember',
+  // batch 2 — 300 originals
+  'Aethon','Boreas','Calder','Drevak','Elvan','Fyren','Gravik','Halvard','Ilvane','Jokull',
+  'Kaldris','Lyrvane','Molveth','Neldrak','Orvith','Pyrrik','Quelvan','Rosveth','Sildrak','Torvath',
+  'Ulvrik','Veldrak','Wyndrak','Xolvath','Yrveth','Zaldane','Aelborn','Bryndor','Celdane','Draveth',
+  'Elorith','Fyldane','Galdeth','Halveth','Ilydor','Jalvane','Keldris','Lirborn','Maldeth','Nalvane',
+  'Ananke','Hemera','Hypnos','Khione','Eos','Selene','Hecate','Asteria','Phoebe','Perses',
+  'Zuberi','Amani','Jabari','Kofi','Kwame','Adaeze','Emeka','Ngozi','Obinna','Chiamaka',
+  'Haruki','Hotaru','Izumi','Kagami','Kasumi','Kohaku','Koyuki','Murasaki','Natsuki','Tsuki',
+  'Piran','Gwydion','Blodeuedd','Taliesin','Ceridwen','Arianrhod','Pwyll','Pryderi','Manawyd','Carantoc',
+  'Aldebaran','Bellatrix','Mintaka','Alnitak','Alnilam','Saiph','Arneb','Phact','Wezn','Nihal',
+  'Cressida','Perdita','Titania','Miranda','Caliban','Trinculo','Stephano','Prospero','Sycorax','Gonzalo',
+  'Heliodor','Peridot','Tsavorite','Tanzanite','Alexandrite','Paraiba','Phenakite','Demantoid','Indicolite','Rubelite',
+  'Morion','Goshenite','Morganite','Larimar','Labradorite','Moonstone','Sunstone','Bloodstone','Carnelian','Chrysoprase',
+  'Vrana','Kalina','Zorka','Vesna','Neda','Rada','Zlata','Brana','Stela','Milena',
+  'Dragan','Boran','Gordan','Miran','Dalibor','Branimir','Dobrivoj','Vladislav','Zivko','Ratko',
+  'Revka','Eiran','Boaz','Liron','Nofar','Shira','Tamar','Yonatan','Avital','Dafna',
+  'Gudrun','Solveig','Bryndis','Frode','Sigrun','Thorleif','Ragnvald','Eyvind','Vigfus','Snorri',
+  'Fionn','Caoimhe','Sorcha','Tadhg','Nuala','Oisin','Eithne','Ciara','Aoibhe','Seanan',
+  'Noctis','Lucis','Aevum','Caelum','Orbis','Nexum','Axius','Vexor','Kyrix','Drakon',
+  'Zephyros','Euros','Notos','Aeolus','Triton','Proteus','Nereus','Tethys','Doris','Galene',
+  'Morwen','Elorian','Sylvaine','Thornwick','Ashveil','Glenmoor','Darkholm','Starweald','Moonhollow','Brightfen',
+  'Velox','Cygni','Lyrae','Aquilae','Cephei','Orionis','Scorpii','Leonis','Virginis','Tauri',
+  'Caelindra','Sylvreth','Morwenna','Thorneval','Duskfall','Cinderveil','Ashenveil','Gloomhaven','Frostmere','Embercroft',
+  'Makari','Balor','Cernunnos','Dagda','Goibniu','Morrigan','Nuada','Brighid','Lugh','Danu',
+  'Aozora','Hayate','Oboro','Suzume','Takara','Utsuro','Yamabuki','Yozora','Fubuki','Ikazuchi',
+  'Calveth','Vorin','Trevak','Xalvan','Yndrek','Zaveth','Aldak','Brivel','Corvath','Elveth',
+  'Falvak','Gloren','Haldrek','Ilvath','Jolvak','Korven','Lardrek','Morvath','Naldrak','Orvath',
+  'Paldrek','Qalveth','Roldrak','Saldeth','Tolveth','Ulvath','Valdrek','Welvan','Xoldrak','Yaldrek',
+  'Noctua','Solarius','Lunaris','Cometis','Cosmica','Astronis','Stellaris','Nebulis','Orbita','Galaxia',
+  'Thornden','Emberveil','Frostmoor','Stonefield','Duskwood','Dawntide','Cloudrift','Nightveil','Sunrift','Stormrift',
+  'Elspeth','Merewyn','Sunniva','Aldwyn','Wulfric','Edwyn','Aelwyn','Briseis','Calynda','Evadne',
 ];
 
 function lastActivityLabel(isoTimestamp: string): string {
@@ -49,12 +83,236 @@ function lastActivityLabel(isoTimestamp: string): string {
   return `${diffHour}h`;
 }
 
+function InfoTooltip({ text }: { text: string }) {
+  const [visible, setVisible] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+
+  return (
+    <span
+      ref={ref}
+      onMouseEnter={e => {
+        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        setPos({ x: r.left + r.width / 2, y: r.top - 8 });
+        setVisible(true);
+      }}
+      onMouseLeave={() => setVisible(false)}
+      style={{ display: 'inline-flex', alignItems: 'center', cursor: 'default', color: 'rgba(255,255,255,0.25)', flexShrink: 0 }}
+    >
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4"/>
+        <text x="8" y="12" textAnchor="middle" fill="currentColor" fontSize="9" fontFamily="Inter,system-ui,sans-serif" fontWeight="600">i</text>
+      </svg>
+      {visible && ReactDOM.createPortal(
+        <div style={{
+          position: 'fixed', left: pos.x, top: pos.y, transform: 'translate(-50%, -100%)',
+          background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.12)',
+          borderRadius: 7, padding: '8px 12px', maxWidth: 260,
+          fontFamily: "'Inter',system-ui,sans-serif", fontSize: 12, lineHeight: 1.5,
+          color: 'rgba(255,255,255,0.75)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          zIndex: 9999, pointerEvents: 'none',
+        }}>{text}</div>,
+        document.body
+      )}
+    </span>
+  );
+}
+
+function CopyBtn({ text, onAfterCopy }: { text: string; onAfterCopy?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+        onAfterCopy?.();
+      }}
+      title="Copy"
+      style={{ flexShrink: 0, background: 'none', border: 'none', color: copied ? '#22c55e' : 'rgba(255,255,255,0.35)', cursor: 'pointer', padding: '2px 4px', borderRadius: 3, display: 'flex', alignItems: 'center', transition: 'color 0.15s' }}
+    >
+      {copied
+        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      }
+    </button>
+  );
+}
+
+function OverlordToast({ message, icon, accent, onDone }: { message: string; icon: React.ReactNode; accent: string; onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 2500);
+    return () => clearTimeout(t);
+  }, [onDone]);
+
+  return ReactDOM.createPortal(
+    <div
+      onClick={onDone}
+      style={{
+        position: 'fixed', top: 16, right: 16,
+        background: '#2a2a3d', border: `1px solid ${accent}`,
+        borderRadius: 9, padding: '10px 16px',
+        display: 'flex', alignItems: 'center', gap: 10,
+        boxShadow: '0 6px 24px rgba(0,0,0,0.6)',
+        fontFamily: "'Inter',system-ui,sans-serif", fontSize: 13,
+        color: 'rgba(255,255,255,0.92)', zIndex: 10000,
+        cursor: 'pointer', animation: 'toastIn 0.15s ease',
+      }}
+    >
+      {icon}
+      <span>{message}</span>
+    </div>,
+    document.body
+  );
+}
+
+function CommandCopiedToast({ onDone }: { onDone: () => void }) {
+  return (
+    <OverlordToast
+      message="Command copied — paste in your terminal"
+      accent="rgba(212,175,55,0.35)"
+      icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+      onDone={onDone}
+    />
+  );
+}
+
+function RoomSpawnDialog({ cwd, initialName, onSpawn, onCancel, onCopyAndClose }: {
+  cwd: string;
+  initialName: string;
+  onSpawn: (name: string, mode: TerminalSpawnMode) => void;
+  onCancel: () => void;
+  onCopyAndClose?: () => void;
+}) {
+  const [name, setName] = useState(initialName);
+  const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
+  const [bridgePath, setBridgePath] = useState<string>('overlord-bridge');
+  const nameRef = useRef<HTMLInputElement>(null);
+  const markerRef = useRef(Math.random().toString(36).slice(2, 10));
+
+  useEffect(() => {
+    setTimeout(() => { nameRef.current?.focus(); nameRef.current?.select(); }, 50);
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onCancel]);
+
+  useEffect(() => {
+    fetch('/api/info')
+      .then(r => r.json())
+      .then((info: { bridgePath?: string }) => { if (info.bridgePath) setBridgePath(info.bridgePath); })
+      .catch(() => {});
+  }, []);
+
+  const safeName = name.trim().replace(/["\s]/g, '-');
+  const marker = markerRef.current;
+  const commands: Record<TerminalSpawnMode, string | null> = {
+    embedded: null,
+    bridge: `cd "${cwd}" && "${bridgePath}" --pipe overlord-${marker} -- claude --name ${safeName}___BRG:${marker}`,
+    plain: `cd "${cwd}" && claude --name "${name.trim()}"`,
+  };
+
+  const modeRows: { key: TerminalSpawnMode; label: string; tooltip: string }[] = [
+    { key: 'embedded', label: 'Overlord', tooltip: 'Spawns a PTY session managed entirely inside Overlord. No terminal window needed — inject messages, view output, and monitor state directly from the UI.' },
+    { key: 'bridge',   label: 'Bridge',   tooltip: 'Opens Terminal.app with a named-pipe relay. Overlord can inject messages and track the session while you keep full terminal control.' },
+    { key: 'plain',    label: 'Direct',   tooltip: 'Opens Terminal.app running claude directly. No relay — Overlord monitors via session files only. Use when bridge is not needed.' },
+  ];
+
+  return ReactDOM.createPortal(
+    <div className={dialogStyles.backdrop} onClick={onCancel}>
+      <div className={dialogStyles.dialog} onClick={e => e.stopPropagation()}>
+        <div className={dialogStyles.header}>
+          <h2 className={dialogStyles.title}>New Session</h2>
+          <button className={dialogStyles.closeBtn} onClick={onCancel}>×</button>
+        </div>
+
+        {/* Fixed path */}
+        <div style={{ padding: '10px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ fontFamily: "'Inter',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 6 }}>Directory</div>
+          <div style={{ fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: 12, color: 'rgba(255,255,255,0.45)', background: '#0a0a14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, padding: '7px 12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cwd}</div>
+        </div>
+
+        {/* Name row */}
+        <div className={dialogStyles.config} style={{ paddingBottom: 0 }}>
+          <div className={dialogStyles.configRow}>
+            <label className={dialogStyles.label}>Name</label>
+            <input
+              ref={nameRef}
+              className={dialogStyles.nameInput}
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), mode); }}
+              placeholder="Session name…"
+              spellCheck={false}
+            />
+          </div>
+        </div>
+
+        {/* Mode rows — each with optional command inline */}
+        <div style={{ padding: '10px 20px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {modeRows.map(({ key, label, tooltip }) => {
+            const cmd = commands[key];
+            const active = mode === key;
+            return (
+              <div
+                key={key}
+                onClick={() => setMode(key)}
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                  background: active ? 'rgba(255,255,255,0.05)' : 'transparent',
+                  border: '1px solid transparent',
+                  borderLeft: active ? '2px solid rgba(212,175,55,0.6)' : '2px solid transparent',
+                  borderRadius: 6, padding: '7px 10px', cursor: 'pointer',
+                  transition: 'all 0.12s',
+                }}
+              >
+                {/* Mode label + info tooltip */}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, width: 72, alignSelf: 'center' }}>
+                  <span style={{
+                    fontFamily: "'Inter',system-ui,sans-serif", fontSize: 11, fontWeight: 600,
+                    color: active ? '#d4af37' : 'rgba(255,255,255,0.3)',
+                    transition: 'color 0.12s',
+                  }}>{label}</span>
+                  <InfoTooltip text={tooltip} />
+                </span>
+
+                {/* Command or description */}
+                {cmd && name.trim() ? (
+                  <>
+                    <code style={{ flex: 1, fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: 10, color: active ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.3)', wordBreak: 'break-all', lineHeight: 1.5, minWidth: 0 }}>{cmd}</code>
+                    <CopyBtn text={cmd} onAfterCopy={() => { onCancel(); onCopyAndClose?.(); }} />
+                  </>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className={dialogStyles.actions}>
+          <button className={dialogStyles.cancelBtn} onClick={onCancel}>Cancel</button>
+          <button
+            className={dialogStyles.spawnBtn}
+            onClick={() => name.trim() && onSpawn(name.trim(), mode)}
+            disabled={!name.trim()}
+          >Spawn</button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 interface RoomProps {
   room: RoomType;
 
   onSelectSession: (session: Session, subagentId?: string) => void;
   customNames: Record<string, string>;
   onSpawnSession?: (cwd: string) => void;
+  onSpawnDirect?: (cwd: string, name: string, mode: TerminalSpawnMode) => void;
   selectedSessionId?: string | null;
   onRoomClick?: (roomId: string) => void;
   isSpawning?: boolean;
@@ -250,13 +508,17 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [spawnName, setSpawnName] = useState('');
   const [terminalSpawnName, setTerminalSpawnName] = useState('');
   const [terminalMode, setTerminalMode] = useState<TerminalSpawnMode>('bridge');
+  const [showSpawnPanel, setShowSpawnPanel] = useState(false);
+  const [spawnPanelName, setSpawnPanelName] = useState('');
+  const [showCopyToast, setShowCopyToast] = useState(false);
+  const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
   const { getOrder, setOrder } = useRoomOrder();
   const { isCollapsed, toggle } = useRoomCollapsed();
   const collapsed = isCollapsed(room.id);
@@ -422,51 +684,49 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
             })}
           </div>
         )}
-        {onSpawnSession && (
-          <div style={{ position: 'relative' }}>
-            <SpawnMenu
-              cwd={room.cwd}
-              onSpawnEmbedded={() => onSpawnSession?.(room.cwd)}
-              onSpawnTerminal={onNewTerminalSession ? (mode?: TerminalSpawnMode) => { setTerminalMode(mode || 'bridge'); onNewTerminalSession(room.cwd, mode); } : undefined}
-              platform={platform}
-            />
-            {(isSpawning || isTerminalSpawning) && (
-              <div className={styles.spawnPopup}>
-            <input
-              ref={isSpawning ? spawnInputRef : terminalSpawnInputRef}
-              className={styles.spawnNameInput}
-              type="text"
-              placeholder="Session name…"
-              value={isSpawning ? spawnName : terminalSpawnName}
-              maxLength={60}
-              onChange={(e) => {
-                if (isSpawning) {
-                  setSpawnName(e.target.value);
-                  onSpawnNameChange?.(e.target.value);
-                } else {
-                  setTerminalSpawnName(e.target.value);
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  if (isSpawning) onSpawnCommit?.(spawnName);
-                  else onTerminalSpawnCommit?.(terminalSpawnName);
-                } else if (e.key === 'Escape') {
-                  e.stopPropagation();
-                  if (isSpawning) onSpawnCommit?.(null);
-                  else onTerminalSpawnCommit?.(null);
-                }
-              }}
-              onBlur={() => {
-                if (isSpawning) onSpawnCommit?.(null);
-                else onTerminalSpawnCommit?.(null);
-              }}
-            />
-          </div>
-        )}
-          </div>
+        {onSpawnDirect && (
+          <button
+            className={styles.spawnButton}
+            onClick={(e) => {
+              e.stopPropagation();
+              const name = getNextName('');
+              setSpawnPanelName(name);
+              setShowSpawnPanel(p => !p);
+            }}
+            title={`New session in ${room.cwd}`}
+            aria-label="New session"
+          >+</button>
         )}
       </div>
+      {showSpawnPanel && onSpawnDirect && (
+        <RoomSpawnDialog
+          cwd={room.cwd}
+          initialName={spawnPanelName}
+          onSpawn={(name, mode) => {
+            onSpawnDirect(room.cwd, name, mode);
+            setShowSpawnPanel(false);
+          }}
+          onCancel={() => setShowSpawnPanel(false)}
+          onCopyAndClose={() => setShowCopyToast(true)}
+        />
+      )}
+      {showCopyToast && <CommandCopiedToast onDone={() => setShowCopyToast(false)} />}
+      {clearToast === 'sent' && (
+        <OverlordToast
+          message="/clear sent — conversation will reset shortly"
+          accent="rgba(212,175,55,0.35)"
+          icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+          onDone={() => setClearToast(null)}
+        />
+      )}
+      {clearToast === 'error' && (
+        <OverlordToast
+          message="Clear failed — session may be busy or inaccessible"
+          accent="rgba(239,68,68,0.4)"
+          icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>}
+          onDone={() => setClearToast(null)}
+        />
+      )}
       {!collapsed && <div className={styles.desks}>
         {sortedSessions.map((session) => {
           const isSelected = session.sessionId === selectedSessionId;
@@ -509,7 +769,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, selec
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ text: '/clear\r' }),
-                    }).catch(() => null);
+                    }).then(r => {
+                      setClearToast(r.ok ? 'sent' : 'error');
+                    }).catch(() => setClearToast('error'));
                   } : undefined}
                   currentName={customNames[session.sessionId] ?? session.proposedName ?? session.sessionId.slice(0, 8)}
                 />

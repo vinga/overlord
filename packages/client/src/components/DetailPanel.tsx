@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useTick } from '../hooks/useTick';
-import type { Session, WorkerState, ActivityItem, PendingQuestionSet } from '../types';
+import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
@@ -100,6 +100,7 @@ interface SessionActions {
   onResumeSession?: (sessionId: string, cwd: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
+  onFocusBridge?: (sessionId: string) => void;
   onMarkDone?: (sessionId: string) => void;
   onAcceptSession?: (sessionId: string) => void;
   onAcceptTask?: (sessionId: string, completedAt: string) => void;
@@ -119,7 +120,7 @@ interface DetailPanelProps {
   actions: SessionActions;
 
   siblingActiveSessions?: Session[];
-  onSelectSession?: (session: Session) => void;
+  onSelectSession?: (session: Session, subagentId?: string) => void;
   customNames?: Record<string, string>;
   panelWidth: number;
   onPanelWidthChange?: (width: number) => void;
@@ -211,9 +212,10 @@ function formatElapsed(seconds: number): string {
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
 }
 
-function PermissionPrompt({ sessionId, promptText, styles }: {
+function PermissionPrompt({ sessionId, promptText, isLimitPrompt, styles }: {
   sessionId: string;
   promptText?: string;
+  isLimitPrompt?: boolean;
   styles: Record<string, string>;
 }) {
   const [responding, setResponding] = React.useState(false);
@@ -238,33 +240,74 @@ function PermissionPrompt({ sessionId, promptText, styles }: {
     }
   };
 
+  // Keyboard shortcuts: 1/2/3 for permission options, Enter/x for limit prompt
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (responding) return;
+      // Don't fire if user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (isLimitPrompt) {
+        if (e.key === 'Enter') { e.preventDefault(); void respond('\r'); }
+        else if (e.key === 'x' || e.key === 'X') { e.preventDefault(); void respond('\x03'); }
+      } else {
+        if (e.key === '1') { e.preventDefault(); void respond('\r'); }
+        else if (e.key === '2') { e.preventDefault(); void respond('\x1b[B\r'); }
+        else if (e.key === '3') { e.preventDefault(); void respond('\x1b'); }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [responding, isLimitPrompt, sessionId]);
+
   return (
     <div className={styles.permissionPrompt}>
       {promptText && (
         <pre className={styles.permissionPromptText}>{promptText}</pre>
       )}
       <div className={styles.permissionPromptActions}>
-        <button
-          className={`${styles.permissionBtn} ${styles.permissionBtnYes}`}
-          onClick={() => void respond('\r')}
-          disabled={responding}
-        >
-          {error ? 'Failed' : '1. Yes'}
-        </button>
-        <button
-          className={`${styles.permissionBtn} ${styles.permissionBtnAlways}`}
-          onClick={() => void respond('\x1b[B\r')}
-          disabled={responding}
-        >
-          2. Yes, allow this session
-        </button>
-        <button
-          className={`${styles.permissionBtn} ${styles.permissionBtnNo}`}
-          onClick={() => void respond('\x1b')}
-          disabled={responding}
-        >
-          3. No
-        </button>
+        {isLimitPrompt ? (
+          <>
+            <button
+              className={`${styles.permissionBtn} ${styles.permissionBtnYes}`}
+              onClick={() => void respond('\r')}
+              disabled={responding}
+            >
+              {error ? 'Failed' : 'Continue'}
+            </button>
+            <button
+              className={`${styles.permissionBtn} ${styles.permissionBtnNo}`}
+              onClick={() => void respond('\x03')}
+              disabled={responding}
+            >
+              Exit
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              className={`${styles.permissionBtn} ${styles.permissionBtnYes}`}
+              onClick={() => void respond('\r')}
+              disabled={responding}
+            >
+              {error ? 'Failed' : '1. Yes'}
+            </button>
+            <button
+              className={`${styles.permissionBtn} ${styles.permissionBtnAlways}`}
+              onClick={() => void respond('\x1b[B\r')}
+              disabled={responding}
+            >
+              2. Yes, allow this session
+            </button>
+            <button
+              className={`${styles.permissionBtn} ${styles.permissionBtnNo}`}
+              onClick={() => void respond('\x1b')}
+              disabled={responding}
+            >
+              3. No
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -504,6 +547,10 @@ interface ToolEntryProps {
   sessionState?: string;
   styles: Record<string, string>;
   cwd?: string;
+  onAgentClick?: () => void;
+  subagentType?: string;
+  isInlineExpanded?: boolean;
+  onToggleInline?: () => void;
 }
 
 function ToolEntry({
@@ -520,6 +567,10 @@ function ToolEntry({
   sessionState,
   styles,
   cwd,
+  onAgentClick,
+  subagentType,
+  isInlineExpanded,
+  onToggleInline,
 }: ToolEntryProps) {
   const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
   const isDiffExpanded = expandedDiffs.has(diffKey);
@@ -564,12 +615,33 @@ function ToolEntry({
             took {tool.durationMs < 100 ? '<0.1' : (tool.durationMs / 1000).toFixed(1)}<span style={{ opacity: 0.6 }}>s</span>
           </span>
         )}
+        {onAgentClick && (
+          <button
+            className={styles.agentViewLink}
+            onClick={(e) => { e.stopPropagation(); onAgentClick(); }}
+            title="Open subagent detail"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 3, verticalAlign: -1 }}>
+              <path d="M8 8a3 3 0 100-6 3 3 0 000 6zm5 5.5a.5.5 0 01-1 0v-.5A2.5 2.5 0 009.5 10.5h-3A2.5 2.5 0 004 13v.5a.5.5 0 01-1 0V13a3.5 3.5 0 013.5-3.5h3A3.5 3.5 0 0113 13v.5z"/>
+            </svg>
+            {subagentType && subagentType !== 'unknown' ? subagentType : 'view agent'}
+          </button>
+        )}
+        {onToggleInline && (
+          <button
+            className={styles.agentInlineToggle}
+            onClick={(e) => { e.stopPropagation(); onToggleInline(); }}
+            title={isInlineExpanded ? 'Collapse subagent conversation' : 'Expand subagent conversation'}
+          >
+            {isInlineExpanded ? '▾' : '▸'}
+          </button>
+        )}
+        {tool.content && (
+          isFilePath(tool.content)
+            ? <button className={styles.toolDescLink} title={tool.content} onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{trimPath(tool.content, cwd)}</button>
+            : <span className={styles.toolDesc}>{tool.content}</span>
+        )}
       </div>
-      {tool.content && (
-        isFilePath(tool.content)
-          ? <button className={styles.toolDescLink} title={tool.content} onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{trimPath(tool.content, cwd)}</button>
-          : <span className={styles.toolDesc}>{tool.content}</span>
-      )}
       {isArgsExpanded && tool.inputJson && (
         <pre className={styles.argsView}>{tool.inputJson}</pre>
       )}
@@ -613,15 +685,18 @@ interface FeedSegmentsProps {
   styles: Record<string, string>;
   isPty?: boolean;
   cwd?: string;
+  subagents?: Subagent[];
+  onSelectSubagent?: (agentId: string) => void;
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
   const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
+  const [expandedInlineAgents, setExpandedInlineAgents] = useState<Set<number>>(new Set());
   // Keyed by message content so state survives UserMessageContent remounts
   const [expandedImagesMap, setExpandedImagesMap] = useState<Map<string, Set<number>>>(new Map());
   const toggleImage = useCallback((contentKey: string, idx: number) => {
@@ -749,23 +824,66 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const diffKey = `${segIdx}-0`;
           const argsKey = `${segIdx}-0-args`;
           const isLastSegment = segIdx === segments.length - 1;
+          // For Agent tool calls, resolve matching subagent by description
+          let agentClickHandler: (() => void) | undefined;
+          let matchedSubagentType: string | undefined;
+          let matchedSubagent: Subagent | undefined;
+          if (tool.toolName === 'Agent' && subagents && tool.inputJson) {
+            try {
+              const parsed = JSON.parse(tool.inputJson) as { description?: string };
+              const desc = parsed.description;
+              if (desc) {
+                const match = subagents.find(s => s.description === desc);
+                if (match) {
+                  matchedSubagent = match;
+                  matchedSubagentType = match.agentType;
+                  if (onSelectSubagent) agentClickHandler = () => onSelectSubagent(match.agentId);
+                }
+              }
+            } catch { /* ignore parse errors */ }
+          }
+          const isInlineExpanded = expandedInlineAgents.has(segIdx);
+          const toggleInline = matchedSubagent ? () => setExpandedInlineAgents(prev => {
+            const next = new Set(prev);
+            if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+            return next;
+          }) : undefined;
           return (
-            <ToolEntry
-              key={segIdx}
-              tool={tool}
-              diffKey={diffKey}
-              argsKey={argsKey}
-              expandedDiffs={expandedDiffs}
-              setExpandedDiffs={setExpandedDiffs}
-              expandedArgs={expandedArgs}
-              setExpandedArgs={setExpandedArgs}
-              ideName={ideName}
-              showRunning={isLastSegment}
-              showDuration={true}
-              sessionState={sessionState}
-              styles={styles}
-              cwd={cwd}
-            />
+            <React.Fragment key={segIdx}>
+              <ToolEntry
+                tool={tool}
+                diffKey={diffKey}
+                argsKey={argsKey}
+                expandedDiffs={expandedDiffs}
+                setExpandedDiffs={setExpandedDiffs}
+                expandedArgs={expandedArgs}
+                setExpandedArgs={setExpandedArgs}
+                ideName={ideName}
+                showRunning={isLastSegment}
+                showDuration={true}
+                sessionState={sessionState}
+                styles={styles}
+                cwd={cwd}
+                onAgentClick={agentClickHandler}
+                subagentType={matchedSubagentType}
+                isInlineExpanded={matchedSubagent ? isInlineExpanded : undefined}
+                onToggleInline={toggleInline}
+              />
+              {matchedSubagent && isInlineExpanded && (
+                <div className={styles.inlineAgentFeed}>
+                  {matchedSubagent.activityFeed?.length ? (
+                    <FeedSegments
+                      feed={matchedSubagent.activityFeed}
+                      roleLabel={roleLabel}
+                      styles={styles}
+                      sessionState={matchedSubagent.state}
+                    />
+                  ) : (
+                    <span className={styles.inlineAgentEmpty}>No activity yet</span>
+                  )}
+                </div>
+              )}
+            </React.Fragment>
           );
         }
         // Multi-tool group — collapsible, expanded only if in the set
@@ -798,7 +916,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                 <span className={styles.toolRunningSpinner} />
               )}
               <span className={`${styles.toolDesc} ${isLastSegment ? '' : styles.toolDescHoverOnly}`} style={{ marginLeft: 4 }}>
-                {lastTool?.toolName}{activeDesc ? `: ${activeDesc.length > 50 ? activeDesc.slice(0, 50) + '…' : activeDesc}` : ''}
+                {lastTool?.toolName}{activeDesc ? `: ${(trimPath(activeDesc, cwd)).length > 50 ? trimPath(activeDesc, cwd).slice(0, 50) + '…' : trimPath(activeDesc, cwd)}` : ''}
               </span>
               {hasGroupDuration && (
                 <span className={`${styles.toolDuration} ${styles.toolDescHoverOnly}`} title="Total duration">
@@ -870,7 +988,7 @@ export function DetailPanel({
   platform = 'darwin',
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onMarkDone, onAcceptSession, onAcceptTask } = actions;
+  const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession, onAcceptTask } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   const isPendingPty = !selectedSession && !!effectiveSessionId && isPtySession(effectiveSessionId);
@@ -946,7 +1064,7 @@ export function DetailPanel({
   const [resuming, setResuming] = useState(false);
   const [openingTerminal, setOpeningTerminal] = useState(false);
   const [openingBridged, setOpeningBridged] = useState(false);
-  const currentDisplayName =
+const currentDisplayName =
     customName ??
     selectedSession?.proposedName ??
     selectedSession?.slug ??
@@ -1396,9 +1514,25 @@ export function DetailPanel({
                         return isDone && !!onAcceptSession ? () => onAcceptSession(selectedSession.sessionId) : undefined;
                       })()}
                     />
-                    {(() => { const l = getLaunchInfo(selectedSession, isPty); return (
-                      <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
-                    ); })()}
+                    {(() => {
+                      const l = getLaunchInfo(selectedSession, isPty);
+                      const canFocus = !!(selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge);
+                      if (canFocus) {
+                        return (
+                          <button
+                            className={`${styles.launchBadge} ${styles.launchBadgeFocusable}`}
+                            data-category={l.category}
+                            data-tooltip="Click to bring terminal window to front"
+                            onClick={() => onFocusBridge!(selectedSession.sessionId)}
+                          >
+                            {l.name} ↗
+                          </button>
+                        );
+                      }
+                      return (
+                        <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
+                      );
+                    })()}
                     {selectedSession.permissionMode && (
                       <span
                         className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
@@ -1407,7 +1541,7 @@ export function DetailPanel({
                           selectedSession.permissionMode === 'bypassPermissions' ? 'Bypass all permissions — click to change' :
                           selectedSession.permissionMode === 'acceptEdits' ? 'Auto-accept edits — click to change' :
                           selectedSession.permissionMode === 'plan' ? 'Plan mode only — click to change' :
-                          'Default permissions — click to change'
+                          'Ask for permissions (default) — click to change'
                         }
                         role="button"
                         tabIndex={0}
@@ -1422,13 +1556,29 @@ export function DetailPanel({
                         {selectedSession.permissionMode === 'bypassPermissions' ? 'bypass' :
                          selectedSession.permissionMode === 'acceptEdits' ? 'auto-edit' :
                          selectedSession.permissionMode === 'plan' ? 'plan' :
-                         'default'}
+                         'ask'}
                       </span>
                     )}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   </div>{/* headerMain */}
+                  {selectedSession.currentTask && !selectedSession.isWorker && ((() => {
+                    const task = selectedSession.currentTask;
+                    const ageMs = Date.now() - new Date(task.createdAt).getTime();
+                    const isGenerating = !task.title && ageMs < 20_000;
+                    return (
+                    <div className={styles.currentTaskCard}>
+                      <span className={styles.currentTaskTitle}>
+                        {task.title
+                          ? task.title
+                          : isGenerating
+                          ? <em style={{ opacity: 0.4 }}>Generating title…</em>
+                          : null}
+                      </span>
+                    </div>
+                    );
+                  })())}
                   </div>{/* headerWithAvatar */}
                 </div>
 
@@ -1446,7 +1596,7 @@ export function DetailPanel({
                   >
                     Details
                   </button>
-                  {selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0 && (
+                  {(selectedSession.currentTask || (selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0)) && (
                     <button
                       className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('tasks')}
@@ -1485,7 +1635,7 @@ export function DetailPanel({
                   <>
                     {/* Non-PTY: transcript + state bar + send input */}
                       <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
-                        {(mergedFeed.length > 0 || selectedSession.lastMessage) && (
+                        {(mergedFeed.length > 0 || selectedSession.lastMessage) ? (
                           <section className={styles.section}>
                             {mergedFeed.length > 0 ? (
                               <div className={styles.transcript}>
@@ -1497,13 +1647,29 @@ export function DetailPanel({
                                   sessionState={selectedSession.state}
                                   isPty={isPty}
                                   cwd={selectedSession.cwd}
+                                  subagents={selectedSession.subagents}
+                                  onSelectSubagent={(agentId) => onSelectSession?.(selectedSession, agentId)}
                                 />
                               </div>
                             ) : (
                               <div className={styles.messageBox}>{selectedSession.lastMessage}</div>
                             )}
                           </section>
-                        )}
+                        ) : selectedSession.needsPermission ? (
+                          <div className={styles.emptyFeedPrompt}>
+                            <PermissionPrompt
+                              sessionId={selectedSession.sessionId}
+                              promptText={selectedSession.permissionPromptText}
+                              isLimitPrompt={selectedSession.isLimitPrompt}
+                              styles={styles}
+                            />
+                          </div>
+                        ) : (isPty || isBridgeSession?.(selectedSession.sessionId)) ? (
+                          <div className={styles.emptyFeedHint}>
+                            <span className={styles.emptyFeedHintIcon}>⎋</span>
+                            <span>Activity visible in <button className={styles.emptyFeedTabLink} onClick={() => setActiveTab('terminal')}>Terminal</button> tab</span>
+                          </div>
+                        ) : null}
                       </div>
                       <ConsolePreview
                         sessionId={selectedSession.sessionId}
@@ -1580,6 +1746,7 @@ export function DetailPanel({
                             <PermissionPrompt
                               sessionId={selectedSession.sessionId}
                               promptText={selectedSession.permissionPromptText}
+                              isLimitPrompt={selectedSession.isLimitPrompt}
                               styles={styles}
                             />
                           )}
@@ -1995,33 +2162,47 @@ export function DetailPanel({
                 {activeTab === 'tasks' && (
                   <div className={styles.scrollArea}>
                     <section className={styles.section}>
-                      {(!selectedSession.completionSummaries || selectedSession.completionSummaries.length === 0) && !lastUserMessage ? (
+                      {!selectedSession.currentTask && (!selectedSession.completionSummaries || selectedSession.completionSummaries.length === 0) ? (
                         <div className={styles.messageBox}>No tasks yet.</div>
                       ) : (
                         <div className={styles.summaryList}>
-                          {lastUserMessage && (
+                          {selectedSession.currentTask && (() => {
+                            const task = selectedSession.currentTask;
+                            const ageMs = Date.now() - new Date(task.createdAt).getTime();
+                            const isGenerating = !task.title && ageMs < 20_000;
+                            return (
                             <div className={`${styles.summaryRow_} ${styles.summaryRowActive}`}>
                               <span className={styles.summaryRowIcon}>{STATE_ICONS[summaryState]}</span>
-                              <span className={styles.summaryRowText}>
-                                {lastUserMessage.length > 120 ? lastUserMessage.slice(0, 120) + '…' : lastUserMessage}
-                              </span>
-                              <span className={styles.summaryRowTime}>now</span>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                {task.title ? (
+                                  <span className={styles.summaryRowText}>{task.title}</span>
+                                ) : isGenerating ? (
+                                  <span className={styles.summaryRowText} style={{ opacity: 0.45, fontStyle: 'italic' }}>Generating title…</span>
+                                ) : null}
+                              </div>
+                              <span className={styles.summaryRowTime}>{formatRelativeTime(task.createdAt)}</span>
                             </div>
-                          )}
-                          {[...(selectedSession.completionSummaries ?? [])].reverse().map((item, i) => (
+                            );
+                          })()}
+                          {(selectedSession.completionSummaries ?? []).map((task, i) => (
                             <div key={i} className={styles.summaryRow_}>
-                              <span className={styles.summaryRowIcon} style={{ color: item.accepted ? '#22c55e' : '#f59e0b' }}>✓</span>
-                              <span className={styles.summaryRowText}>{item.summary}</span>
-                              {!item.accepted && (
+                              <span className={styles.summaryRowIcon} style={{ color: task.accepted ? '#22c55e' : '#f59e0b' }}>✓</span>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                {task.title && <div className={styles.summaryRowText} style={{ fontWeight: 500 }}>{task.title}</div>}
+                                {task.summary && <div className={styles.summaryRowText} style={{ opacity: 0.7, fontSize: '11px' }}>{task.summary}</div>}
+                                {!task.title && !task.summary && <span className={styles.summaryRowText}>—</span>}
+                                {task.sessionName && <div style={{ fontSize: '10px', color: 'rgba(180,180,200,0.4)', marginTop: 1 }}>{task.sessionName}</div>}
+                              </div>
+                              {!task.accepted && (
                                 <span style={{ fontSize: '11px', color: '#f59e0b', opacity: 0.8, marginRight: 4 }}>· review</span>
                               )}
-                              <span className={styles.summaryRowTime}>{formatRelativeTime(item.completedAt)}</span>
-                              {!item.accepted && (
+                              <span className={styles.summaryRowTime}>{formatRelativeTime(task.completedAt ?? task.createdAt)}</span>
+                              {!task.accepted && (
                                 <button
                                   className={styles.summaryRowAcceptBtn}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onAcceptTask?.(selectedSession.sessionId, item.completedAt);
+                                    onAcceptTask?.(selectedSession.sessionId, task.completedAt ?? '');
                                   }}
                                 >
                                   Accept

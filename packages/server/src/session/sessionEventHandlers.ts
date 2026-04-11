@@ -255,7 +255,8 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
       if (oldSession && oldSession.sessionId !== raw.sessionId) {
         // Suppress intermediate snapshots so client receives session:replaced before any snapshot
         ctx.stateManager.suppressBroadcast();
-        ctx.stateManager.addOrUpdate(raw);
+        // Inherit old session's startedAt to preserve sort order after /clear
+        ctx.stateManager.addOrUpdate({ ...raw, startedAt: oldSession.startedAt });
         ctx.stateManager.transferName(oldSession.sessionId, raw.sessionId);
         migratePtyMaps(ctx, oldSession.sessionId, raw.sessionId);
         ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });

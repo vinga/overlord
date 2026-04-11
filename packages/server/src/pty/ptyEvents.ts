@@ -16,13 +16,18 @@ export interface PtyEventsContext {
   sendToClient: (ws: WebSocket, msg: object) => void;
 }
 
+// Rolling plain-text buffer per PTY session for cross-chunk pattern detection.
+// Stores stripped text (no ANSI), capped at COMPACT_DETECT_BUF_SIZE chars.
+const compactDetectBuf = new Map<string, string>();
+const COMPACT_DETECT_BUF_SIZE = 500;
+
 export function wirePtyEvents(ctx: PtyEventsContext): void {
   // Wire PtyManager events → broadcast to ALL connected clients
   // so any tab can view the PTY terminal
   const PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-    { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
-    { pattern: /accept edits on/i, mode: 'acceptEdits' },
-    { pattern: /plan mode on/i, mode: 'plan' },
+    { pattern: />>\s+bypass permissions on/i, mode: 'bypassPermissions' },
+    { pattern: />>\s+accept edits on/i, mode: 'acceptEdits' },
+    { pattern: />>\s+plan mode on/i, mode: 'plan' },
   ];
 
   ctx.ptyManager.on('output', (sessionId: string, data: string) => {
@@ -34,6 +39,9 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     if (isRepaint) {
       buf = [];
       ctx.ptyOutputBuffer.set(sessionId, buf);
+      // Repaint redraws the full terminal state — stale partial text in the compact
+      // detect buffer would combine with new chunks and cause false positives.
+      compactDetectBuf.delete(sessionId);
     }
 
     buf.push(Buffer.from(data));
@@ -42,21 +50,28 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     const effectiveId = ctx.ptyToClaudeId.get(sessionId) ?? sessionId;
     const encoded = Buffer.from(data).toString('base64');
     ctx.broadcastRaw({ type: 'terminal:output', sessionId: effectiveId, data: encoded });
+    ctx.stateManager.setPtyActive(effectiveId);
 
     // Detect "Compacting conversation" in PTY output — set isCompacting immediately,
     // before the compact_boundary event lands in the transcript.
-    if (data.includes('Compacting conversation')) {
-      // Strip ANSI escape codes to get clean text
-      const cleanText = data
+    // Use a rolling text buffer to handle the text arriving split across chunks.
+    {
+      const stripped = data
         .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
         .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
         .replace(/\x1b[^[\]]/g, '')
         .replace(/\x1b/g, '')
         .replace(/[^\x20-\x7e\n\t\r]/g, '');
-      // Extract the compacting line (may include timing like "Compacting conversation… (2m 1s · ↑ 698 tokens)")
-      const match = cleanText.match(/Compacting conversation[^\n]*/);
-      const compactLine = match ? match[0].trim() : 'Compacting conversation…';
-      ctx.stateManager.addPtyCompact(effectiveId, compactLine);
+      const prev = compactDetectBuf.get(sessionId) ?? '';
+      const combined = (prev + stripped).slice(-COMPACT_DETECT_BUF_SIZE);
+      compactDetectBuf.set(sessionId, combined);
+      if (combined.includes('Compacting conversation')) {
+        const match = combined.match(/Compacting conversation[^\n]*/);
+        const compactLine = match ? match[0].trim() : 'Compacting conversation…';
+        ctx.stateManager.addPtyCompact(effectiveId, compactLine);
+        // Clear buffer after detection to avoid duplicate triggers
+        compactDetectBuf.set(sessionId, '');
+      }
     }
 
     // On repaint, detect permission mode and update immediately
@@ -92,6 +107,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         break;
       }
     }
+    compactDetectBuf.delete(sessionId);
     // Resolve the claude session ID before cleaning maps (client tracks by claude ID, not pty ID)
     const claudeId = ctx.ptyToClaudeId.get(sessionId);
     const effectiveId = claudeId ?? sessionId;

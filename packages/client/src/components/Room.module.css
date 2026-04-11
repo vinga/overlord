@@ -373,3 +373,182 @@
 .spawnNameInput::placeholder {
   color: rgba(255, 255, 255, 0.3);
 }
+
+/* ── Inline spawn panel ─────────────────────────────────────── */
+.spawnPanel {
+  background: rgba(10, 10, 20, 0.98);
+  border: 1px solid rgba(212, 175, 55, 0.18);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  animation: fadeIn 150ms ease;
+}
+
+.spawnPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.spawnPanelTitle {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(212, 175, 55, 0.7);
+}
+
+.spawnPanelClose {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+  transition: color 0.12s;
+}
+
+.spawnPanelClose:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.spawnPanelPath {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.4);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spawnPanelRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.spawnPanelLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  flex-shrink: 0;
+  width: 36px;
+}
+
+.spawnPanelNameInput {
+  flex: 1;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 6px 10px;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+  min-width: 0;
+}
+
+.spawnPanelNameInput:focus {
+  border-color: rgba(212, 175, 55, 0.5);
+  background: rgba(212, 175, 55, 0.04);
+}
+
+.spawnPanelNameInput::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.spawnModeSelector {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+
+.spawnModeBtn {
+  flex: 1;
+  padding: 5px 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.spawnModeBtn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.spawnModeBtnActive {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: rgba(212, 175, 55, 0.38);
+  color: #d4af37;
+}
+
+.spawnPanelActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.spawnPanelCancelBtn {
+  padding: 6px 14px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.spawnPanelCancelBtn:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.spawnPanelSpawnBtn {
+  padding: 6px 18px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(212, 175, 55, 0.1);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 6px;
+  color: #d4af37;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.spawnPanelSpawnBtn:hover:not(:disabled) {
+  background: rgba(212, 175, 55, 0.18);
+  border-color: rgba(212, 175, 55, 0.55);
+}
+
+.spawnPanelSpawnBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}

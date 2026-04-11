@@ -209,6 +209,40 @@
   min-width: 0;
 }
 
+.currentTaskCard {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px 6px;
+  font-size: 11px;
+  color: rgba(200, 200, 220, 0.65);
+  font-style: italic;
+}
+
+.currentTaskTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.currentTaskRegenBtn {
+  background: none;
+  border: none;
+  color: rgba(167, 139, 250, 0.6);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.currentTaskRegenBtn:hover {
+  opacity: 1;
+  color: #a78bfa;
+}
+
 .detailsExpanded {
   padding: 12px 0 4px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
@@ -360,6 +394,49 @@
 }
 
 /* Message box */
+.emptyFeedPrompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 32px 24px;
+}
+
+.emptyFeedHint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 8px;
+  padding: 40px 24px;
+  color: rgba(255, 255, 255, 0.25);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.emptyFeedHintIcon {
+  font-size: 22px;
+  opacity: 0.35;
+}
+
+.emptyFeedTabLink {
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(212, 175, 55, 0.65);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.emptyFeedTabLink:hover {
+  color: rgba(212, 175, 55, 1);
+}
+
 .messageBox {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.07);
@@ -865,6 +942,16 @@
   color: rgba(255, 255, 255, 0.4);
 }
 
+.launchBadgeFocusable {
+  cursor: pointer;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+
+.launchBadgeFocusable:hover {
+  filter: brightness(1.4);
+  opacity: 1 !important;
+}
+
 .inlineImageBlock {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1109,6 +1196,62 @@
 }
 .toolNameClickable:hover {
   opacity: 0.7;
+}
+
+.agentViewLink {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(167, 139, 250, 0.12);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #a78bfa;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.agentViewLink:hover {
+  background: rgba(167, 139, 250, 0.22);
+  border-color: rgba(167, 139, 250, 0.55);
+}
+
+.agentInlineToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(167, 139, 250, 0.08);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  color: #a78bfa;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.agentInlineToggle:hover {
+  background: rgba(167, 139, 250, 0.2);
+  border-color: rgba(167, 139, 250, 0.5);
+}
+
+.inlineAgentFeed {
+  margin-top: 6px;
+  margin-left: 12px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(167, 139, 250, 0.25);
+  padding-bottom: 2px;
+}
+
+.inlineAgentEmpty {
+  font-size: 12px;
+  color: #555;
+  font-style: italic;
+  padding: 4px 0;
+  display: block;
 }
 
 .toolDesc {
@@ -1648,12 +1791,12 @@
 }
 
 .stateBarCompacting {
-  background: rgba(251, 146, 60, 0.08);
-  color: #fb923c;
+  background: rgba(167, 139, 250, 0.08);
+  color: #a78bfa;
 }
 .stateBarCompacting .stateBarDot {
-  background: #fb923c;
-  box-shadow: 0 0 6px rgba(251, 146, 60, 0.8);
+  background: #a78bfa;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
   animation: stateDotPulse 1.5s ease-in-out infinite;
 }
 

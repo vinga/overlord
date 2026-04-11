@@ -23,7 +23,6 @@ import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/s
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
-import { cleanupOldWorkerTranscripts } from './ai/claudeQuery.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
 import type { OfficeSnapshot } from './types.js';
 
@@ -77,9 +76,9 @@ const BRIDGE_PERM_BUF_SIZE = 8192;
 // Last detected permission mode per bridge session — updated as text streams through
 const bridgePermMode = new Map<string, string>();
 const BRIDGE_PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
-  { pattern: /accept edits on/i, mode: 'acceptEdits' },
-  { pattern: /plan mode on/i, mode: 'plan' },
+  { pattern: />>\s+bypass permissions on/i, mode: 'bypassPermissions' },
+  { pattern: />>\s+accept edits on/i, mode: 'acceptEdits' },
+  { pattern: />>\s+plan mode on/i, mode: 'plan' },
 ];
 
 function stripAnsi(raw: string): string {
@@ -262,6 +261,26 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
   });
 }
 
+/**
+ * Find the TTY device path of the terminal hosting a bridge session (macOS only).
+ * Uses: claude PID → parent PID (bridge process) → ps tty.
+ * Returns e.g. "/dev/ttys003", or "" on failure or non-macOS.
+ *
+ * Note: We intentionally do NOT use the GETTY pipe command here because old bridge
+ * binaries (without GETTY support) would forward "GETTY\n" as text input to Claude.
+ */
+function queryBridgeTTY(claudePid: number | undefined): string {
+  if (process.platform !== 'darwin' || !claudePid) return '';
+  try {
+    const ppidOut = execSync(`ps -o ppid= -p ${claudePid}`, { encoding: 'utf-8', timeout: 3000 }).trim();
+    const bridgePid = parseInt(ppidOut);
+    if (isNaN(bridgePid) || bridgePid <= 1) return '';
+    const ttyOut = execSync(`ps -o tty= -p ${bridgePid}`, { encoding: 'utf-8', timeout: 3000 }).trim();
+    if (!ttyOut || ttyOut === '??' || ttyOut === '?') return '';
+    return `/dev/${ttyOut}`;
+  } catch { return ''; }
+}
+
 // Connect to a bridge pipe for a given session. Used for both initial linking and reconnection.
 // Opens TWO connections: one for reading output, one for writing input.
 // This prevents output backpressure from blocking input delivery.
@@ -309,6 +328,14 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       // Revive sessions loaded as 'closed' from known-sessions on restart.
       // The bridge is alive → the process is still running → session is active again.
       stateManager.reviveClosedSession(sessionId);
+      // Find the TTY of the Terminal.app tab hosting this bridge (macOS only).
+      // Used later to bring the window to front via AppleScript.
+      const claudePid = stateManager.getSession(sessionId)?.pid;
+      const tty = queryBridgeTTY(claudePid);
+      if (tty) {
+        console.log(`[bridge] tty for ${sessionId.slice(0, 8)}: ${tty}`);
+        stateManager.setBridgeTty(sessionId, tty);
+      }
     });
   });
 
@@ -570,9 +597,6 @@ startupComplete = true;
 // Detect /clear that happened while server was down (PID file comparison)
 stateManager.detectClearOnStartup();
 
-// Clean up old haiku-worker transcript files (>15 min)
-cleanupOldWorkerTranscripts();
-
 // Reconnect to any bridge pipes that survived the server restart
 reconnectBridgePipes();
 
@@ -595,10 +619,8 @@ processChecker.start((pids) => {
   stateManager.updateAlivePids(pids);
 });
 
-// Periodic GC: remove haiku-worker ghosts, stale closed sessions, and old transcripts every 60s
 setInterval(() => {
   stateManager.cleanupStaleSessions();
-  cleanupOldWorkerTranscripts();
 }, 60_000).unref();
 
 // Transcript watcher + state refresh (moved to transcriptWatcher.ts)
@@ -776,6 +798,7 @@ registerApiRoutes(
   deleteSession,
   aiClassifier.generateCompletionSummary.bind(aiClassifier),
   ptyOutputBuffer,
+  aiClassifier.generateTaskTitle.bind(aiClassifier),
 );
 
 // Start HTTP server

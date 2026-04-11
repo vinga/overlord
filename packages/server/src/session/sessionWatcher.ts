@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chokidar, { FSWatcher } from 'chokidar';
-import { HAIKU_WORKER_CWD } from '../ai/claudeQuery.js';
+const QUERY_WORKER_CWD = path.join(os.homedir(), '.claude', 'overlord', 'query-worker');
 
 export interface RawSession {
   pid: number;
@@ -97,8 +97,8 @@ export class SessionWatcher extends EventEmitter {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content) as RawSession;
-      if (data.cwd && path.normalize(data.cwd) === path.normalize(HAIKU_WORKER_CWD)) {
-        return { ...data, provider: 'claude', kind: 'haiku-worker' };
+      if (data.cwd && path.normalize(data.cwd) === path.normalize(QUERY_WORKER_CWD)) {
+        return { ...data, provider: 'claude', kind: 'query-worker' };
       }
       return { ...data, provider: 'claude' };
     } catch {

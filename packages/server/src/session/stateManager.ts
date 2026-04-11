@@ -54,8 +54,8 @@ import {
   clearProposedNameCache,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
-import { readTaskSummaries, acceptTaskSummary, saveCompletionHint, loadCompletionHint, clearCompletionHint } from '../ai/taskStorage.js';
-import type { TaskSummary } from '../ai/taskStorage.js';
+import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask } from '../ai/taskStorage.js';
+import type { Task } from '../types.js';
 
 function normalizePath(p: string): string {
   // Convert WSL path /mnt/c/... to c:/...
@@ -104,6 +104,10 @@ export class StateManager {
   private colorOverrides = new Map<string, string>(); // sessionId → color preserved across /clear
   /** Sessions that had /clear injected via UI — maps cwd → { sessionId, timestamp } for the next new transcript. */
   private pendingClearReplacements = new Map<string, { sessionId: string; timestamp: number }>();
+  /** Timestamp of last PTY output per session — used to override stale 'waiting' state. */
+  private lastPtyActivityAt = new Map<string, number>();
+  /** Timestamp when pending PTY input started (user typing without Enter) — cleared on Enter. */
+  private ptyInputPendingSince = new Map<string, number>();
   readonly bridgePath: string;
 
   constructor(onChange: () => void) {
@@ -259,7 +263,8 @@ export class StateManager {
           subagents: [],
           proposedName: entry.proposedName,
           resumedFrom: entry.resumedFrom,
-          completionSummaries: entry.completionSummaries,
+          completionSummaries: readTasks(entry.cwd, entry.sessionId).filter(t => t.state === 'done'),
+          currentTask: readTasks(entry.cwd, entry.sessionId).find(t => t.state === 'active'),
           userAccepted: entry.userAccepted,
           bridgePipeName: entry.bridgePipeName,
           bridgeMarker: entry.bridgeMarker,
@@ -357,7 +362,6 @@ export class StateManager {
           pid: s.pid,
           proposedName: s.proposedName,
           resumedFrom: s.resumedFrom,
-          completionSummaries: s.completionSummaries,
           userAccepted: s.userAccepted,
           bridgePipeName: s.bridgePipeName,
           bridgeMarker: s.bridgeMarker,
@@ -394,12 +398,13 @@ export class StateManager {
     this.onChange();
   }
 
-  acceptTask(sessionId: string, completedAt: string): boolean {
+  acceptTask(sessionId: string, completedAt: string | undefined): boolean {
+    if (!completedAt) return false;
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    const updated = acceptTaskSummary(sessionId, completedAt);
+    const updated = acceptTaskByCompletedAt(session.cwd, sessionId, completedAt);
     if (!updated) return false;
-    session.completionSummaries = updated;
+    session.completionSummaries = updated.filter(t => t.state === 'done');
     this.onChange();
     return true;
   }
@@ -469,7 +474,12 @@ export class StateManager {
     const transcript = transcriptPath ? readTranscriptState(transcriptPath) : undefined;
     const slug = transcriptPath ? readSlug(transcriptPath) : undefined;
 
-    const state = transcript?.state ?? existingSession?.state ?? 'waiting';
+    const transcriptState = transcript?.state ?? existingSession?.state ?? 'waiting';
+    // If transcript says 'waiting' but PTY was active within the last 5s, the session is still
+    // working — transcript just hasn't been updated yet (e.g. between tool calls).
+    const lastPtyAt = this.lastPtyActivityAt.get(sessionId);
+    const ptyIsRecent = lastPtyAt != null && Date.now() - lastPtyAt < 5000;
+    const state: WorkerState = (transcriptState === 'waiting' && ptyIsRecent) ? 'working' : transcriptState;
     const lastActivity = transcript?.lastActivity ?? new Date().toISOString();
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
@@ -481,7 +491,7 @@ export class StateManager {
     // Strip <local-command-caveat> prefix — treat it as no name so transferName can override
     const proposedName = resolvedName?.startsWith('<local-command-caveat') ? undefined : resolvedName;
 
-    const subagents = readSubagents(cwd, sessionId);
+    const subagents = readSubagents(cwd, sessionId, transcriptPath);
     const color = this.sessionColor(sessionId);
     const ideInfo = this.readIdeInfo(cwd);
     // Only tag as IDE if the session process is actually a child of the IDE process
@@ -530,16 +540,19 @@ export class StateManager {
       }
     }
 
-    // Load persisted summaries on first encounter; preserve in-memory on updates.
-    // If this is a resumed session, prepend parent's summaries so history carries over.
-    let completionSummaries: TaskSummary[] | undefined;
+    // Load persisted tasks on first encounter; preserve in-memory on updates.
+    // If this is a resumed session, merge parent tasks so history carries over.
+    let completionSummaries: Task[] | undefined;
+    let currentTask: Task | undefined;
     if (isNew) {
-      const own = readTaskSummaries(sessionId);
-      const parent = resumedFrom ? readTaskSummaries(resumedFrom) : [];
-      const merged = [...parent, ...own];
+      const own = readTasks(cwd, sessionId);
+      // For resumed sessions, parent tasks are already in the same room file since rooms are cwd-based
+      const merged = own.filter(t => t.state === 'done');
       completionSummaries = merged.length > 0 ? merged : undefined;
+      currentTask = own.find(t => t.state === 'active');
     } else {
       completionSummaries = existingSession?.completionSummaries;
+      currentTask = existingSession?.currentTask;
     }
 
     const session: Session = {
@@ -565,17 +578,20 @@ export class StateManager {
       resumedFrom,
       needsPermission: transcript?.needsPermission || existingSession?.needsPermission,
       permissionPromptText: transcript?.permissionPromptText || existingSession?.permissionPromptText,
+      isLimitPrompt: existingSession?.isLimitPrompt,
       permissionMode: transcript?.permissionMode || existingSession?.permissionMode,
       permissionApprovedAt: existingSession?.permissionApprovedAt,
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       completionSummaries,
+      currentTask,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
       isWorker: raw.kind === 'haiku-worker',
       bridgePipeName: existingSession?.bridgePipeName,
       bridgeMarker: existingSession?.bridgeMarker,
       ptySessionId: existingSession?.ptySessionId,
       transcriptPath: transcriptPath ?? undefined,
+      ptyInputPendingSince: this.ptyInputPendingSince.get(sessionId),
     };
 
     this.sessions.set(sessionId, session);
@@ -646,9 +662,13 @@ export class StateManager {
     this.colorOverrides.set(newSessionId, oldColor);
     // Also update the already-baked color field on the session object (addOrUpdate set it before transferSessionState ran)
     if (newSession) newSession.color = oldColor;
+    // Preserve position in sort order — inherit old session's startedAt so server-side
+    // sort (by startedAt) keeps the cleared session at the same index it occupied before.
+    newSession.startedAt = oldSession.startedAt;
     // Transfer bridge/PTY connection metadata
     if (oldSession.bridgePipeName) newSession.bridgePipeName = oldSession.bridgePipeName;
     if (oldSession.bridgeMarker) newSession.bridgeMarker = oldSession.bridgeMarker;
+    if (oldSession.bridgeTty) newSession.bridgeTty = oldSession.bridgeTty;
     if (oldSession.ptySessionId) newSession.ptySessionId = oldSession.ptySessionId;
     if (oldSession.sessionType !== 'plain') newSession.sessionType = oldSession.sessionType;
     // Link to parent so transcript fallback, name resolution, and summaries carry over
@@ -660,6 +680,13 @@ export class StateManager {
     oldSession.bridgeMarker = undefined;
     oldSession.ptySessionId = undefined;
     this.saveKnownSessions();
+  }
+
+  setBridgeTty(sessionId: string, tty: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.bridgeTty = tty;
+    this.onChange();
   }
 
   setBridgePipe(sessionId: string, pipeName: string, marker?: string): void {
@@ -712,7 +739,7 @@ export class StateManager {
 
     const prevState = session.state;
     const result = readTranscriptState(transcriptPath);
-    const subagents = readSubagents(session.cwd, sessionId);
+    const subagents = readSubagents(session.cwd, sessionId, transcriptPath);
     const slug = session.slug ?? readSlug(transcriptPath);
     const proposedName = session.proposedName ?? readProposedName(sessionId, transcriptPath);
 
@@ -786,12 +813,33 @@ export class StateManager {
       if (result.permissionMode && !(session.permissionModeLockedUntil && Date.now() < session.permissionModeLockedUntil)) {
         session.permissionMode = result.permissionMode;
       }
+      // Detect rate-limit text in the activity feed (for plain/bridge sessions where
+      // permissionChecker can't read the screen). Check last 8 feed items.
+      const RATE_LIMIT_RE = /you'?ve hit your (daily )?limit|rate.?limit/i;
+      const feedHasRateLimit = result.state === 'waiting' &&
+        mergedFeed.slice(0, 8).some(item => item.content && RATE_LIMIT_RE.test(item.content));
       // Only update needsPermission from transcript when it clears (goes false).
       // Setting it true is owned by transcriptReader/addOrUpdate; clearing is also
       // done here when the session advances (transcript no longer shows stale tool_use).
-      if (!result.needsPermission) {
+      if (!result.needsPermission && !feedHasRateLimit) {
         session.needsPermission = undefined;
+        session.isLimitPrompt = undefined;
         session.permissionPromptText = undefined;
+      } else if (!session.needsPermission && feedHasRateLimit) {
+        // Rate-limit detected in feed — show PermissionPrompt dialog
+        const suppressed = session.permissionApprovedAt &&
+          Date.now() - session.permissionApprovedAt < 30_000;
+        if (!suppressed) {
+          session.needsPermission = true;
+          session.isLimitPrompt = true;
+          if (!session.permissionPromptText) {
+            // Extract rate-limit text from the matching feed item
+            const limitItem = mergedFeed.slice(0, 8).find(item =>
+              item.content && RATE_LIMIT_RE.test(item.content)
+            );
+            session.permissionPromptText = limitItem?.content ?? 'Rate limit reached';
+          }
+        }
       } else if (!session.needsPermission) {
         // Respect the 30s suppression window after user approved
         const suppressed = session.permissionApprovedAt &&
@@ -910,7 +958,7 @@ export class StateManager {
     }
   }
 
-  setNeedsPermission(sessionId: string, value: boolean, promptText?: string): void {
+  setNeedsPermission(sessionId: string, value: boolean, promptText?: string, isLimitPrompt?: boolean): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     if (value) {
@@ -921,10 +969,12 @@ export class StateManager {
       if (!session.needsPermission) {
         session.needsPermission = true;
         session.permissionPromptText = promptText;
+        session.isLimitPrompt = isLimitPrompt;
         this.onChange();
       } else if (promptText && promptText !== session.permissionPromptText) {
         // Screen reader text is richer than transcript-derived text — always update
         session.permissionPromptText = promptText;
+        session.isLimitPrompt = isLimitPrompt;
         this.onChange();
       }
     } else {
@@ -932,6 +982,7 @@ export class StateManager {
       if (session.needsPermission || session.permissionPromptText !== undefined) {
         session.needsPermission = undefined;
         session.permissionPromptText = undefined;
+        session.isLimitPrompt = undefined;
         this.onChange();
       }
     }
@@ -968,7 +1019,7 @@ export class StateManager {
     return { sessionId: entry.sessionId };
   }
 
-  setCompletionSummaries(sessionId: string, summaries: TaskSummary[]): void {
+  setCompletionSummaries(sessionId: string, summaries: Task[]): void {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.completionSummaries = summaries;
@@ -983,6 +1034,60 @@ export class StateManager {
       this.onChange();
     }
   }
+
+  /** Creates a new active Task for the session. Returns the task, or undefined if session not found or already has an active task. */
+  createTaskForSession(sessionId: string, createdAt: string): Task | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.currentTask) return undefined;
+    const sessionName = session.proposedName ?? session.slug ?? sessionId.slice(0, 8);
+    const task = createTask(session.cwd, sessionId, sessionName, createdAt);
+    session.currentTask = task;
+    this.onChange();
+    return task;
+  }
+
+  /** Marks the active task as done, moves it to completionSummaries. */
+  completeActiveTask(sessionId: string, completedAt: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.currentTask || session.currentTask.state !== 'active') return;
+    const taskId = session.currentTask.taskId;
+    updateTask(session.cwd, taskId, { state: 'done', completedAt });
+    const doneTask: Task = { ...session.currentTask, state: 'done', completedAt };
+    session.completionSummaries = [doneTask, ...(session.completionSummaries ?? [])];
+    session.currentTask = undefined;
+    this.onChange();
+  }
+
+  /** Updates the title of a task (active or done). */
+  setTaskTitle(sessionId: string, taskId: string, title: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    updateTask(session.cwd, taskId, { title });
+    if (session.currentTask?.taskId === taskId) {
+      session.currentTask = { ...session.currentTask, title };
+    } else {
+      const idx = (session.completionSummaries ?? []).findIndex(t => t.taskId === taskId);
+      if (idx !== -1) {
+        session.completionSummaries![idx] = { ...session.completionSummaries![idx], title };
+      }
+    }
+    this.onChange();
+  }
+
+  /** Updates the summary of a done task. */
+  setTaskSummary(sessionId: string, taskId: string, summary: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    updateTask(session.cwd, taskId, { summary });
+    const idx = (session.completionSummaries ?? []).findIndex(t => t.taskId === taskId);
+    if (idx !== -1) {
+      session.completionSummaries![idx] = { ...session.completionSummaries![idx], summary };
+    }
+    this.onChange();
+  }
+
+  /** @deprecated No-op. Request summaries superseded by Task.title. */
+  setRequestSummary(_sessionId: string, _summary: string): void { /* no-op */ }
 
   setCompacting(sessionId: string): void {
     const session = this.sessions.get(sessionId);
@@ -1006,6 +1111,33 @@ export class StateManager {
     session.activityFeed.unshift(item);
     session.isCompacting = true;
     this.onChange();
+  }
+
+  /** Record PTY output activity for a session — overrides stale 'waiting' state in snapshot. */
+  setPtyActive(sessionId: string): void {
+    this.lastPtyActivityAt.set(sessionId, Date.now());
+  }
+
+  /** Mark that the user has typed non-Enter input in the PTY terminal. */
+  setPtyInputPending(sessionId: string): void {
+    if (!this.ptyInputPendingSince.has(sessionId)) {
+      const since = Date.now();
+      this.ptyInputPendingSince.set(sessionId, since);
+      // Also mutate the stored session object so getSnapshot() sees the new value immediately.
+      const session = this.sessions.get(sessionId);
+      if (session) session.ptyInputPendingSince = since;
+      this.onChange();
+    }
+  }
+
+  /** Clear pending PTY input (user pressed Enter). */
+  clearPtyInputPending(sessionId: string): void {
+    if (this.ptyInputPendingSince.has(sessionId)) {
+      this.ptyInputPendingSince.delete(sessionId);
+      const session = this.sessions.get(sessionId);
+      if (session) session.ptyInputPendingSince = undefined;
+      this.onChange();
+    }
   }
 
   setPermissionMode(sessionId: string, mode: string | undefined): void {
@@ -1245,7 +1377,7 @@ export class StateManager {
           if (transcriptState.lastActivity && new Date(transcriptState.lastActivity) < oneDayAgo) continue;
 
           const proposedName = readProposedName(sessionId, transcriptPath);
-          const subagents = readSubagents(cwd, sessionId);
+          const subagents = readSubagents(cwd, sessionId, transcriptPath);
           const color = this.sessionColor(sessionId);
 
           // Recover startedAt from first transcript entry

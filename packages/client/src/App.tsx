@@ -60,7 +60,7 @@ export function App() {
     migrateRoomOrder(oldId, newId);
   }, [migrateNames, migrateRoomOrder]);
 
-  const { snapshot, connected, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
+  const { snapshot, connected, connecting, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
   const terminal = useTerminal(sendMessage, (id) => setActivePtySessionId(id));
 
   // Build display names: proposedName from server > custom name from user > fallback
@@ -248,41 +248,16 @@ export function App() {
 
   return (
     <>
-      <button
-        onClick={() => setView('logs')}
-        style={{
-          position: 'fixed',
-          top: 12,
-          right: 16,
-          zIndex: 1000,
-          background: 'transparent',
-          border: '1px solid #333',
-          color: '#888',
-          fontSize: '12px',
-          padding: '4px 10px',
-          borderRadius: '4px',
-          cursor: 'pointer',
-          fontFamily: 'Inter, system-ui, sans-serif',
-          transition: 'border-color 0.15s ease, color 0.15s ease',
-        }}
-        onMouseEnter={e => {
-          (e.currentTarget as HTMLButtonElement).style.borderColor = '#d4af37';
-          (e.currentTarget as HTMLButtonElement).style.color = '#d4af37';
-        }}
-        onMouseLeave={e => {
-          (e.currentTarget as HTMLButtonElement).style.borderColor = '#333';
-          (e.currentTarget as HTMLButtonElement).style.color = '#888';
-        }}
-      >
-        Logs
-      </button>
       <Office
         snapshot={snapshot}
         connected={connected}
+        connecting={connecting}
         onSelectSession={handleSelectSession}
         customNames={displayNames}
         onSpawnSession={handleSpawnSession}
+        onSpawnDirect={handleNewFolderSpawn}
         onNewTerminalSession={handleNewTerminalSession}
+        onLogsClick={() => setView('logs')}
 
         selectedSessionId={selectedSessionId}
         rightOffset={panelWidth}
@@ -341,6 +316,7 @@ export function App() {
           onResumeSession: (sessionId, cwd) => { terminal.resumeSession(sessionId, cwd); },
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),
+          onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),
           onMarkDone: (sessionId) => { fetch(`/api/sessions/${sessionId}/mark-done`, { method: 'POST' }).catch(console.error); },
           onAcceptSession: handleAcceptSession,
           onAcceptTask: handleAcceptTask,
@@ -356,7 +332,7 @@ export function App() {
                 .sort((a, b) => b.startedAt - a.startedAt) ?? [])
             : []
         }
-        onSelectSession={(s) => handleSelectSession(s)}
+        onSelectSession={(s, subagentId) => handleSelectSession(s, subagentId)}
         customNames={displayNames}
         bridgePath={snapshot?.bridgePath}
         platform={snapshot?.platform ?? 'darwin'}

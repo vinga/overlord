@@ -1,5 +1,6 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
-import type { WorkerState } from '../types';
+import ReactDOM from 'react-dom';
+import type { WorkerState, Task } from '../types';
 import styles from './Worker.module.css';
 
 interface WorkerProps {
@@ -11,11 +12,13 @@ interface WorkerProps {
   minimal?: boolean;
   agentType?: string;
   completionHint?: 'done' | 'awaiting';
-  completionSummaries?: Array<{ summary: string; completedAt: string }>;
+  completionSummaries?: Task[];
   userAccepted?: boolean;
   needsPermission?: boolean;
   currentTaskLabel?: string;
+  currentTask?: Task;
   isWorker?: boolean;
+  ptyInputPendingSince?: number;
   onClick: () => void;
   onRename?: (newName: string) => void;
 }
@@ -26,10 +29,9 @@ interface WaitingIndicatorProps {
   userAccepted?: boolean;
   needsPermission?: boolean;
   styles: Record<string, string>;
-  onWaitingClick?: (e: React.MouseEvent) => void;
 }
 
-function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermission, styles, onWaitingClick }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermission, styles }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
   if (userAccepted) {
     return <span className={styles.bubbleDone}>done</span>;
@@ -38,15 +40,7 @@ function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermi
     return <span className={styles.bubbleDonePending}>review</span>;
   }
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
-  return (
-    <span
-      className={styles.bubble}
-      onClick={onWaitingClick}
-      style={onWaitingClick ? { cursor: 'pointer' } : undefined}
-    >
-      waiting
-    </span>
-  );
+  return <span className={styles.bubble}>waiting</span>;
 }
 
 function lightenHsl(color: string, amount: number): string {
@@ -59,7 +53,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, isWorker, onClick, onRename }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, currentTask, isWorker, ptyInputPendingSince, onClick, onRename }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -97,7 +91,16 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showDoneMenu]);
 
-  const handleWaitingBubbleClick = useCallback((e: React.MouseEvent) => {
+  // Re-render every second while pending input exists, to cross the 5s threshold.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!ptyInputPendingSince) return;
+    const id = setInterval(() => setTick(n => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [ptyInputPendingSince]);
+  const hasPendingInput = ptyInputPendingSince != null && Date.now() - ptyInputPendingSince >= 5000;
+
+  const handleIndicatorClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setMenuPos({ x: rect.left + rect.width / 2, y: rect.bottom + 6 });
@@ -107,10 +110,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
   const handleMarkDone = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowDoneMenu(false);
-    await fetch(`/api/sessions/${sessionId}/inject`, {
+    await fetch(`/api/sessions/${sessionId}/mark-done`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: 'done\r' }),
     });
   }, [sessionId]);
 
@@ -138,8 +140,15 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       {!minimal && needsPermission && !isSubagent && (
         <div className={styles.permissionBadge}>⚠ approval</div>
       )}
+      {!minimal && hasPendingInput && !isSubagent && (
+        <div className={styles.pendingInputBadge}>✎ typing…</div>
+      )}
       {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting') && (
-        <div className={`${styles.indicator} ${styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}>
+        <div
+          className={`${styles.indicator} ${styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
+          onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
+          style={!isSubagent && !userAccepted && !needsPermission ? { cursor: 'pointer' } : undefined}
+        >
           {state === 'working' && (
             <span className={styles.workingDot} />
           )}
@@ -157,14 +166,13 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
               userAccepted={userAccepted}
               needsPermission={needsPermission}
               styles={styles}
-              onWaitingClick={!isSubagent && !userAccepted && !needsPermission && completionHint !== 'done' ? handleWaitingBubbleClick : undefined}
             />
           )}
         </div>
       )}
       <svg
-        width="60"
-        height="79"
+        width="48"
+        height="63"
         viewBox="0 0 40 52"
         xmlns="http://www.w3.org/2000/svg"
         className={styles.svg}
@@ -214,13 +222,16 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
           </span>
         )
       )}
+      {!minimal && !isSubagent && currentTask?.title && completionHint !== 'done' && (
+        <span className={styles.requestSummary}>{currentTask.title}</span>
+      )}
       {!minimal && !isSubagent && currentTaskLabel && state !== 'closed' && (
         <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>
       )}
       {!minimal && completionSummaries && completionSummaries.length > 0 && completionHint === 'done' && !isSubagent && (
-        <span className={styles.completionSummary}>{completionSummaries[completionSummaries.length - 1].summary}</span>
+        <span className={styles.completionSummary}>{completionSummaries[0].summary}</span>
       )}
-      {showDoneMenu && (
+      {showDoneMenu && ReactDOM.createPortal(
         <div
           ref={menuRef}
           className={styles.doneMenu}
@@ -230,7 +241,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
           <button className={styles.doneMenuItem} onClick={handleMarkDone}>
             ✓ Set to Done
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

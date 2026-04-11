@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { spawn } from 'child_process';
 import type { WebSocket, WebSocketServer } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
@@ -24,6 +25,39 @@ export interface WsHandlerContext {
   autoResumePtySessions: () => Promise<void>;
   getLogBuffer: () => unknown[];
   bridgeInjectQueue: Map<string, Array<{ text: string; resolve: () => void }>>;
+}
+
+/**
+ * Bring a Terminal.app tab to front by matching its TTY device path.
+ * macOS only — no-op on other platforms.
+ */
+function focusBridgeWindow(tty: string): Promise<void> {
+  if (process.platform !== 'darwin') return Promise.resolve();
+  const safeTty = tty.replace(/"/g, '');
+  // Select the right tab and raise it within Terminal's window stack.
+  // We intentionally do NOT call `activate` or `set frontmost` — both change the
+  // OS-level frontmost application, which fires xterm focus-tracking sequences
+  // (\x1b[I / \x1b[O) into the running process and corrupts the prompt.
+  // Instead we just pre-select the correct tab so when the user switches to
+  // Terminal (e.g. Cmd+Tab) it is already showing the right session.
+  const script = [
+    'tell application "Terminal"',
+    `  repeat with w in windows`,
+    `    repeat with t in tabs of w`,
+    `      if tty of t is "${safeTty}" then`,
+    `        set selected of t to true`,
+    `        set index of w to 1`,
+    `        return`,
+    `      end if`,
+    `    end repeat`,
+    `  end repeat`,
+    `end tell`,
+  ].join('\n');
+  return new Promise<void>((resolve) => {
+    const child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
+    child.on('close', () => resolve());
+    child.on('error', () => resolve());
+  });
 }
 
 function stripInternalMarkers(name: string): string {
@@ -229,6 +263,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const data = String(msg.data ?? '');
         stateManager.clearHintOnInput(sessionId);
+        // Track pending input: Enter clears it, any other char starts/extends it.
+        if (data.includes('\r') || data.includes('\n')) {
+          stateManager.clearPtyInputPending(sessionId);
+        } else {
+          stateManager.setPtyInputPending(sessionId);
+        }
         const wrote = ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
         if (!wrote) {
           // No PTY session — fall back to ConPTY injection
@@ -293,10 +333,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         const isBridge = stateManager.isBridge(sessionId);
-        // PTY: \r — line discipline converts it to newline for the app.
-        // Bridge: relays to ConPTY, so \r is also correct.
-        const ptyTextToSend = text + (extraEnter ? '\r' : '');
-        const bridgeTextToSend = text + '\r';
 
         // Mark pending clear so the replacement transcript gets linked to this session
         if (text.trimStart().startsWith('/clear')) {
@@ -308,23 +344,48 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // Prefer PTY stdin write when an active PTY is linked to this claude session.
         // Writing directly to the TTY is more reliable than ConPTY virtual keystroke
         // injection and ensures text+Enter always reaches the process atomically.
+        // Bridge sessions must NOT take this path — their PTY is a display mirror only;
+        // input must go through the named pipe instead.
         const ptyId = claudeToPtyId.get(sessionId);
-        if (ptyId && ptyManager.has(ptyId)) {
+        if (!isBridge && ptyId && ptyManager.has(ptyId)) {
           console.log(`[inject] pty session=${sessionId.slice(0, 8)} ptyId=${ptyId.slice(0, 8)} text="${text}"`);
-          ptyManager.write(ptyId, ptyTextToSend);
+          if (extraEnter) {
+            // @file autocomplete: send text only first, let TUI render autocomplete,
+            // then \r to select, then another \r to submit.
+            ptyManager.write(ptyId, text);
+            setTimeout(() => {
+              if (!ptyManager.has(ptyId)) return;
+              ptyManager.write(ptyId, '\r');
+              console.log(`[inject] extra-enter pty step1 (select) session=${sessionId.slice(0, 8)}`);
+              setTimeout(() => {
+                if (!ptyManager.has(ptyId)) return;
+                ptyManager.write(ptyId, '\r');
+                console.log(`[inject] extra-enter pty step2 (submit) session=${sessionId.slice(0, 8)}`);
+              }, 300);
+            }, 400);
+          } else {
+            ptyManager.write(ptyId, text + '\r');
+          }
           console.log(`[inject] pty write ok`);
           return;
         }
 
         console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
         // Try bridge pipe first, fall back to macOS Terminal.app injection, then ConPTY.
-        // bridgeTextToSend includes \r to submit. When extraEnter=true (e.g. image paste with
-        // @mention), Claude TUI shows an autocomplete overlay that the first \r dismisses —
-        // a second \r after a short delay then submits the message.
+        // When extraEnter=true (@file autocomplete): send text only, wait for TUI to render
+        // autocomplete dropdown, then \r to select it, then \r to submit. Sending \r atomically
+        // with text causes the \r to arrive before autocomplete renders and get consumed.
         (isBridge
-          ? injectViaPipe(sessionId, bridgeTextToSend).then(async (ok): Promise<void> => {
+          ? injectViaPipe(sessionId, extraEnter ? text : text + '\r').then(async (ok): Promise<void> => {
               if (!ok) { await (process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter)); return; }
-              if (extraEnter) setTimeout(() => injectViaPipe(sessionId, '\r'), 200);
+              if (extraEnter) setTimeout(() => {
+                void injectViaPipe(sessionId, '\r').then(ok2 => {
+                  console.log(`[inject] extra-enter bridge step1 (select) ok=${ok2} session=${sessionId.slice(0, 8)}`);
+                  setTimeout(() => {
+                    void injectViaPipe(sessionId, '\r').then(ok3 => console.log(`[inject] extra-enter bridge step2 (submit) ok=${ok3} session=${sessionId.slice(0, 8)}`));
+                  }, 300);
+                });
+              }, 400);
             })
           : process.platform === 'darwin'
             ? injectViaMac(targetPid, text, extraEnter)
@@ -433,6 +494,16 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
               }
             }
           }
+        }
+        return;
+      }
+
+      if (type === 'terminal:focus') {
+        const sessionId = String(msg.sessionId ?? '');
+        const session = stateManager.getSession(sessionId);
+        const tty = session?.bridgeTty;
+        if (tty) {
+          void focusBridgeWindow(tty);
         }
         return;
       }

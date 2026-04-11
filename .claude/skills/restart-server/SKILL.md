@@ -6,6 +6,27 @@ Code changes require a manual restart (tsx watch removed). Vite HMR still handle
 
 **IMPORTANT:** Only kill processes bound to ports 3000/5173 — do NOT kill all node processes, as that destroys active Claude sessions.
 
+## macOS
+
+```bash
+# Kill ONLY processes on ports 3000 and 5173
+kill -9 $(lsof -ti:3000) 2>/dev/null; kill -9 $(lsof -ti:5173) 2>/dev/null
+
+sleep 1
+
+# Start server
+npm run dev --workspace=packages/server > /tmp/overlord-server.log 2>&1 &
+
+# Start client
+npm run dev --workspace=packages/client > /tmp/overlord-client.log 2>&1 &
+
+sleep 4
+curl -s http://localhost:3000/api/info && echo "" && lsof -ti:5173 | head -1 && echo "Both up"
+echo "Logs: /tmp/overlord-server.log and /tmp/overlord-client.log"
+```
+
+## Windows
+
 ```bash
 # Kill ONLY processes on ports 3000 and 5173 (not all node processes!)
 powershell -Command "

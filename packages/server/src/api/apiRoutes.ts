@@ -8,7 +8,7 @@ import type { WebSocket } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
-import { injectViaPipe, bridgeManager } from '../pty/pipeInjector.js';
+import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { injectViaMac } from '../pty/macInjector.js';
 import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
@@ -30,8 +30,14 @@ export function registerApiRoutes(
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void,
   generateCompletionSummary: (sessionId: string, forMessage: string) => Promise<void>,
   ptyOutputBuffer: Map<string, Buffer[]>,
+  generateTaskTitle?: (sessionId: string, taskId: string) => Promise<void>,
 ): void {
   const { ptyToClaudeId, claudeToPtyId, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
+
+  // Server info endpoint — returns bridge binary path and platform
+  app.get('/api/info', (_req, res) => {
+    res.json({ bridgePath: getBridgePath(), platform: process.platform });
+  });
 
   // Debug endpoint: spawn a test session
   app.post('/api/debug/spawn', express.json(), (req, res) => {
@@ -232,6 +238,17 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
+  // Regenerate request summary for a session
+  app.post('/api/sessions/:sessionId/regenerate-summary', (req, res) => {
+    const { sessionId } = req.params;
+    const session = stateManager.getSession(sessionId);
+    if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+    if (generateTaskTitle && session.currentTask) {
+      void generateTaskTitle(sessionId, session.currentTask.taskId);
+    }
+    res.json({ ok: true });
+  });
+
   // Accept a done session (user reviewed and confirmed result)
   app.post('/api/sessions/:sessionId/accept', (req, res) => {
     const { sessionId } = req.params;
@@ -295,64 +312,6 @@ export function registerApiRoutes(
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
-  });
-
-  // Summarize endpoint: reads transcript, calls claude haiku to produce a bullet-point summary
-  app.post('/api/summarize', express.json({ limit: '1mb' }), (req, res) => {
-    void (async () => {
-      const { sessionId } = req.body as { sessionId: string };
-      if (!sessionId) { res.status(400).json({ error: 'sessionId required' }); return; }
-
-      const transcriptPath = findTranscriptPathAnywhere(sessionId);
-      if (!transcriptPath) { res.json({ summary: 'No transcript found for this session.' }); return; }
-
-      try {
-        const content = fs.readFileSync(transcriptPath, 'utf-8');
-        const lines = content.split('\n').filter(l => l.trim());
-
-        // Extract up to 20 user/assistant messages (scanning from end to get the most recent)
-        const messages: Array<{ role: string; content: string }> = [];
-        for (let i = lines.length - 1; i >= 0 && messages.length < 20; i--) {
-          try {
-            const parsed = JSON.parse(lines[i]) as {
-              type?: string;
-              message?: { content?: string | Array<{ type?: string; text?: string }> };
-            };
-            if (parsed.type === 'user' || parsed.type === 'assistant') {
-              const rawContent = parsed.message?.content;
-              let text: string | undefined;
-              if (typeof rawContent === 'string') {
-                text = rawContent;
-              } else if (Array.isArray(rawContent)) {
-                const textBlock = rawContent.find((b) => (b as { type?: string }).type === 'text');
-                text = (textBlock as { text?: string })?.text;
-              }
-              if (text?.trim()) {
-                messages.unshift({ role: parsed.type, content: text.slice(0, 600) });
-              }
-            }
-          } catch { /* skip */ }
-        }
-
-        if (messages.length < 2) {
-          res.json({ summary: 'Not enough conversation to summarize.' });
-          return;
-        }
-
-        const conversationText = messages
-          .map(m => `${m.role === 'user' ? 'User' : 'Claude'}: ${m.content}`)
-          .join('\n\n');
-
-        const prompt = `Summarize this Claude Code agent session in 3-5 bullet points. Focus on high-level goals and what was accomplished — not implementation details. Be specific and concise.\n\nConversation:\n${conversationText}\n\nRespond with bullet points only (use • prefix), no preamble.`;
-
-        const summary = await runClaudeQuery(prompt, 60_000);
-
-        res.json({ summary: summary || 'No summary generated.' });
-      } catch (err) {
-        console.error('[summarize] error:', err);
-        res.status(500).json({ error: (err as Error).message });
-      }
-    })();
   });
 
   // Open file endpoint: opens a file path in a JetBrains IDE (Windows) or default system editor

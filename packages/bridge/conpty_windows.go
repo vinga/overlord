@@ -96,6 +96,11 @@ func startChildWithPty(args []string, clients *clientRegistry) (func([]byte), fu
 	return writeFunc, waitFunc, pid, nudgeRedraw, resizeAndNudge, readerDead, nil
 }
 
+// getBridgeTTY is not supported on Windows — ConPTY doesn't have a TTY device path.
+func getBridgeTTY() string {
+	return ""
+}
+
 func buildCommandLine(args []string) string {
 	line := ""
 	for i, arg := range args {

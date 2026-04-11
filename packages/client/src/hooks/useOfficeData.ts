@@ -9,12 +9,15 @@ interface UseOfficeDataOptions {
 interface UseOfficeDataResult {
   snapshot: OfficeSnapshot | null;
   connected: boolean;
+  connecting: boolean;
   sendMessage: (msg: object) => boolean;
 }
 
 export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void, options?: UseOfficeDataOptions): UseOfficeDataResult {
   const [snapshot, setSnapshot] = useState<OfficeSnapshot | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(true);
+  const everConnectedRef = useRef(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const mountedRef = useRef(true);
@@ -43,6 +46,10 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
       ws.onopen = () => {
         if (mountedRef.current) {
           setConnected(true);
+          if (!everConnectedRef.current) {
+            everConnectedRef.current = true;
+            setConnecting(false);
+          }
         }
       };
 
@@ -104,5 +111,5 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
     };
   }, []);
 
-  return { snapshot, connected, sendMessage };
+  return { snapshot, connected, connecting, sendMessage };
 }
