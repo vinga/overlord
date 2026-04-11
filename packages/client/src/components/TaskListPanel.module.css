@@ -311,3 +311,189 @@
   background: rgba(212, 175, 55, 0.1);
   border-color: rgba(212, 175, 55, 0.5);
 }
+
+/* ── Search tab ──────────────────────────────────────────────────────── */
+
+.searchPane {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.searchInputWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.searchIcon {
+  width: 14px;
+  height: 14px;
+  color: rgba(255, 255, 255, 0.25);
+  flex-shrink: 0;
+}
+
+.searchInput {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: #e8e8e8;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  caret-color: #d4af37;
+}
+.searchInput::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.searchClear {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 4px;
+  transition: color 0.12s;
+}
+.searchClear:hover { color: rgba(255, 255, 255, 0.6); }
+
+.searchEmpty {
+  padding: 48px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.2);
+  line-height: 1.6;
+}
+
+/* Agent group */
+.searchGroup {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+}
+
+.searchGroupSub {
+  padding-left: 8px;
+}
+
+.searchGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.searchGroupHeader:hover { background: rgba(255, 255, 255, 0.04); }
+
+.searchDot {
+  font-size: 13px;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.searchAgentName {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e8e8e8;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchParentBadge {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.searchTypeBadge {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(100, 160, 255, 0.7);
+  background: rgba(100, 160, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.searchMatchCount {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(212, 175, 55, 0.6);
+  flex-shrink: 0;
+}
+
+/* Match fragment */
+.searchFragment {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 14px 4px 35px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.searchFragment:hover { background: rgba(255, 255, 255, 0.03); }
+
+.searchRole {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  width: 44px;
+  color: rgba(255, 255, 255, 0.2);
+}
+.searchRole_user { color: rgba(100, 180, 255, 0.6); }
+.searchRole_assistant { color: rgba(160, 220, 130, 0.6); }
+.searchRole_tool { color: rgba(200, 160, 255, 0.6); }
+.searchRole_thinking { color: rgba(255, 200, 100, 0.5); }
+
+.searchFragmentText {
+  flex: 1;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.searchFragmentText strong {
+  color: #e8e8e8;
+  font-weight: 700;
+}
+
+.searchFragmentTime {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.15);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.searchShowMore {
+  background: none;
+  border: none;
+  color: rgba(212, 175, 55, 0.5);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 14px 6px 35px;
+  text-align: left;
+  transition: color 0.12s;
+}
+.searchShowMore:hover { color: #d4af37; }

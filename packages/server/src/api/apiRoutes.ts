@@ -209,7 +209,8 @@ export function registerApiRoutes(
     const session = stateManager.getSession(sessionId);
     if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
     try {
-      execSync(`taskkill /F /T /PID ${session.pid}`, { stdio: 'ignore' });
+      try { execSync(`pkill -P ${session.pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
+      execSync(`kill -9 ${session.pid}`, { stdio: 'ignore' });
       const killedName = session.proposedName ?? sessionId.slice(0, 8);
       log('session:killed', 'Process killed', { sessionId, sessionName: killedName, extra: 'PID ' + session.pid });
       res.json({ ok: true });

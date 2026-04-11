@@ -165,6 +165,7 @@ function migrateBridgeSession(oldId: string, newId: string): void {
 // Pending bridge connections for new sessions (marker → temp pipe name)
 // When a new session appears with ___BRG:<marker> in its name, we link it to the bridge pipe.
 const pendingBridgeByMarker = new Map<string, { pipeName: string; timestamp: number }>();
+const pendingBridgeOpen = new Set<string>(); // sessionIds with in-flight bridge open; cleared in linkPendingBridge
 
 // Bridge injection queue (kept for potential future use)
 const bridgeInjectQueue = new Map<string, Array<{ text: string; resolve: () => void }>>();
@@ -474,6 +475,14 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
   // own guard will handle deduplication. Never short-circuit to an existingPipe
   // that may be stale (e.g. from a previous bridge run with a different socket).
   console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (derived)'}`);
+  // Clear pending bridge open guard — the session has now actually appeared,
+  // so subsequent open-bridged requests for the same original session are safe to reject via isBridge().
+  for (const id of pendingBridgeOpen) {
+    if (id.startsWith(marker)) {
+      pendingBridgeOpen.delete(id);
+      break;
+    }
+  }
   stateManager.setSessionType(sessionId, 'bridge');
   connectBridgePipe(sessionId, pipeName);
 }
@@ -675,8 +684,9 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
   // 1. Kill the process tree so it can't recreate the session file
   if (pid) {
     try {
-      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
-      console.log(`[deleteSession] killed pid=${pid} via taskkill`);
+      try { execSync(`pkill -P ${pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
+      execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
+      console.log(`[deleteSession] killed pid=${pid} via kill -9`);
     } catch {
       // Process already dead — fine
     }
@@ -774,6 +784,7 @@ setupWebSocketHandler(wss, {
   pendingPtyByResumeId,
   pendingCloneInfo,
   ptyOutputBuffer,
+  pendingBridgeOpen,
   broadcastRaw,
   sendToClient,
   deleteSession,

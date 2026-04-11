@@ -143,6 +143,7 @@ Before implementing any solution, **stop and think through the design space**:
 
 If you catch yourself about to start a second approach after the first failed, pause and think about _why_ it failed. The root cause often points to the right solution.
 
+
 ## Browser Verification
 
 After any client-side code change, verify rendering and behavior in the browser using the Chrome DevTools MCP before marking work complete. Steps:

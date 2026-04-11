@@ -1,9 +1,72 @@
-import React, { useState, useRef } from 'react';
-import type { Room, Session, Task } from '../types';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import type { Room, Session, Task, ActivityItem } from '../types';
 import styles from './TaskListPanel.module.css';
 
-type Tab = 'agents' | 'tasks';
+type Tab = 'agents' | 'tasks' | 'search';
 type Filter = 'done' | 'awaiting';
+
+// ── Search helpers ──────────────────────────────────────────────────────────
+
+interface SearchMatch {
+  item: ActivityItem;
+  excerpt: string;        // ~120 char excerpt with match bolded (as JSX fragments)
+  boldRanges: [number, number][]; // [start, end] in excerpt
+}
+
+interface AgentSearchResult {
+  sessionId: string;
+  displayName: string;
+  state: string;
+  sessionType?: string;
+  isSubagent: boolean;
+  parentName?: string;
+  matches: SearchMatch[];
+  onSelect: () => void;
+}
+
+function buildCorpus(item: ActivityItem): string {
+  if (item.kind === 'thinking' && item.isRedacted) return '';
+  const parts: string[] = [item.content];
+  if (item.inputJson) parts.push(item.inputJson);
+  return parts.join(' ');
+}
+
+function makeExcerpt(corpus: string, query: string, windowSize = 120): { text: string; start: number; end: number } {
+  const lower = corpus.toLowerCase();
+  const idx = lower.indexOf(query.toLowerCase());
+  if (idx === -1) return { text: corpus.slice(0, windowSize), start: -1, end: -1 };
+  const half = Math.floor(windowSize / 2);
+  const from = Math.max(0, idx - half + Math.floor(query.length / 2));
+  const to = Math.min(corpus.length, from + windowSize);
+  const adjusted = Math.max(0, to - windowSize);
+  const text = (adjusted > 0 ? '…' : '') + corpus.slice(adjusted, to) + (to < corpus.length ? '…' : '');
+  const matchInExcerpt = idx - adjusted + (adjusted > 0 ? 1 : 0); // offset by ellipsis char
+  return { text, start: matchInExcerpt, end: matchInExcerpt + query.length };
+}
+
+function searchFeed(feed: ActivityItem[], query: string): SearchMatch[] {
+  const q = query.toLowerCase();
+  return feed
+    .filter(item => buildCorpus(item).toLowerCase().includes(q))
+    .map(item => {
+      const corpus = buildCorpus(item);
+      const { text, start, end } = makeExcerpt(corpus, query);
+      return { item, excerpt: text, boldRanges: start >= 0 ? [[start, end] as [number, number]] : [] };
+    });
+}
+
+function BoldExcerpt({ text, ranges }: { text: string; ranges: [number, number][] }) {
+  if (ranges.length === 0) return <>{text}</>;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const [s, e] of ranges) {
+    if (s > cursor) parts.push(text.slice(cursor, s));
+    parts.push(<strong key={s}>{text.slice(s, e)}</strong>);
+    cursor = e;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
 
 interface TaskListPanelProps {
   room: Room;
@@ -43,8 +106,17 @@ const STATE_ICON: Record<string, string> = {
 export function TaskListPanel({ room, customNames, onSelectSession, onClose, panelWidth, onPanelWidthChange }: TaskListPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>('tasks');
   const [filters, setFilters] = useState<Set<Filter>>(new Set(['done', 'awaiting']));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const isResizingRef = useRef(false);
   const [isResizing, setIsResizing] = useState(false);
+
+  useEffect(() => {
+    if (activeTab === 'search') {
+      setTimeout(() => searchInputRef.current?.focus(), 50);
+    }
+  }, [activeTab]);
 
   function toggleFilter(f: Filter) {
     setFilters(prev => {
@@ -111,6 +183,50 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
 
   const noTasksVisible = doneTasks.length === 0 && awaitingRows.length === 0 && approvalRows.length === 0;
 
+  // ── Search results ──────────────────────────────────────────────────────
+  const searchResults = useMemo<AgentSearchResult[]>(() => {
+    const q = searchQuery.trim();
+    if (!q) return [];
+
+    // Collect all feed items across the room (cap at 2000 most recent by timestamp)
+    const results: AgentSearchResult[] = [];
+
+    for (const session of room.sessions) {
+      const feed = session.activityFeed ?? [];
+      const matches = searchFeed(feed, q);
+      if (matches.length > 0) {
+        results.push({
+          sessionId: session.sessionId,
+          displayName: getSessionDisplayName(session, customNames),
+          state: session.state,
+          sessionType: session.sessionType,
+          isSubagent: false,
+          matches,
+          onSelect: () => onSelectSession(session),
+        });
+      }
+
+      for (const sub of session.subagents ?? []) {
+        const subFeed = sub.activityFeed ?? [];
+        const subMatches = searchFeed(subFeed, q);
+        if (subMatches.length > 0) {
+          results.push({
+            sessionId: `${session.sessionId}::${sub.agentId}`,
+            displayName: [sub.agentType, sub.description].filter(Boolean).join(' · ').slice(0, 45),
+            state: sub.state,
+            isSubagent: true,
+            parentName: getSessionDisplayName(session, customNames),
+            matches: subMatches,
+            onSelect: () => onSelectSession(session),
+          });
+        }
+      }
+    }
+
+    // Sort by match count descending
+    return results.sort((a, b) => b.matches.length - a.matches.length);
+  }, [searchQuery, room.sessions, customNames, onSelectSession]);
+
   function handleSelect(session: Session) {
     onSelectSession(session);
   }
@@ -153,6 +269,12 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
           onClick={() => setActiveTab('tasks')}
         >
           Tasks
+        </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'search' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('search')}
+        >
+          Search
         </button>
       </div>
 
@@ -302,6 +424,113 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
               </div>
             )}
           </>
+        )}
+
+        {/* ── SEARCH TAB ── */}
+        {activeTab === 'search' && (
+          <div className={styles.searchPane}>
+            <div className={styles.searchInputWrap}>
+              <svg className={styles.searchIcon} viewBox="0 0 16 16" fill="none">
+                <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              <input
+                ref={searchInputRef}
+                className={styles.searchInput}
+                type="text"
+                placeholder="Search conversations…"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button
+                  className={styles.searchClear}
+                  onClick={() => { setSearchQuery(''); searchInputRef.current?.focus(); }}
+                  title="Clear"
+                >✕</button>
+              )}
+            </div>
+
+            {!searchQuery.trim() && (
+              <div className={styles.searchEmpty}>Type to search across sessions in this room.</div>
+            )}
+
+            {searchQuery.trim() && searchResults.length === 0 && (
+              <div className={styles.searchEmpty}>No results for &laquo;{searchQuery.trim()}&raquo;</div>
+            )}
+
+            {searchResults.map(result => {
+              const isExpanded = expandedAgents.has(result.sessionId);
+              const visibleMatches = isExpanded ? result.matches : result.matches.slice(0, 3);
+              const hasMore = result.matches.length > 3;
+              const dotColor = STATE_COLOR[result.state] ?? '#6b7280';
+              const icon = STATE_ICON[result.state] ?? '○';
+
+              return (
+                <div
+                  key={result.sessionId}
+                  className={`${styles.searchGroup} ${result.isSubagent ? styles.searchGroupSub : ''}`}
+                >
+                  {/* Agent header */}
+                  <div
+                    className={styles.searchGroupHeader}
+                    onClick={result.onSelect}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') result.onSelect(); }}
+                  >
+                    <span className={styles.searchDot} style={{ color: dotColor }}>{icon}</span>
+                    <span className={styles.searchAgentName}>{result.displayName}</span>
+                    {result.isSubagent && result.parentName && (
+                      <span className={styles.searchParentBadge}>{result.parentName}</span>
+                    )}
+                    {result.sessionType && result.sessionType !== 'plain' && (
+                      <span className={styles.searchTypeBadge}>{result.sessionType}</span>
+                    )}
+                    <span className={styles.searchMatchCount}>{result.matches.length}</span>
+                  </div>
+
+                  {/* Match fragments */}
+                  {visibleMatches.map((match, i) => {
+                    const roleLabel = match.item.kind === 'tool'
+                      ? (match.item.toolName ?? 'tool')
+                      : (match.item.role ?? match.item.kind);
+                    return (
+                      <div
+                        key={i}
+                        className={styles.searchFragment}
+                        onClick={result.onSelect}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') result.onSelect(); }}
+                      >
+                        <span className={`${styles.searchRole} ${styles[`searchRole_${match.item.role ?? match.item.kind}`]}`}>
+                          {roleLabel}
+                        </span>
+                        <span className={styles.searchFragmentText}>
+                          <BoldExcerpt text={match.excerpt} ranges={match.boldRanges} />
+                        </span>
+                        {match.item.timestamp && (
+                          <span className={styles.searchFragmentTime}>
+                            {relativeTime(match.item.timestamp)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {hasMore && !isExpanded && (
+                    <button
+                      className={styles.searchShowMore}
+                      onClick={e => { e.stopPropagation(); setExpandedAgents(prev => new Set([...prev, result.sessionId])); }}
+                    >
+                      {result.matches.length - 3} more match{result.matches.length - 3 > 1 ? 'es' : ''}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>

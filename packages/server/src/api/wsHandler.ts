@@ -19,6 +19,7 @@ export interface WsHandlerContext {
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
+  pendingBridgeOpen: Set<string>;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void;
@@ -44,6 +45,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     pendingPtyByResumeId,
     pendingCloneInfo,
     ptyOutputBuffer,
+    pendingBridgeOpen,
     broadcastRaw,
     sendToClient,
     deleteSession,
@@ -54,7 +56,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
   } = ctx;
 
   let autoResumeTriggered = false;
-  const pendingBridgeOpen = new Set<string>();
 
   wss.on('connection', (ws) => {
     // Trigger auto-resume on the first client connection
@@ -219,8 +220,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         pendingBridgeOpen.add(sessionId);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
           .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))
-          .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` }))
-          .finally(() => pendingBridgeOpen.delete(sessionId));
+          .catch((err) => {
+            pendingBridgeOpen.delete(sessionId); // allow retry on spawn failure
+            sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` });
+          });
+        // pendingBridgeOpen is cleared in linkPendingBridge (index.ts) once the session
+        // actually appears with the ___BRG: marker — not here on spawn, which is too early.
         return;
       }
 
