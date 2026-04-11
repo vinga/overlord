@@ -63,9 +63,11 @@ export class AiClassifier {
     }
   }
 
-  async generateTaskTitle(sessionId: string, taskId: string): Promise<void> {
-    if (this.activeTaskTitleGenerations.has(taskId)) return;
-    this.activeTaskTitleGenerations.add(taskId);
+  async generateTaskTitle(_sessionId: string, _taskId: string): Promise<void> {
+    // disabled — too costly
+    return;
+    if (this.activeTaskTitleGenerations.has(_taskId)) return;
+    this.activeTaskTitleGenerations.add(_taskId);
     try {
       const session = this.stateManager.getSession(sessionId);
       if (!session || session.isWorker) return;
@@ -130,6 +132,7 @@ export class AiClassifier {
   }
 
   async classifyCompletion(sessionId: string, lastMessage: string): Promise<void> {
+    // Haiku classification disabled — heuristic only
     const heuristic = this.classifyByHeuristic(lastMessage);
     if (heuristic !== null) {
       console.log(`[classify] ${sessionId.slice(0, 8)} → ${heuristic} (heuristic)`);
@@ -138,26 +141,6 @@ export class AiClassifier {
         this.stateManager.completeActiveTask(sessionId, new Date().toISOString());
         setTimeout(() => { void this.generateCompletionSummary(sessionId, lastMessage); }, 2_000);
       }
-      return;
-    }
-    try {
-      const prompt = `A Claude Code AI agent sent this message to a user. Did it complete a task/request (and is done), or is it asking a question / waiting for more user instructions?\n\nMessage: "${lastMessage.slice(0, 300)}"\n\nReply with exactly one word: done OR awaiting`;
-      console.log(`[classify] ${sessionId.slice(0, 8)} querying haiku...`);
-      const result = await runClaudeQuery(prompt, 45_000, () => {
-        const s = this.stateManager.getSession(sessionId);
-        return s?.state === 'waiting' && s?.lastMessage === lastMessage.slice(0, 300);
-      });
-      const hint = result.toLowerCase().includes('done') ? 'done' : 'awaiting';
-      console.log(`[classify] ${sessionId.slice(0, 8)} → ${hint} (raw: "${result.trim()}")`);
-      this.stateManager.setCompletionHint(sessionId, hint, lastMessage.slice(0, 300));
-      if (hint === 'done') {
-        this.stateManager.completeActiveTask(sessionId, new Date().toISOString());
-        // Wait 2s to confirm state is stable, then generate a one-line summary
-        setTimeout(() => { void this.generateCompletionSummary(sessionId, lastMessage); }, 2_000);
-      }
-    } catch (err) {
-      const msg = (err as Error).message;
-      if (msg !== 'invalidated') console.warn(`[classify] ${sessionId.slice(0, 8)} failed:`, msg);
     }
   }
 
@@ -214,12 +197,8 @@ export class AiClassifier {
   }
 
   /** Sets a 3s debounce timer before generating an active label */
-  scheduleLabel(sessionId: string): void {
-    if (this.activeTaskTimers.has(sessionId)) {
-      clearTimeout(this.activeTaskTimers.get(sessionId)!);
-    }
-    const timer = setTimeout(() => { void this.generateActiveLabel(sessionId); }, 3_000);
-    this.activeTaskTimers.set(sessionId, timer);
+  scheduleLabel(_sessionId: string): void {
+    // disabled — too costly
   }
 
   /** Clears a pending label generation timer */

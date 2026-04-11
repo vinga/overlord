@@ -1,5 +1,4 @@
 import * as fs from 'fs';
-import { spawn } from 'child_process';
 import type { WebSocket, WebSocketServer } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
@@ -7,6 +6,8 @@ import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath } from '../pty/pipeInjector.js';
 import { injectViaMac } from '../pty/macInjector.js';
 import { log } from '../logger.js';
+import { focusBridgeWindow } from '../pty/windowFocus.js';
+import { scheduleInject } from '../pty/injectScheduler.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -27,38 +28,6 @@ export interface WsHandlerContext {
   bridgeInjectQueue: Map<string, Array<{ text: string; resolve: () => void }>>;
 }
 
-/**
- * Bring a Terminal.app tab to front by matching its TTY device path.
- * macOS only — no-op on other platforms.
- */
-function focusBridgeWindow(tty: string): Promise<void> {
-  if (process.platform !== 'darwin') return Promise.resolve();
-  const safeTty = tty.replace(/"/g, '');
-  // Select the right tab and raise it within Terminal's window stack.
-  // We intentionally do NOT call `activate` or `set frontmost` — both change the
-  // OS-level frontmost application, which fires xterm focus-tracking sequences
-  // (\x1b[I / \x1b[O) into the running process and corrupts the prompt.
-  // Instead we just pre-select the correct tab so when the user switches to
-  // Terminal (e.g. Cmd+Tab) it is already showing the right session.
-  const script = [
-    'tell application "Terminal"',
-    `  repeat with w in windows`,
-    `    repeat with t in tabs of w`,
-    `      if tty of t is "${safeTty}" then`,
-    `        set selected of t to true`,
-    `        set index of w to 1`,
-    `        return`,
-    `      end if`,
-    `    end repeat`,
-    `  end repeat`,
-    `end tell`,
-  ].join('\n');
-  return new Promise<void>((resolve) => {
-    const child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
-    child.on('close', () => resolve());
-    child.on('error', () => resolve());
-  });
-}
 
 function stripInternalMarkers(name: string): string {
   return name.replace(/___(?:BRG|OVR):[A-Za-z0-9_-]*/g, '').replace(/[-_\s]+$/, '').trim();
@@ -85,6 +54,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
   } = ctx;
 
   let autoResumeTriggered = false;
+  const pendingBridgeOpen = new Set<string>();
 
   wss.on('connection', (ws) => {
     // Trigger auto-resume on the first client connection
@@ -226,6 +196,19 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // and links the PTY output to this session automatically.
         const sessionId = String(msg.sessionId ?? '');
         const cwd = String(msg.cwd ?? process.cwd());
+
+        // Deduplicate: reject if already bridged or if a bridge-open is in flight.
+        if (stateManager.isBridge(sessionId)) {
+          console.log(`[open-bridged] rejected — session ${sessionId.slice(0, 8)} already bridged`);
+          sendToClient(ws, { type: 'terminal:error', sessionId, message: 'Session already has an active bridge.' });
+          return;
+        }
+        if (pendingBridgeOpen.has(sessionId)) {
+          console.log(`[open-bridged] rejected — bridge open already in flight for ${sessionId.slice(0, 8)}`);
+          sendToClient(ws, { type: 'terminal:error', sessionId, message: 'Bridge open already in progress.' });
+          return;
+        }
+
         const session = stateManager.getSession(sessionId);
         const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
         const marker = sessionId.slice(0, 8);
@@ -233,9 +216,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const bridgePath = getBridgePath();
         const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name ${safeName}___BRG:${marker}`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
+        pendingBridgeOpen.add(sessionId);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
           .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))
-          .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` }));
+          .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` }))
+          .finally(() => pendingBridgeOpen.delete(sessionId));
         return;
       }
 
@@ -263,10 +248,14 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const data = String(msg.data ?? '');
         stateManager.clearHintOnInput(sessionId);
+        // Strip focus-tracking sequences (ESC[I focus-in, ESC[O focus-out) before
+        // evaluating pending-input state. xterm.js can emit these when the browser
+        // window gains/loses focus — they must not trigger the "typing…" badge.
+        const dataForPending = data.replace(/\x1b\[I|\x1b\[O/g, '');
         // Track pending input: Enter clears it, any other char starts/extends it.
-        if (data.includes('\r') || data.includes('\n')) {
+        if (dataForPending.includes('\r') || dataForPending.includes('\n')) {
           stateManager.clearPtyInputPending(sessionId);
-        } else {
+        } else if (dataForPending.length > 0) {
           stateManager.setPtyInputPending(sessionId);
         }
         const wrote = ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
@@ -349,23 +338,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const ptyId = claudeToPtyId.get(sessionId);
         if (!isBridge && ptyId && ptyManager.has(ptyId)) {
           console.log(`[inject] pty session=${sessionId.slice(0, 8)} ptyId=${ptyId.slice(0, 8)} text="${text}"`);
-          if (extraEnter) {
-            // @file autocomplete: send text only first, let TUI render autocomplete,
-            // then \r to select, then another \r to submit.
-            ptyManager.write(ptyId, text);
-            setTimeout(() => {
-              if (!ptyManager.has(ptyId)) return;
-              ptyManager.write(ptyId, '\r');
-              console.log(`[inject] extra-enter pty step1 (select) session=${sessionId.slice(0, 8)}`);
-              setTimeout(() => {
-                if (!ptyManager.has(ptyId)) return;
-                ptyManager.write(ptyId, '\r');
-                console.log(`[inject] extra-enter pty step2 (submit) session=${sessionId.slice(0, 8)}`);
-              }, 300);
-            }, 400);
-          } else {
-            ptyManager.write(ptyId, text + '\r');
-          }
+          scheduleInject(
+            (data) => ptyManager.write(ptyId, data),
+            () => ptyManager.has(ptyId),
+            text,
+            extraEnter,
+          );
           console.log(`[inject] pty write ok`);
           return;
         }

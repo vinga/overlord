@@ -40,9 +40,11 @@ describe('derivePipeNameFromMarker', () => {
     expect(derivePipeNameFromMarker('brg-1a2b3c')).toBe('overlord-new-1a2b3c');
   });
 
-  it('passes through markers without brg- prefix (manual spawns)', () => {
-    expect(derivePipeNameFromMarker('57dfd1eb')).toBe('overlord-new-57dfd1eb');
-    expect(derivePipeNameFromMarker('abc123')).toBe('overlord-new-abc123');
+  it('uses overlord-{marker} for short-session-id markers (terminal:open-bridged)', () => {
+    // bridge command: --pipe overlord-7c622040 → socket: overlord-7c622040.sock
+    expect(derivePipeNameFromMarker('7c622040')).toBe('overlord-7c622040');
+    expect(derivePipeNameFromMarker('57dfd1eb')).toBe('overlord-57dfd1eb');
+    expect(derivePipeNameFromMarker('abc123')).toBe('overlord-abc123');
   });
 
   it('does not double-strip if suffix itself starts with brg-', () => {
@@ -59,9 +61,11 @@ describe('resolvePipeName — no pending entry (manual bridge spawn)', () => {
       .toBe('overlord-new-mntcq5ci');
   });
 
-  it('derives pipe from non-brg marker correctly', () => {
+  it('derives overlord-{marker} for short-session-id markers (terminal:open-bridged)', () => {
     expect(resolvePipeName('57dfd1eb', undefined, Date.now()))
-      .toBe('overlord-new-57dfd1eb');
+      .toBe('overlord-57dfd1eb');
+    expect(resolvePipeName('7c622040', undefined, Date.now()))
+      .toBe('overlord-7c622040');
   });
 });
 

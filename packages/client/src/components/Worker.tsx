@@ -137,11 +137,11 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
       aria-label={`Worker ${label}`}
     >
-      {!minimal && needsPermission && !isSubagent && (
-        <div className={styles.permissionBadge}>⚠ approval</div>
-      )}
       {!minimal && hasPendingInput && !isSubagent && (
         <div className={styles.pendingInputBadge}>✎ typing…</div>
+      )}
+      {!minimal && needsPermission && !isSubagent && (
+        <div className={styles.permissionBadge}>⚠ approval</div>
       )}
       {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting') && (
         <div

@@ -932,23 +932,67 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             {isExpanded && seg.items.map((tool, ti) => {
               const diffKey = `${segIdx}-${ti}`;
               const argsKey = `${segIdx}-${ti}-args`;
+              // Resolve agent-specific props for Agent tool entries inside multi-tool groups
+              let agentClickHandler: (() => void) | undefined;
+              let matchedSubagentType: string | undefined;
+              let matchedSubagent: Subagent | undefined;
+              if (tool.toolName === 'Agent' && subagents && tool.inputJson) {
+                try {
+                  const parsed = JSON.parse(tool.inputJson) as { description?: string };
+                  const desc = parsed.description;
+                  if (desc) {
+                    const match = subagents.find(s => s.description === desc);
+                    if (match) {
+                      matchedSubagent = match;
+                      matchedSubagentType = match.agentType;
+                      if (onSelectSubagent) agentClickHandler = () => onSelectSubagent(match.agentId);
+                    }
+                  }
+                } catch { /* ignore */ }
+              }
+              const inlineKey = segIdx * 1000 + ti;
+              const isInlineExpanded = expandedInlineAgents.has(inlineKey);
+              const toggleInline = matchedSubagent ? () => setExpandedInlineAgents(prev => {
+                const next = new Set(prev);
+                if (next.has(inlineKey)) next.delete(inlineKey); else next.add(inlineKey);
+                return next;
+              }) : undefined;
               return (
-                <ToolEntry
-                  key={ti}
-                  tool={tool}
-                  diffKey={diffKey}
-                  argsKey={argsKey}
-                  expandedDiffs={expandedDiffs}
-                  setExpandedDiffs={setExpandedDiffs}
-                  expandedArgs={expandedArgs}
-                  setExpandedArgs={setExpandedArgs}
-                  ideName={ideName}
-                  showRunning={true}
-                  showDuration={true}
-                  sessionState={sessionState}
-                  styles={styles}
-                  cwd={cwd}
-                />
+                <React.Fragment key={ti}>
+                  <ToolEntry
+                    tool={tool}
+                    diffKey={diffKey}
+                    argsKey={argsKey}
+                    expandedDiffs={expandedDiffs}
+                    setExpandedDiffs={setExpandedDiffs}
+                    expandedArgs={expandedArgs}
+                    setExpandedArgs={setExpandedArgs}
+                    ideName={ideName}
+                    showRunning={true}
+                    showDuration={true}
+                    sessionState={sessionState}
+                    styles={styles}
+                    cwd={cwd}
+                    onAgentClick={agentClickHandler}
+                    subagentType={matchedSubagentType}
+                    isInlineExpanded={matchedSubagent ? isInlineExpanded : undefined}
+                    onToggleInline={toggleInline}
+                  />
+                  {matchedSubagent && isInlineExpanded && (
+                    <div className={styles.inlineAgentFeed}>
+                      {matchedSubagent.activityFeed?.length ? (
+                        <FeedSegments
+                          feed={matchedSubagent.activityFeed}
+                          roleLabel={roleLabel}
+                          styles={styles}
+                          sessionState={matchedSubagent.state}
+                        />
+                      ) : (
+                        <span className={styles.inlineAgentEmpty}>No activity yet</span>
+                      )}
+                    </div>
+                  )}
+                </React.Fragment>
               );
             })}
           </div>
@@ -1189,7 +1233,7 @@ const currentDisplayName =
     // During compaction, preserve the draft — injection will be queued but may be swallowed
     if (selectedSession.isCompacting) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-    const sent = injectText(selectedSession.sessionId, full, true);
+    const sent = injectText(selectedSession.sessionId, full, full.includes('@'));
     if (sent && full) {
       // Snapshot real user message count on first pending send
       if (realCountAtFirstSend.current === null) {
@@ -1664,11 +1708,6 @@ const currentDisplayName =
                               styles={styles}
                             />
                           </div>
-                        ) : (isPty || isBridgeSession?.(selectedSession.sessionId)) ? (
-                          <div className={styles.emptyFeedHint}>
-                            <span className={styles.emptyFeedHintIcon}>⎋</span>
-                            <span>Activity visible in <button className={styles.emptyFeedTabLink} onClick={() => setActiveTab('terminal')}>Terminal</button> tab</span>
-                          </div>
                         ) : null}
                       </div>
                       <ConsolePreview
@@ -2110,7 +2149,7 @@ const currentDisplayName =
                                 {openingTerminal ? 'Opening…' : selectedSession.state === 'closed' ? 'Open in Terminal' : 'Attach in Terminal'}
                               </button>
                             )}
-                            {onOpenBridged && (
+                            {onOpenBridged && !isBridgeSession?.(selectedSession.sessionId) && (
                               <button
                                 className={`${styles.resumeButton} ${openingBridged ? styles.resumeButtonPending : ''}`}
                                 disabled={openingBridged}

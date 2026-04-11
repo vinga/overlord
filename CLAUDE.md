@@ -42,147 +42,28 @@ Client dev server runs on `http://localhost:5173`.
 ```
 packages/
 ├── server/   Node.js + TypeScript + Express + ws + chokidar
+│   └── src/
+│       ├── session/   session lifecycle, state, transcript watching
+│       ├── pty/       terminal injection (PTY, bridge pipe, scheduling)
+│       ├── ai/        classification, LLM queries, task storage
+│       └── api/       REST routes + WebSocket handler
 ├── client/   React 18 + TypeScript + Vite + CSS Modules
-└── bridge/   Go binary — named-pipe relay for reliable terminal injection
+│   └── src/
+│       ├── hooks/      useOfficeData, useTerminal, useCustomNames, …
+│       └── components/ Office, Room, Worker, DetailPanel, …
+└── bridge/   Go binary — named-pipe relay for terminal injection
 ```
 
-**Server module structure** (`packages/server/src/`):
-```
-index.ts              — entry point, server bootstrap, shared state, wiring (~360 lines)
-types.ts              — shared server types
-logger.ts             — ring-buffer logger with WS broadcast
-session/
-  ├── stateManager.ts        — aggregates state, broadcasts OfficeSnapshot
-  ├── sessionWatcher.ts      — watches ~/.claude/sessions/*.json (chokidar)
-  ├── sessionEventHandlers.ts — added/changed/removed handlers, PTY linking
-  ├── transcriptReader.ts    — reads .jsonl transcript tail for state detection
-  ├── transcriptWatcher.ts   — watches transcript files, triggers state refresh
-  ├── processChecker.ts      — polls tasklist for alive PIDs
-  └── permissionChecker.ts   — detects permission prompts (Windows)
-pty/
-  ├── ptyManager.ts          — ConPTY session lifecycle
-  ├── ptyEvents.ts           — PTY output/exit/error/pid-ready handlers
-  ├── consoleInjector.ts     — PowerShell daemon for SendInput injection
-  └── pipeInjector.ts        — named-pipe injection via bridge binary
-ai/
-  ├── aiClassifier.ts        — heuristic + LLM session labeling & summaries
-  ├── claudeQuery.ts         — Claude API wrapper
-  └── taskStorage.ts         — per-session task/hint persistence
-api/
-  ├── apiRoutes.ts           — REST endpoints (inject, tasks, labels, delete)
-  └── wsHandler.ts           — WebSocket message handlers (terminal, session ops)
-```
+**Data flow:** `SessionWatcher` (chokidar) → `TranscriptReader` (jsonl tail) + `ProcessChecker` (PID poll) → `StateManager` → `OfficeSnapshot` broadcast via WebSocket → client renders office grid.
 
-**Server data flow:**
-1. `SessionWatcher` — watches `~/.claude/sessions/*.json` with chokidar; emits `added/changed/removed` events
-2. `TranscriptReader` — reads last 30 lines of `~/.claude/projects/{slug}/{sessionId}.jsonl` to determine session state (`working/thinking/waiting/idle`)
-3. `ProcessChecker` — polls `tasklist /fo csv /nh` every 5s; sessions with dead PIDs become `idle`
-4. `StateManager` — aggregates all state into `Map<sessionId, Session>`; on change broadcasts `OfficeSnapshot` JSON via WebSocket to all clients
+**Key files:**
+- `server/src/session/stateManager.ts` — central state, snapshot broadcast
+- `server/src/api/wsHandler.ts` — all WebSocket message handling
+- `server/src/pty/injectScheduler.ts` — `scheduleInject()` / `shouldUseExtraEnter()`
+- `client/src/components/DetailPanel.tsx` — chat UI, activity feed, terminal embed
+- `client/src/hooks/useTerminal.ts` — PTY lifecycle hook
 
-**Session state detection** (from transcript tail):
-- File modified < 8s → `working`
-- Last event `type:"user"` + age > 2s → `thinking`
-- Last event `type:"user"` + age ≤ 2s → `working`
-- Last event `type:"assistant"` → `waiting`
-- PID dead → `idle`
-
-**Client component tree:**
-```
-App.tsx (270 lines) — state orchestrator, view switching (office/logs)
-├── LogsPage.tsx (210 lines) — real-time event log with color-coded badges
-└── Office.tsx (99 lines) — CSS Grid of rooms, header with OverlordLogo
-    ├── OverlordLogo.tsx (90 lines) — SVG crown + wordmark
-    ├── Room.tsx (397 lines) — workspace card, draggable sessions, spawn menus
-    │   └── WorkerGroup.tsx (73 lines) — main session + arc of subagents
-    │       └── Worker.tsx (135 lines) — SVG avatar, state indicators, badges
-    ├── DetailPanel.tsx (1,571 lines) — right sidebar: activity feed, markdown,
-    │   │   diffs, permission prompts, subagent list, terminal embed
-    │   ├── WorkerAvatar.tsx (48 lines) — reusable SVG avatar
-    │   └── XtermTerminal.tsx (155 lines) — xterm.js terminal emulator
-    ├── TaskListPanel.tsx (291 lines) — room-level agents/tasks tabs
-    ├── InjectionInput.tsx (161 lines) — message input with image paste
-    └── PtyTerminalPanel.tsx (242 lines) — standalone PTY terminal panel
-```
-
-**Client hooks** (`packages/client/src/hooks/`):
-- `useOfficeData` (106 lines) — WebSocket → snapshot + terminal messages, auto-reconnect
-- `useTerminal` (250 lines) — PTY lifecycle: spawn, resume, input, resize, kill
-- `useCustomNames` (43 lines) — session names in localStorage
-- `useRoomOrder` (42 lines) — drag order persistence in localStorage
-- `useTick` (11 lines) — periodic re-render for elapsed time displays
-
-**Client types** (`packages/client/src/types.ts`, 199 lines):
-- `Session` — sessionId, state, color, subagents, activityFeed, completionSummaries
-- `ActivityItem` — kind (`message|tool|thinking`), role, content, tool info, duration
-- `Room` — sessions grouped by workspace cwd
-- `OfficeSnapshot` — complete state with all rooms
-- Terminal message types (spawn, input, inject, resize, output, linked, replaced)
-- `LogEntry` — event type, sessionId, message, timestamp
-
-**Conversation/chat UI** lives in `DetailPanel.tsx`:
-- Activity feed renders `session.activityFeed` (messages, tool calls, thinking blocks)
-- `PermissionPrompt` internal component shows yes/always/no when `session.needsPermission`
-- `InjectionInput.tsx` provides the message textarea
-- Permission asks are only visible in DetailPanel when that session is selected
-
-**Subagents** read from `~/.claude/projects/{slug}/{sessionId}/subagents/agent-{id}.meta.json` + `.jsonl`
-
-**CSS Modules** (10 files, ~3,975 lines total) — one per component, largest is `DetailPanel.module.css` (2,046 lines)
-
-## Repository Structure
-
-```
-overlord/
-├── package.json              # npm workspaces root
-├── packages/
-│   ├── server/src/
-│   │   ├── index.ts          # Entry point, bootstrap, shared state
-│   │   ├── types.ts          # Shared server types
-│   │   ├── logger.ts         # Ring-buffer logger
-│   │   ├── session/          # Session lifecycle & state
-│   │   │   ├── stateManager.ts
-│   │   │   ├── sessionWatcher.ts
-│   │   │   ├── sessionEventHandlers.ts
-│   │   │   ├── transcriptReader.ts
-│   │   │   ├── transcriptWatcher.ts
-│   │   │   ├── processChecker.ts
-│   │   │   └── permissionChecker.ts
-│   │   ├── pty/              # Terminal / injection
-│   │   │   ├── ptyManager.ts
-│   │   │   ├── ptyEvents.ts
-│   │   │   ├── consoleInjector.ts
-│   │   │   └── pipeInjector.ts
-│   │   ├── ai/               # Classification & LLM
-│   │   │   ├── aiClassifier.ts
-│   │   │   ├── claudeQuery.ts
-│   │   │   └── taskStorage.ts
-│   │   └── api/              # HTTP & WebSocket
-│   │       ├── apiRoutes.ts
-│   │       └── wsHandler.ts
-│   ├── client/src/
-│   │   ├── App.tsx            # Root: view switching, state orchestration
-│   │   ├── types.ts           # All shared types
-│   │   ├── hooks/
-│   │   │   ├── useOfficeData.ts   # WebSocket connection
-│   │   │   ├── useTerminal.ts     # PTY session management
-│   │   │   ├── useCustomNames.ts  # Session naming
-│   │   │   ├── useRoomOrder.ts    # Drag order persistence
-│   │   │   └── useTick.ts         # Periodic re-render
-│   │   └── components/
-│   │       ├── Office.tsx         # Main grid layout
-│   │       ├── Room.tsx           # Workspace card with drag-to-reorder
-│   │       ├── WorkerGroup.tsx    # Session + subagent arc
-│   │       ├── Worker.tsx         # SVG avatar card
-│   │       ├── DetailPanel.tsx    # Activity feed, chat, terminal (largest)
-│   │       ├── TaskListPanel.tsx  # Room-level agents/tasks panel
-│   │       ├── InjectionInput.tsx # Message input with image paste
-│   │       ├── PtyTerminalPanel.tsx # Standalone PTY panel
-│   │       ├── XtermTerminal.tsx  # xterm.js embed
-│   │       ├── WorkerAvatar.tsx   # Reusable SVG avatar
-│   │       ├── OverlordLogo.tsx   # Header logo
-│   │       └── LogsPage.tsx       # Event log view
-│   └── bridge/               # Go binary for named-pipe injection
-└── specs/
+For deep dives, see `docs/`.
 ```
 
 ## Session Matching Rules
@@ -355,4 +236,9 @@ When source code is added, update this file with:
 
 
 ### Communication
-Use short sentences only (3-6 words). No filler/preamble. Tool first, result first, no explain unless asked.
+⚠️ CRITICAL — MUST FOLLOW IN EVERY RESPONSE WITHOUT EXCEPTION:
+- Short sentences only (3-6 words).
+- Zero filler or preamble. Never start with "I'll", "Let me", "Sure", "Great", etc.
+- Tool first, result first. Explain only if explicitly asked.
+- Violating this is a failure regardless of task quality.
+- Pass this requirement to subagents

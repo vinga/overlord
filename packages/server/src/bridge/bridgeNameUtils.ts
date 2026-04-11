@@ -22,8 +22,12 @@ export function normalizePipeName(pipeName: string): string {
  * So strip the "brg-" prefix and prepend "overlord-new-".
  */
 export function derivePipeNameFromMarker(marker: string): string {
-  const suffix = marker.startsWith('brg-') ? marker.slice(4) : marker;
-  return `overlord-new-${suffix}`;
+  if (marker.startsWith('brg-')) {
+    // New-style bridge (openTerminalWindow): marker = "brg-{ts}", pipe = "overlord-new-{ts}"
+    return `overlord-new-${marker.slice(4)}`;
+  }
+  // Explicit bridge (terminal:open-bridged): marker = "{short-session-id}", pipe = "overlord-{short-session-id}"
+  return `overlord-${marker}`;
 }
 
 /**

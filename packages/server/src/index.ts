@@ -461,16 +461,6 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
 
   if (bridgeManager.isConnected(sessionId)) return; // already connected
 
-  // If we already know this session's pipe (e.g. restored from known-sessions after restart),
-  // use it directly instead of re-deriving from the marker.
-  const existingPipe = stateManager.getSession(sessionId)?.bridgePipeName;
-  if (existingPipe) {
-    console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to known pipe ${existingPipe} via marker ${marker}`);
-    stateManager.setSessionType(sessionId, 'bridge');
-    connectBridgePipe(sessionId, existingPipe);
-    return;
-  }
-
   const pending = pendingBridgeByMarker.get(marker);
   const pipeName = resolvePipeName(marker, pending, Date.now());
   if (!pipeName) {
@@ -479,7 +469,11 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
   }
   if (pending) pendingBridgeByMarker.delete(marker);
 
-  console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (manual spawn)'}`);
+  // If the session already has this exact pipe stored (e.g. restart race where
+  // the session watcher fires before reconnectBridgePipes), connectBridgePipe's
+  // own guard will handle deduplication. Never short-circuit to an existingPipe
+  // that may be stale (e.g. from a previous bridge run with a different socket).
+  console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (derived)'}`);
   stateManager.setSessionType(sessionId, 'bridge');
   connectBridgePipe(sessionId, pipeName);
 }

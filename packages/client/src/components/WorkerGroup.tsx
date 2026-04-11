@@ -103,13 +103,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
               {overflowExpanded && (
                 <button className={styles.extraBadge} onClick={(e) => { e.stopPropagation(); setOverflowExpanded(false); }}>−</button>
               )}
-              <button className={styles.collapseToggle} onClick={toggleExpanded} title="Collapse subagents">▾</button>
             </div>
-          )}
-          {!expanded && (
-            <button className={styles.collapsedBadge} onClick={toggleExpanded} title="Show subagents">
-              ▸ {allRecentSubagents.length}
-            </button>
           )}
         </>
       )}

@@ -135,6 +135,33 @@ Run via `osascript -e '...'`. On non-macOS: no-op.
 
 ---
 
+---
+
+## Post-implementation: Focus Garbage Fix
+
+**Problem discovered after shipping:** clicking Focus caused `^[[?1;2c`, `^[[O`, and `^[[I` to appear as literal text in the Claude CLI prompt inside Terminal.app.
+
+**Root cause (three layers):**
+
+1. **Outer PTY in cooked mode** — `setRawInputMode()` was a no-op on Unix (`vt_stub.go`). The outer PTY (Terminal.app ↔ bridge) stayed in cooked mode with echo enabled. When Terminal.app sent focus-tracking sequences (`\x1b[I]`, `\x1b[O]`) after gaining OS focus, the TTY line discipline *echoed* them back to the display as `^[[I` before the bridge ever read them.
+
+2. **Bridge stdin not filtering** — Even after fixing cooked/raw mode, focus sequences (`\x1b[I]`, `\x1b[O]`) and DA1 device-attribute responses (`\x1b[?1;2c`) arrived via stdin and were forwarded unfiltered to Claude.
+
+3. **INPUT pipe not filtering** — xterm.js (embedded in Overlord) has focus-reporting mode activated by Claude's TUI (`\x1b[?1004h`). When the browser window lost focus, xterm.js sent `\x1b[O]` via `onData` → `terminal:input` → bridge INPUT pipe → `writeToChild`, bypassing the stdin filter entirely.
+
+**Fixes applied:**
+
+| Layer | File | Change |
+|---|---|---|
+| Bridge raw mode | `vt_stub.go` | Implemented `setRawInputMode()` using `unix.IoctlGetTermios` / `IoctlSetTermios` (TIOCGETA/TIOCSETA) to disable echo + canonical mode |
+| Bridge stdin filter | `filter.go` + `main.go` | `stdinFilter` state machine strips `ESC[?...c` (DA1/DA2) and `ESC[I]` / `ESC[O]` (focus tracking) from all stdin bytes before forwarding to child |
+| Bridge INPUT pipe filter | `main.go` | Same `stdinFilter` applied to the INPUT pipe handler (per-connection instance) |
+| xterm.js client filter | `XtermTerminal.tsx` | `onData` handler strips `\x1b[I` and `\x1b[O]` before calling `onInput` |
+
+**Why the filter exists at all levels:** each layer defends against a different source — Terminal.app's PTY echo (raw mode), keyboard-path focus events (stdin filter), and xterm.js-originated focus events (INPUT pipe filter + client filter).
+
+---
+
 ## Out of scope
 
 - Windows focus (no `SetForegroundWindow` integration in this spec)

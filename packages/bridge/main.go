@@ -104,13 +104,22 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "[bridge] Child PID: %d\n", childPid)
 
-	// Forward console stdin to child
+	// Forward console stdin to child, stripping DA1/DA2 terminal responses
+	// that Terminal.app injects on focus (e.g. ESC[?1;2c) — these must not
+	// reach Claude as input or they appear as visible garbage in the prompt.
 	go func() {
+		f := newStdinFilter()
 		buf := make([]byte, 4096)
 		for {
 			n, err := os.Stdin.Read(buf)
 			if n > 0 {
-				writeToChild(buf[:n])
+				fmt.Fprintf(os.Stderr, "[bridge-stdin] raw %d bytes: %q\n", n, string(buf[:n]))
+				if filtered := f.filter(buf[:n]); len(filtered) > 0 {
+					fmt.Fprintf(os.Stderr, "[bridge-stdin] forwarding %d bytes: %q\n", len(filtered), string(filtered))
+					writeToChild(filtered)
+				} else {
+					fmt.Fprintf(os.Stderr, "[bridge-stdin] all filtered\n")
+				}
 			}
 			if err != nil {
 				break
@@ -195,18 +204,23 @@ func main() {
 				}
 
 				if n == 6 && string(header[:6]) == "INPUT\n" {
-					// Input-only connection: forward pipe→child, no broadcast
+					// Input-only connection: forward pipe→child, no broadcast.
+					// Apply the same filter as stdin to strip focus-tracking sequences
+					// (ESC[I / ESC[O) that xterm.js generates on browser focus changes.
 					fmt.Fprintf(os.Stderr, "[bridge] Input-only client connected\n")
 					defer func() {
 						conn.Close()
 						fmt.Fprintf(os.Stderr, "[bridge] Input-only client disconnected\n")
 					}()
+					pf := newStdinFilter()
 					buf := make([]byte, 4096)
 					for {
 						n, err := conn.Read(buf)
 						if n > 0 {
 							fmt.Fprintf(os.Stderr, "[bridge] pipe→child %d bytes: %q\n", n, string(buf[:n]))
-							writeToChild(buf[:n])
+							if filtered := pf.filter(buf[:n]); len(filtered) > 0 {
+								writeToChild(filtered)
+							}
 						}
 						if err != nil {
 							break

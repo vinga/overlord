@@ -85,10 +85,15 @@ export function XtermTerminal({
 
     termRef.current = term;
 
-    // Forward keyboard input to server
+    // Forward keyboard input to server.
+    // Strip focus-tracking sequences (ESC[I = focus-in, ESC[O = focus-out)
+    // that xterm.js generates when the browser gains/loses focus if the running
+    // application enabled focus reporting (ESC[?1004h). Claude's TUI does this,
+    // so without filtering they appear as ^[[I / ^[[O garbage in the prompt.
     const onDataDispose = term.onData((data) => {
       if (!isExitedRef.current) {
-        onInput(data);
+        const filtered = data.replace(/\x1b\[I|\x1b\[O/g, '');
+        if (filtered) onInput(filtered);
       } else if (onResumeRef.current) {
         setShowResumePrompt(true);
       }
