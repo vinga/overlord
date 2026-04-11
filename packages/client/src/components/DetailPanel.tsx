@@ -537,13 +537,16 @@ function parseTaskNotification(content: string): { summary: string; status: stri
 }
 
 interface ToolEntryProps {
-  tool: { toolName?: string; content?: string; inputJson?: string; durationMs?: number; oldString?: string; newString?: string };
+  tool: { toolName?: string; content?: string; inputJson?: string; resultJson?: string; isError?: boolean; durationMs?: number; oldString?: string; newString?: string };
   diffKey: string;
   argsKey: string;
+  resultKey: string;
   expandedDiffs: Set<string>;
   setExpandedDiffs: React.Dispatch<React.SetStateAction<Set<string>>>;
   expandedArgs: Set<string>;
   setExpandedArgs: React.Dispatch<React.SetStateAction<Set<string>>>;
+  expandedResults: Set<string>;
+  setExpandedResults: React.Dispatch<React.SetStateAction<Set<string>>>;
   ideName?: string;
   showRunning?: boolean;
   showDuration?: boolean;
@@ -560,10 +563,13 @@ function ToolEntry({
   tool,
   diffKey,
   argsKey,
+  resultKey,
   expandedDiffs,
   setExpandedDiffs,
   expandedArgs,
   setExpandedArgs,
+  expandedResults,
+  setExpandedResults,
   ideName,
   showRunning,
   showDuration,
@@ -578,6 +584,7 @@ function ToolEntry({
   const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
   const isDiffExpanded = expandedDiffs.has(diffKey);
   const isArgsExpanded = expandedArgs.has(argsKey);
+  const isResultExpanded = expandedResults.has(resultKey);
   return (
     <div className={styles.toolEntry}>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
@@ -605,6 +612,18 @@ function ToolEntry({
             })}
           >
             diff
+          </button>
+        )}
+        {tool.resultJson && (
+          <button
+            className={`${styles.diffToggle} ${tool.isError ? styles.resultToggleError : styles.resultToggle}`}
+            onClick={() => setExpandedResults(prev => {
+              const next = new Set(prev);
+              if (next.has(resultKey)) next.delete(resultKey); else next.add(resultKey);
+              return next;
+            })}
+          >
+            {tool.isError ? 'error' : 'result'}
           </button>
         )}
         {showRunning && sessionState === 'working' && tool.durationMs === undefined && (
@@ -647,6 +666,9 @@ function ToolEntry({
       </div>
       {isArgsExpanded && tool.inputJson && (
         <pre className={styles.argsView}>{tool.inputJson}</pre>
+      )}
+      {isResultExpanded && tool.resultJson && (
+        <pre className={`${styles.argsView} ${tool.isError ? styles.resultViewError : styles.resultView}`}>{tool.resultJson}</pre>
       )}
       {hasDiff && isDiffExpanded && (
         <div className={styles.diffView}>
@@ -699,6 +721,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
+  const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
   const [expandedInlineAgents, setExpandedInlineAgents] = useState<Set<number>>(new Set());
   // Keyed by message content so state survives UserMessageContent remounts
   const [expandedImagesMap, setExpandedImagesMap] = useState<Map<string, Set<number>>>(new Map());
@@ -773,10 +796,12 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             );
           }
           const isRaw = rawSegments.has(segIdx);
+          const prevSeg = segIdx > 0 ? segments[segIdx - 1] : null;
+          const isAfterTools = seg.item.role === 'user' && prevSeg?.type === 'toolGroup';
           return (
             <div key={segIdx} data-ts={seg.item.timestamp} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
               {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
-              <div className={styles.transcriptBubble}>
+              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''}`}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
                   <>
                     {isRaw ? (
@@ -826,6 +851,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const tool = seg.items[0];
           const diffKey = `${segIdx}-0`;
           const argsKey = `${segIdx}-0-args`;
+          const resultKey = `${segIdx}-0-result`;
           const isLastSegment = segIdx === segments.length - 1;
           // For Agent tool calls, resolve matching subagent by description
           let agentClickHandler: (() => void) | undefined;
@@ -857,10 +883,13 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                 tool={tool}
                 diffKey={diffKey}
                 argsKey={argsKey}
+                resultKey={resultKey}
                 expandedDiffs={expandedDiffs}
                 setExpandedDiffs={setExpandedDiffs}
                 expandedArgs={expandedArgs}
                 setExpandedArgs={setExpandedArgs}
+                expandedResults={expandedResults}
+                setExpandedResults={setExpandedResults}
                 ideName={ideName}
                 showRunning={isLastSegment}
                 showDuration={true}
@@ -935,6 +964,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             {isExpanded && seg.items.map((tool, ti) => {
               const diffKey = `${segIdx}-${ti}`;
               const argsKey = `${segIdx}-${ti}-args`;
+              const resultKey = `${segIdx}-${ti}-result`;
               // Resolve agent-specific props for Agent tool entries inside multi-tool groups
               let agentClickHandler: (() => void) | undefined;
               let matchedSubagentType: string | undefined;
@@ -966,10 +996,13 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                     tool={tool}
                     diffKey={diffKey}
                     argsKey={argsKey}
+                    resultKey={resultKey}
                     expandedDiffs={expandedDiffs}
                     setExpandedDiffs={setExpandedDiffs}
                     expandedArgs={expandedArgs}
                     setExpandedArgs={setExpandedArgs}
+                    expandedResults={expandedResults}
+                    setExpandedResults={setExpandedResults}
                     ideName={ideName}
                     showRunning={true}
                     showDuration={true}
@@ -2210,7 +2243,7 @@ const currentDisplayName =
                                 {openingTerminal ? 'Opening…' : selectedSession.state === 'closed' ? 'Open in Terminal' : 'Attach in Terminal'}
                               </button>
                             )}
-                            {onOpenBridged && !isBridgeSession?.(selectedSession.sessionId) && (
+                            {onOpenBridged && (
                               <button
                                 className={`${styles.resumeButton} ${openingBridged ? styles.resumeButtonPending : ''}`}
                                 disabled={openingBridged}

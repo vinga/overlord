@@ -19,7 +19,6 @@ export interface WsHandlerContext {
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
-  pendingBridgeOpen: Set<string>;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void;
@@ -45,7 +44,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     pendingPtyByResumeId,
     pendingCloneInfo,
     ptyOutputBuffer,
-    pendingBridgeOpen,
     broadcastRaw,
     sendToClient,
     deleteSession,
@@ -66,6 +64,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
     // Register this client in the session map
     wsSessionMap.set(ws, new Set());
+    // Per-connection virtual input buffer: tracks typed-but-not-submitted chars per session
+    // so backspace-to-empty correctly clears the "has input" indicator.
+    const ptyInputBuffers = new Map<string, string>();
 
     const snapshot = stateManager.getSnapshot();
     ws.send(JSON.stringify({ type: 'snapshot', ...snapshot }));
@@ -198,18 +199,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const cwd = String(msg.cwd ?? process.cwd());
 
-        // Deduplicate: reject if already bridged or if a bridge-open is in flight.
-        if (stateManager.isBridge(sessionId)) {
-          console.log(`[open-bridged] rejected — session ${sessionId.slice(0, 8)} already bridged`);
-          sendToClient(ws, { type: 'terminal:error', sessionId, message: 'Session already has an active bridge.' });
-          return;
-        }
-        if (pendingBridgeOpen.has(sessionId)) {
-          console.log(`[open-bridged] rejected — bridge open already in flight for ${sessionId.slice(0, 8)}`);
-          sendToClient(ws, { type: 'terminal:error', sessionId, message: 'Bridge open already in progress.' });
-          return;
-        }
-
         const session = stateManager.getSession(sessionId);
         const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
         const marker = sessionId.slice(0, 8);
@@ -217,15 +206,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const bridgePath = getBridgePath();
         const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name ${safeName}___BRG:${marker}`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
-        pendingBridgeOpen.add(sessionId);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
           .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))
-          .catch((err) => {
-            pendingBridgeOpen.delete(sessionId); // allow retry on spawn failure
-            sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` });
-          });
-        // pendingBridgeOpen is cleared in linkPendingBridge (index.ts) once the session
-        // actually appears with the ___BRG: marker — not here on spawn, which is too early.
+          .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open bridge terminal: ${(err as Error).message}` }));
         return;
       }
 
@@ -257,11 +240,25 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // evaluating pending-input state. xterm.js can emit these when the browser
         // window gains/loses focus — they must not trigger the "typing…" badge.
         const dataForPending = data.replace(/\x1b\[I|\x1b\[O/g, '');
-        // Track pending input: Enter clears it, any other char starts/extends it.
+        // Track pending input using a virtual buffer so backspace-to-empty clears the indicator.
         if (dataForPending.includes('\r') || dataForPending.includes('\n')) {
+          ptyInputBuffers.set(sessionId, '');
           stateManager.clearPtyInputPending(sessionId);
         } else if (dataForPending.length > 0) {
-          stateManager.setPtyInputPending(sessionId);
+          let buf = ptyInputBuffers.get(sessionId) ?? '';
+          for (const ch of dataForPending) {
+            if (ch === '\x7f' || ch === '\b') {
+              buf = buf.slice(0, -1);
+            } else {
+              buf += ch;
+            }
+          }
+          ptyInputBuffers.set(sessionId, buf);
+          if (buf.length > 0) {
+            stateManager.setPtyInputPending(sessionId);
+          } else {
+            stateManager.clearPtyInputPending(sessionId);
+          }
         }
         const wrote = ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
         if (!wrote) {
@@ -327,6 +324,22 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         const isBridge = stateManager.isBridge(sessionId);
+
+        // Track pending input: if injected text won't submit Enter, mark pending; otherwise clear.
+        // Bridge sessions always append \r when extraEnter=false (pipe sends text+'\r').
+        // Non-bridge: Enter is only sent if text contains \r/\n or extraEnter is true.
+        {
+          const injectHasEnter = isBridge
+            ? !extraEnter  // bridge: Enter appended unless extraEnter=true (autocomplete deferral)
+            : extraEnter || text.includes('\r') || text.includes('\n');
+          if (injectHasEnter) {
+            ptyInputBuffers.set(sessionId, '');
+            stateManager.clearPtyInputPending(sessionId);
+          } else if (text.length > 0) {
+            ptyInputBuffers.set(sessionId, (ptyInputBuffers.get(sessionId) ?? '') + text);
+            stateManager.setPtyInputPending(sessionId);
+          }
+        }
 
         // Mark pending clear so the replacement transcript gets linked to this session
         if (text.trimStart().startsWith('/clear')) {

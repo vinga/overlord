@@ -75,15 +75,19 @@ const BRIDGE_PERM_BUF_SIZE = 8192;
 
 // Last detected permission mode per bridge session — updated as text streams through
 const bridgePermMode = new Map<string, string>();
+// No >> prefix required — the (shift+tab to cycle) sentinel already ensures we're on the status bar line.
 const BRIDGE_PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-  { pattern: />>\s+bypass permissions on/i, mode: 'bypassPermissions' },
-  { pattern: />>\s+accept edits on/i, mode: 'acceptEdits' },
-  { pattern: />>\s+plan mode on/i, mode: 'plan' },
+  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
+  { pattern: /accept edits on/i, mode: 'acceptEdits' },
+  { pattern: /plan mode on/i, mode: 'plan' },
 ];
 
 function stripAnsi(raw: string): string {
   const stripped = raw
-    // CSI sequences: ESC [ ... final-byte  (covers [?2026h, [0m, [2J, etc.)
+    // CSI sequences: cursor-movement finals (A-H, S, T, f) → space to preserve word boundaries.
+    // TUI status bars position text with cursor-absolute moves; without spaces the words concatenate.
+    .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[A-HSTf]/g, ' ')
+    // Remaining CSI sequences: ESC [ ... final-byte → nothing
     .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
     // OSC sequences: ESC ] ... ST or BEL
     .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
@@ -165,7 +169,6 @@ function migrateBridgeSession(oldId: string, newId: string): void {
 // Pending bridge connections for new sessions (marker → temp pipe name)
 // When a new session appears with ___BRG:<marker> in its name, we link it to the bridge pipe.
 const pendingBridgeByMarker = new Map<string, { pipeName: string; timestamp: number }>();
-const pendingBridgeOpen = new Set<string>(); // sessionIds with in-flight bridge open; cleared in linkPendingBridge
 
 // Bridge injection queue (kept for potential future use)
 const bridgeInjectQueue = new Map<string, Array<{ text: string; resolve: () => void }>>();
@@ -414,20 +417,37 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       ? appended.slice(appended.length - BRIDGE_PERM_BUF_SIZE) : appended);
     checkBridgePermission(eid);
 
-    // On each full repaint, detect permission mode from the fresh frame — most reliable source
-    if (isRepaint) {
-      const frameText = stripAnsi(data.toString('utf8'));
-      let frameMode: string | undefined;
-      for (const { pattern, mode } of BRIDGE_PERM_MODE_PATTERNS) {
-        if (pattern.test(frameText)) { frameMode = mode; break; }
+    // Detect permission mode from the rolling text buffer tail.
+    // Runs on every data event (not just repaints) so we catch the status bar even when
+    // \x1b[?2026h (BSU) arrives in a different chunk than the status bar line.
+    // Use "(shift+tab to cycle)" as the sentinel — it's the literal tail of every Claude
+    // CLI status bar line and is far less likely to appear in terminal content than ">>".
+    // Find the LAST such line and check if it contains a mode keyword.
+    {
+      const tail = (bridgePermText.get(eid) ?? '').slice(-2048);
+      const tailLines = tail.split('\n');
+      let detectedMode: string | undefined;
+      let statusBarFound = false;
+      for (let i = tailLines.length - 1; i >= 0; i--) {
+        const line = tailLines[i];
+        if (/\(shift\+tab to cycle\)/i.test(line)) {
+          statusBarFound = true;
+          for (const { pattern, mode } of BRIDGE_PERM_MODE_PATTERNS) {
+            if (pattern.test(line)) { detectedMode = mode; break; }
+          }
+          // detectedMode stays undefined if default mode (no keyword in status bar)
+          break;
+        }
       }
-      const resolvedMode = frameMode ?? 'default';
-      // REVERT NOTE: original code guarded with: if (resolvedMode !== current) { bridgePermMode.set(...); stateManager.setPermissionMode(...); }
-      // CHANGE: Always call setPermissionMode on repaint — even if mode unchanged — so the
-      // lock gets refreshed for non-default modes, preventing permissionChecker
-      // from flipping back to 'default' between repaints.
-      bridgePermMode.set(eid, resolvedMode);
-      stateManager.setPermissionMode(eid, resolvedMode);
+      if (statusBarFound) {
+        const resolvedMode = detectedMode ?? 'default';
+        bridgePermMode.set(eid, resolvedMode);
+        // Only reset to 'default' when session is at the interactive prompt (waiting).
+        // During thinking/working, the full TUI may not be rendering the status bar.
+        if (resolvedMode !== 'default' || stateManager.getSession(eid)?.state === 'waiting') {
+          stateManager.setPermissionMode(eid, resolvedMode);
+        }
+      }
     }
   });
 
@@ -475,14 +495,6 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
   // own guard will handle deduplication. Never short-circuit to an existingPipe
   // that may be stale (e.g. from a previous bridge run with a different socket).
   console.log(`[bridge] linking session ${sessionId.slice(0, 8)} to pipe ${pipeName} via marker ${marker}${pending ? '' : ' (derived)'}`);
-  // Clear pending bridge open guard — the session has now actually appeared,
-  // so subsequent open-bridged requests for the same original session are safe to reject via isBridge().
-  for (const id of pendingBridgeOpen) {
-    if (id.startsWith(marker)) {
-      pendingBridgeOpen.delete(id);
-      break;
-    }
-  }
   stateManager.setSessionType(sessionId, 'bridge');
   connectBridgePipe(sessionId, pipeName);
 }
@@ -541,7 +553,8 @@ function bufferToText(chunks: Buffer[]): string | null {
 
 // Screen text reader for permissionChecker — handles bridge, embedded PTY, and plain sessions
 async function getScreenText(sessionId: string, pid: number): Promise<string | null> {
-  // Bridge sessions: use ptyOutputBuffer keyed by sessionId
+  // Bridge sessions: use ptyOutputBuffer (reset at each repaint start, rebuilt from all chunks).
+  // This gives permissionChecker the most recent complete repaint frame.
   if (stateManager.isBridge(sessionId)) {
     return bufferToText(ptyOutputBuffer.get(sessionId) ?? []);
   }
@@ -784,7 +797,6 @@ setupWebSocketHandler(wss, {
   pendingPtyByResumeId,
   pendingCloneInfo,
   ptyOutputBuffer,
-  pendingBridgeOpen,
   broadcastRaw,
   sendToClient,
   deleteSession,
