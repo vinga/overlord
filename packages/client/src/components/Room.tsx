@@ -637,7 +637,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
       <div className={styles.titleBar}>
         {onRoomDragStart && (
           <span
-            className={styles.dragHandle}
+            className={styles.roomDragHandle}
             draggable
             onDragStart={onRoomDragStart}
             onDragEnd={onRoomDragEnd}

@@ -657,6 +657,11 @@
   overflow-y: auto;
 }
 
+.transcriptBubbleSkillDef {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
 /* Search scroll highlight — applied via JS classList, uses global class so no CSS Modules hashing */
 :global(.searchHighlight) {
   animation: searchPulse 2s ease-out forwards;

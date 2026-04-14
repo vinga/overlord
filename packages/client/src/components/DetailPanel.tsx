@@ -803,10 +803,11 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const isRaw = rawSegments.has(segIdx);
           const prevSeg = segIdx > 0 ? segments[segIdx - 1] : null;
           const isAfterTools = seg.item.role === 'user' && prevSeg?.type === 'toolGroup';
+          const isSkillDef = seg.item.role === 'user' && seg.item.content?.startsWith('Base directory for this skill');
           return (
             <div key={segIdx} data-ts={seg.item.timestamp} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
               {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
-              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''}`}>
+              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''} ${isSkillDef ? styles.transcriptBubbleSkillDef : ''}`}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
                   <>
                     {isRaw ? (
@@ -1351,9 +1352,9 @@ const currentDisplayName =
     if (e.key === 'Escape') setIsEditing(false);
   }
 
-  function sendText(text: string) {
-    if (!selectedSession || !text) return;
-    if (selectedSession.isCompacting) return;
+  function sendText(text: string): boolean {
+    if (!selectedSession || !text) return false;
+    if (selectedSession.isCompacting) return false;
     const sent = injectText(selectedSession.sessionId, text, text.includes('@'));
     if (sent) {
       if (realCountAtFirstSend.current === null) {
@@ -1362,6 +1363,7 @@ const currentDisplayName =
       }
       setLocalSent(prev => [...prev, text]);
     }
+    return sent;
   }
 
   function handleSend() {
@@ -1371,7 +1373,8 @@ const currentDisplayName =
     // During compaction, preserve the draft — injection will be queued but may be swallowed
     if (selectedSession.isCompacting) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-    sendText(full);
+    const sent = sendText(full);
+    if (!sent) return; // preserve input + image if WebSocket not connected
     setSendInput2('');
     if (selectedSession) draftPerSession.current.delete(selectedSession.sessionId);
     setPastedImage(null);
