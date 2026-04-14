@@ -14,7 +14,7 @@ export interface SessionEventContext {
   ptyToClaudeId: Map<string, string>;
   claudeToPtyId: Map<string, string>;
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
+  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
   migrateBridgeSession?: (oldId: string, newId: string) => void;

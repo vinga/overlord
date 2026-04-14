@@ -46,6 +46,14 @@
   text-transform: uppercase;
 }
 
+.tabNotesDot {
+  font-size: 8px;
+  color: inherit;
+  opacity: 0.7;
+  margin-left: 3px;
+  line-height: 1;
+}
+
 .tabPtyBadgeEnded {
   background: rgba(102, 102, 102, 0.15);
   border: 1px solid rgba(102, 102, 102, 0.25);
@@ -384,6 +392,33 @@
   justify-content: center;
   flex: 1;
   padding: 32px 24px;
+}
+
+.emptyFeedBridge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex: 1;
+  padding: 32px 24px;
+  color: #666;
+  font-size: 13px;
+}
+
+.emptyFeedBridgeBtn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 14px;
+}
+
+.emptyFeedBridgeBtn:hover {
+  background: rgba(255,255,255,0.1);
+  color: #ddd;
 }
 
 .emptyFeedHint {
@@ -1919,12 +1954,103 @@
   color: #e5e7eb;
   font-size: 13px;
   font-family: inherit;
-  padding: 9px 40px 9px 12px;
+  padding: 9px 72px 9px 12px;
   resize: none;
   outline: none;
   line-height: 1.5;
   transition: border-color 0.15s;
   display: block;
+}
+
+.quickMenuAnchor {
+  position: absolute;
+  right: 42px;
+  bottom: 8px;
+  z-index: 10;
+}
+
+.quickMenuTrigger {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.25);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  padding: 0;
+}
+
+.quickMenuTrigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.burgerIcon,
+.burgerIcon::before,
+.burgerIcon::after {
+  display: block;
+  width: 12px;
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 1px;
+  position: relative;
+}
+
+.burgerIcon {
+  transition: background 0.15s;
+}
+
+.burgerIcon::before,
+.burgerIcon::after {
+  content: '';
+  position: absolute;
+  left: 0;
+}
+
+.burgerIcon::before { top: -4px; }
+.burgerIcon::after  { top: 4px; }
+
+.quickMenu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: #1e2028;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 220px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  animation: quickMenuFadeIn 120ms ease-out;
+}
+
+@keyframes quickMenuFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.quickMenuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #d1d5db;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 8px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.quickMenuItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f9fafb;
 }
 
 .sendTextarea:focus {
@@ -2787,3 +2913,32 @@
   border-color: #ef4444;
   color: #f87171;
 }
+
+/* Notes tab */
+.notesTab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+}
+
+.notesTextarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Menlo', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 14px 16px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.notesTextarea::placeholder {
+  color: rgba(255, 255, 255, 0.2);
+}
+

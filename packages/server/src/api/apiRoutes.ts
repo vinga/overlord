@@ -1,6 +1,25 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { join, resolve, dirname, basename } from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const NOTES_FILE = join(__dirname, '../../data/notes.json');
+
+function loadNotes(): Record<string, string> {
+  try {
+    if (!fs.existsSync(NOTES_FILE)) return {};
+    return JSON.parse(fs.readFileSync(NOTES_FILE, 'utf-8'));
+  } catch { return {}; }
+}
+
+function saveNotes(notes: Record<string, string>): void {
+  const dir = dirname(NOTES_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2), 'utf-8');
+}
 import { exec, execSync } from 'child_process';
 import express from 'express';
 import type { Express } from 'express';
@@ -18,7 +37,7 @@ export interface PtyMaps {
   ptyToClaudeId: Map<string, string>;
   claudeToPtyId: Map<string, string>;
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
+  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
 }
 
@@ -478,6 +497,32 @@ export function registerApiRoutes(
     const skills = readDir(join(cwd, '.claude', 'skills'));
     const agents = readDir(join(cwd, '.claude', 'agents'));
     res.json({ skills, agents });
+  });
+
+  // Notes: GET /api/notes — all notes (for bulk display in worker cards)
+  app.get('/api/notes', (_req, res) => {
+    res.json(loadNotes());
+  });
+
+  // Notes: GET /api/sessions/:sessionId/notes
+  app.get('/api/sessions/:sessionId/notes', (req, res) => {
+    const { sessionId } = req.params;
+    const notes = loadNotes();
+    res.json({ notes: notes[sessionId] ?? '' });
+  });
+
+  // Notes: PUT /api/sessions/:sessionId/notes
+  app.put('/api/sessions/:sessionId/notes', express.json(), (req, res) => {
+    const { sessionId } = req.params;
+    const content = typeof req.body?.notes === 'string' ? req.body.notes : '';
+    const notes = loadNotes();
+    if (content === '') {
+      delete notes[sessionId];
+    } else {
+      notes[sessionId] = content;
+    }
+    saveNotes(notes);
+    res.json({ ok: true });
   });
 
   // Return activity feed items before a given timestamp (for search "load context" feature)

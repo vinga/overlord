@@ -49,7 +49,7 @@ const wsSessionMap = new Map<WebSocket, Set<string>>();
 const pendingPtyByPid = new Map<number, { ptySessionId: string; ws: WebSocket }>();
 
 // Track PTY sessions waiting to be linked by resumeSessionId (for ConPTY PID mismatch on Windows)
-const pendingPtyByResumeId = new Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>();
+const pendingPtyByResumeId = new Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>();
 
 // Map pty-xxx sessionId → real claudeSessionId after linking
 const ptyToClaudeId = new Map<string, string>();
@@ -640,10 +640,22 @@ stateManager.loadClosedSessionsFromTranscripts().catch(err => {
 });
 
 async function autoResumePtySessions(): Promise<void> {
-  // Auto-resume disabled — sessions are no longer automatically resumed at startup.
-  // The function is kept as a no-op so callers don't need to be updated.
-  console.log('[auto-resume] disabled — skipping');
-  return;
+  const sessions = stateManager.getPtySessionsToResume();
+  if (sessions.length === 0) {
+    console.log('[auto-resume] no embedded sessions to resume');
+    return;
+  }
+  console.log(`[auto-resume] resuming ${sessions.length} embedded session(s)`);
+  for (const { sessionId, cwd } of sessions) {
+    const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', sessionId, '--name', `___OVR:${ptySessionId}`]);
+      pendingPtyByResumeId.set(sessionId, { ptySessionId, timestamp: Date.now() });
+      console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
+    } catch (err) {
+      console.warn(`[auto-resume] failed to spawn PTY for ${sessionId.slice(0, 8)}:`, err);
+    }
+  }
 }
 // auto-resume is now triggered on first client WebSocket connection (see wss.on('connection'))
 

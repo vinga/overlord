@@ -16,7 +16,7 @@ export interface WsHandlerContext {
   ptyToClaudeId: Map<string, string>;
   claudeToPtyId: Map<string, string>;
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
+  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
   broadcastRaw: (msg: object) => void;
@@ -199,9 +199,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const session = stateManager.getSession(sessionId);
         const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
         const marker = sessionId.slice(0, 8);
-        const safeName = sessionName.replace(/["\s]/g, '-');
+        const safeName = sessionName.replace(/"/g, '-');
         const bridgePath = getBridgePath();
-        const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name ${safeName}___BRG:${marker}`;
+        const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
           .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))

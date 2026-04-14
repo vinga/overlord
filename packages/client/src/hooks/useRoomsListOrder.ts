@@ -52,8 +52,11 @@ export function useRoomsListOrder() {
    * Call this inside useMemo — it is side-effect-free.
    */
   const sortRooms = useCallback(
-    <T extends { id: string }>(rooms: T[]): T[] => {
+    <T extends { id: string; name?: string }>(rooms: T[]): T[] => {
       return [...rooms].sort((a, b) => {
+        const aIsQW = a.name === 'query-worker';
+        const bIsQW = b.name === 'query-worker';
+        if (aIsQW !== bIsQW) return aIsQW ? 1 : -1;
         const ai = order.indexOf(a.id);
         const bi = order.indexOf(b.id);
         // Unknown rooms (index -1) go to the end

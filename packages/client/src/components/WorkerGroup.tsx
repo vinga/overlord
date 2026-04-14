@@ -1,6 +1,7 @@
 import React, { useState, useCallback, memo } from 'react';
 import type { Session } from '../types';
 import { Worker } from './Worker';
+import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './WorkerGroup.module.css';
 
 interface WorkerGroupProps {
@@ -35,6 +36,7 @@ function writeExpanded(sessionId: string, value: boolean): void {
 export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename }: WorkerGroupProps) {
   const [expanded, setExpanded] = useState(() => readExpanded(session.sessionId));
   const [overflowExpanded, setOverflowExpanded] = useState(false);
+  const notesMap = useNotesSummaries();
 
   const allRecentSubagents = session.userAccepted ? [] : session.subagents.filter(s =>
     s.state === 'working' || s.state === 'thinking' ||
@@ -71,6 +73,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           currentTask={session.currentTask}
           isWorker={session.isWorker}
           ptyInputPendingSince={session.ptyInputPendingSince}
+          notesSummary={notesMap.get(session.sessionId)}
           onClick={() => onSelectSession(session)}
           onRename={onRename ? (name) => onRename(session.sessionId, name) : undefined}
         />

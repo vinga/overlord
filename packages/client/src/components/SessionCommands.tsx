@@ -51,8 +51,8 @@ export function SessionCommands({ cwd, name, sessionId, bridgePath, label }: Pro
   // Stable random marker for new sessions (no sessionId available yet)
   const newMarkerRef = useRef(Math.random().toString(36).slice(2, 10));
 
-  const safeName = name.replace(/["\s]/g, '-');
-  const bridgeBin = bridgePath ? `& "${bridgePath}"` : 'overlord-bridge';
+  const safeName = name.replace(/"/g, '-');
+  const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
 
   let directCmd: string;
   let bridgeCmd: string;
@@ -61,12 +61,12 @@ export function SessionCommands({ cwd, name, sessionId, bridgePath, label }: Pro
     // Resume: --resume handles CWD internally, so no cd needed in the bridge variant
     const marker = sessionId.slice(0, 8);
     directCmd = `cd "${cwd}" && claude --resume ${sessionId} --name "${name}"`;
-    bridgeCmd = `${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sessionId} --name ${safeName}___BRG:${marker}`;
+    bridgeCmd = `${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
   } else {
     // New session: include cd in both variants
     const marker = newMarkerRef.current;
     directCmd = `cd "${cwd}" && claude --name "${name}"`;
-    bridgeCmd = `cd "${cwd}" && ${bridgeBin} --pipe overlord-${marker} -- claude --name ${safeName}___BRG:${marker}`;
+    bridgeCmd = `cd "${cwd}" && ${bridgeBin} --pipe overlord-${marker} -- claude --name "${safeName}___BRG:${marker}"`;
   }
 
   return (

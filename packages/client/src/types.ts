@@ -276,8 +276,8 @@ function getLaunchInfo(
     raw.replace(/\s+(IDEA|Community|Ultimate|Professional|Enterprise|Educational|CE)\b.*/, '').trim();
 
   if (session.sessionType === 'bridge') {
-    const suffix = session.ideName ? ` / ${shortIde(session.ideName)}` : '';
-    return { category: 'bridge', name: `Bridge${suffix}` };
+    const ideLabel = session.ideName ? shortIde(session.ideName) : undefined;
+    return { category: 'bridge', name: ideLabel ?? 'Bridge' };
   }
   // Only show "Overlord" if the session was actually spawned by Overlord.
   // isPtyActive alone is not enough — an IDE/terminal session can have a PTY

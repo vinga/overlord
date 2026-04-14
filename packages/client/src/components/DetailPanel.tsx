@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useTick } from '../hooks/useTick';
+import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
@@ -1131,8 +1132,11 @@ export function DetailPanel({
     if (atBottom && scrollTarget) onScrollTargetConsumed?.();
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
+  const [notesContent, setNotesContent] = useState('');
+  const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notesSessionIdRef = useRef<string | undefined>(undefined);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -1140,6 +1144,18 @@ export function DetailPanel({
   const [localSent, setLocalSent] = useState<string[]>([]);
   const realCountAtFirstSend = useRef<number | null>(null);
   const [sendInput2, setSendInput2] = useState('');
+  const [showQuickMenu, setShowQuickMenu] = useState(false);
+  const quickMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showQuickMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (quickMenuRef.current && !quickMenuRef.current.contains(e.target as Node)) {
+        setShowQuickMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showQuickMenu]);
   const draftPerSession = useRef<Map<string, string>>(new Map());
   const localSentPerSession = useRef<Map<string, string[]>>(new Map());
   const realCountPerSession = useRef<Map<string, number | null>>(new Map());
@@ -1297,6 +1313,21 @@ const currentDisplayName =
     return () => { if (raf !== undefined) cancelAnimationFrame(raf); };
   }, [selectedSession?.sessionId, selectedSubagentId]);
 
+  useEffect(() => {
+    const sessionId = selectedSession?.sessionId;
+    if (!sessionId) return;
+    notesSessionIdRef.current = sessionId;
+    setNotesContent('');
+    fetch(`/api/sessions/${sessionId}/notes`)
+      .then(r => r.json())
+      .then((data: { notes: string }) => {
+        if (notesSessionIdRef.current !== sessionId) return;
+        const content = data.notes ?? '';
+        setNotesContent(content);
+      })
+      .catch(() => {});
+  }, [selectedSession?.sessionId]);
+
   function startEdit() {
     setEditValue(currentDisplayName);
     setIsEditing(true);
@@ -1320,6 +1351,19 @@ const currentDisplayName =
     if (e.key === 'Escape') setIsEditing(false);
   }
 
+  function sendText(text: string) {
+    if (!selectedSession || !text) return;
+    if (selectedSession.isCompacting) return;
+    const sent = injectText(selectedSession.sessionId, text, text.includes('@'));
+    if (sent) {
+      if (realCountAtFirstSend.current === null) {
+        const feed = selectedSession.activityFeed ?? [];
+        realCountAtFirstSend.current = feed.filter(i => i.role === 'user').length;
+      }
+      setLocalSent(prev => [...prev, text]);
+    }
+  }
+
   function handleSend() {
     if (!selectedSession) return;
     const text = sendInput2.trim();
@@ -1327,15 +1371,7 @@ const currentDisplayName =
     // During compaction, preserve the draft — injection will be queued but may be swallowed
     if (selectedSession.isCompacting) return;
     const full = pastedImage ? `${text} @${pastedImage.path}`.trim() : text;
-    const sent = injectText(selectedSession.sessionId, full, full.includes('@'));
-    if (sent && full) {
-      // Snapshot real user message count on first pending send
-      if (realCountAtFirstSend.current === null) {
-        const feed = selectedSession.activityFeed ?? [];
-        realCountAtFirstSend.current = feed.filter(i => i.role === 'user').length;
-      }
-      setLocalSent(prev => [...prev, full]);
-    }
+    sendText(full);
     setSendInput2('');
     if (selectedSession) draftPerSession.current.delete(selectedSession.sessionId);
     setPastedImage(null);
@@ -1738,6 +1774,12 @@ const currentDisplayName =
                   >
                     Details
                   </button>
+                  <button
+                    className={`${styles.tab} ${activeTab === 'notes' ? styles.tabActive : ''}`}
+                    onClick={() => setActiveTab('notes')}
+                  >
+                    Notes{notesContent.trim() && <span className={styles.tabNotesDot}>✱</span>}
+                  </button>
                   {(selectedSession.currentTask || (selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0)) && (
                     <button
                       className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
@@ -1805,6 +1847,11 @@ const currentDisplayName =
                               isLimitPrompt={selectedSession.isLimitPrompt}
                               styles={styles}
                             />
+                          </div>
+                        ) : selectedSession.sessionType === 'bridge' ? (
+                          <div className={styles.emptyFeedBridge}>
+                            <span>Session started. Interact via the bridge terminal.</span>
+                            <button className={styles.emptyFeedBridgeBtn} onClick={() => setActiveTab('terminal')}>Open Terminal</button>
                           </div>
                         ) : null}
                       </div>
@@ -1944,6 +1991,29 @@ const currentDisplayName =
                           </div>
                         )}
                         <div className={styles.sendInputWrapper}>
+                          <div className={styles.quickMenuAnchor} ref={quickMenuRef}>
+                            <button
+                              className={styles.quickMenuTrigger}
+                              title="Quick prompts"
+                              onClick={() => setShowQuickMenu(v => !v)}
+                            >
+                              <span className={styles.burgerIcon} />
+                            </button>
+                            {showQuickMenu && (
+                              <div className={styles.quickMenu}>
+                                <button
+                                  className={styles.quickMenuItem}
+                                  onMouseDown={e => {
+                                    e.preventDefault();
+                                    setShowQuickMenu(false);
+                                    sendText("Briefly summarize this conversation — what did we just work on and what were the last changes we made? Keep it short.");
+                                  }}
+                                >
+                                  Remind me where we left off
+                                </button>
+                              </div>
+                            )}
+                          </div>
                           <textarea
                             className={`${styles.sendTextarea} ${selectedSession.state === 'closed' ? styles.sendTextareaClosed : ''}`}
                             value={sendInput2}
@@ -2065,6 +2135,32 @@ const currentDisplayName =
                         Resume in new PTY
                       </button>
                     )}
+                  </div>
+                )}
+
+                {/* Tab: Notes */}
+                {activeTab === 'notes' && (
+                  <div className={styles.notesTab}>
+                    <textarea
+                      className={styles.notesTextarea}
+                      value={notesContent}
+                      placeholder="Add notes…"
+                      onChange={e => {
+                        const value = e.target.value;
+                        setNotesContent(value);
+                        if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+                        const sessionId = selectedSession.sessionId;
+                        notesSaveTimerRef.current = setTimeout(() => {
+                          fetch(`/api/sessions/${sessionId}/notes`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ notes: value }),
+                          }).then(() => {
+                            updateNoteFirstLine(sessionId, value);
+                          }).catch(() => {});
+                        }, 500);
+                      }}
+                    />
                   </div>
                 )}
 

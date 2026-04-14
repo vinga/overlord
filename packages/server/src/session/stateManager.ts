@@ -578,7 +578,11 @@ export class StateManager {
       color,
       subagents,
       resumedFrom,
-      needsPermission: transcript?.needsPermission || existingSession?.needsPermission,
+      needsPermission: (() => {
+        const effectivePermMode = transcript?.permissionMode || existingSession?.permissionMode;
+        if (effectivePermMode === 'bypassPermissions') return undefined;
+        return transcript?.needsPermission || existingSession?.needsPermission;
+      })(),
       permissionPromptText: transcript?.permissionPromptText || existingSession?.permissionPromptText,
       isLimitPrompt: existingSession?.isLimitPrompt,
       permissionMode: transcript?.permissionMode || existingSession?.permissionMode,
@@ -823,7 +827,7 @@ export class StateManager {
       // Only update needsPermission from transcript when it clears (goes false).
       // Setting it true is owned by transcriptReader/addOrUpdate; clearing is also
       // done here when the session advances (transcript no longer shows stale tool_use).
-      if (!result.needsPermission && !feedHasRateLimit) {
+      if (!result.needsPermission && !feedHasRateLimit || session.permissionMode === 'bypassPermissions') {
         session.needsPermission = undefined;
         session.isLimitPrompt = undefined;
         session.permissionPromptText = undefined;
@@ -846,7 +850,8 @@ export class StateManager {
         // Respect the 30s suppression window after user approved
         const suppressed = session.permissionApprovedAt &&
           Date.now() - session.permissionApprovedAt < 30_000;
-        if (!suppressed) {
+        const isBypass = session.permissionMode === 'bypassPermissions';
+        if (!suppressed && !isBypass) {
           session.needsPermission = result.needsPermission;
           if (result.permissionPromptText && !session.permissionPromptText) {
             session.permissionPromptText = result.permissionPromptText;
@@ -1270,8 +1275,13 @@ export class StateManager {
 
     const rooms = Array.from(roomMap.values());
 
-    // Sort rooms by name
-    rooms.sort((a, b) => a.name.localeCompare(b.name));
+    // Sort rooms by name; query-worker always last
+    rooms.sort((a, b) => {
+      const aIsQW = a.name === 'query-worker';
+      const bIsQW = b.name === 'query-worker';
+      if (aIsQW !== bIsQW) return aIsQW ? 1 : -1;
+      return a.name.localeCompare(b.name);
+    });
 
     // Sort sessions within each room by startedAt
     for (const room of rooms) {
@@ -1436,13 +1446,14 @@ export class StateManager {
     } catch {
       return undefined;
     }
-    const cached = this.ideNameCache.get(ideDir);
+    const normalizedCwd = normalizePath(cwd);
+    const cacheKey = `${ideDir}|${normalizedCwd}`;
+    const cached = this.ideNameCache.get(cacheKey);
     if (cached && cached.mtimeMs === dirMtime) return cached.result;
 
     let result: { name: string; idePid: number } | undefined;
     try {
       const files = fs.readdirSync(ideDir);
-      const normalizedCwd = normalizePath(cwd);
       for (const file of files) {
         if (!file.endsWith('.lock')) continue;
         try {
@@ -1464,7 +1475,7 @@ export class StateManager {
     } catch {
       // ignore
     }
-    this.ideNameCache.set(ideDir, { mtimeMs: dirMtime, result });
+    this.ideNameCache.set(cacheKey, { mtimeMs: dirMtime, result });
     return result;
   }
 

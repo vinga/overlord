@@ -19,6 +19,7 @@ interface WorkerProps {
   currentTask?: Task;
   isWorker?: boolean;
   ptyInputPendingSince?: number;
+  notesSummary?: string;
   onClick: () => void;
   onRename?: (newName: string) => void;
 }
@@ -53,7 +54,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, currentTask, isWorker, ptyInputPendingSince, onClick, onRename }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, currentTask, isWorker, ptyInputPendingSince, notesSummary, onClick, onRename }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -209,6 +210,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
             {label}
           </span>
         )
+      )}
+      {!minimal && !isSubagent && notesSummary && (
+        <span className={styles.notesSummaryLine}><span className={styles.notesSummaryPrefix}>Notes:</span> {notesSummary}</span>
       )}
       {!minimal && !isSubagent && currentTask?.title && completionHint !== 'done' && (
         <span className={styles.requestSummary}>{currentTask.title}</span>

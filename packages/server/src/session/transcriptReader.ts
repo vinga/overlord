@@ -55,18 +55,19 @@ export function markTranscriptDirty(filePath: string): void {
  */
 function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; needsPermission?: boolean } {
   const ageSec = (Date.now() - cached.fileModifiedMs) / 1000;
+  const isBypass = cached.result.permissionMode === 'bypassPermissions';
   // After 2 minutes of no file updates, assume the session/subagent is stale
   // But still check for pending tool_use → permission prompt
   if (ageSec > 120) {
-    if (cached.stateHint === 'tool_use') return { state: 'waiting', needsPermission: true };
+    if (cached.stateHint === 'tool_use') return { state: 'waiting', needsPermission: isBypass ? undefined : true };
     // ask_user_question stays waiting without permission flag
     return { state: 'waiting' };
   }
   switch (cached.stateHint) {
     case 'tool_use': {
       const state: WorkerState = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
-      // Tool pending >8s with no result → likely permission prompt
-      const needsPermission = ageSec > 8 ? true : undefined;
+      // Tool pending >8s with no result → likely permission prompt (not in bypass mode)
+      const needsPermission = ageSec > 8 && !isBypass ? true : undefined;
       return { state, needsPermission };
     }
     case 'ask_user_question': {
@@ -759,7 +760,7 @@ export function readTranscriptState(filePath: string): {
             state = 'working';
           } else if (ageSec > 8) {
             state = 'waiting';
-            needsPermission = true;
+            needsPermission = permissionMode !== 'bypassPermissions' ? true : undefined;
           } else {
             state = 'thinking';
           }
