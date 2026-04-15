@@ -186,11 +186,52 @@ interface DetailPanelProps {
   platform?: string;
   /** Timestamp of an ActivityItem to scroll to (from search) */
   scrollTarget?: string;
+  /** Query that was searched — used to highlight matching text within the target item */
+  scrollQuery?: string;
   onScrollTargetConsumed?: () => void;
 }
 
 function isFilePath(s: string): boolean {
   return /^([A-Za-z]:[/\\]|\/[^\s])/.test(s);
+}
+
+/**
+ * Walk text nodes inside `root` and wrap the first case-insensitive
+ * occurrence of `query` in a <span data-search-wrap="1">. Returns the
+ * wrapping span, or null if no match was found / match spans multiple
+ * text nodes. The wrap is temporary — caller is responsible for unwrapping.
+ */
+function highlightMatchingText(root: HTMLElement, query: string): HTMLElement | null {
+  if (!query) return null;
+  const q = query.toLowerCase();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      // Skip script/style and empty text
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      const tag = parent.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE') return NodeFilter.FILTER_REJECT;
+      return node.nodeValue && node.nodeValue.length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue ?? '';
+    const idx = text.toLowerCase().indexOf(q);
+    if (idx < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, idx);
+    range.setEnd(node, idx + query.length);
+    const span = document.createElement('span');
+    span.dataset.searchWrap = '1';
+    try {
+      range.surroundContents(span);
+    } catch {
+      return null;
+    }
+    return span;
+  }
+  return null;
 }
 
 
@@ -1174,6 +1215,7 @@ export function DetailPanel({
   bridgePath,
   platform = 'darwin',
   scrollTarget,
+  scrollQuery,
   onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
@@ -1327,6 +1369,11 @@ const currentDisplayName =
   useEffect(() => {
     if (!scrollTarget || !selectedSession) return;
 
+    // Eagerly disable auto-scroll-to-bottom so subsequent feed updates
+    // (tab switch, activity-before fetch, live activityFeed) don't stomp
+    // the scroll-to-target animation before attemptScroll runs.
+    isAtBottomRef.current = false;
+
     // Switch to conversation tab so the feed is visible
     setActiveTab('conversation');
 
@@ -1368,15 +1415,42 @@ const currentDisplayName =
       }
       if (rectEl.getBoundingClientRect().height === 0) return false;
       isAtBottomRef.current = false;
-      // Manual scroll: center the target in the container viewport.
-      const containerRect = container.getBoundingClientRect();
-      const targetRect = rectEl.getBoundingClientRect();
-      const offset =
-        targetRect.top - containerRect.top + container.scrollTop
-        - container.clientHeight / 2 + targetRect.height / 2;
-      container.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
-      rectEl.classList.add('searchHighlight');
-      setTimeout(() => rectEl.classList.remove('searchHighlight'), 2000);
+
+      // If we have the search query, try to find the matching text inside and
+      // highlight only that span. Otherwise fall back to highlighting the row.
+      const q = scrollQuery?.trim() ?? '';
+      const highlightEl: HTMLElement = q ? (highlightMatchingText(rectEl, q) ?? rectEl) : rectEl;
+
+      // Scroll every scrollable ancestor between the highlight and the outer
+      // transcript container so matches inside inner scroll panes (e.g. code
+      // blocks with max-height + overflow:auto) are actually brought into view.
+      const scrollables: HTMLElement[] = [];
+      for (let p: HTMLElement | null = highlightEl.parentElement; p && p !== container; p = p.parentElement) {
+        if (p.scrollHeight > p.clientHeight + 1) {
+          const style = getComputedStyle(p);
+          if (/(auto|scroll)/.test(style.overflowY)) scrollables.push(p);
+        }
+      }
+      scrollables.push(container);
+      for (const sc of scrollables) {
+        const scRect = sc.getBoundingClientRect();
+        const tRect = highlightEl.getBoundingClientRect();
+        const offset =
+          tRect.top - scRect.top + sc.scrollTop
+          - sc.clientHeight / 2 + tRect.height / 2;
+        sc.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+      }
+      highlightEl.classList.add('searchHighlight');
+      setTimeout(() => {
+        highlightEl.classList.remove('searchHighlight');
+        // If we wrapped a text span, unwrap it so the DOM returns to pristine.
+        if (highlightEl.dataset.searchWrap === '1' && highlightEl.parentNode) {
+          const parent = highlightEl.parentNode;
+          while (highlightEl.firstChild) parent.insertBefore(highlightEl.firstChild, highlightEl);
+          parent.removeChild(highlightEl);
+          (parent as Element).normalize?.();
+        }
+      }, 10000);
       return true;
     };
 
@@ -1397,7 +1471,7 @@ const currentDisplayName =
     }, 80);
     return () => clearTimeout(tid);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollTarget]);
+  }, [scrollTarget, scrollQuery]);
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
@@ -1625,7 +1699,7 @@ const currentDisplayName =
     : stateBarNeedsApproval ? 'Waiting for approval'
     : stateBarHasQuestion ? 'Question for you'
     : selectedSession?.state === 'waiting' && stateBarActiveSubagents.length > 0 ? 'Delegated · waiting for subagent'
-    : selectedSession?.state === 'waiting' ? 'Waiting for your response'
+    : selectedSession?.state === 'waiting' ? 'Waiting for input'
     : selectedSession?.state === 'thinking' ? 'Thinking...'
     : 'Working...';
   const stateBarClass = isCompacting ? styles.stateBarCompacting

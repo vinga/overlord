@@ -10,6 +10,7 @@ import { DetailPanel } from './components/DetailPanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
 import { DirectoryPickerDialog } from './components/DirectoryPickerDialog';
+import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
 import { SESSION_NAMES } from './components/Room';
 import type { Room } from './types';
 
@@ -27,7 +28,7 @@ export function App() {
     return m ? m[1] : undefined;
   });
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
-  const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string } | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string; query?: string } | null>(null);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => {
     const m = window.location.hash.match(/^#room\/(.+)/);
     return m ? m[1] : null;
@@ -37,6 +38,7 @@ export function App() {
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
+  const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
   const { customNames, rename, migrateSession: migrateNames } = useCustomNames();
   const { migrateSession: migrateRoomOrder } = useRoomOrder();
@@ -196,13 +198,13 @@ export function App() {
       ? (snapshot?.rooms.find(r => r.id === selectedRoomId) ?? null)
       : null;
 
-  function handleSelectSession(session: Session, subagentId?: string, timestamp?: string) {
+  function handleSelectSession(session: Session, subagentId?: string, timestamp?: string, query?: string) {
     // Use ovrId as the stable session key; fall back to sessionId for sessions without one
     const id = session.overlordId ?? session.sessionId;
     setSelectedSessionId(id);
     setSelectedSubagentId(subagentId);
     setSelectedRoomId(null);
-    setScrollTarget(timestamp ? { sessionId: id, timestamp } : null);
+    setScrollTarget(timestamp ? { sessionId: id, timestamp, query } : null);
   }
 
   function handleRoomClick(roomId: string) {
@@ -291,6 +293,7 @@ export function App() {
         onSpawnDirect={handleNewFolderSpawn}
         onNewTerminalSession={handleNewTerminalSession}
         onLogsClick={() => setView('logs')}
+        onOpenAdvancedSearch={() => setShowAdvancedSearch(true)}
 
         selectedSessionId={selectedSessionId}
         rightOffset={panelWidth}
@@ -318,6 +321,14 @@ export function App() {
           setShowDirectoryPicker(true);
         }}
       />
+      {showAdvancedSearch && (
+        <AdvancedSearchPopup
+          snapshot={snapshot}
+          customNames={displayNames}
+          onSelectSession={(session, timestamp, query) => handleSelectSession(session, undefined, timestamp, query)}
+          onClose={() => setShowAdvancedSearch(false)}
+        />
+      )}
       <DirectoryPickerDialog
         open={showDirectoryPicker}
         onClose={() => setShowDirectoryPicker(false)}
@@ -369,14 +380,15 @@ export function App() {
         customNames={displayNames}
         bridgePath={snapshot?.bridgePath}
         platform={snapshot?.platform ?? 'darwin'}
-        scrollTarget={scrollTarget && scrollTarget.sessionId === selectedSession?.sessionId ? scrollTarget.timestamp : undefined}
+        scrollTarget={scrollTarget && (scrollTarget.sessionId === selectedSession?.overlordId || scrollTarget.sessionId === selectedSession?.sessionId) ? scrollTarget.timestamp : undefined}
+        scrollQuery={scrollTarget && (scrollTarget.sessionId === selectedSession?.overlordId || scrollTarget.sessionId === selectedSession?.sessionId) ? scrollTarget.query : undefined}
         onScrollTargetConsumed={() => setScrollTarget(null)}
       />}
       {selectedRoom && (
         <TaskListPanel
           room={selectedRoom}
           customNames={displayNames}
-          onSelectSession={(s, timestamp) => handleSelectSession(s, undefined, timestamp)}
+          onSelectSession={(s, timestamp, query) => handleSelectSession(s, undefined, timestamp, query)}
           onClose={handleRoomDetailClose}
           panelWidth={panelWidth}
           onPanelWidthChange={(w) => {

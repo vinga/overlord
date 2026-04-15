@@ -664,13 +664,20 @@
 
 /* Search scroll highlight — applied via JS classList, uses global class so no CSS Modules hashing */
 :global(.searchHighlight) {
-  animation: searchPulse 2s ease-out forwards;
+  display: inline-block;
+  border: 1px solid rgba(236, 72, 153, 0.9);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin: 0 -3px;
+  line-height: 1.25;
+  color: #f9a8d4;
+  animation: searchPulse 10s ease-out forwards;
 }
 
 @keyframes searchPulse {
-  0%   { background: rgba(212, 175, 55, 0.18); box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.25); border-radius: 6px; }
-  60%  { background: rgba(212, 175, 55, 0.10); }
-  100% { background: transparent; box-shadow: none; }
+  0%   { border-color: rgba(236, 72, 153, 0.9); color: #f9a8d4; }
+  70%  { border-color: rgba(236, 72, 153, 0.55); color: #f9a8d4; }
+  100% { border-color: rgba(236, 72, 153, 0); color: inherit; }
 }
 
 .pendingMessage {

@@ -30,6 +30,7 @@ interface OfficeProps {
   isPtySession?: (sessionId: string) => boolean;
   onOpenDirectoryPicker?: () => void;
   onLogsClick?: () => void;
+  onOpenAdvancedSearch?: () => void;
   platform?: string;
 }
 
@@ -42,7 +43,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -130,6 +131,20 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); } }}
         />
+        {onOpenAdvancedSearch && (
+          <button
+            className={styles.advSearchBtn}
+            onClick={onOpenAdvancedSearch}
+            title="Advanced search across all rooms"
+            aria-label="Advanced search"
+          >
+            <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+              <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              <path d="M4.5 6.5h4M6.5 4.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
         {onOpenDirectoryPicker && (
           <button className={styles.newSessionBtn} onClick={onOpenDirectoryPicker}>
             + New Session
