@@ -255,7 +255,9 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     // Skip if linked to PTY — it's a resume, not a /clear.
     // Skip during startup — known sessions from the initial scan are not /clear replacements.
     if (ctx.isStartupComplete() && !linkedToPty && raw.pid && raw.pid > 0 && !ctx.pendingPtyByPid.has(raw.pid) && !hasActiveResumeInProgress(ctx)) {
-      const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId);
+      // Pass raw.startedAt so we only match an in-place /clear (same pid AND
+      // same startedAt) — not a concurrent --resume with the same pid.
+      const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId, raw.startedAt);
       if (oldSession) {
         ctx.stateManager.suppressBroadcast();
         ctx.stateManager.transferSessionState(oldSession.sessionId, raw.sessionId);
@@ -282,7 +284,9 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     // Detect in-place session replacement (e.g. Claude Code's /clear for non-PTY sessions)
     // The session file updates in-place with a new sessionId — same PID, different UUID
     if (raw.pid && raw.pid > 0) {
-      const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId);
+      // Gate on startedAt: a real /clear preserves startedAt, a concurrent
+      // --resume or pid reuse does not.
+      const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId, raw.startedAt);
       if (oldSession && oldSession.sessionId !== raw.sessionId) {
         ctx.stateManager.suppressBroadcast();
         ctx.stateManager.addOrUpdate({ ...raw, startedAt: oldSession.startedAt });

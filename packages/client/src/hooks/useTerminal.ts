@@ -64,7 +64,7 @@ export function useTerminal(
           const bytes = decodeBase64(msg.data);
           const buf = outputBuffer.current.get(msg.sessionId) ?? [];
           buf.push(bytes);
-          if (buf.length > 2000) buf.splice(0, buf.length - 2000);
+          if (buf.length > 4000) buf.splice(0, buf.length - 4000);
           outputBuffer.current.set(msg.sessionId, buf);
         } catch { /* ignore */ }
       }

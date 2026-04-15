@@ -475,6 +475,34 @@ export class StateManager {
 
     const existingSession = this.sessions.get(sessionId);
 
+    // Guard against "session stealing": when two PTYs `--resume` the same
+    // parent sessionId concurrently, the second PTY's {pid}.json transiently
+    // reports the parent sid with a different pid/startedAt. Without a guard
+    // the existing entry's pid would be overwritten, later causing
+    // findSessionByPid to false-match and transferSessionState to steal the
+    // ovrId.
+    //
+    // We only block when the existing session is STILL LIVE (not closed) —
+    // a closed session being resumed is legitimate: the new PTY replaces
+    // the dead process and keeps the lineage. Willow/Isolde are both live
+    // and hit this block; a user clicking "Resume" on a closed session does
+    // not.
+    if (
+      existingSession &&
+      existingSession.state !== 'closed' &&
+      existingSession.pid > 0 &&
+      pid > 0 &&
+      existingSession.pid !== pid &&
+      existingSession.startedAt !== startedAt
+    ) {
+      console.log(
+        `[stateManager] rejecting conflicting update for ${sessionId.slice(0, 8)}: ` +
+        `existing pid=${existingSession.pid} startedAt=${existingSession.startedAt} (live), ` +
+        `incoming pid=${pid} startedAt=${startedAt} — likely concurrent --resume`
+      );
+      return { isNewWaiting: false };
+    }
+
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
     let resumedFrom: string | undefined;
@@ -1187,15 +1215,31 @@ export class StateManager {
   /** Record PTY output activity for a session — overrides stale 'waiting' state in snapshot. */
   setPtyActive(sessionId: string): void {
     this.lastPtyActivityAt.set(sessionId, Date.now());
+    this.promoteToWorkingIfWaiting(sessionId);
   }
 
   /** Persistently mark a bridge session as active (spinner detected). Cleared when idle prompt seen. */
   setBridgeActive(sessionId: string, active: boolean): void {
     if (active) {
       this.bridgeActiveOverride.add(sessionId);
+      this.promoteToWorkingIfWaiting(sessionId);
     } else {
       this.bridgeActiveOverride.delete(sessionId);
     }
+    this.onChange();
+  }
+
+  /** Flip 'waiting' → 'working' immediately when terminal activity is detected,
+   *  without waiting for the next transcript write. Guarded by activityFeed so
+   *  brand-new sessions emitting startup output don't get promoted. */
+  private promoteToWorkingIfWaiting(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.state !== 'waiting') return;
+    if (!session.activityFeed || session.activityFeed.length === 0) return;
+    session.state = 'working';
+    session.completionHint = undefined;
+    session.completionHintByUser = false;
     this.onChange();
   }
 
@@ -1379,11 +1423,21 @@ export class StateManager {
     return this.sessions.get(sessionId);
   }
 
-  findSessionByPid(pid: number, excludeSessionId: string): Session | undefined {
+  /**
+   * Find a session by pid, optionally gated on startedAt matching.
+   *
+   * The startedAt guard prevents a false /clear detection when a new PTY
+   * process transiently writes the parent sessionId (during `claude --resume`).
+   * A real in-place /clear preserves startedAt; a second resume or pid reuse
+   * has a different startedAt. Callers doing /clear detection MUST pass
+   * startedAt; callers that genuinely need any pid match may omit it.
+   */
+  findSessionByPid(pid: number, excludeSessionId: string, startedAt?: number): Session | undefined {
     for (const session of this.sessions.values()) {
-      if (session.pid === pid && session.sessionId !== excludeSessionId) {
-        return session;
-      }
+      if (session.pid !== pid) continue;
+      if (session.sessionId === excludeSessionId) continue;
+      if (startedAt !== undefined && session.startedAt !== startedAt) continue;
+      return session;
     }
     return undefined;
   }

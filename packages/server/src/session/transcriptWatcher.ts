@@ -202,7 +202,11 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           try {
             if (fs.existsSync(sessionFilePath)) {
               const raw = JSON.parse(fs.readFileSync(sessionFilePath, 'utf-8')) as { pid: number; sessionId: string; cwd: string; startedAt: number };
-              if (raw.sessionId !== sessionId && !ctx.stateManager.isDeleted(raw.sessionId)) {
+              // Also require startedAt to match — a genuine /clear rewrites the
+              // session file in place and preserves startedAt, while OS pid reuse
+              // produces a fresh startedAt and must not be treated as /clear.
+              const startedAtMatches = raw.startedAt === sess2.startedAt;
+              if (raw.sessionId !== sessionId && startedAtMatches && !ctx.stateManager.isDeleted(raw.sessionId)) {
                 const clearName = sess2.proposedName ?? sessionId.slice(0, 8);
                 ctx.stateManager.suppressBroadcast();
                 ctx.stateManager.addOrUpdate(raw);

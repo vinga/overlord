@@ -21,6 +21,10 @@ export interface PtyEventsContext {
 const compactDetectBuf = new Map<string, string>();
 const COMPACT_DETECT_BUF_SIZE = 500;
 
+// Rolling stripped-text buffer for active-state detection (status bar + spinner line).
+const activeDetectBuf = new Map<string, string>();
+const ACTIVE_DETECT_BUF_SIZE = 2048;
+
 export function wirePtyEvents(ctx: PtyEventsContext): void {
   // Wire PtyManager events → broadcast to ALL connected clients
   // so any tab can view the PTY terminal
@@ -45,6 +49,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       // Repaint redraws the full terminal state — stale partial text in the compact
       // detect buffer would combine with new chunks and cause false positives.
       compactDetectBuf.delete(ptySessionId);
+      activeDetectBuf.delete(ptySessionId);
     }
 
     buf.push(Buffer.from(data));
@@ -77,6 +82,37 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       }
     }
 
+    // Detect active state (status bar "esc to interrupt" / spinner line)
+    // so the UI flips from 'waiting' → 'working' without waiting for the next
+    // transcript write. Mirrors the bridge-side logic in index.ts.
+    {
+      const stripped = data
+        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+        .replace(/\x1b[^[\]]/g, '')
+        .replace(/\x1b/g, '')
+        .replace(/[^\x20-\x7e\n\t\r]/g, '');
+      const prev = activeDetectBuf.get(ptySessionId) ?? '';
+      const combined = (prev + stripped).slice(-ACTIVE_DETECT_BUF_SIZE);
+      activeDetectBuf.set(ptySessionId, combined);
+
+      const tailLines = combined.split('\n');
+      let activeSignal: boolean | null = null;
+      for (let i = tailLines.length - 1; i >= 0; i--) {
+        const line = tailLines[i];
+        if (/\(shift\+tab to cycle\)/i.test(line)) {
+          activeSignal = /esc to interrupt/i.test(line);
+          break;
+        }
+        if (/[·*·]\s+\w+[.\u2026]+\s*\(\d/.test(line)) {
+          activeSignal = true;
+          break;
+        }
+      }
+      if (activeSignal === true) ctx.stateManager.setBridgeActive(ovrId, true);
+      else if (activeSignal === false) ctx.stateManager.setBridgeActive(ovrId, false);
+    }
+
     // On repaint, detect permission mode and update immediately
     if (isRepaint) {
       const text = data.replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
@@ -107,6 +143,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       }
     }
     compactDetectBuf.delete(ptySessionId);
+    activeDetectBuf.delete(ptySessionId);
 
     // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
