@@ -8,6 +8,30 @@ Architecture diagrams, known issues, and quick symptom lookup for session diagno
 
 ## Known Issues & Patterns
 
+### Stuck session: empty conversation but live PTY (stale PID binding)
+**Symptom:** DetailPanel shows no conversation / empty activity feed, but the Terminal PTY tab works fine. Session state (e.g. `working`) and `lastActivity` are frozen in the past while the transcript file on disk keeps growing.
+
+**How to identify:**
+- `readTranscriptState` run directly on the transcript file returns a fresh, correct result (feed populated, recent `lastActivity`).
+- `/api/debug/state` shows the session with a stale `lastActivity` that doesn't match the transcript file's real content.
+- Transcript file has **zero `type:"summary"` entries** and a single sessionId throughout → this is NOT a /clear case.
+- The session's `pid` in the server state points to a process that has died or been replaced (check liveness).
+- Terminal still works because PTY routing is keyed by `ovrId`, independent of Claude process/sessionId state.
+
+**Root cause:** Session-to-PID binding survives across Claude process restarts when the sessionId doesn't change (e.g. after `--resume e4f0ed6d...` spawns a new PID on the same sessionId). Overlord keeps the session object anchored to the old dead PID. If the old PID was ever marked closed by the process checker, `refreshTranscript` bails early (`session.state === 'closed'` guard) and the new process's transcript writes are never picked up.
+
+**Recovery:** Usually self-heals when Overlord eventually re-links the live process to the session — `lastActivity` then jumps forward and the feed populates. If it doesn't, restart the server.
+
+**Diagnostic steps:**
+1. `curl -s http://localhost:3000/api/debug/state` — note the session's `pid`, `state`, `lastActivity`.
+2. `ps -p <pid>` (or `tasklist /FI "PID eq <pid>"` on Windows) — is it alive?
+3. `stat -f "%m" <transcript.jsonl>` vs session's `lastActivity` — large gap = stuck.
+4. `grep -c '"type":"summary"' <transcript.jsonl>` — zero = NOT /clear.
+5. Run `readTranscriptState` directly (via a tsx one-liner importing `./src/session/transcriptReader.js`) to confirm the file is readable and fresh — isolates the bug to server-side state, not the reader.
+6. Check `pendingClearSessions` in `/api/debug/state` — if the session is in there, a UI `/clear` was triggered but the replacement transcript never arrived; `refreshTranscript` bails on this flag too.
+
+**Related debug fields exposed on `/api/debug/state`:** `pendingClearSessions` (added to confirm this case).
+
 ### IntelliJ /clear doesn't update session file
 When `/clear` is run in an IntelliJ terminal, the session file (named by PID) sometimes doesn't update its `sessionId` field, and no new transcript file appears. The process stays alive. Overlord continues tracking the old session with stale data. **Mitigation (implemented):** The periodic stale transcript poll (3s interval in `transcriptWatcher.ts`) detects this — when transcript is stale but PID is alive, it re-reads `{pid}.json` to check if the sessionId changed. If it did, the full replacement flow fires via `transferSessionState()`. See `session-cleanups.md` for the unified /clear detection architecture.
 
