@@ -37,12 +37,22 @@ If all linking fails, the PTY output goes nowhere and the session shows without 
 ### Embedded session spawn flow (name-first)
 See "Name-first spawn flow (CURRENT APPROACH)" below for full details. Summary: click "+" → name input → Enter → spawn with `--name` flag. Name is in session file from the first write.
 
-### Stale PTY maps causing phantom Terminal tab (FIXED)
-**Root cause:** `claudeToPtyId` / `ptyToClaudeId` maps were not cleaned up when sessions were deleted or removed. On WS reconnect, the server replayed `terminal:linked` for stale entries, causing clients to show a phantom PTY Terminal tab with empty content.
+### ovrId architecture — stable PTY routing across UUID changes (IMPLEMENTED)
 
-**Fix (implemented):** PTY map cleanup added to:
-1. `deleteSession()` — clears `claudeToPtyId`/`ptyToClaudeId` entries and kills the PTY process
-2. `sessionWatcher.on('removed')` — clears map entries for removed sessions
+**Problem (Manawyd bug):** When `terminal:resume` links a PTY via the `___OVR:` name marker, compaction fires shortly after — creating a new Claude UUID but the same PID. `hasActiveResumeInProgress()` guard skips /clear detection for this case. The new UUID then links via `pendingPtyByPid`, setting `ptyToClaudeId` for the new UUID. Now BOTH old and new UUIDs reference the same PTY — divergence.
+
+**Fix:** Introduced a stable `overlordId` (`ovr-xxxxxxxx`) assigned once per session lineage and propagated via `transferSessionState()`. PTY routing now uses `ovrToPty`/`ptyToOvr` maps keyed by ovrId instead of claudeId. When compaction creates a new UUID:
+- Marker path: detects `ptyToOvr.get(marker) !== ovrId` → runs `transferSessionState` (no map changes needed)
+- PID path: detects `ptyToOvr.get(entry.ptySessionId)` already set → runs `transferSessionState` instead of double-linking
+
+**Diagnosis:** Use `GET /api/debug/identity` to see ovrId ↔ claudeId ↔ ptyId mappings. Divergence shows up as two sessions with the same `ptyId` but different `claudeId`.
+
+**Key files:** `packages/server/src/session/sessionEventHandlers.ts` (compaction fix in PID + marker paths), `packages/server/src/session/stateManager.ts` (`addOrUpdate`, `transferSessionState`, `getActiveClaudeByOvr`), `packages/server/src/pty/ptyEvents.ts` (output/exit keyed by ovrId)
+
+### Stale PTY maps causing phantom Terminal tab (SUPERSEDED by ovrId architecture)
+**Root cause (historical):** `claudeToPtyId` / `ptyToClaudeId` maps were not cleaned up when sessions were deleted or removed. On WS reconnect, the server replayed `terminal:linked` for stale entries, causing clients to show a phantom PTY Terminal tab with empty content.
+
+**Current architecture:** These maps are replaced by `ovrToPty`/`ptyToOvr`. Cleanup happens in `deleteSession()` and via the PTY exit handler in `ptyEvents.ts`. WS reconnect replay iterates `ovrToPty` (alive PTYs only via `ptyManager.has()` check).
 
 ### Dynamic `launchMethod` — PTY indicator accuracy (FIXED)
 **Root cause:** `launchMethod` was set once at session creation and never updated. This caused inaccurate indicators:
@@ -263,6 +273,20 @@ Additionally, PTY events (`terminal:spawned`, `terminal:output`, `terminal:exit`
 **Key insight:** The `migrateId(oldId, newId)` function in useTerminal.ts always adds `newId` to `ptySessionIds` regardless of whether `oldId` was present. So even if the client missed `terminal:spawned`, receiving `terminal:linked` is sufficient for the tab to appear.
 
 **Additional fix:** Added `replay: true` flag to replayed `terminal:linked` messages to prevent the `onSpawned` callback from auto-opening the DetailPanel on reconnect.
+
+### Bridge Terminal Shows Different Conversation Than Chat Panel (FIXED)
+
+**Symptom:** For a bridge session, the Terminal tab shows a different conversation than the Conversation tab.
+
+**Root cause:** `terminal:output` was broadcast with `sessionId: eid` where `eid` is the **Claude session ID** (e.g. `bc5117e9`). But `XtermTerminal` registers its output handler under `effectiveOvrId` (e.g. `ovr-gwn6a9a5`). The keys never match — output goes into a dead buffer and is never rendered. The Conversation tab reads the correct transcript (keyed by ovrId), so the two panels show unrelated content.
+
+**Fix (`packages/server/src/index.ts`):** In `connectBridgeOutputSocket`'s `data` handler, resolve ovrId before broadcasting:
+```typescript
+const broadcastId = stateManager.getSession(eid)?.overlordId ?? eid;
+broadcastRaw({ type: 'terminal:output', sessionId: broadcastId, data: ... });
+```
+
+**Diagnosis:** Check `GET /api/debug/identity` — if `claudeId` ≠ `ovrId` for the affected session and the terminal is blank or showing wrong content, this is the likely cause. `ptyOutputBuffer` and permission-check maps remain keyed by `eid`; the replay path in `wsHandler.ts` already falls back to `ptyOutputBuffer.get(claudeSessionId)` so replay is unaffected.
 
 ### Garbled Terminal PTY Output on Clone Resume (FIXED — was CLI Bug)
 **Status:** Fixed by switching to `--fork-session`. The info below is preserved for reference.

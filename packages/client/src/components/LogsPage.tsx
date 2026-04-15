@@ -16,6 +16,7 @@ const EVENT_BADGE_STYLES: Record<LogEventType, { bg: string; color: string }> = 
   'session:resumed':  { bg: '#a855f7', color: '#fff' },
   'session:killed':   { bg: '#ef4444', color: '#fff' },
   'pty:started':      { bg: '#06b6d4', color: '#000' },
+  'pty:linked':       { bg: '#06b6d4', color: '#000' },
   'clear:detected':   { bg: '#f59e0b', color: '#000' },
   'info':             { bg: '#374151', color: '#9ca3af' },
 };

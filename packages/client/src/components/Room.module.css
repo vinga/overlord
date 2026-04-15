@@ -160,30 +160,35 @@
 }
 
 .desk {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   padding: 18px 18px 14px;
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  min-width: 110px;
-  max-width: 160px;
+  min-width: 122px;
+  max-width: 176px;
   position: relative;
   transition: background 0.15s, border-color 0.15s;
 }
 
 .desk:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.1);
   border-color: rgba(255, 255, 255, 0.1);
 }
 
 .deskSelected {
-  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(212, 175, 55, 0.13);
+  border-color: rgba(212, 175, 55, 0.5);
   box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.1),
-    0 0 28px rgba(255, 255, 255, 0.08),
-    0 0 8px rgba(255, 255, 255, 0.06);
+    0 0 0 1px rgba(212, 175, 55, 0.2),
+    0 0 20px rgba(212, 175, 55, 0.1);
+}
+
+.deskSelected:hover {
+  background: rgba(212, 175, 55, 0.17);
+  border-color: rgba(212, 175, 55, 0.55);
 }
 
 .desk::before {

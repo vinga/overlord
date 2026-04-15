@@ -6,10 +6,10 @@ export interface PtyEventsContext {
   ptyManager: PtyManager;
   stateManager: StateManager;
   wsSessionMap: Map<WebSocket, Set<string>>;
-  ptyToClaudeId: Map<string, string>;
-  claudeToPtyId: Map<string, string>;
+  ovrToPty: Map<string, string>;   // ovrId → ptySessionId
+  ptyToOvr: Map<string, string>;   // ptySessionId → ovrId
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: WebSocket; timestamp: number }>;
+  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   ptyOutputBuffer: Map<string, Buffer[]>;
   PTY_BUFFER_MAX_CHUNKS: number;
   broadcastRaw: (msg: object) => void;
@@ -30,27 +30,30 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     { pattern: />>\s+plan mode on/i, mode: 'plan' },
   ];
 
-  ctx.ptyManager.on('output', (sessionId: string, data: string) => {
-    // Buffer output for replay on reconnect
-    let buf = ctx.ptyOutputBuffer.get(sessionId);
-    if (!buf) { buf = []; ctx.ptyOutputBuffer.set(sessionId, buf); }
+  ctx.ptyManager.on('output', (ptySessionId: string, data: string) => {
+    // Resolve ovrId for this PTY (set after linking; fall back to ptyId before link)
+    const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
+
+    // Buffer output under ptySessionId while alive; migrated to ovrId on exit
+    let buf = ctx.ptyOutputBuffer.get(ptySessionId);
+    if (!buf) { buf = []; ctx.ptyOutputBuffer.set(ptySessionId, buf); }
 
     const isRepaint = data.includes('\x1b[?2026h');
     if (isRepaint) {
       buf = [];
-      ctx.ptyOutputBuffer.set(sessionId, buf);
+      ctx.ptyOutputBuffer.set(ptySessionId, buf);
       // Repaint redraws the full terminal state — stale partial text in the compact
       // detect buffer would combine with new chunks and cause false positives.
-      compactDetectBuf.delete(sessionId);
+      compactDetectBuf.delete(ptySessionId);
     }
 
     buf.push(Buffer.from(data));
     if (buf.length > ctx.PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - ctx.PTY_BUFFER_MAX_CHUNKS);
 
-    const effectiveId = ctx.ptyToClaudeId.get(sessionId) ?? sessionId;
     const encoded = Buffer.from(data).toString('base64');
-    ctx.broadcastRaw({ type: 'terminal:output', sessionId: effectiveId, data: encoded });
-    ctx.stateManager.setPtyActive(effectiveId);
+    // Broadcast using ovrId as sessionId so clients keyed by ovrId receive it
+    ctx.broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: encoded });
+    ctx.stateManager.setPtyActive(ovrId);
 
     // Detect "Compacting conversation" in PTY output — set isCompacting immediately,
     // before the compact_boundary event lands in the transcript.
@@ -62,15 +65,15 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         .replace(/\x1b[^[\]]/g, '')
         .replace(/\x1b/g, '')
         .replace(/[^\x20-\x7e\n\t\r]/g, '');
-      const prev = compactDetectBuf.get(sessionId) ?? '';
+      const prev = compactDetectBuf.get(ptySessionId) ?? '';
       const combined = (prev + stripped).slice(-COMPACT_DETECT_BUF_SIZE);
-      compactDetectBuf.set(sessionId, combined);
+      compactDetectBuf.set(ptySessionId, combined);
       if (combined.includes('Compacting conversation')) {
         const match = combined.match(/Compacting conversation[^\n]*/);
         const compactLine = match ? match[0].trim() : 'Compacting conversation…';
-        ctx.stateManager.addPtyCompact(effectiveId, compactLine);
+        ctx.stateManager.addPtyCompact(ovrId, compactLine);
         // Clear buffer after detection to avoid duplicate triggers
-        compactDetectBuf.set(sessionId, '');
+        compactDetectBuf.set(ptySessionId, '');
       }
     }
 
@@ -84,64 +87,60 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         if (pattern.test(text)) { frameMode = mode; break; }
       }
       const resolvedMode = frameMode ?? 'default';
-      // REVERT NOTE: original code guarded this with: if (resolvedMode !== current) { ... }
-      // CHANGE: Always call setPermissionMode on repaint — even if mode unchanged — so the
-      // lock gets refreshed for non-default modes, preventing permissionChecker
-      // from flipping back to 'default' between repaints.
-      ctx.stateManager.setPermissionMode(effectiveId, resolvedMode);
+      ctx.stateManager.setPermissionMode(ovrId, resolvedMode);
     }
   });
 
-  ctx.ptyManager.on('exit', (sessionId: string, code: number) => {
+  ctx.ptyManager.on('exit', (ptySessionId: string, code: number) => {
     // Clean up any pending PID entry for this PTY session
     for (const [pid, entry] of ctx.pendingPtyByPid) {
-      if (entry.ptySessionId === sessionId) {
+      if (entry.ptySessionId === ptySessionId) {
         ctx.pendingPtyByPid.delete(pid);
         break;
       }
     }
     // Clean up any pending resume entry for this PTY session
     for (const [resumeId, entry] of ctx.pendingPtyByResumeId) {
-      if (entry.ptySessionId === sessionId) {
+      if (entry.ptySessionId === ptySessionId) {
         ctx.pendingPtyByResumeId.delete(resumeId);
         break;
       }
     }
-    compactDetectBuf.delete(sessionId);
-    // Resolve the claude session ID before cleaning maps (client tracks by claude ID, not pty ID)
-    const claudeId = ctx.ptyToClaudeId.get(sessionId);
-    const effectiveId = claudeId ?? sessionId;
-    ctx.ptyToClaudeId.delete(sessionId);
-    // Clean up reverse map
-    if (claudeId) {
-      ctx.claudeToPtyId.delete(claudeId);
-    } else {
-      for (const [cId, pId] of ctx.claudeToPtyId) {
-        if (pId === sessionId) { ctx.claudeToPtyId.delete(cId); break; }
-      }
+    compactDetectBuf.delete(ptySessionId);
+
+    // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
+    const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
+    ctx.ptyToOvr.delete(ptySessionId);
+    if (ctx.ovrToPty.get(ovrId) === ptySessionId) {
+      ctx.ovrToPty.delete(ovrId);
     }
-    // Migrate output buffer from ptyId → claudeId so the last repaint stays
+
+    // Migrate output buffer from ptyId → ovrId so the last repaint stays
     // accessible after the PTY mapping is cleaned up (terminal:replay for closed sessions).
-    if (claudeId) {
-      const buf = ctx.ptyOutputBuffer.get(sessionId);
+    if (ovrId !== ptySessionId) {
+      const buf = ctx.ptyOutputBuffer.get(ptySessionId);
       if (buf && buf.length > 0) {
-        ctx.ptyOutputBuffer.set(claudeId, buf);
+        ctx.ptyOutputBuffer.set(ovrId, buf);
       }
     }
-    ctx.ptyOutputBuffer.delete(sessionId);
+    ctx.ptyOutputBuffer.delete(ptySessionId);
+
     // Broadcast exit to all clients so any tab can update its state
-    ctx.broadcastRaw({ type: 'terminal:exit', sessionId: effectiveId, code });
+    ctx.broadcastRaw({ type: 'terminal:exit', sessionId: ovrId, code });
+    console.log(`[pty:exit] ptyId=${ptySessionId.slice(0, 12)} ovrId=${ovrId} code=${code}`);
+
     // Clean up wsSessionMap entries
     for (const [, sessions] of ctx.wsSessionMap) {
-      sessions.delete(sessionId);
-      sessions.delete(effectiveId);
+      sessions.delete(ptySessionId);
+      sessions.delete(ovrId);
     }
   });
 
-  ctx.ptyManager.on('error', (sessionId: string, message: string) => {
-    const msg = { type: 'terminal:error', sessionId, message };
+  ctx.ptyManager.on('error', (ptySessionId: string, message: string) => {
+    const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
+    const msg = { type: 'terminal:error', sessionId: ovrId, message };
     for (const [ws, sessions] of ctx.wsSessionMap) {
-      if (sessions.has(sessionId)) {
+      if (sessions.has(ptySessionId) || sessions.has(ovrId)) {
         ctx.sendToClient(ws, msg);
         break;
       }

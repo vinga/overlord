@@ -282,19 +282,29 @@ curl -s http://localhost:3000/api/sessions/SESSION_ID/screen | node -e "process.
 
 ---
 
-## Step 9 — Check PTY State (Indirect)
+## Step 9 — Check PTY Identity State
 
-The debug endpoint does not expose the PTY map or `wsSessionMap` directly. To check PTY state indirectly:
+Use the dedicated identity endpoint to see the full ovrId ↔ claudeId ↔ ptyId mapping:
 
 ```bash
-tasklist /FO CSV /NH | grep -i node
+curl -s http://localhost:3000/api/debug/identity | node -e "
+const d = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf8'));
+console.log('Identities:');
+for (const i of d.identities) {
+  console.log(' ', i.ovrId, '->', i.claudeId, '| pty:', i.ptyId, '| state:', i.state, '| name:', i.name);
+}
+console.log('ovrToPty:', d.ovrToPty);
+console.log('ptyToOvr:', d.ptyToOvr);
+"
 ```
 
-Cross-reference node processes with tracked PIDs. Look for:
-- Sessions in `wsSessionMap` that don't exist in `stateManager` -> linking failed
-- PTY sessions with no corresponding session file -> leaked PTY
+**What to look for:**
+- `ptyId: (none)` on a session showing a Terminal tab → PTY never linked, or link was lost
+- Two different `claudeId`s sharing the same `ovrId` → correct (after /clear or compaction)
+- `ovrToPty` has entry but `ptyToOvr` is missing the reverse → map corruption
+- Session has `ptyId` but `state: closed` → zombie PTY, should be cleaned up on deleteSession
 
-If deeper PTY diagnostics are needed, suggest adding a temporary debug log to `packages/server/src/pty/ptyManager.ts`.
+**Historical context (pre-ovrId):** `claudeToPtyId`/`ptyToClaudeId` maps were cleaned up on session delete/remove, but compaction could cause both the old and new Claude session to point to the same PTY simultaneously. The ovrId layer eliminates this by keying PTY routing on a stable ID that never changes across Claude UUID transitions.
 
 ---
 

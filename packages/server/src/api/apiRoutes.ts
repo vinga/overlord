@@ -34,8 +34,8 @@ import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { log } from '../logger.js';
 
 export interface PtyMaps {
-  ptyToClaudeId: Map<string, string>;
-  claudeToPtyId: Map<string, string>;
+  ovrToPty: Map<string, string>;     // ovrId → ptySessionId
+  ptyToOvr: Map<string, string>;     // ptySessionId → ovrId
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
@@ -51,7 +51,7 @@ export function registerApiRoutes(
   ptyOutputBuffer: Map<string, Buffer[]>,
   generateTaskTitle?: (sessionId: string, taskId: string) => Promise<void>,
 ): void {
-  const { ptyToClaudeId, claudeToPtyId, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
+  const { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
 
   // Server info endpoint — returns bridge binary path and platform
   app.get('/api/info', (_req, res) => {
@@ -114,13 +114,28 @@ export function registerApiRoutes(
         resumedFrom: s.resumedFrom,
         lastActivity: s.lastActivity,
       })),
-      ptyToClaudeId: Object.fromEntries(ptyToClaudeId),
-      claudeToPtyId: Object.fromEntries(claudeToPtyId),
+      ovrToPty: Object.fromEntries(ovrToPty),
+      ptyToOvr: Object.fromEntries(ptyToOvr),
       pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
       pendingPtyByResumeId: Object.fromEntries([...pendingPtyByResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
       bridgeSessions: Object.keys(stateManager.deriveBridgeRegistry()),
       bridgeConnected: Object.keys(stateManager.deriveBridgeRegistry()).map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),
     });
+  });
+
+  // Debug endpoint: show stable ovrId → claudeId → ptyId identity mappings
+  app.get('/api/debug/identity', (_req, res) => {
+    const snapshot = stateManager.getSnapshot();
+    const sessions = snapshot.rooms.flatMap(r => r.sessions);
+    const identities = sessions.map(s => ({
+      claudeId: s.sessionId.slice(0, 8),
+      ovrId: (s as { overlordId?: string }).overlordId ?? '(none)',
+      ptyId: (() => { const oId = (s as { overlordId?: string }).overlordId; return oId ? (ovrToPty.get(oId)?.slice(0, 12) ?? '(none)') : '(none)'; })(),
+      name: s.proposedName ?? '',
+      state: s.state,
+      sessionType: s.sessionType ?? '',
+    }));
+    res.json({ identities, ovrToPty: Object.fromEntries([...ovrToPty].map(([k, v]) => [k, v.slice(0, 12)])), ptyToOvr: Object.fromEntries([...ptyToOvr].map(([k, v]) => [k.slice(0, 12), v])) });
   });
 
   // Respond to permission prompt for an external session
@@ -186,8 +201,9 @@ export function registerApiRoutes(
         // Wait for the TUI to update, then read screen
         await new Promise(r => setTimeout(r, 500));
         let text: string | null = null;
-        const { claudeToPtyId } = ptyMaps;
-        const bufKey = stateManager.isBridge(sessionId) ? sessionId : (claudeToPtyId.get(sessionId) ?? null);
+        const sess2 = stateManager.getSession(sessionId);
+        const ovrId2 = sess2?.overlordId ?? sessionId;
+        const bufKey = stateManager.isBridge(sessionId) ? ovrId2 : (ovrToPty.get(ovrId2) ?? null);
         if (bufKey) {
           const chunks = ptyOutputBuffer.get(bufKey);
           if (chunks && chunks.length > 0) {

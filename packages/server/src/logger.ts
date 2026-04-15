@@ -1,7 +1,7 @@
 export interface LogEntry {
   id: number;
   timestamp: string; // ISO
-  event: 'session:created' | 'session:removed' | 'session:replaced' | 'session:state' | 'session:resumed' | 'session:killed' | 'pty:started' | 'clear:detected' | 'info';
+  event: 'session:created' | 'session:removed' | 'session:replaced' | 'session:state' | 'session:resumed' | 'session:killed' | 'pty:started' | 'pty:linked' | 'clear:detected' | 'info';
   sessionId?: string;
   sessionName?: string;
   detail: string;

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import type { TerminalSpawnMode } from '../types';
 import styles from './DirectoryPickerDialog.module.css';
-import { SessionCommands } from './SessionCommands';
 
 interface Props {
   open: boolean;
@@ -10,6 +9,27 @@ interface Props {
   defaultPath?: string;
   suggestedName?: string;
   bridgePath?: string;
+}
+
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={e => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      title="Copy"
+      style={{ flexShrink: 0, background: 'none', border: 'none', color: copied ? '#22c55e' : 'rgba(255,255,255,0.35)', cursor: 'pointer', padding: '2px 4px', borderRadius: 3, display: 'flex', alignItems: 'center', transition: 'color 0.15s' }}
+    >
+      {copied
+        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      }
+    </button>
+  );
 }
 
 export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, suggestedName, bridgePath }: Props) {
@@ -23,6 +43,7 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
   const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
   const nameInputRef = useRef<HTMLInputElement>(null);
   const pathInputRef = useRef<HTMLInputElement>(null);
+  const markerRef = useRef(Math.random().toString(36).slice(2, 10));
 
   // Sync suggested name when dialog opens
   useEffect(() => {
@@ -49,7 +70,6 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
           setParent(data.parent);
           setCurrentPath(data.current);
           setPathInput(data.current);
-          // Only fall back to folder basename if no suggested name was provided
           if (!suggestedName) {
             const basename = data.current.split(/[\\/]/).filter(Boolean).pop() || 'New';
             setSessionName(prev => prev || basename);
@@ -60,7 +80,6 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
       .finally(() => setLoading(false));
   }, [currentPath, open]);
 
-  // Update session name when navigating (only if user hasn't set a custom name and no suggestedName)
   const navigateTo = useCallback((path: string) => {
     setCurrentPath(path);
     if (!suggestedName) {
@@ -69,50 +88,46 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
     }
   }, [suggestedName]);
 
-  // Handle path input Enter
   const handlePathKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      navigateTo(pathInput);
-    }
+    if (e.key === 'Enter') navigateTo(pathInput);
   };
 
-  // Handle spawn
   const handleSpawn = () => {
-    if (currentPath && sessionName) {
-      onSpawn(currentPath, sessionName, mode);
-    }
+    if (currentPath && sessionName) onSpawn(currentPath, sessionName, mode);
   };
 
-  // Escape to close
   useEffect(() => {
     if (!open) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [open, onClose]);
 
-  // Focus path input on open
   useEffect(() => {
-    if (open) {
-      setTimeout(() => pathInputRef.current?.focus(), 100);
-    }
+    if (open) setTimeout(() => pathInputRef.current?.focus(), 100);
   }, [open]);
 
   if (!open) return null;
 
-  // Build breadcrumbs from current path
   const segments = currentPath.split(/[\\/]/).filter(Boolean);
   const breadcrumbs: { label: string; path: string }[] = [];
   for (let i = 0; i < segments.length; i++) {
     const pathParts = segments.slice(0, i + 1);
-    // Windows: "C:" needs trailing backslash to be a valid path
     const fullPath = i === 0 && /^[A-Za-z]:$/.test(pathParts[0])
       ? pathParts[0] + '\\'
       : pathParts.join('\\');
     breadcrumbs.push({ label: segments[i], path: fullPath });
   }
+
+  const safeName = sessionName.trim().replace(/"/g, '-');
+  const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
+  const marker = markerRef.current;
+
+  const modeRows: { key: TerminalSpawnMode; label: string; cmd: string | null }[] = [
+    { key: 'embedded', label: 'Overlord', cmd: null },
+    { key: 'bridge',   label: 'Bridge',   cmd: currentPath && sessionName ? `cd "${currentPath}" && ${bridgeBin} --pipe overlord-${marker} -- claude --name "${safeName}___BRG:${marker}"` : null },
+    { key: 'plain',    label: 'Direct',   cmd: currentPath && sessionName ? `cd "${currentPath}" && claude --name "${sessionName.trim()}"` : null },
+  ];
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
@@ -133,10 +148,7 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
             placeholder="Enter directory path..."
             spellCheck={false}
           />
-          <button
-            className={styles.goBtn}
-            onClick={() => navigateTo(pathInput)}
-          >Go</button>
+          <button className={styles.goBtn} onClick={() => navigateTo(pathInput)}>Go</button>
         </div>
 
         {/* Breadcrumbs */}
@@ -144,10 +156,7 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
           {breadcrumbs.map((bc, i) => (
             <React.Fragment key={i}>
               {i > 0 && <span className={styles.breadcrumbSep}>/</span>}
-              <button
-                className={styles.breadcrumbBtn}
-                onClick={() => navigateTo(bc.path)}
-              >{bc.label}</button>
+              <button className={styles.breadcrumbBtn} onClick={() => navigateTo(bc.path)}>{bc.label}</button>
             </React.Fragment>
           ))}
         </div>
@@ -159,31 +168,22 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
           {!loading && !error && (
             <>
               {parent && (
-                <button
-                  className={styles.dirItem}
-                  onClick={() => navigateTo(parent)}
-                >
+                <button className={styles.dirItem} onClick={() => navigateTo(parent)}>
                   <span className={styles.dirName}>..</span>
                 </button>
               )}
               {dirs.map(dir => (
-                <button
-                  key={dir}
-                  className={styles.dirItem}
-                  onClick={() => navigateTo(currentPath + '\\' + dir)}
-                >
+                <button key={dir} className={styles.dirItem} onClick={() => navigateTo(currentPath + '\\' + dir)}>
                   <span className={styles.dirName}>{dir}</span>
                 </button>
               ))}
-              {dirs.length === 0 && !parent && (
-                <div className={styles.emptyDir}>No subdirectories</div>
-              )}
+              {dirs.length === 0 && !parent && <div className={styles.emptyDir}>No subdirectories</div>}
             </>
           )}
         </div>
 
-        {/* Session config */}
-        <div className={styles.config}>
+        {/* Name row */}
+        <div className={styles.config} style={{ paddingBottom: 0 }}>
           <div className={styles.configRow}>
             <label className={styles.label}>Name</label>
             <input
@@ -196,30 +196,31 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
               spellCheck={false}
             />
           </div>
-          <div className={styles.configRow}>
-            <label className={styles.label}>Type</label>
-            <div className={styles.modeSelector}>
-              {(['embedded', 'bridge', 'plain'] as TerminalSpawnMode[]).map(m => (
-                <button
-                  key={m}
-                  className={`${styles.modeBtn} ${mode === m ? styles.modeBtnActive : ''}`}
-                  onClick={() => setMode(m)}
-                >{m === 'embedded' ? 'Overlord' : m === 'bridge' ? 'Bridge' : 'Direct'}</button>
-              ))}
-            </div>
-          </div>
         </div>
 
-        {/* IntelliJ / terminal commands */}
-        {currentPath && sessionName && (
-          <div className={styles.commandsSection}>
-            <SessionCommands
-              cwd={currentPath}
-              name={sessionName}
-              bridgePath={bridgePath}
-            />
-          </div>
-        )}
+        {/* Mode rows — type label left, command right */}
+        <div className={styles.modeRows}>
+          {modeRows.map(({ key, label, cmd }) => {
+            const active = mode === key;
+            return (
+              <div
+                key={key}
+                className={`${styles.modeRow} ${active ? styles.modeRowActive : ''}`}
+                onClick={() => setMode(key)}
+              >
+                <span className={`${styles.modeRowLabel} ${active ? styles.modeRowLabelActive : ''}`}>{label}</span>
+                {cmd ? (
+                  <>
+                    <code className={`${styles.modeRowCmd} ${active ? styles.modeRowCmdActive : ''}`}>{cmd}</code>
+                    <CopyBtn text={cmd} />
+                  </>
+                ) : (
+                  <span className={styles.modeRowHint}>Spawns a PTY session managed inside Overlord</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
         {/* Actions */}
         <div className={styles.actions}>

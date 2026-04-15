@@ -253,6 +253,73 @@
   border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* Mode rows — type label left, command right */
+.modeRows {
+  padding: 6px 20px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.modeRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.modeRow:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.modeRowActive {
+  background: rgba(255, 255, 255, 0.05);
+  border-left-color: rgba(212, 175, 55, 0.6);
+}
+
+.modeRowLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+  width: 56px;
+  transition: color 0.12s;
+}
+
+.modeRowLabelActive {
+  color: #d4af37;
+}
+
+.modeRowCmd {
+  flex: 1;
+  min-width: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  word-break: break-all;
+  line-height: 1.5;
+  transition: color 0.12s;
+}
+
+.modeRowCmdActive {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.modeRowHint {
+  flex: 1;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.2);
+  font-style: italic;
+}
+
 .actions {
   display: flex;
   justify-content: flex-end;

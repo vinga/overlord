@@ -61,6 +61,8 @@ export interface Task {
 
 export interface Session {
   sessionId: string;
+  overlordId: string;   // stable identifier across /clear and compaction; assigned once per lineage
+  sessionHistory?: Array<{ sessionId: string; attachedAt: number }>;  // all Claude UUIDs ever attached to this ovrId
   provider?: SessionProvider;
   slug?: string;
   proposedName?: string;

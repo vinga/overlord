@@ -7,7 +7,7 @@ import type { PtyManager } from '../pty/ptyManager.js';
 import type { AiClassifier } from '../ai/aiClassifier.js';
 import type { SessionEventContext } from './sessionEventHandlers.js';
 import { markTranscriptDirty } from './transcriptReader.js';
-import { closeOrRemoveReplaced, migratePtyMaps } from './sessionEventHandlers.js';
+import { closeOrRemoveReplaced } from './sessionEventHandlers.js';
 import { log } from '../logger.js';
 
 export interface TranscriptWatcherContext {
@@ -17,7 +17,7 @@ export interface TranscriptWatcherContext {
   sessionCtx: SessionEventContext;
   broadcastRaw: (msg: object) => void;
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: unknown }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws: unknown; timestamp: number }>;
+  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: unknown; timestamp: number }>;
 }
 
 export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
@@ -115,13 +115,17 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
             if (existingNew && existingNew.pid === 0) ctx.stateManager.remove(newSessionId);
             // Inherit old session's startedAt to preserve sort order after /clear
             ctx.stateManager.addOrUpdate({ sessionId: newSessionId, pid: clearSession.pid, cwd, startedAt: clearSession.startedAt });
-            // transferName and migratePtyMaps must run BEFORE removing old session
-            // so they can still read old session's proposedName and bridge/PTY state
+            // transferName must run BEFORE removing old session so it can read proposedName/bridge/PTY state.
+            // transferSessionState propagates overlordId so PTY routing (keyed by ovrId) stays valid.
             ctx.stateManager.transferName(pending.sessionId, newSessionId);
-            migratePtyMaps(ctx.sessionCtx, pending.sessionId, newSessionId, clearSession.pid);
+            const pendingOvrId = ctx.stateManager.getSession(newSessionId)?.overlordId ?? newSessionId;
+            // Bridge migration (if applicable)
+            if (ctx.stateManager.isBridge(pending.sessionId)) {
+              ctx.sessionCtx.migrateBridgeSession?.(pending.sessionId, newSessionId);
+            }
             // Broadcast session:replaced BEFORE markDeleted so client migrates room order
             // before the snapshot that removes the old session arrives.
-            ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: pending.sessionId, newSessionId });
+            ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: pending.sessionId, newSessionId, ovrId: pendingOvrId });
             // markDeleted (not just remove) so session watcher won't re-register old session from stale {pid}.json
             ctx.stateManager.markDeleted(pending.sessionId);
             ctx.stateManager.resumeBroadcast();
@@ -190,8 +194,12 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
                 ctx.stateManager.suppressBroadcast();
                 ctx.stateManager.addOrUpdate(raw);
                 ctx.stateManager.transferName(sessionId, raw.sessionId);
-                migratePtyMaps(ctx.sessionCtx, sessionId, raw.sessionId, sess2.pid);
-                ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: sessionId, newSessionId: raw.sessionId });
+                const staleOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? raw.sessionId;
+                // Bridge migration (if applicable)
+                if (ctx.stateManager.isBridge(sessionId)) {
+                  ctx.sessionCtx.migrateBridgeSession?.(sessionId, raw.sessionId);
+                }
+                ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: sessionId, newSessionId: raw.sessionId, ovrId: staleOvrId });
                 closeOrRemoveReplaced(ctx.sessionCtx, sessionId);
                 ctx.stateManager.resumeBroadcast();
                 log('clear:detected', 'Stale transcript clear detected', { sessionId: raw.sessionId, sessionName: clearName, extra: sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });

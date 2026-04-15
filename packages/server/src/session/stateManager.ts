@@ -108,7 +108,19 @@ export class StateManager {
   private lastPtyActivityAt = new Map<string, number>();
   /** Timestamp when pending PTY input started (user typing without Enter) — cleared on Enter. */
   private ptyInputPendingSince = new Map<string, number>();
+  /** Stable ovrId → current active claudeSessionId. Updated by transferSessionState. */
+  private sessionsByOvrId = new Map<string, string>();
   readonly bridgePath: string;
+
+  private generateOvrId(): string {
+    return 'ovr-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  /** Return the active session for a given overlordId. */
+  getActiveClaudeByOvr(ovrId: string): Session | undefined {
+    const claudeId = this.sessionsByOvrId.get(ovrId);
+    return claudeId ? this.sessions.get(claudeId) : undefined;
+  }
 
   constructor(onChange: () => void) {
     this.bridgePath = getBridgePath();
@@ -226,8 +238,14 @@ export class StateManager {
         cleaned.push(entry);
         // Pre-populate as closed; SessionWatcher will update active ones
         const color = this.sessionColor(entry.sessionId);
+        const storedOvrId = (entry.overlordId as string | undefined) ?? this.generateOvrId();
+        this.sessionsByOvrId.set(storedOvrId, entry.sessionId);
+        const storedHistory = (entry.sessionHistory as Array<{ sessionId: string; attachedAt: number }> | undefined)
+          ?? [{ sessionId: entry.sessionId, attachedAt: entry.startedAt ?? Date.now() }];
         this.sessions.set(entry.sessionId, {
           sessionId: entry.sessionId,
+          overlordId: storedOvrId,
+          sessionHistory: storedHistory,
           provider: entry.provider ?? 'claude',
           cwd: entry.cwd,
           pid: entry.pid ?? 0,
@@ -354,6 +372,8 @@ export class StateManager {
         .filter(s => !s.isWorker && !s.cwd.toLowerCase().replace(/\\/g, '/').includes('/.claude/'))
         .map(s => ({
           sessionId: s.sessionId,
+          overlordId: s.overlordId,
+          sessionHistory: s.sessionHistory,
           provider: s.provider,
           cwd: s.cwd,
           sessionType: s.sessionType,
@@ -557,8 +577,16 @@ export class StateManager {
       currentTask = existingSession?.currentTask;
     }
 
+    // Preserve overlordId across updates; generate once on first creation.
+    const overlordId = existingSession?.overlordId ?? this.generateOvrId();
+    // Preserve sessionHistory; initialize with first entry on creation.
+    const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
+      existingSession?.sessionHistory ?? [{ sessionId, attachedAt: Date.now() }];
+
     const session: Session = {
       sessionId,
+      overlordId,
+      sessionHistory,
       provider: raw.provider ?? existingSession?.provider ?? 'claude',
       slug,
       proposedName,
@@ -601,6 +629,7 @@ export class StateManager {
     };
 
     this.sessions.set(sessionId, session);
+    this.sessionsByOvrId.set(overlordId, sessionId);
     if (isNew) {
       this.saveKnownSessions();
     }
@@ -612,6 +641,11 @@ export class StateManager {
     this.pendingClearSessions.delete(sessionId);
     this.colorOverrides.delete(sessionId);
     if (this.sessions.has(sessionId)) {
+      const ovrId = this.sessions.get(sessionId)?.overlordId;
+      // Only remove from sessionsByOvrId if this session is still the active one for this ovrId
+      if (ovrId && this.sessionsByOvrId.get(ovrId) === sessionId) {
+        this.sessionsByOvrId.delete(ovrId);
+      }
       this.sessions.delete(sessionId);
       clearProposedNameCache(sessionId);
       this.saveKnownSessions();
@@ -677,6 +711,22 @@ export class StateManager {
     if (oldSession.bridgeTty) newSession.bridgeTty = oldSession.bridgeTty;
     if (oldSession.ptySessionId) newSession.ptySessionId = oldSession.ptySessionId;
     if (oldSession.sessionType !== 'plain') newSession.sessionType = oldSession.sessionType;
+    // Inherit stable overlordId — this is the core of the ovrId design.
+    // The new session takes over the old session's lineage identity so PTY routing
+    // (keyed by ovrId) does not need to change.
+    // If newSession already has an overlordId (e.g. it was loaded from known-sessions at startup),
+    // keep it — don't clobber an established PTY link with an interim session's generated ovrId.
+    const inheritedOvrId = newSession.overlordId || oldSession.overlordId;
+    newSession.overlordId = inheritedOvrId;
+    // Inherit session history: merge old + new, deduplicating by sessionId.
+    // If newSession already has history (it was a real session, not an interim), union them.
+    const oldHistory = oldSession.sessionHistory ?? [{ sessionId: oldSessionId, attachedAt: oldSession.startedAt }];
+    const newHistory = newSession.sessionHistory ?? [{ sessionId: newSessionId, attachedAt: newSession.startedAt }];
+    const seen = new Set<string>();
+    newSession.sessionHistory = [...oldHistory, ...newHistory]
+      .filter(e => { if (seen.has(e.sessionId)) return false; seen.add(e.sessionId); return true; })
+      .sort((a, b) => a.attachedAt - b.attachedAt);
+    this.sessionsByOvrId.set(inheritedOvrId, newSessionId);
     // Link to parent so transcript fallback, name resolution, and summaries carry over
     newSession.resumedFrom = oldSessionId;
     // Mark old session as replaced and clear its bridge/PTY state so it doesn't
@@ -1362,6 +1412,14 @@ export class StateManager {
 
         const transcriptPath = path.join(slugDir, file);
         try {
+          // Fast skip: don't read files not modified in the last 24 hours.
+          // stat.mtime is cheap; readFileSync on 1000+ files is the OOM culprit.
+          const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          try {
+            const stat = fs.statSync(transcriptPath);
+            if (stat.mtime < oneDayAgo) continue;
+          } catch { continue; }
+
           // Read cwd from first line that has it (first line is file-history-snapshot with no cwd)
           const lines = fs.readFileSync(transcriptPath, 'utf-8').split('\n');
           let cwd: string | undefined;
@@ -1381,8 +1439,7 @@ export class StateManager {
           // Read transcript state
           const transcriptState = readTranscriptState(transcriptPath);
 
-          // Skip sessions inactive for more than 24 hours
-          const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          // Skip sessions inactive for more than 24 hours (double-check via transcript content)
           if (transcriptState.lastActivity && new Date(transcriptState.lastActivity) < oneDayAgo) continue;
 
           const proposedName = readProposedName(sessionId, transcriptPath);
@@ -1402,8 +1459,11 @@ export class StateManager {
             } catch { continue; }
           }
 
+          const recoveredOvrId = this.generateOvrId();
+          this.sessionsByOvrId.set(recoveredOvrId, sessionId);
           const session: Session = {
             sessionId,
+            overlordId: recoveredOvrId,
             provider: 'claude',
             pid: 0,
             cwd,

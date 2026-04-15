@@ -724,7 +724,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
       )}
       {!collapsed && <div className={styles.desks}>
         {sortedSessions.map((session) => {
-          const isSelected = session.sessionId === selectedSessionId;
+          const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;
           const isDragging = draggedId === session.sessionId;
           const isDragOver = dragOverId === session.sessionId && draggedId !== session.sessionId;
           return (
@@ -746,7 +746,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
               <div className={styles.deskInfo}>
                 <div className={styles.deskTimeLabel}>{lastActivityLabel(session.lastActivity)}</div>
                 {(() => {
-                  const launch = getLaunchInfo(session, isPtySession?.(session.sessionId));
+                  const launch = getLaunchInfo(session, isPtySession?.(session.overlordId ?? session.sessionId));
                   return (
                     <div className={styles.deskLaunchRow}>
                       <span className={styles.deskLaunchBadge} data-category={launch.category}>{launch.name}</span>

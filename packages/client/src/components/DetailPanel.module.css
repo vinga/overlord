@@ -2590,7 +2590,7 @@
 
 /* Resume section (shown when state === 'closed') */
 .resumeSection {
-  margin: 12px 16px 4px;
+  margin: 24px 16px 4px;
 }
 
 .resumeSectionLabel {
@@ -2601,6 +2601,145 @@
   text-transform: uppercase;
   color: rgba(255, 255, 255, 0.35);
   margin-bottom: 6px;
+}
+
+/* Mode rows — type label left, command right */
+.resumeModeRows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.resumeModeRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.resumeModeRow:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.resumeModeRowActive {
+  background: rgba(255, 255, 255, 0.05);
+  border-left-color: rgba(212, 175, 55, 0.6);
+}
+
+.resumeModeRowLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.3);
+  flex-shrink: 0;
+  width: 56px;
+  transition: color 0.12s;
+}
+
+.resumeModeRowLabelActive {
+  color: #d4af37;
+}
+
+.resumeModeRowCmd {
+  flex: 1;
+  min-width: 0;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  word-break: break-all;
+  line-height: 1.5;
+  transition: color 0.12s;
+}
+
+.resumeModeRowCmdActive {
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.resumeModeRowHint {
+  flex: 1;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.2);
+  font-style: italic;
+}
+
+.resumeCopyBtn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.resumeCopyBtn:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Action row at bottom of resume section */
+.resumeActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.resumeActionBtn {
+  padding: 8px 20px;
+  background: #d4af37;
+  border: none;
+  border-radius: 6px;
+  color: #0a0a14;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.resumeActionBtn:hover {
+  background: #e0c050;
+}
+
+.resumeActionBtn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.resumeKillBtn {
+  margin-left: auto;
+  padding: 7px 14px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  color: #ef4444;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.resumeKillBtn:hover {
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.resumeKillBtn:disabled {
+  opacity: 0.5;
+  cursor: wait;
 }
 
 .resumeCommand {

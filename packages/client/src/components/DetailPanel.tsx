@@ -87,6 +87,53 @@ function UserMessageContent({ content, styles, expandedImages, onToggleImage }: 
   );
 }
 
+/** Scrollable container that only captures wheel events after being clicked */
+function ScrollOnClick({ className, children }: { className: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(false);
+  const activeRef = useRef(false);
+
+  useEffect(() => { activeRef.current = active; }, [active]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      if (!activeRef.current) {
+        e.preventDefault();
+        let parent = el.parentElement;
+        while (parent) {
+          const ov = getComputedStyle(parent).overflowY;
+          if (ov === 'auto' || ov === 'scroll') { parent.scrollBy({ top: e.deltaY }); break; }
+          parent = parent.parentElement;
+        }
+      }
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const out = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setActive(false);
+    };
+    document.addEventListener('mousedown', out);
+    return () => document.removeEventListener('mousedown', out);
+  }, [active]);
+
+  return (
+    <div
+      ref={ref}
+      className={className}
+      onClick={() => setActive(true)}
+      style={active ? { outline: '1px solid rgba(212,175,55,0.35)', outlineOffset: '-1px' } : { cursor: 'text' }}
+    >
+      {children}
+    </div>
+  );
+}
+
 interface PtyHandlers {
   sendInput: (sessionId: string, data: string) => void;
   injectText: (sessionId: string, text: string, extraEnter?: boolean) => boolean;
@@ -807,7 +854,25 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           return (
             <div key={segIdx} data-ts={seg.item.timestamp} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
               {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
-              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''} ${isSkillDef ? styles.transcriptBubbleSkillDef : ''}`}>
+              {isSkillDef ? (
+                <ScrollOnClick className={`${styles.transcriptBubble} ${styles.transcriptBubbleSkillDef}`}>
+                  <UserMessageContent
+                    content={seg.item.content}
+                    styles={styles}
+                    expandedImages={expandedImagesMap.get(seg.item.content ?? '') ?? new Set()}
+                    onToggleImage={(idx) => toggleImage(seg.item.content ?? '', idx)}
+                  />
+                  {seg.item.timestamp && (
+                    <span className={`${styles.feedTimestamp} ${styles.feedTimestampUser}`}>
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" style={{ marginRight: 3, verticalAlign: -1 }}>
+                        <path d="M8 0a8 8 0 110 16A8 8 0 018 0zm0 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM8 3a.75.75 0 01.75.75v3.69l2.28 2.28a.75.75 0 01-1.06 1.06l-2.5-2.5A.75.75 0 017.25 8V3.75A.75.75 0 018 3z"/>
+                      </svg>
+                      {formatFeedTimestamp(seg.item.timestamp)}
+                    </span>
+                  )}
+                </ScrollOnClick>
+              ) : (
+              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''}`}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
                   <>
                     {isRaw ? (
@@ -849,6 +914,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                   <span className={styles.transcriptContent}>{seg.item.content}</span>
                 )}
               </div>
+              )}
             </div>
           );
         }
@@ -1079,6 +1145,9 @@ export function DetailPanel({
   const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession, onAcceptTask } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
+  // selectedSessionId is now an ovrId — use it directly for PTY routing.
+  // Fall back to overlordId from session (for legacy UUID-keyed hashes), then effectiveSessionId.
+  const effectiveOvrId = selectedSessionId ?? selectedSession?.overlordId ?? effectiveSessionId ?? '';
   const isPendingPty = !selectedSession && !!effectiveSessionId && isPtySession(effectiveSessionId);
   const isOpen = selectedSession !== null || isPendingPty;
 
@@ -1144,8 +1213,10 @@ export function DetailPanel({
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
   const [localSent, setLocalSent] = useState<string[]>([]);
   const realCountAtFirstSend = useRef<number | null>(null);
+  const sendTimestampMs = useRef<number | null>(null);
   const [sendInput2, setSendInput2] = useState('');
   const [showQuickMenu, setShowQuickMenu] = useState(false);
+  const [quickMenuError, setQuickMenuError] = useState<string | null>(null);
   const quickMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!showQuickMenu) return;
@@ -1160,6 +1231,7 @@ export function DetailPanel({
   const draftPerSession = useRef<Map<string, string>>(new Map());
   const localSentPerSession = useRef<Map<string, string[]>>(new Map());
   const realCountPerSession = useRef<Map<string, number | null>>(new Map());
+  const sendTsPerSession = useRef<Map<string, number | null>>(new Map());
   const prevSessionIdRef = useRef<string | undefined>(undefined);
   const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
@@ -1170,6 +1242,7 @@ export function DetailPanel({
   const [resuming, setResuming] = useState(false);
   const [openingTerminal, setOpeningTerminal] = useState(false);
   const [openingBridged, setOpeningBridged] = useState(false);
+  const [connectMode, setConnectMode] = useState<'overlord' | 'terminal' | 'bridged'>('overlord');
 const currentDisplayName =
     customName ??
     selectedSession?.proposedName ??
@@ -1270,9 +1343,11 @@ const currentDisplayName =
       if (localSent.length > 0) {
         localSentPerSession.current.set(prevId, localSent);
         realCountPerSession.current.set(prevId, realCountAtFirstSend.current);
+        sendTsPerSession.current.set(prevId, sendTimestampMs.current);
       } else {
         localSentPerSession.current.delete(prevId);
         realCountPerSession.current.delete(prevId);
+        sendTsPerSession.current.delete(prevId);
       }
     }
     prevSessionIdRef.current = selectedSession?.sessionId;
@@ -1293,14 +1368,22 @@ const currentDisplayName =
     const newId = selectedSession?.sessionId;
     const savedPending = newId ? (localSentPerSession.current.get(newId) ?? []) : [];
     const savedRealCount = newId ? (realCountPerSession.current.get(newId) ?? null) : null;
+    const savedSendTs = newId ? (sendTsPerSession.current.get(newId) ?? null) : null;
     const currentCount = (selectedSession?.activityFeed ?? []).filter(i => i.role === 'user').length;
-    const alreadyConfirmed = savedPending.length > 0 && savedRealCount !== null && currentCount > savedRealCount;
+    // activityFeed is oldest-first — check NEWEST user message from the end
+    const newestUserTsOnSwitch = [...(selectedSession?.activityFeed ?? [])].reverse().find(i => i.role === 'user')?.timestamp;
+    const newestUserTsMsOnSwitch = newestUserTsOnSwitch ? new Date(newestUserTsOnSwitch).getTime() : 0;
+    const countConfirmed = savedPending.length > 0 && savedRealCount !== null && currentCount > savedRealCount;
+    const tsConfirmed = savedPending.length > 0 && savedSendTs !== null && newestUserTsMsOnSwitch >= savedSendTs;
+    const alreadyConfirmed = countConfirmed || tsConfirmed;
     if (alreadyConfirmed && newId) {
       localSentPerSession.current.delete(newId);
       realCountPerSession.current.delete(newId);
+      sendTsPerSession.current.delete(newId);
     }
     setLocalSent(alreadyConfirmed ? [] : savedPending);
     realCountAtFirstSend.current = alreadyConfirmed ? null : savedRealCount;
+    sendTimestampMs.current = alreadyConfirmed ? null : savedSendTs;
     // Restore draft for the new session
     setSendInput2(newId ? (draftPerSession.current.get(newId) ?? '') : '');
     setConfirmDelete(false);
@@ -1355,11 +1438,12 @@ const currentDisplayName =
   function sendText(text: string): boolean {
     if (!selectedSession || !text) return false;
     if (selectedSession.isCompacting) return false;
-    const sent = injectText(selectedSession.sessionId, text, text.includes('@'));
+    const sent = injectText(effectiveOvrId, text, text.includes('@'));
     if (sent) {
       if (realCountAtFirstSend.current === null) {
         const feed = selectedSession.activityFeed ?? [];
         realCountAtFirstSend.current = feed.filter(i => i.role === 'user').length;
+        sendTimestampMs.current = Date.now();
       }
       setLocalSent(prev => [...prev, text]);
     }
@@ -1388,9 +1472,9 @@ const currentDisplayName =
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  const isPty = selectedSession ? isPtySession(selectedSession.sessionId) : false;
-  const isExited = selectedSession ? exitedSessions.has(selectedSession.sessionId) : false;
-  const sessionError = selectedSession ? getError(selectedSession.sessionId) : undefined;
+  const isPty = selectedSession ? isPtySession(effectiveOvrId) : false;
+  const isExited = selectedSession ? exitedSessions.has(effectiveOvrId) : false;
+  const sessionError = selectedSession ? getError(effectiveOvrId) : undefined;
 
 
   // Clear stale pending messages after 30s (safety net — count-based clearing handles normal flow)
@@ -1400,9 +1484,11 @@ const currentDisplayName =
     const timer = setTimeout(() => {
       setLocalSent([]);
       realCountAtFirstSend.current = null;
+      sendTimestampMs.current = null;
       if (sessionId) {
         localSentPerSession.current.delete(sessionId);
         realCountPerSession.current.delete(sessionId);
+        sendTsPerSession.current.delete(sessionId);
       }
     }, 60_000);
     return () => clearTimeout(timer);
@@ -1417,15 +1503,20 @@ const currentDisplayName =
   }, [selectedSession?.state]);
 
   // Build merged activityFeed: real feed + optimistic locally-sent messages.
-  // Count-based: show all pending until the real feed has more user messages than when we sent.
-  // This avoids content-matching false positives (duplicate messages, long transcripts, etc.).
+  // Confirmed when: (a) feed has more user messages than at send time (short sessions), OR
+  // (b) the most recent user message in the feed has a timestamp >= our send time (long sessions
+  //     where the feed is at max capacity and user-count stays flat).
   // Extra feed items loaded from server when scrollTarget is near the top of the trimmed feed
   const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
 
   const realFeed = selectedSession?.activityFeed ?? [];
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
-  const confirmed = currentUserCount > prevUserCount;
+  // activityFeed is oldest-first — find the NEWEST user message by searching from the end
+  const newestUserTs = [...realFeed].reverse().find(i => i.role === 'user')?.timestamp;
+  const newestUserTsMs = newestUserTs ? new Date(newestUserTs).getTime() : 0;
+  const confirmed = currentUserCount > prevUserCount ||
+    (sendTimestampMs.current !== null && newestUserTsMs >= sendTimestampMs.current);
 
   // Clear pending messages via useEffect (not queueMicrotask during render) to avoid
   // a race where the session-switch effect saves stale localSent before the microtask fires.
@@ -1434,9 +1525,11 @@ const currentDisplayName =
     const sessionId = selectedSession?.sessionId;
     setLocalSent([]);
     realCountAtFirstSend.current = null;
+    sendTimestampMs.current = null;
     if (sessionId) {
       localSentPerSession.current.delete(sessionId);
       realCountPerSession.current.delete(sessionId);
+      sendTsPerSession.current.delete(sessionId);
     }
   }, [confirmed, localSent.length, selectedSession?.sessionId]);
 
@@ -1506,9 +1599,9 @@ const currentDisplayName =
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               <XtermTerminal
-                sessionId={effectiveSessionId}
-                onInput={(data) => sendInput(effectiveSessionId, data)}
-                onResize={(cols, rows) => resizePty(effectiveSessionId, cols, rows)}
+                sessionId={effectiveOvrId}
+                onInput={(data) => sendInput(effectiveOvrId, data)}
+                onResize={(cols, rows) => resizePty(effectiveOvrId, cols, rows)}
                 registerOutputHandler={registerOutputHandler}
                 fillHeight
               />
@@ -1668,8 +1761,8 @@ const currentDisplayName =
                         <h2 className={styles.sessionName} onDoubleClick={startEdit} title="Double-click to rename">{currentDisplayName}</h2>
                         <button
                           className={styles.nameBtn}
-                          onClick={() => navigator.clipboard.writeText(`name: ${currentDisplayName} id: ${selectedSession.sessionId}`)}
-                          title={`Copy name + ID`}
+                          onClick={() => navigator.clipboard.writeText(`name: ${currentDisplayName} id: ${selectedSession.sessionId}${selectedSession.overlordId ? ` ovrId: ${selectedSession.overlordId}` : ''}`)}
+                          title={`Copy name + ID${selectedSession.overlordId ? ' + ovrId' : ''}`}
                         >
                           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                             <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/>
@@ -1799,14 +1892,14 @@ const currentDisplayName =
                       Subagents
                     </button>
                   )}
-                  {(isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(selectedSession.sessionId)) && (
+                  {(isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(effectiveOvrId)) && (
                     <button
                       className={`${styles.tab} ${activeTab === 'terminal' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('terminal')}
                     >
                       Terminal
-                      {(isPty || isBridgeSession?.(selectedSession.sessionId)) ? (
-                        <span className={styles.tabPtyBadge}>{isBridgeSession?.(selectedSession.sessionId) && !isPty ? 'Bridge' : 'PTY'}</span>
+                      {(isPty || isBridgeSession?.(effectiveOvrId)) ? (
+                        <span className={styles.tabPtyBadge}>{isBridgeSession?.(effectiveOvrId) && !isPty ? 'Bridge' : 'PTY'}</span>
                       ) : (
                         <>
                           <span className={styles.tabPtyBadgeEnded}>PTY</span>
@@ -1961,8 +2054,8 @@ const currentDisplayName =
                         </div>
                       )}
                       <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''} ${selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' ? styles.sendAreaDisabled : ''}`}>
-                        {sessionError && (
-                          <div className={styles.sendError}>{sessionError}</div>
+                        {(sessionError || quickMenuError) && (
+                          <div className={styles.sendError}>{quickMenuError ?? sessionError}</div>
                         )}
                         {showConvoResumePrompt && onResumeSession && selectedSession.state === 'closed' && (
                           <div className={styles.convoResumeOverlay}>
@@ -2009,6 +2102,11 @@ const currentDisplayName =
                                   onMouseDown={e => {
                                     e.preventDefault();
                                     setShowQuickMenu(false);
+                                    if (selectedSession?.state !== 'waiting') {
+                                      setQuickMenuError('Session is busy — wait for it to finish.');
+                                      setTimeout(() => setQuickMenuError(null), 3000);
+                                      return;
+                                    }
                                     sendText("Briefly summarize this conversation — what did we just work on and what were the last changes we made? Keep it short.");
                                   }}
                                 >
@@ -2038,7 +2136,7 @@ const currentDisplayName =
                                 const text = sendInput2.trim();
                                 if (!text && !pastedImage) {
                                   // bare Enter — send \r to confirm a prompt (e.g. permission dialog)
-                                  injectText(selectedSession.sessionId, '\r', false);
+                                  injectText(effectiveOvrId, '\r', false);
                                   return;
                                 }
                                 handleSend();
@@ -2104,15 +2202,15 @@ const currentDisplayName =
                 )}
 
                 {/* Tab: Terminal — always mounted when live to preserve scrollback buffer */}
-                {(isPty || isBridgeSession?.(selectedSession.sessionId)) && (
+                {(isPty || isBridgeSession?.(effectiveOvrId)) && (
                   <div
                     className={styles.terminalContent}
                     style={{ display: activeTab === 'terminal' ? 'flex' : 'none' }}
                   >
                     <XtermTerminal
-                      sessionId={selectedSession.sessionId}
-                      onInput={(data) => sendInput(selectedSession.sessionId, data)}
-                      onResize={(cols, rows) => resizePty(selectedSession.sessionId, cols, rows)}
+                      sessionId={effectiveOvrId}
+                      onInput={(data) => sendInput(effectiveOvrId, data)}
+                      onResize={(cols, rows) => resizePty(effectiveOvrId, cols, rows)}
                       registerOutputHandler={registerOutputHandler}
                       isExited={isExited && !isPty}
                       onResume={
@@ -2121,11 +2219,11 @@ const currentDisplayName =
                           : undefined
                       }
                       fillHeight
-                      isBridge={isBridgeSession?.(selectedSession.sessionId)}
+                      isBridge={isBridgeSession?.(effectiveOvrId)}
                     />
                   </div>
                 )}
-                {activeTab === 'terminal' && !isPty && !isBridgeSession?.(selectedSession.sessionId) && selectedSession.sessionType === 'embedded' && (
+                {activeTab === 'terminal' && !isPty && !isBridgeSession?.(effectiveOvrId) && selectedSession.sessionType === 'embedded' && (
                   <div className={styles.terminalEndedNotice}>
                     <span className={styles.terminalEndedIcon}>⊘</span>
                     <span>PTY session has ended</span>
@@ -2214,6 +2312,47 @@ const currentDisplayName =
                           )}
                         </span>
                       </div>
+                      {selectedSession.overlordId && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Ovr ID</span>
+                          <span className={styles.fieldValue} title={selectedSession.overlordId} style={{ fontFamily: 'monospace', fontSize: '0.8em', opacity: 0.7 }}>
+                            {selectedSession.overlordId}
+                            <button
+                              className={styles.copyIdButton}
+                              title="Copy overlord ID"
+                              onClick={() => { void navigator.clipboard.writeText(selectedSession.overlordId!); }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <rect x="4.5" y="1.5" width="6" height="7.5" rx="1" stroke="currentColor" strokeWidth="1.2"/>
+                                <path d="M7.5 1.5V1a.5.5 0 0 0-.5-.5H2A1 1 0 0 0 1 1.5V9a.5.5 0 0 0 .5.5H3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          </span>
+                        </div>
+                      )}
+                      {selectedSession.sessionHistory && selectedSession.sessionHistory.length > 0 && (
+                        <div className={styles.field} style={{ alignItems: 'flex-start' }}>
+                          <span className={styles.fieldLabel} style={{ paddingTop: '2px' }}>Lineage</span>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', flex: 1 }}>
+                            {selectedSession.sessionHistory.map((entry, i) => {
+                              const d = new Date(entry.attachedAt);
+                              const ts = `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+                              const isCurrent = entry.sessionId === selectedSession.sessionId;
+                              return (
+                                <div key={entry.sessionId} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontFamily: 'monospace', fontSize: '0.75em' }}>
+                                  <span style={{ opacity: 0.4, width: '80px', flexShrink: 0 }}>{ts}</span>
+                                  <span style={{ opacity: isCurrent ? 1 : 0.5, color: isCurrent ? 'var(--color-accent, #a78bfa)' : undefined }}>
+                                    {entry.sessionId.slice(0, 8)}
+                                  </span>
+                                  {i === selectedSession.sessionHistory!.length - 1 && (
+                                    <span style={{ opacity: 0.4, fontSize: '0.9em' }}>← current</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                       <div className={styles.field}>
                         <span className={styles.fieldLabel}>Workspace</span>
                         <span className={`${styles.fieldValue} ${styles.cwd}`}>{selectedSession.cwd}</span>
@@ -2287,111 +2426,120 @@ const currentDisplayName =
                         );
                       })()}
 
-                      {/* Continuation banner */}
-                      {selectedSession.state === 'closed' && (
-                        <div className={styles.continuationBanner}>
-                          {siblingActiveSessions && siblingActiveSessions.length > 0 ? (
-                            <>
-                              <span className={styles.continuationLabel}>Session continued →</span>
-                              <div className={styles.continuationList}>
-                                {siblingActiveSessions.map(s => (
-                                  <button
-                                    key={s.sessionId}
-                                    className={styles.continuationBtn}
-                                    onClick={() => onSelectSession?.(s)}
-                                    style={{ borderColor: s.color, color: s.color }}
-                                  >
-                                    {customNames?.[s.sessionId] ?? s.proposedName ?? s.sessionId.slice(0, 8)}
-                                  </button>
-                                ))}
-                              </div>
-                            </>
-                          ) : (
-                            <span className={styles.continuationLabel}>Session closed</span>
-                          )}
-                        </div>
-                      )}
 
                       {/* Resume / Connect section */}
-                      {(
-                        <div className={styles.resumeSection}>
-                          <div className={styles.resumeSectionLabel}>{selectedSession.state === 'closed' ? 'Resume' : 'Connect'}</div>
-                          <SessionCommands
-                            cwd={selectedSession.cwd}
-                            name={currentDisplayName}
-                            sessionId={selectedSession.sessionId}
-                            bridgePath={bridgePath}
-                          />
-                          <div className={styles.resumeButtons}>
-                            {onResumeSession && (
-                              <button
-                                className={`${styles.resumeButton} ${resuming ? styles.resumeButtonPending : ''}`}
-                                disabled={resuming}
-                                onClick={() => {
-                                  setResuming(true);
-                                  onResumeSession(selectedSession.sessionId, selectedSession.cwd);
-                                }}
-                              >
-                                {resuming ? 'Starting…' : selectedSession.state === 'closed' ? 'Resume in Overlord' : 'Attach in Overlord'}
-                              </button>
-                            )}
-                            {onOpenInTerminal && (
-                              <button
-                                className={`${styles.resumeButton} ${openingTerminal ? styles.resumeButtonPending : ''}`}
-                                disabled={openingTerminal}
-                                onClick={() => {
-                                  setOpeningTerminal(true);
-                                  onOpenInTerminal(selectedSession.sessionId, selectedSession.cwd);
-                                  setTimeout(() => setOpeningTerminal(false), 2000);
-                                }}
-                              >
-                                {openingTerminal ? 'Opening…' : selectedSession.state === 'closed' ? 'Open in Terminal' : 'Attach in Terminal'}
-                              </button>
-                            )}
-                            {onOpenBridged && (
-                              <button
-                                className={`${styles.resumeButton} ${openingBridged ? styles.resumeButtonPending : ''}`}
-                                disabled={openingBridged}
-                                onClick={() => {
-                                  setOpeningBridged(true);
-                                  onOpenBridged(selectedSession.sessionId, selectedSession.cwd);
-                                  setTimeout(() => setOpeningBridged(false), 3000);
-                                }}
-                              >
-                                {openingBridged ? 'Opening…' : 'Open Bridged'}
-                              </button>
-                            )}
-                            {selectedSession.state !== 'closed' && (
-                              confirmKill ? (
-                                <div className={styles.killConfirmInline}>
-                                  <span>Kill session?</span>
-                                  <button
-                                    className={styles.killConfirmYes}
-                                    onClick={() => {
-                                      setConfirmKill(false);
-                                      setKilling(true);
-                                      fetch(`/api/sessions/${selectedSession.sessionId}/kill-process`, { method: 'POST' })
-                                        .catch(console.error)
-                                        .finally(() => setKilling(false));
-                                    }}
+                      {(() => {
+                        const availableModes = [
+                          onResumeSession ? 'overlord' : null,
+                          onOpenInTerminal ? 'terminal' : null,
+                          onOpenBridged ? 'bridged' : null,
+                        ].filter(Boolean) as ('overlord' | 'terminal' | 'bridged')[];
+                        const effectiveMode = availableModes.includes(connectMode) ? connectMode : (availableModes[0] ?? 'overlord');
+                        const isClosed = selectedSession.state === 'closed';
+                        const sid = selectedSession.sessionId;
+                        const marker = sid.slice(0, 8);
+                        const safeName = currentDisplayName.replace(/"/g, '-');
+                        const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
+                        const directCmd = `cd "${selectedSession.cwd}" && claude --resume ${sid} --name "${currentDisplayName}"`;
+                        const bridgeCmd = `${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sid} --name "${safeName}___BRG:${marker}"`;
+
+                        const modeRows: { key: 'overlord' | 'terminal' | 'bridged'; label: string; cmd: string | null; available: boolean }[] = [
+                          { key: 'overlord', label: 'Overlord', cmd: null,       available: !!onResumeSession },
+                          { key: 'terminal', label: 'Terminal', cmd: directCmd,  available: !!onOpenInTerminal },
+                          { key: 'bridged',  label: 'Bridge',   cmd: bridgeCmd,  available: !!onOpenBridged },
+                        ];
+
+                        return (
+                          <div className={styles.resumeSection}>
+                            {/* Mode rows — type label left, command right */}
+                            <div className={styles.resumeModeRows}>
+                              {modeRows.filter(r => r.available).map(({ key, label, cmd }) => {
+                                const active = effectiveMode === key;
+                                return (
+                                  <div
+                                    key={key}
+                                    className={`${styles.resumeModeRow} ${active ? styles.resumeModeRowActive : ''}`}
+                                    onClick={() => setConnectMode(key)}
                                   >
-                                    Kill
-                                  </button>
-                                  <button className={styles.killConfirmNo} onClick={() => setConfirmKill(false)}>Cancel</button>
-                                </div>
-                              ) : (
+                                    <span className={`${styles.resumeModeRowLabel} ${active ? styles.resumeModeRowLabelActive : ''}`}>{label}</span>
+                                    {cmd ? (
+                                      <>
+                                        <code className={`${styles.resumeModeRowCmd} ${active ? styles.resumeModeRowCmdActive : ''}`}>{cmd}</code>
+                                        <button
+                                          className={styles.resumeCopyBtn}
+                                          onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(cmd); }}
+                                          title="Copy"
+                                        >
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <span className={styles.resumeModeRowHint}>Spawns a PTY session managed inside Overlord</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Action row */}
+                            <div className={styles.resumeActions}>
+                              {effectiveMode === 'overlord' && onResumeSession && (
                                 <button
-                                  className={`${styles.resumeButton} ${styles.killSessionButton} ${killing ? styles.resumeButtonPending : ''}`}
-                                  disabled={killing}
-                                  onClick={() => setConfirmKill(true)}
+                                  className={`${styles.resumeActionBtn} ${resuming ? styles.resumeButtonPending : ''}`}
+                                  disabled={resuming}
+                                  onClick={() => { setResuming(true); onResumeSession(sid, selectedSession.cwd); }}
                                 >
-                                  {killing ? 'Killing…' : 'Kill Session'}
+                                  {resuming ? 'Starting…' : isClosed ? 'Resume in Overlord' : 'Attach in Overlord'}
                                 </button>
-                              )
-                            )}
+                              )}
+                              {effectiveMode === 'terminal' && onOpenInTerminal && (
+                                <button
+                                  className={`${styles.resumeActionBtn} ${openingTerminal ? styles.resumeButtonPending : ''}`}
+                                  disabled={openingTerminal}
+                                  onClick={() => { setOpeningTerminal(true); onOpenInTerminal(sid, selectedSession.cwd); setTimeout(() => setOpeningTerminal(false), 2000); }}
+                                >
+                                  {openingTerminal ? 'Opening…' : isClosed ? 'Open in Terminal' : 'Attach in Terminal'}
+                                </button>
+                              )}
+                              {effectiveMode === 'bridged' && onOpenBridged && (
+                                <button
+                                  className={`${styles.resumeActionBtn} ${openingBridged ? styles.resumeButtonPending : ''}`}
+                                  disabled={openingBridged}
+                                  onClick={() => { setOpeningBridged(true); onOpenBridged(sid, selectedSession.cwd); setTimeout(() => setOpeningBridged(false), 3000); }}
+                                >
+                                  {openingBridged ? 'Opening…' : isClosed ? 'Open in Bridge' : 'Attach in Bridge'}
+                                </button>
+                              )}
+                              {selectedSession.state !== 'closed' && (
+                                confirmKill ? (
+                                  <div className={styles.killConfirmInline}>
+                                    <span>Kill session?</span>
+                                    <button
+                                      className={styles.killConfirmYes}
+                                      onClick={() => {
+                                        setConfirmKill(false);
+                                        setKilling(true);
+                                        fetch(`/api/sessions/${sid}/kill-process`, { method: 'POST' })
+                                          .catch(console.error)
+                                          .finally(() => setKilling(false));
+                                      }}
+                                    >Kill</button>
+                                    <button className={styles.killConfirmNo} onClick={() => setConfirmKill(false)}>Cancel</button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    className={`${styles.resumeKillBtn} ${killing ? styles.resumeButtonPending : ''}`}
+                                    disabled={killing}
+                                    onClick={() => setConfirmKill(true)}
+                                  >
+                                    {killing ? 'Killing…' : 'Kill Session'}
+                                  </button>
+                                )
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </section>
                   </div>
                 )}

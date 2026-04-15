@@ -12,88 +12,65 @@ export interface UseTerminalResult {
   handleTerminalMessage: (msg: TerminalMessage) => void;
   spawnSession: (cwd: string, cols?: number, rows?: number, name?: string) => void;
   resumeSession: (resumeSessionId: string, cwd: string, cols?: number, rows?: number) => void;
-  sendInput: (sessionId: string, data: string) => void;
-  injectText: (sessionId: string, text: string, extraEnter?: boolean) => boolean;
-  resizePty: (sessionId: string, cols: number, rows: number) => void;
-  registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => () => void;
-  isPtySession: (sessionId: string) => boolean;
-  getError: (sessionId: string) => string | undefined;
-  killSession: (sessionId: string) => void;
+  sendInput: (ovrId: string, data: string) => void;
+  injectText: (ovrId: string, text: string, extraEnter?: boolean) => boolean;
+  resizePty: (ovrId: string, cols: number, rows: number) => void;
+  registerOutputHandler: (ovrId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => () => void;
+  isPtySession: (ovrId: string) => boolean;
+  getError: (ovrId: string) => string | undefined;
+  killSession: (ovrId: string) => void;
   openInTerminal: (sessionId: string, cwd: string) => void;
   openBridgedTerminal: (sessionId: string, cwd: string) => void;
   openNewTerminal: (cwd: string, name?: string, mode?: TerminalSpawnMode) => void;
   ptySessionIds: Set<string>;
   exitedSessions: Set<string>;
-  isBridgeSession: (sessionId: string) => boolean;
+  isBridgeSession: (ovrId: string) => boolean;
 }
 
 export function useTerminal(
   sendMessage: (msg: object) => boolean,
   onSpawned?: (sessionId: string) => void
 ): UseTerminalResult {
+  // All maps keyed by ovrId (stable Overlord session ID) — never migrated
   const outputHandlers = useRef(new Map<string, (data: Uint8Array) => void>());
   const outputBuffer = useRef(new Map<string, Uint8Array[]>());
   const exitHandlers = useRef(new Map<string, () => void>());
 
-  // Use state for ptySessionIds and exitedSessions so components re-render on change
+  // Use state for ptySessionIds and exitedSessions so components re-render on change.
+  // These sets contain ovrIds (or ptySessionIds before terminal:linked arrives).
   const [ptySessionIds, setPtySessionIds] = useState<Set<string>>(new Set());
   const [exitedSessions, setExitedSessions] = useState<Set<string>>(new Set());
   const [sessionErrors, setSessionErrors] = useState<Map<string, string>>(new Map());
+
+  // Bridge sessions tracked by ovrId
   const bridgeSessionIds = useRef(new Set<string>());
 
   const onSpawnedRef = useRef(onSpawned);
   onSpawnedRef.current = onSpawned;
 
-  function migrateId(oldId: string, newId: string) {
-    // migrate outputBuffer
-    const buf = outputBuffer.current.get(oldId);
-    if (buf && buf.length > 0) {
-      outputBuffer.current.delete(oldId);
-      const existing = outputBuffer.current.get(newId) ?? [];
-      outputBuffer.current.set(newId, [...buf, ...existing]);
-    }
-    // migrate outputHandlers
-    const handler = outputHandlers.current.get(oldId);
-    if (handler) {
-      outputHandlers.current.delete(oldId);
-      outputHandlers.current.set(newId, handler);
-    }
-    // migrate exitHandlers
-    const exitHandler = exitHandlers.current.get(oldId);
-    if (exitHandler) {
-      exitHandlers.current.delete(oldId);
-      exitHandlers.current.set(newId, exitHandler);
-    }
-    // migrate ptySessionIds set
-    setPtySessionIds(prev => {
-      const next = new Set(prev);
-      next.delete(oldId);
-      next.add(newId);
-      return next;
-    });
-  }
-
   const handleTerminalMessage = useCallback((msg: TerminalMessage) => {
     if (msg.type === 'terminal:output') {
+      // msg.sessionId is ovrId
       const handler = outputHandlers.current.get(msg.sessionId);
       if (handler) {
         try {
           handler(decodeBase64(msg.data));
         } catch {
-          // fallback: encode raw string as UTF-8 bytes
           handler(new TextEncoder().encode(msg.data));
         }
       } else {
-        // Buffer output until a handler registers (e.g. during panel transition)
+        // Buffer until handler registers (e.g. during panel transition)
         try {
           const bytes = decodeBase64(msg.data);
           const buf = outputBuffer.current.get(msg.sessionId) ?? [];
           buf.push(bytes);
-          if (buf.length > 2000) buf.splice(0, buf.length - 2000); // cap buffer size
+          if (buf.length > 2000) buf.splice(0, buf.length - 2000);
           outputBuffer.current.set(msg.sessionId, buf);
         } catch { /* ignore */ }
       }
     } else if (msg.type === 'terminal:spawned') {
+      // msg.sessionId is the ptySessionId (before linking).
+      // Add temporarily; terminal:linked replaces it with ovrId.
       setPtySessionIds((prev) => {
         const next = new Set(prev);
         next.add(msg.sessionId);
@@ -101,6 +78,7 @@ export function useTerminal(
       });
       if (onSpawnedRef.current) onSpawnedRef.current(msg.sessionId);
     } else if (msg.type === 'terminal:exit') {
+      // msg.sessionId is ovrId
       setPtySessionIds((prev) => {
         const next = new Set(prev);
         next.delete(msg.sessionId);
@@ -120,49 +98,53 @@ export function useTerminal(
         next.set(msg.sessionId, msg.message);
         return next;
       });
-    } else if (msg.type === 'terminal:session-replaced') {
-      const { oldSessionId, newSessionId } = msg;
-      migrateId(oldSessionId, newSessionId);
     } else if (msg.type === 'terminal:clear') {
       const { sessionId } = msg as { type: string; sessionId: string };
       // Clear client-side buffered output so it doesn't replay after the nudge
       outputBuffer.current.delete(sessionId);
-      // Reset the xterm terminal — ESC c is a full terminal reset (clears screen + scrollback)
       const handler = outputHandlers.current.get(sessionId);
       if (handler) {
         handler(new TextEncoder().encode('\x1bc'));
       }
     } else if (msg.type === 'terminal:linked') {
-      const { ptySessionId, claudeSessionId, replay } = msg as { type: string; ptySessionId: string; claudeSessionId: string; replay?: boolean };
-      migrateId(ptySessionId, claudeSessionId);
-      // Track bridge sessions (ptySessionId starts with "bridge-")
-      if (ptySessionId.startsWith('bridge-')) {
-        bridgeSessionIds.current.add(claudeSessionId);
-      }
-      // Ensure the session is in ptySessionIds (bridge sessions may not have a prior spawned event)
+      // ovrId is the stable overlord session ID; all state should be keyed by it.
+      // ptySessionId was a temporary ID used before linking (added by terminal:spawned).
+      const { ovrId, ptySessionId, claudeSessionId, replay } = msg;
+
+      // Transition: remove temporary ptySessionId, add stable ovrId.
+      // Also add claudeSessionId so isPtySession() returns true even if the
+      // snapshot hasn't arrived yet with overlordId (snapshot race fix).
       setPtySessionIds(prev => {
-        if (prev.has(claudeSessionId)) return prev;
+        if (prev.has(ovrId)) return prev; // already known
         const next = new Set(prev);
-        next.add(claudeSessionId);
+        next.delete(ptySessionId); // remove pre-link entry
+        next.add(ovrId);
+        next.add(claudeSessionId); // temporary until snapshot delivers overlordId
         return next;
       });
-      // Clear exited state — bridge reconnection means the session is alive again
+
+      // Clear exited state — reconnection means session is alive
       setExitedSessions(prev => {
-        if (!prev.has(claudeSessionId)) return prev;
+        if (!prev.has(ovrId)) return prev;
         const next = new Set(prev);
-        next.delete(claudeSessionId);
+        next.delete(ovrId);
         return next;
       });
+
+      // Track bridge sessions by ovrId
+      if (ptySessionId.startsWith('bridge-')) {
+        bridgeSessionIds.current.add(ovrId);
+      }
+
       if (!replay) {
-        // Clear buffered output and reset the xterm terminal to discard
-        // startup crash noise from `claude --resume` (JS stack trace before TUI recovery)
-        outputBuffer.current.delete(claudeSessionId);
-        const handler = outputHandlers.current.get(claudeSessionId);
+        // Clear buffered output and reset xterm to discard startup noise from --resume
+        outputBuffer.current.delete(ovrId);
+        const handler = outputHandlers.current.get(ovrId);
         if (handler) {
-          // ESC[2J = clear entire screen, ESC[H = move cursor to home position
           handler(new TextEncoder().encode('\x1b[2J\x1b[H'));
         }
-        if (onSpawnedRef.current) onSpawnedRef.current(claudeSessionId);  // update activePtySessionId in App.tsx
+        // Notify App.tsx with claudeSessionId so it can select the session in the UI
+        if (onSpawnedRef.current) onSpawnedRef.current(claudeSessionId);
       }
     }
   }, []);
@@ -182,25 +164,24 @@ export function useTerminal(
   );
 
   const sendInput = useCallback(
-    (sessionId: string, data: string) => {
-      sendMessage({ type: 'terminal:input', sessionId, data });
+    (ovrId: string, data: string) => {
+      sendMessage({ type: 'terminal:input', sessionId: ovrId, data });
     },
     [sendMessage]
   );
 
   const injectText = useCallback(
-    (sessionId: string, text: string, extraEnter = false): boolean => {
-      // Clear previous error for this session when sending
+    (ovrId: string, text: string, extraEnter = false): boolean => {
       setSessionErrors((prev) => {
         const next = new Map(prev);
-        next.delete(sessionId);
+        next.delete(ovrId);
         return next;
       });
-      const sent = sendMessage({ type: 'terminal:inject', sessionId, text, extraEnter });
+      const sent = sendMessage({ type: 'terminal:inject', sessionId: ovrId, text, extraEnter });
       if (!sent) {
         setSessionErrors((prev) => {
           const next = new Map(prev);
-          next.set(sessionId, 'Not connected – message not sent. Try again.');
+          next.set(ovrId, 'Not connected – message not sent. Try again.');
           return next;
         });
       }
@@ -210,53 +191,51 @@ export function useTerminal(
   );
 
   const resizePty = useCallback(
-    (sessionId: string, cols: number, rows: number) => {
-      sendMessage({ type: 'terminal:resize', sessionId, cols, rows });
+    (ovrId: string, cols: number, rows: number) => {
+      sendMessage({ type: 'terminal:resize', sessionId: ovrId, cols, rows });
     },
     [sendMessage]
   );
 
   const registerOutputHandler = useCallback(
-    (sessionId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => {
-      outputHandlers.current.set(sessionId, handler);
+    (ovrId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => {
+      outputHandlers.current.set(ovrId, handler);
       // Flush any client-side buffered output
-      const buf = outputBuffer.current.get(sessionId);
+      const buf = outputBuffer.current.get(ovrId);
       if (buf && buf.length > 0) {
         for (const chunk of buf) handler(chunk);
-        outputBuffer.current.delete(sessionId);
+        outputBuffer.current.delete(ovrId);
       }
-      // Request server-side buffer replay (covers view-switch remounts where
-      // the xterm instance was disposed and client buffer was already flushed).
-      // Pass cols/rows so bridge sessions can resize their ConPTY to match the xterm.
-      sendMessage({ type: 'terminal:replay', sessionId, ...(cols && rows ? { cols, rows } : {}) });
+      // Request server-side buffer replay
+      sendMessage({ type: 'terminal:replay', sessionId: ovrId, ...(cols && rows ? { cols, rows } : {}) });
       return () => {
-        outputHandlers.current.delete(sessionId);
+        outputHandlers.current.delete(ovrId);
       };
     },
     [sendMessage]
   );
 
   const isPtySession = useCallback(
-    (sessionId: string) => ptySessionIds.has(sessionId),
+    (ovrId: string) => ptySessionIds.has(ovrId),
     [ptySessionIds]
   );
 
   const isBridgeSession = useCallback(
-    (sessionId: string) => bridgeSessionIds.current.has(sessionId),
+    (ovrId: string) => bridgeSessionIds.current.has(ovrId),
     []
   );
 
   const getError = useCallback(
-    (sessionId: string) => sessionErrors.get(sessionId),
+    (ovrId: string) => sessionErrors.get(ovrId),
     [sessionErrors]
   );
 
   const killSession = useCallback(
-    (sessionId: string) => {
-      sendMessage({ type: 'terminal:kill', sessionId });
+    (ovrId: string) => {
+      sendMessage({ type: 'terminal:kill', sessionId: ovrId });
       setPtySessionIds((prev) => {
         const next = new Set(prev);
-        next.delete(sessionId);
+        next.delete(ovrId);
         return next;
       });
     },

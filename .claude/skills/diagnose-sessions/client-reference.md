@@ -19,15 +19,18 @@ End-to-end flow for a message sent from the Conversation tab:
 
 ```
 DetailPanel.handleSend()
-  → injectText(sessionId, text, extraEnter=true)   [useTerminal.ts]
-    → sendMessage({ type: 'terminal:inject', ... }) [useOfficeData.ts]
+  → injectText(session.overlordId, text, extraEnter=true)   [useTerminal.ts]
+    → sendMessage({ type: 'terminal:inject', sessionId: ovrId }) [useOfficeData.ts]
       → WebSocket to server
         → wsHandler.ts: terminal:inject handler
-          → claudeToPtyId? → ptyManager.write()         (embedded PTY)
-          → isBridge?      → injectViaPipe()             (bridge socket)
-          → macOS fallback → injectViaMacTerminal()      (AppleScript)
-                           → injectViaCGEvent()           (CGEvent binary)
+          → getActiveClaudeByOvr(ovrId) → claudeSessionId, pid
+          → ovrToPty.get(ovrId)?  → ptyManager.write()    (embedded PTY)
+          → isBridge(claudeId)?   → injectViaPipe()        (bridge socket)
+          → macOS fallback        → injectViaMac()         (AppleScript)
+                                  → injectText()            (ConPTY)
 ```
+
+**ovrId routing:** All terminal messages (input, inject, resize, kill, replay) use `session.overlordId` as `sessionId`. This is a stable ID that persists across `/clear`, compaction, and PTY restarts — so the terminal panel keeps working even when the Claude session UUID changes underneath.
 
 **Diagnosing a stuck message:**
 1. Check browser console for `[terminal:inject]` log — did the client send?

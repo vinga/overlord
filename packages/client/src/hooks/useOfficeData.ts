@@ -72,10 +72,8 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
             if (onSessionReplacedRef.current) {
               onSessionReplacedRef.current(msg.oldSessionId, msg.newSessionId);
             }
-            // Also notify terminal handler to migrate PTY state
-            if (onTerminalMessageRef.current) {
-              onTerminalMessageRef.current({ type: 'terminal:session-replaced', oldSessionId: msg.oldSessionId, newSessionId: msg.newSessionId });
-            }
+            // No terminal PTY migration needed — PTY is keyed by stable ovrId which
+            // persists across session replacements; ovrId propagated via session snapshot.
           }
         } catch {
           // ignore malformed messages

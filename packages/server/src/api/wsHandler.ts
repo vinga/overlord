@@ -7,14 +7,14 @@ import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath
 import { injectViaMac } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
-import { scheduleInject } from '../pty/injectScheduler.js';
+import { scheduleBridgeInject } from '../pty/injectScheduler.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
   ptyManager: PtyManager;
   wsSessionMap: Map<WebSocket, Set<string>>;
-  ptyToClaudeId: Map<string, string>;
-  claudeToPtyId: Map<string, string>;
+  ovrToPty: Map<string, string>;     // ovrId → ptySessionId
+  ptyToOvr: Map<string, string>;     // ptySessionId → ovrId
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
@@ -38,8 +38,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     stateManager,
     ptyManager,
     wsSessionMap,
-    ptyToClaudeId,
-    claudeToPtyId,
+    ovrToPty,
+    ptyToOvr,
     pendingPtyByPid,
     pendingPtyByResumeId,
     pendingCloneInfo,
@@ -68,23 +68,31 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     const snapshot = stateManager.getSnapshot();
     ws.send(JSON.stringify({ type: 'snapshot', ...snapshot }));
     ws.send(JSON.stringify({ type: 'log:history', entries: getLogBuffer() }));
-    // Replay active PTY session links so the terminal tab shows on fresh connects / reloads
+
+    // Replay active PTY session links so the terminal tab shows on fresh connects / reloads.
+    // Keyed by ovrId → ptyId; include claudeSessionId so client can route messages.
     const wsSessions = wsSessionMap.get(ws)!;
-    for (const [claudeSessionId, ptySessionId] of claudeToPtyId) {
+    for (const [ovrId, ptySessionId] of ovrToPty) {
       if (!ptyManager.has(ptySessionId)) continue; // skip dead PTYs
-      wsSessions.add(claudeSessionId);
+      const claudeSession = stateManager.getActiveClaudeByOvr(ovrId);
+      const claudeSessionId = claudeSession?.sessionId ?? ovrId;
+      wsSessions.add(ovrId);
       wsSessions.add(ptySessionId);
-      sendToClient(ws, { type: 'terminal:linked', ptySessionId, claudeSessionId, replay: true });
-      // Replay buffered PTY output so the terminal isn't blank on reconnect
-      const buf = ptyOutputBuffer.get(ptySessionId);
+      sendToClient(ws, { type: 'terminal:linked', ovrId, ptySessionId, claudeSessionId, replay: true });
+      // Replay buffered PTY output so the terminal isn't blank on reconnect.
+      // Buffer is keyed by ptyId while alive (migrated to ovrId on exit).
+      const buf = ptyOutputBuffer.get(ptySessionId) ?? ptyOutputBuffer.get(ovrId);
       if (buf && buf.length > 0) {
         const encoded = Buffer.concat(buf).toString('base64');
-        sendToClient(ws, { type: 'terminal:output', sessionId: claudeSessionId, data: encoded });
+        sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
       }
     }
-    // Replay active bridge session links (bridge sessions don't use ptyManager)
+    // Replay active bridge session links (bridge sessions don't use ptyManager).
+    // Bridge ovrId is stored on the session's overlordId field.
     for (const [bridgeSessionId] of Object.entries(stateManager.deriveBridgeRegistry())) {
-      sendToClient(ws, { type: 'terminal:linked', ptySessionId: `bridge-${bridgeSessionId}`, claudeSessionId: bridgeSessionId, replay: true });
+      const bridgeSess = stateManager.getSession(bridgeSessionId);
+      const bridgeOvrId = bridgeSess?.overlordId ?? bridgeSessionId;
+      sendToClient(ws, { type: 'terminal:linked', ovrId: bridgeOvrId, ptySessionId: `bridge-${bridgeSessionId}`, claudeSessionId: bridgeSessionId, replay: true });
       // Don't send historical buffer — terminal:replay will trigger a fresh nudge instead
     }
 
@@ -230,38 +238,33 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       if (type === 'terminal:input') {
-        const sessionId = String(msg.sessionId ?? '');
+        const ovrId = String(msg.sessionId ?? '');
         const data = String(msg.data ?? '');
-        stateManager.clearHintOnInput(sessionId);
-        const wrote = ptyManager.write(claudeToPtyId.get(sessionId) ?? sessionId, data);
+        // Resolve Claude session for bridge/PID info (fallback: treat ovrId as claudeId)
+        const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
+        const claudeSessionId = claudeSession?.sessionId ?? ovrId;
+        const pid = claudeSession?.pid;
+        stateManager.clearHintOnInput(claudeSessionId);
+        const ptyId = ovrToPty.get(ovrId);
+        const wrote = ptyManager.write(ptyId ?? ovrId, data);
         if (!wrote) {
-          // No PTY session — fall back to ConPTY injection
-          const snapshot = stateManager.getSnapshot();
-          let pid: number | undefined;
-          outer: for (const room of snapshot.rooms) {
-            for (const session of room.sessions) {
-              if (session.sessionId === sessionId) {
-                pid = session.pid;
-                break outer;
-              }
-            }
-          }
+          // No PTY session — fall back to bridge pipe / OS injection
           if (pid === undefined) {
             sendToClient(ws, {
               type: 'terminal:error',
-              sessionId,
-              message: `No PTY and no PID found for session ${sessionId}`,
+              sessionId: ovrId,
+              message: `No PTY and no PID found for session ${ovrId}`,
             });
             return;
           }
           // Try bridge pipe first, fall back to macOS Terminal / ConPTY injection
-          (stateManager.isBridge(sessionId)
-            ? injectViaPipe(sessionId, data).then(async (ok): Promise<void> => { if (!ok) await (process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true)); })
+          (stateManager.isBridge(claudeSessionId)
+            ? injectViaPipe(claudeSessionId, data).then(async (ok): Promise<void> => { if (!ok) await (process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true)); })
             : process.platform === 'darwin' ? injectViaMac(pid, data, false) : injectText(pid, data, false, true).then(() => {})
           ).catch((err: Error) => {
               sendToClient(ws, {
                 type: 'terminal:error',
-                sessionId,
+                sessionId: ovrId,
                 message: err.message,
               });
             });
@@ -270,84 +273,105 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       if (type === 'terminal:inject') {
-        const sessionId = String(msg.sessionId ?? '');
+        const ovrId = String(msg.sessionId ?? '');
         const text = String(msg.text ?? '');
         const extraEnter = Boolean(msg.extraEnter);
-        stateManager.clearHintOnInput(sessionId);
-
-        // Find the PID from stateManager sessions
-        const snapshot = stateManager.getSnapshot();
-        let targetPid: number | undefined;
-        outer: for (const room of snapshot.rooms) {
-          for (const session of room.sessions) {
-            if (session.sessionId === sessionId) {
-              targetPid = session.pid;
-              break outer;
-            }
-          }
-        }
+        // Resolve Claude session for bridge/PID info (fallback: treat ovrId as claudeId)
+        const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
+        const claudeSessionId = claudeSession?.sessionId ?? ovrId;
+        const targetPid = claudeSession?.pid;
+        stateManager.clearHintOnInput(claudeSessionId);
 
         if (targetPid === undefined) {
           sendToClient(ws, {
             type: 'terminal:error',
-            sessionId,
-            message: `Session ${sessionId} not found`,
+            sessionId: ovrId,
+            message: `Session ${ovrId} not found`,
           });
           return;
         }
 
-        const isBridge = stateManager.isBridge(sessionId);
+        const isBridge = stateManager.isBridge(claudeSessionId);
 
         // Mark pending clear so the replacement transcript gets linked to this session
         if (text.trimStart().startsWith('/clear')) {
-          stateManager.clearActivityFeed(sessionId);
-          const sess = stateManager.getSession(sessionId);
-          if (sess) stateManager.markPendingClearReplacement(sessionId, sess.cwd);
+          stateManager.clearActivityFeed(claudeSessionId);
+          const sess = stateManager.getSession(claudeSessionId);
+          if (sess) stateManager.markPendingClearReplacement(claudeSessionId, sess.cwd);
         }
 
-        // Prefer PTY stdin write when an active PTY is linked to this claude session.
+        // macOS/ConPTY fallback for non-PTY paths (also used as PTY fallback below).
+        const macOrConsole = (t: string, ee: boolean): Promise<void> =>
+          process.platform === 'darwin'
+            ? injectViaMac(targetPid, t, ee).then(() => {})
+            : injectText(targetPid, t, ee).then(() => {});
+
+        // Prefer PTY stdin write when an active PTY is linked to this ovrId.
         // Writing directly to the TTY is more reliable than ConPTY virtual keystroke
         // injection and ensures text+Enter always reaches the process atomically.
         // Bridge sessions must NOT take this path — their PTY is a display mirror only;
         // input must go through the named pipe instead.
-        const ptyId = claudeToPtyId.get(sessionId);
+        const ptyId = ovrToPty.get(ovrId);
         if (!isBridge && ptyId && ptyManager.has(ptyId)) {
-          console.log(`[inject] pty session=${sessionId.slice(0, 8)} ptyId=${ptyId.slice(0, 8)} text="${text}"`);
-          scheduleInject(
-            (data) => ptyManager.write(ptyId, data),
-            () => ptyManager.has(ptyId),
-            text,
-            extraEnter,
-          );
-          console.log(`[inject] pty write ok`);
+          console.log(`[inject] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptyId.slice(0, 8)} text="${text}"`);
+          // PTY injection: always send text and \r as SEPARATE writes.
+          // React Ink (Claude Code's TUI) batches a large atomic write (text+\r)
+          // as "paste" and ignores the trailing \r as a submit. Splitting into two
+          // writes with a short delay ensures \r arrives as a distinct keypress event.
+          const ptyWrite = (data: string): boolean => {
+            console.log(`[inject] pty write bytes=${data.length} ends=${JSON.stringify(data.slice(-2))} ovrId=${ovrId.slice(0, 8)}`);
+            try { return ptyManager.write(ptyId, data); } catch { return false; }
+          };
+          if (!ptyWrite(text)) {
+            console.log(`[inject] pty write failed, falling back to OS inject ovrId=${ovrId.slice(0, 8)}`);
+            macOrConsole(text, extraEnter).catch((err: Error) => {
+              sendToClient(ws, { type: 'terminal:error', sessionId: ovrId, message: err.message });
+            });
+            return;
+          }
+          // Send \r (and possibly a second \r for @file autocomplete) after a delay.
+          // 80 ms for plain text; 400 ms for extraEnter (autocomplete select).
+          const firstEnterDelay = extraEnter ? 400 : 80;
+          setTimeout(() => {
+            if (!ptyManager.has(ptyId)) return;
+            if (!ptyWrite('\r')) {
+              console.log(`[inject] pty deferred \\r failed, falling back to OS inject ovrId=${ovrId.slice(0, 8)}`);
+              macOrConsole('\r', false).catch(() => {});
+              return;
+            }
+            if (!extraEnter) { console.log(`[inject] pty ok ovrId=${ovrId.slice(0, 8)}`); return; }
+            // Second \r to submit after autocomplete selects the @file path
+            setTimeout(() => {
+              if (!ptyManager.has(ptyId)) return;
+              if (!ptyWrite('\r')) macOrConsole('\r', false).catch(() => {});
+              else console.log(`[inject] pty ok ovrId=${ovrId.slice(0, 8)}`);
+            }, 300);
+          }, firstEnterDelay);
           return;
         }
 
-        console.log(`[inject] session=${sessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
+        console.log(`[inject] ovrId=${ovrId.slice(0, 8)} claudeId=${claudeSessionId.slice(0, 8)} pid=${targetPid} text="${text}" bridge=${isBridge}`);
         // Try bridge pipe first, fall back to macOS Terminal.app injection, then ConPTY.
-        // When extraEnter=true (@file autocomplete): send text only, wait for TUI to render
-        // autocomplete dropdown, then \r to select it, then \r to submit. Sending \r atomically
-        // with text causes the \r to arrive before autocomplete renders and get consumed.
         (isBridge
-          ? injectViaPipe(sessionId, extraEnter ? text : text + '\r').then(async (ok): Promise<void> => {
-              if (!ok) { await (process.platform === 'darwin' ? injectViaMac(targetPid, text, extraEnter) : injectText(targetPid, text, extraEnter)); return; }
-              if (extraEnter) setTimeout(() => {
-                void injectViaPipe(sessionId, '\r').then(ok2 => {
-                  console.log(`[inject] extra-enter bridge step1 (select) ok=${ok2} session=${sessionId.slice(0, 8)}`);
-                  setTimeout(() => {
-                    void injectViaPipe(sessionId, '\r').then(ok3 => console.log(`[inject] extra-enter bridge step2 (submit) ok=${ok3} session=${sessionId.slice(0, 8)}`));
-                  }, 300);
-                });
-              }, 400);
-            })
-          : process.platform === 'darwin'
-            ? injectViaMac(targetPid, text, extraEnter)
-            : injectText(targetPid, text, extraEnter).then(() => {})
+          ? scheduleBridgeInject(
+              (data) => injectViaPipe(claudeSessionId, data),
+              (t, ee) => {
+                console.log(`[inject] bridge pipe failed, falling back to OS inject ovrId=${ovrId.slice(0, 8)}`);
+                return macOrConsole(t, ee);
+              },
+              () => {
+                console.log(`[inject] bridge deferred \\r failed, sending Enter via OS inject ovrId=${ovrId.slice(0, 8)}`);
+                return macOrConsole('\r', false);
+              },
+              text,
+              extraEnter,
+            )
+          : macOrConsole(text, extraEnter)
         ).then(() => console.log(`[inject] ok pid=${targetPid}`))
           .catch((err: Error) => {
           sendToClient(ws, {
             type: 'terminal:error',
-            sessionId,
+            sessionId: ovrId,
             message: err.message,
           });
         });
@@ -355,59 +379,63 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       if (type === 'terminal:resize') {
-        const sessionId = String(msg.sessionId ?? '');
+        const ovrId = String(msg.sessionId ?? '');
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
-        if (stateManager.isBridge(sessionId)) {
-          void resizeAndNudgeBridgePipe(sessionId, cols, rows);
+        const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
+        const claudeSessionId = claudeSession?.sessionId ?? ovrId;
+        if (stateManager.isBridge(claudeSessionId)) {
+          void resizeAndNudgeBridgePipe(claudeSessionId, cols, rows);
         } else {
-          ptyManager.resize(claudeToPtyId.get(sessionId) ?? sessionId, cols, rows);
+          const ptyId = ovrToPty.get(ovrId);
+          ptyManager.resize(ptyId ?? ovrId, cols, rows);
         }
         return;
       }
 
       if (type === 'terminal:replay') {
         // Client requests replay of buffered output (e.g. after terminal remount on view switch)
-        const sessionId = String(msg.sessionId ?? '');
+        const ovrId = String(msg.sessionId ?? '');
+        const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
+        const claudeSessionId = claudeSession?.sessionId ?? ovrId;
 
         // Bridge sessions: send buffered output first for immediate display (buffer is
         // trimmed to start at the last full repaint frame via \x1b[?2026h detection, so
         // replaying it is safe). Then nudge the bridge for a fresh repaint.
-        // This matches the non-bridge PTY flow (send buffer + SIGWINCH) and avoids the
-        // blank-screen gap that occurred when we cleared first and waited for the nudge.
-        if (stateManager.isBridge(sessionId)) {
+        if (stateManager.isBridge(claudeSessionId)) {
           const cols = Number(msg.cols || 0);
           const rows = Number(msg.rows || 0);
-          const buf = ptyOutputBuffer.get(sessionId);
+          // Bridge buffer may be keyed by ovrId or claudeSessionId
+          const buf = ptyOutputBuffer.get(ovrId) ?? ptyOutputBuffer.get(claudeSessionId);
           if (buf && buf.length > 0) {
             const encoded = Buffer.concat(buf).toString('base64');
-            sendToClient(ws, { type: 'terminal:output', sessionId, data: encoded });
+            sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
           }
-          console.log(`[terminal:replay] bridge nudge for ${sessionId.slice(0, 8)} cols=${cols} rows=${rows} bufChunks=${buf?.length ?? 0}`);
+          console.log(`[terminal:replay] bridge nudge for ovrId=${ovrId.slice(0, 8)} cols=${cols} rows=${rows} bufChunks=${buf?.length ?? 0}`);
           if (cols > 0 && rows > 0) {
-            void resizeAndNudgeBridgePipe(sessionId, cols, rows).then(ok => {
-              console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ${sessionId.slice(0, 8)}`);
+            void resizeAndNudgeBridgePipe(claudeSessionId, cols, rows).then(ok => {
+              console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ovrId=${ovrId.slice(0, 8)}`);
             });
           } else {
-            void nudgeBridgePipe(sessionId).then(ok => {
-              console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ${sessionId.slice(0, 8)}`);
+            void nudgeBridgePipe(claudeSessionId).then(ok => {
+              console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ovrId=${ovrId.slice(0, 8)}`);
             });
           }
           return;
         }
 
         // Non-bridge PTY: send buffered output, then nudge the PTY with SIGWINCH so the
-        // TUI repaints. This ensures the terminal isn't blank even if the buffer is stale
-        // or empty (same pattern as the bridge nudge above).
-        const ptySessionId = claudeToPtyId.get(sessionId);
-        const nudgeId = ptySessionId ?? (ptyManager.has(sessionId) ? sessionId : null);
-        const buf = ptyOutputBuffer.get(ptySessionId ?? sessionId) ?? ptyOutputBuffer.get(sessionId);
+        // TUI repaints.
+        const ptySessionId = ovrToPty.get(ovrId);
+        const nudgeId = ptySessionId ?? (ptyManager.has(ovrId) ? ovrId : null);
+        // Buffer: keyed by ptyId while alive, keyed by ovrId after exit
+        const buf = ptyOutputBuffer.get(ptySessionId ?? '') ?? ptyOutputBuffer.get(ovrId);
         const cols = Number(msg.cols || 0);
         const rows = Number(msg.rows || 0);
-        console.log(`[terminal:replay] pty sid=${sessionId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} cols=${cols} rows=${rows}`);
+        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} cols=${cols} rows=${rows}`);
         if (buf && buf.length > 0) {
           const encoded = Buffer.concat(buf).toString('base64');
-          sendToClient(ws, { type: 'terminal:output', sessionId, data: encoded });
+          sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
         }
         // SIGWINCH nudge: causes the TUI to emit a fresh full-screen repaint
         if (nudgeId) {
@@ -418,23 +446,16 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       if (type === 'terminal:kill') {
-        const sessionId = String(msg.sessionId ?? '');
-        const resolvedId = claudeToPtyId.get(sessionId) ?? sessionId;
+        const ovrId = String(msg.sessionId ?? '');
+        const ptyId = ovrToPty.get(ovrId) ?? ovrId;
         // Get the PID before killing so we can find the Claude session record
-        const ptyPid = ptyManager.getPid(resolvedId);
-        ptyManager.kill(resolvedId);
-        // Clean up PTY <-> Claude ID maps (kill() bypasses the onExit handler)
-        const linkedClaude = ptyToClaudeId.get(resolvedId);
-        if (linkedClaude) {
-          claudeToPtyId.delete(linkedClaude);
-        }
-        ptyToClaudeId.delete(resolvedId);
-        // Also clean the forward entry if sessionId was the Claude ID
-        if (claudeToPtyId.has(sessionId)) {
-          claudeToPtyId.delete(sessionId);
-        }
+        const ptyPid = ptyManager.getPid(ptyId);
+        ptyManager.kill(ptyId);
+        // Clean up ovrId ↔ ptyId maps (kill() bypasses the onExit handler)
+        ptyToOvr.delete(ptyId);
+        ovrToPty.delete(ovrId);
         const sessions = wsSessionMap.get(ws);
-        if (sessions) sessions.delete(sessionId);
+        if (sessions) { sessions.delete(ovrId); sessions.delete(ptyId); }
 
         // Find the real Claude session by PID and delete it
         if (ptyPid) {
@@ -452,9 +473,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       if (type === 'terminal:focus') {
-        const sessionId = String(msg.sessionId ?? '');
-        const session = stateManager.getSession(sessionId);
-        const tty = session?.bridgeTty;
+        const ovrId = String(msg.sessionId ?? '');
+        const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
+        const tty = claudeSession?.bridgeTty;
         if (tty) {
           void focusBridgeWindow(tty);
         }
@@ -532,8 +553,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         // Store clone info (name + original session) so it gets applied after
         // the PTY links to the new forked session via PID matching.
-        // This sets both proposedName and resumedFrom directly on the session,
-        // bypassing the unreliable cwd-scoped pendingResumes mechanism.
         pendingCloneInfo.set(ptySessionId, { name: cloneName, originalSessionId: sessionId });
 
         try {

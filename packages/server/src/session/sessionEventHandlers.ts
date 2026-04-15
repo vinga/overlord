@@ -11,8 +11,8 @@ export interface SessionEventContext {
   ptyManager: PtyManager;
   aiClassifier: AiClassifier;
   wsSessionMap: Map<WebSocket, Set<string>>;
-  ptyToClaudeId: Map<string, string>;
-  claudeToPtyId: Map<string, string>;
+  ovrToPty: Map<string, string>;   // ovrId → ptySessionId
+  ptyToOvr: Map<string, string>;   // ptySessionId → ovrId
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
   pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
   pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
@@ -37,29 +37,14 @@ export function closeOrRemoveReplaced(ctx: SessionEventContext, oldSessionId: st
   log('session:removed', 'Removed replaced session', { sessionId: oldSessionId, sessionName: oldSessionId.slice(0, 8) });
 }
 
-// Migrate PTY routing maps when a session UUID changes (e.g. /clear)
-// Tries by session ID first, then falls back to finding any PTY entry sharing the same PID.
-export function migratePtyMaps(ctx: SessionEventContext, oldSessionId: string, newSessionId: string, pid?: number): void {
-  let oldPtyId = ctx.claudeToPtyId.get(oldSessionId);
-  if (!oldPtyId && pid && pid > 0) {
-    for (const [claudeId, ptyId] of ctx.claudeToPtyId) {
-      if (ctx.ptyManager.getPid(ptyId) === pid || ctx.stateManager.getSession(claudeId)?.pid === pid) {
-        oldPtyId = ptyId;
-        ctx.claudeToPtyId.delete(claudeId);
-        break;
-      }
-    }
-  }
-  if (oldPtyId) {
-    ctx.claudeToPtyId.set(newSessionId, oldPtyId);
-    ctx.ptyToClaudeId.set(oldPtyId, newSessionId);
-    ctx.stateManager.setSessionType(newSessionId, 'embedded');
-    ctx.broadcastRaw({ type: 'terminal:session-replaced', oldSessionId, newSessionId });
-  }
-  // Migrate bridge session (input socket, output rerouting, buffers, registry)
-  if (ctx.stateManager.isBridge(oldSessionId)) {
-    ctx.migrateBridgeSession?.(oldSessionId, newSessionId);
-  }
+/**
+ * Link a PTY session to a Claude session via ovrId.
+ * Sets ovrToPty and ptyToOvr maps. No PTY migration is needed on /clear —
+ * because the ovrId is stable and already points to the right PTY.
+ */
+function linkPtyToOvr(ctx: SessionEventContext, ovrId: string, ptySessionId: string): void {
+  ctx.ovrToPty.set(ovrId, ptySessionId);
+  ctx.ptyToOvr.set(ptySessionId, ovrId);
 }
 
 export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx: SessionEventContext): void {
@@ -75,6 +60,27 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
         ctx.stateManager.refreshTranscript(claudeSessionId);
       }
       log('info', `Applied clone info: name="${info.name}", resumedFrom=${info.originalSessionId.slice(0, 8)} → ${claudeSessionId.slice(0, 8)}`);
+    }
+  }
+
+  /** Broadcast terminal:linked and update wsSessionMap for a newly linked PTY. */
+  function broadcastPtyLinked(
+    ptySessionId: string,
+    claudeSessionId: string,
+    ovrId: string,
+    ws?: WebSocket | null,
+  ): void {
+    const msg = { type: 'terminal:linked', ovrId, ptySessionId, claudeSessionId };
+    if (ws) {
+      const wsSessions = ctx.wsSessionMap.get(ws);
+      if (wsSessions) { wsSessions.add(ptySessionId); wsSessions.add(ovrId); }
+      ctx.sendToClient(ws, msg);
+    } else {
+      for (const sessions of ctx.wsSessionMap.values()) {
+        sessions.add(ptySessionId);
+        sessions.add(ovrId);
+      }
+      ctx.broadcastRaw(msg);
     }
   }
 
@@ -95,153 +101,178 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     // Log session creation
     const createdName = raw.proposedName ?? raw.sessionId.slice(0, 8);
     log('session:created', 'Session created', { sessionId: raw.sessionId, sessionName: createdName, extra: `PID ${raw.pid} name=${raw.name ?? 'NONE'}` });
-    // Link PTY by embedded marker in session name (works for spawn, resume, and clone)
+
+    const session = ctx.stateManager.getSession(raw.sessionId);
+    const ovrId = session?.overlordId ?? raw.sessionId;
+
+    // ── Link PTY by embedded marker in session name ──
     let linkedToPty = false;
     if (raw.name && raw.name.includes('___OVR:')) {
       const marker = raw.name.split('___OVR:')[1];
       const ptyAlive = ctx.ptyManager.has(marker);
-      console.log(`[marker-check] added: marker=${marker} ptyAlive=${ptyAlive}`);
+      console.log(`[marker-check] added: marker=${marker} ptyAlive=${ptyAlive} ovrId=${ovrId}`);
       if (marker && ptyAlive) {
         linkedToPty = true;
-        // If this PTY was already linked to a different session → /clear inside a Terminal tab.
-        // The PID/CWD detection is skipped when linkedToPty=true, so we detect it here instead.
-        const prevClaudeId = ctx.ptyToClaudeId.get(marker);
-        if (prevClaudeId && prevClaudeId !== raw.sessionId) {
-          ctx.stateManager.transferName(prevClaudeId, raw.sessionId);
-          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: prevClaudeId, newSessionId: raw.sessionId });
-          closeOrRemoveReplaced(ctx, prevClaudeId);
-          log('clear:detected', 'Clear detected in embedded PTY session', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: prevClaudeId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
-          ctx.claudeToPtyId.delete(prevClaudeId);
-        }
-        ctx.ptyToClaudeId.set(marker, raw.sessionId);
-        ctx.claudeToPtyId.set(raw.sessionId, marker);
-        // Find the WS that owns this PTY
-        let ownerWs: WebSocket | null = null;
-        for (const [ws, sessions] of ctx.wsSessionMap) {
-          if (sessions.has(marker)) {
-            ownerWs = ws;
-            break;
+        // If this PTY was already linked to a different session → compaction or /clear inside a Terminal tab.
+        const existingOvrId = ctx.ptyToOvr.get(marker);
+        if (existingOvrId && existingOvrId !== ovrId) {
+          // PTY already has an ovrId: this is compaction — new session inherits the ovrId.
+          const existingSession = ctx.stateManager.getActiveClaudeByOvr(existingOvrId);
+          if (existingSession && existingSession.sessionId !== raw.sessionId) {
+            ctx.stateManager.suppressBroadcast();
+            ctx.stateManager.transferSessionState(existingSession.sessionId, raw.sessionId);
+            const newOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? ovrId;
+            ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: existingSession.sessionId, newSessionId: raw.sessionId, ovrId: newOvrId });
+            closeOrRemoveReplaced(ctx, existingSession.sessionId);
+            ctx.stateManager.resumeBroadcast();
+            log('clear:detected', 'Compaction detected in embedded PTY (marker, added)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${newOvrId} ${existingSession.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)}` });
+            // Use the inherited ovrId for subsequent linking
+            const inheritedOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? existingOvrId;
+            linkPtyToOvr(ctx, inheritedOvrId, marker);
+            ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+            const ptyPid = ctx.ptyManager.getPid(marker);
+            if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+            applyPendingCloneInfo(marker, raw.sessionId);
+            log('pty:linked', 'PTY linked via marker (compaction)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${inheritedOvrId} ptyId=${marker}` });
           }
-        }
-        if (ownerWs) {
-          const wsSessions = ctx.wsSessionMap.get(ownerWs);
-          if (wsSessions) wsSessions.add(raw.sessionId);
-          ctx.sendToClient(ownerWs, { type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
         } else {
-          for (const sessions of ctx.wsSessionMap.values()) {
-            sessions.add(raw.sessionId);
+          // Normal new link or same session — set ovrId mapping
+          linkPtyToOvr(ctx, ovrId, marker);
+          // Find the WS that owns this PTY
+          let ownerWs: WebSocket | null = null;
+          for (const [ws, sessions] of ctx.wsSessionMap) {
+            if (sessions.has(marker)) { ownerWs = ws; break; }
           }
-          ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
+          broadcastPtyLinked(marker, raw.sessionId, ovrId, ownerWs);
+          ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+          const ptyPid = ctx.ptyManager.getPid(marker);
+          if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+          applyPendingCloneInfo(marker, raw.sessionId);
+          log('pty:linked', 'PTY linked via name marker', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${ovrId} ptyId=${marker}` });
         }
-        ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
-        const ptyPid = ctx.ptyManager.getPid(marker);
-        if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
-        applyPendingCloneInfo(marker, raw.sessionId);
-        log('pty:started', 'PTY clone linked via name marker', { sessionId: raw.sessionId });
       }
     }
-    // Link PTY session to real Claude session by PID
+
+    // ── Link PTY session to real Claude session by PID ──
     if (!linkedToPty && raw.pid && ctx.pendingPtyByPid.has(raw.pid)) {
       const entry = ctx.pendingPtyByPid.get(raw.pid)!;
-      ctx.pendingPtyByPid.delete(raw.pid);
-      linkedToPty = true;
-      // Set up ID mapping so output is rerouted from pty-xxx to real claudeSessionId
-      ctx.ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
-      ctx.claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
-      ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
-      if (entry.ws) {
-        // Normal spawn: link to the owning WS client
-        const wsSessions = ctx.wsSessionMap.get(entry.ws);
-        if (wsSessions) wsSessions.add(raw.sessionId);
-        ctx.sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
-      } else {
-        // Auto-resume: broadcast linked event to all clients, migrate all wsSessionMap entries
-        for (const sessions of ctx.wsSessionMap.values()) {
-          sessions.add(raw.sessionId);
+
+      // Check if this PTY already has an ovrId (compaction-during-resume case).
+      // If so, the new session is a replacement — inherit the existing ovrId.
+      const existingOvrId = ctx.ptyToOvr.get(entry.ptySessionId);
+      if (existingOvrId) {
+        const existingSession = ctx.stateManager.getActiveClaudeByOvr(existingOvrId);
+        if (existingSession && existingSession.sessionId !== raw.sessionId) {
+          // Compaction: Z replaces 1a9b865b. PTY stays linked to same ovrId.
+          ctx.pendingPtyByPid.delete(raw.pid);
+          linkedToPty = true;
+          ctx.stateManager.suppressBroadcast();
+          ctx.stateManager.transferSessionState(existingSession.sessionId, raw.sessionId);
+          const inheritedOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? existingOvrId;
+          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: existingSession.sessionId, newSessionId: raw.sessionId, ovrId: inheritedOvrId });
+          closeOrRemoveReplaced(ctx, existingSession.sessionId);
+          ctx.stateManager.resumeBroadcast();
+          ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+          const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
+          if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+          applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
+          log('clear:detected', 'Compaction detected in PTY (PID path, added)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${inheritedOvrId} ${existingSession.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)}` });
+        } else {
+          // Same session re-appearing (shouldn't normally happen) — just consume the entry
+          ctx.pendingPtyByPid.delete(raw.pid);
+          linkedToPty = true;
         }
-        ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
+      } else {
+        // Normal new spawn — link PTY to this session's ovrId
+        ctx.pendingPtyByPid.delete(raw.pid);
+        linkedToPty = true;
+        linkPtyToOvr(ctx, ovrId, entry.ptySessionId);
+        ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+        broadcastPtyLinked(entry.ptySessionId, raw.sessionId, ovrId, entry.ws ?? null);
+        const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
+        if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+        applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
+        const ptySessionName = ctx.stateManager.getSession(raw.sessionId)?.proposedName ?? raw.proposedName ?? raw.sessionId.slice(0, 8);
+        log('pty:linked', 'PTY linked via PID', { sessionId: raw.sessionId, sessionName: ptySessionName, extra: `ovrId=${ovrId} ptyId=${entry.ptySessionId}` });
       }
-      ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
-      // Update the session's PID to the PTY process PID so ProcessChecker doesn't mark it closed
-      const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
-      if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
-      applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
-      const ptySessionName = ctx.stateManager.getSession(raw.sessionId)?.proposedName ?? raw.proposedName ?? raw.sessionId.slice(0, 8);
-      log('pty:started', 'PTY session started', { sessionId: raw.sessionId, sessionName: ptySessionName });
     } else if (raw.pid && !ctx.pendingPtyByPid.has(raw.pid) && ctx.stateManager.hasPendingResume(raw.cwd)) {
       // PID not in pendingPtyByPid yet — PTY may not have emitted pid-ready; retry after 500ms
       const retryPid = raw.pid;
       const retrySessionId = raw.sessionId;
-      const retryCwd = raw.cwd;
+      const retryOvrId = ovrId;
       setTimeout(() => {
         if (ctx.pendingPtyByPid.has(retryPid)) {
           const entry = ctx.pendingPtyByPid.get(retryPid)!;
           ctx.pendingPtyByPid.delete(retryPid);
-          ctx.ptyToClaudeId.set(entry.ptySessionId, retrySessionId);
-          ctx.claudeToPtyId.set(retrySessionId, entry.ptySessionId);
-          if (entry.ws) {
-            const wsSessions = ctx.wsSessionMap.get(entry.ws);
-            if (wsSessions) wsSessions.add(retrySessionId);
-            ctx.sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: retrySessionId });
-          } else {
-            for (const sessions of ctx.wsSessionMap.values()) {
-              sessions.add(retrySessionId);
+          const existingOvrId = ctx.ptyToOvr.get(entry.ptySessionId);
+          if (existingOvrId) {
+            // Compaction case in retry path — same logic as above
+            const existingSession = ctx.stateManager.getActiveClaudeByOvr(existingOvrId);
+            if (existingSession && existingSession.sessionId !== retrySessionId) {
+              ctx.stateManager.suppressBroadcast();
+              ctx.stateManager.transferSessionState(existingSession.sessionId, retrySessionId);
+              const inheritedOvrId = ctx.stateManager.getSession(retrySessionId)?.overlordId ?? existingOvrId;
+              ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: existingSession.sessionId, newSessionId: retrySessionId, ovrId: inheritedOvrId });
+              closeOrRemoveReplaced(ctx, existingSession.sessionId);
+              ctx.stateManager.resumeBroadcast();
+              ctx.stateManager.setSessionType(retrySessionId, 'embedded');
+              const retryPtyPid = ctx.ptyManager.getPid(entry.ptySessionId);
+              if (retryPtyPid) ctx.stateManager.setPid(retrySessionId, retryPtyPid);
+              log('clear:detected', 'Compaction detected in PTY (PID retry path)', { sessionId: retrySessionId, sessionName: retrySessionId.slice(0, 8), extra: `ovrId=${inheritedOvrId}` });
+              return;
             }
-            ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: retrySessionId });
           }
+          linkPtyToOvr(ctx, retryOvrId, entry.ptySessionId);
+          const wsSessions = entry.ws ? ctx.wsSessionMap.get(entry.ws) : undefined;
+          if (wsSessions) wsSessions.add(retryOvrId);
+          broadcastPtyLinked(entry.ptySessionId, retrySessionId, retryOvrId, entry.ws ?? null);
           ctx.stateManager.setSessionType(retrySessionId, 'embedded');
           const retryPtyPid = ctx.ptyManager.getPid(entry.ptySessionId);
           if (retryPtyPid) ctx.stateManager.setPid(retrySessionId, retryPtyPid);
           applyPendingCloneInfo(entry.ptySessionId, retrySessionId);
-          log('pty:started', 'PTY linked after retry', { sessionId: retrySessionId, sessionName: retrySessionId.slice(0, 8) });
+          log('pty:linked', 'PTY linked after retry', { sessionId: retrySessionId, sessionName: retrySessionId.slice(0, 8), extra: `ovrId=${retryOvrId} ptyId=${entry.ptySessionId}` });
         }
       }, 500);
     }
-    // Fallback linking: match by sessionId directly in pendingPtyByResumeId (ConPTY resume flow)
+
+    // ── Fallback linking: match by sessionId directly in pendingPtyByResumeId (ConPTY resume flow) ──
     if (!linkedToPty && ctx.pendingPtyByResumeId.has(raw.sessionId)) {
       const entry = ctx.pendingPtyByResumeId.get(raw.sessionId)!;
       ctx.pendingPtyByResumeId.delete(raw.sessionId);
       linkedToPty = true;
-      ctx.ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
-      ctx.claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
+      linkPtyToOvr(ctx, ovrId, entry.ptySessionId);
       // Clear startup noise from the PTY buffer before linking
       ctx.ptyOutputBuffer.delete(entry.ptySessionId);
-      if (entry.ws) {
-        const wsSessions = ctx.wsSessionMap.get(entry.ws);
-        if (wsSessions) wsSessions.add(raw.sessionId);
-        ctx.sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
-      } else {
-        for (const sessions of ctx.wsSessionMap.values()) {
-          sessions.add(raw.sessionId);
-        }
-        ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
-      }
+      broadcastPtyLinked(entry.ptySessionId, raw.sessionId, ovrId, entry.ws ?? null);
       ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
       const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
       if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
       applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
-      log('pty:started', 'PTY linked via resumeId', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
+      log('pty:linked', 'PTY linked via resumeId', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8), extra: `ovrId=${ovrId} ptyId=${entry.ptySessionId}` });
     }
-    // Detect session replacement: same PID, different UUID (e.g. Claude Code's /clear)
-    // Skip if this session was just linked to a PTY — it's a resume, not a /clear.
+
+    // ── Detect session replacement: same PID, different UUID (e.g. Claude Code's /clear) ──
+    // Skip if linked to PTY — it's a resume, not a /clear.
     // Skip during startup — known sessions from the initial scan are not /clear replacements.
-    let replacedByPid = false;
     if (ctx.isStartupComplete() && !linkedToPty && raw.pid && raw.pid > 0 && !ctx.pendingPtyByPid.has(raw.pid) && !hasActiveResumeInProgress(ctx)) {
       const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId);
       if (oldSession) {
-        // Suppress intermediate snapshots so client receives session:replaced before any snapshot
         ctx.stateManager.suppressBroadcast();
-        ctx.stateManager.transferName(oldSession.sessionId, raw.sessionId);
-        migratePtyMaps(ctx, oldSession.sessionId, raw.sessionId, raw.pid);
-        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
+        ctx.stateManager.transferSessionState(oldSession.sessionId, raw.sessionId);
+        const newOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? ovrId;
+        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId, ovrId: newOvrId });
         closeOrRemoveReplaced(ctx, oldSession.sessionId);
         ctx.stateManager.resumeBroadcast();
+        // Migrate bridge session if needed
+        if (ctx.stateManager.isBridge(oldSession.sessionId)) {
+          ctx.migrateBridgeSession?.(oldSession.sessionId, raw.sessionId);
+        }
         const clearName1 = raw.proposedName ?? raw.sessionId.slice(0, 8);
-        log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName1, extra: oldSession.sessionId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
-        replacedByPid = true;
+        log('clear:detected', 'Clear detected', { sessionId: raw.sessionId, sessionName: clearName1, extra: `ovrId=${newOvrId} ${oldSession.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)}` });
       }
     }
-    // Link pending bridge sessions (opened via "Open in Terminal" with bridge binary)
+
+    // ── Link pending bridge sessions ──
     if (!linkedToPty && ctx.linkPendingBridge) {
       ctx.linkPendingBridge(raw.sessionId, raw.cwd, raw.name);
     }
@@ -253,89 +284,84 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     if (raw.pid && raw.pid > 0) {
       const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId);
       if (oldSession && oldSession.sessionId !== raw.sessionId) {
-        // Suppress intermediate snapshots so client receives session:replaced before any snapshot
         ctx.stateManager.suppressBroadcast();
-        // Inherit old session's startedAt to preserve sort order after /clear
         ctx.stateManager.addOrUpdate({ ...raw, startedAt: oldSession.startedAt });
-        ctx.stateManager.transferName(oldSession.sessionId, raw.sessionId);
-        migratePtyMaps(ctx, oldSession.sessionId, raw.sessionId);
-        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId });
+        ctx.stateManager.transferSessionState(oldSession.sessionId, raw.sessionId);
+        const newOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? raw.sessionId;
+        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId, ovrId: newOvrId });
         if (oldSession.resumedFrom === raw.sessionId) {
           ctx.stateManager.remove(oldSession.sessionId);
         } else {
           closeOrRemoveReplaced(ctx, oldSession.sessionId);
         }
+        // Migrate bridge session if needed
+        if (ctx.stateManager.isBridge(oldSession.sessionId)) {
+          ctx.migrateBridgeSession?.(oldSession.sessionId, raw.sessionId);
+        }
         ctx.stateManager.resumeBroadcast();
+        log('clear:detected', 'Clear detected (changed)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${newOvrId} ${oldSession.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)}` });
         return;
       }
     }
     ctx.stateManager.addOrUpdate(raw);
-    // Link PTY by embedded marker in session name (changed handler)
-    if (raw.name && raw.name.includes('___OVR:') && !ctx.claudeToPtyId.has(raw.sessionId)) {
+
+    const session = ctx.stateManager.getSession(raw.sessionId);
+    const ovrId = session?.overlordId ?? raw.sessionId;
+
+    // ── Link PTY by embedded marker in session name (changed handler) ──
+    if (raw.name && raw.name.includes('___OVR:') && !ctx.ovrToPty.has(ovrId)) {
       const marker = raw.name.split('___OVR:')[1];
       const ptyAlive = ctx.ptyManager.has(marker);
-      console.log(`[marker-check] changed: sid=${raw.sessionId.slice(0,8)} marker=${marker} ptyAlive=${ptyAlive} alreadyLinked=${ctx.claudeToPtyId.has(raw.sessionId)}`);
+      console.log(`[marker-check] changed: sid=${raw.sessionId.slice(0, 8)} marker=${marker} ptyAlive=${ptyAlive} alreadyLinked=${ctx.ovrToPty.has(ovrId)}`);
       if (marker && ptyAlive) {
-        // If this PTY was already linked to a different session → /clear inside a Terminal tab
-        const prevClaudeId = ctx.ptyToClaudeId.get(marker);
-        if (prevClaudeId && prevClaudeId !== raw.sessionId) {
-          ctx.stateManager.transferName(prevClaudeId, raw.sessionId);
-          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: prevClaudeId, newSessionId: raw.sessionId });
-          closeOrRemoveReplaced(ctx, prevClaudeId);
-          log('clear:detected', 'Clear detected in embedded PTY session (changed)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: prevClaudeId.slice(0, 8) + ' → ' + raw.sessionId.slice(0, 8) });
-          ctx.claudeToPtyId.delete(prevClaudeId);
-        }
-        ctx.ptyToClaudeId.set(marker, raw.sessionId);
-        ctx.claudeToPtyId.set(raw.sessionId, marker);
-        let ownerWs: WebSocket | null = null;
-        for (const [ws, sessions] of ctx.wsSessionMap) {
-          if (sessions.has(marker)) {
-            ownerWs = ws;
-            break;
+        const existingOvrId = ctx.ptyToOvr.get(marker);
+        if (existingOvrId && existingOvrId !== ovrId) {
+          // PTY already linked to a different session — compaction or /clear
+          const existingSession = ctx.stateManager.getActiveClaudeByOvr(existingOvrId);
+          if (existingSession && existingSession.sessionId !== raw.sessionId) {
+            ctx.stateManager.suppressBroadcast();
+            ctx.stateManager.transferSessionState(existingSession.sessionId, raw.sessionId);
+            const inheritedOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? existingOvrId;
+            ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: existingSession.sessionId, newSessionId: raw.sessionId, ovrId: inheritedOvrId });
+            closeOrRemoveReplaced(ctx, existingSession.sessionId);
+            ctx.stateManager.resumeBroadcast();
+            linkPtyToOvr(ctx, inheritedOvrId, marker);
+            ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+            const ptyPid = ctx.ptyManager.getPid(marker);
+            if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+            log('clear:detected', 'Compaction detected in embedded PTY (marker, changed)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${inheritedOvrId} ${existingSession.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)}` });
           }
-        }
-        if (ownerWs) {
-          const wsSessions = ctx.wsSessionMap.get(ownerWs);
-          if (wsSessions) wsSessions.add(raw.sessionId);
-          ctx.sendToClient(ownerWs, { type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
         } else {
-          for (const sessions of ctx.wsSessionMap.values()) {
-            sessions.add(raw.sessionId);
+          linkPtyToOvr(ctx, ovrId, marker);
+          let ownerWs: WebSocket | null = null;
+          for (const [ws, sessions] of ctx.wsSessionMap) {
+            if (sessions.has(marker)) { ownerWs = ws; break; }
           }
-          ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: marker, claudeSessionId: raw.sessionId });
+          broadcastPtyLinked(marker, raw.sessionId, ovrId, ownerWs);
+          ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+          const ptyPid = ctx.ptyManager.getPid(marker);
+          if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+          applyPendingCloneInfo(marker, raw.sessionId);
+          log('pty:linked', 'PTY linked via name marker (changed)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${ovrId} ptyId=${marker}` });
         }
-        ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
-        const ptyPid = ctx.ptyManager.getPid(marker);
-        if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
-        applyPendingCloneInfo(marker, raw.sessionId);
-        log('pty:started', 'PTY clone linked via name marker (changed)', { sessionId: raw.sessionId });
       }
     }
-    // Check for pending PTY resume link (ConPTY: session file settles to target ID)
+
+    // ── Check for pending PTY resume link (ConPTY: session file settles to target ID) ──
     if (ctx.pendingPtyByResumeId.has(raw.sessionId)) {
       const entry = ctx.pendingPtyByResumeId.get(raw.sessionId)!;
       ctx.pendingPtyByResumeId.delete(raw.sessionId);
-      ctx.ptyToClaudeId.set(entry.ptySessionId, raw.sessionId);
-      ctx.claudeToPtyId.set(raw.sessionId, entry.ptySessionId);
-      // Clear startup noise from the PTY buffer before linking
+      linkPtyToOvr(ctx, ovrId, entry.ptySessionId);
       ctx.ptyOutputBuffer.delete(entry.ptySessionId);
-      if (entry.ws) {
-        const wsSessions = ctx.wsSessionMap.get(entry.ws);
-        if (wsSessions) wsSessions.add(raw.sessionId);
-        ctx.sendToClient(entry.ws, { type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
-      } else {
-        for (const sessions of ctx.wsSessionMap.values()) {
-          sessions.add(raw.sessionId);
-        }
-        ctx.broadcastRaw({ type: 'terminal:linked', ptySessionId: entry.ptySessionId, claudeSessionId: raw.sessionId });
-      }
+      broadcastPtyLinked(entry.ptySessionId, raw.sessionId, ovrId, entry.ws ?? null);
       ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
       const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
       if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
       applyPendingCloneInfo(entry.ptySessionId, raw.sessionId);
-      log('pty:started', 'PTY linked via resumeId (changed)', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8) });
+      log('pty:linked', 'PTY linked via resumeId (changed)', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8), extra: `ovrId=${ovrId} ptyId=${entry.ptySessionId}` });
     }
-    // Link pending bridge sessions (name may arrive in 'changed' after initial 'added' without name)
+
+    // ── Link pending bridge sessions (name may arrive in 'changed') ──
     if (ctx.linkPendingBridge && raw.name?.includes('___BRG:')) {
       ctx.linkPendingBridge(raw.sessionId, raw.cwd, raw.name);
     }
@@ -343,14 +369,20 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
 
   sessionWatcher.on('removed', (sessionId: string) => {
     const session = ctx.stateManager.getSession(sessionId);
-    const removedName = ctx.stateManager.getSession(sessionId)?.proposedName ?? sessionId.slice(0, 8);
+    const removedName = session?.proposedName ?? sessionId.slice(0, 8);
     log('session:removed', 'Session removed', { sessionId, sessionName: removedName, extra: 'PID ' + (session?.pid ?? '?') });
     // Clean up PTY maps for removed sessions
-    const ptyId = ctx.claudeToPtyId.get(sessionId);
-    if (ptyId) {
-      ctx.claudeToPtyId.delete(sessionId);
-      ctx.ptyToClaudeId.delete(ptyId);
-      console.log(`[removed] cleaned up PTY maps for ${sessionId} → pty=${ptyId}`);
+    const ovrId = session?.overlordId;
+    if (ovrId) {
+      const ptyId = ctx.ovrToPty.get(ovrId);
+      if (ptyId) {
+        // Only remove if this session is still the active one for this ovrId
+        if (ctx.stateManager.getActiveClaudeByOvr(ovrId)?.sessionId === sessionId) {
+          ctx.ovrToPty.delete(ovrId);
+          ctx.ptyToOvr.delete(ptyId);
+          console.log(`[removed] cleaned up PTY maps for ${sessionId.slice(0, 8)} ovrId=${ovrId} pty=${ptyId}`);
+        }
+      }
     }
     if (session?.isWorker) {
       ctx.stateManager.remove(sessionId);

@@ -51,10 +51,10 @@ const pendingPtyByPid = new Map<number, { ptySessionId: string; ws: WebSocket }>
 // Track PTY sessions waiting to be linked by resumeSessionId (for ConPTY PID mismatch on Windows)
 const pendingPtyByResumeId = new Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>();
 
-// Map pty-xxx sessionId → real claudeSessionId after linking
-const ptyToClaudeId = new Map<string, string>();
-// Reverse: claudeSessionId → pty-xxx sessionId (for input/resize routing)
-const claudeToPtyId = new Map<string, string>();
+// Stable overlordId ↔ pty-xxx mapping (replaces ptyToClaudeId / claudeToPtyId).
+// ovrId is stable across /clear and compaction; PTY id can change on restart.
+const ovrToPty = new Map<string, string>(); // ovrId → pty-xxx
+const ptyToOvr = new Map<string, string>(); // pty-xxx → ovrId
 
 // Ring buffer for PTY output — replayed on new WS connections so the terminal isn't blank
 const ptyOutputBuffer = new Map<string, Buffer[]>();
@@ -161,7 +161,8 @@ function migrateBridgeSession(oldId: string, newId: string): void {
   const pm = bridgePermMode.get(oldId); if (pm) { bridgePermMode.set(newId, pm); bridgePermMode.delete(oldId); }
   if (linkedBridgeSessions.has(oldId)) { linkedBridgeSessions.add(newId); linkedBridgeSessions.delete(oldId); }
   // Tell clients the bridge terminal is now under newId
-  broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${newId}`, claudeSessionId: newId, replay: true });
+  const migratedOvrId = stateManager.getSession(newId)?.overlordId ?? newId;
+  broadcastRaw({ type: 'terminal:linked', ovrId: migratedOvrId, ptySessionId: `bridge-${newId}`, claudeSessionId: newId, replay: true });
   // Nudge the bridge so the fresh screen state flows into newId's buffer before xterm mounts
   setTimeout(() => void nudgeBridgePipe(newId), 300);
 }
@@ -387,7 +388,7 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
   connectBridgeOutputSocket(sessionId, pipeAddr, pipeName);
 }
 
-function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName: string): void {
+function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName: string, consecutiveFailures = 0): void {
   // Send "OUTPT\n" handshake so bridge adds this socket to the broadcast list
   const outputSocket = net.connect(pipeAddr, () => {
     outputSocket.write('OUTPT\n', () => {
@@ -426,7 +427,9 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
 
     buf.push(data);
     if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
-    broadcastRaw({ type: 'terminal:output', sessionId: eid, data: data.toString('base64') });
+    // Broadcast under ovrId so client XtermTerminal (keyed by ovrId) receives the output.
+    const broadcastId = stateManager.getSession(eid)?.overlordId ?? eid;
+    broadcastRaw({ type: 'terminal:output', sessionId: broadcastId, data: data.toString('base64') });
 
     // Update rolling plain-text buffer for permission detection
     const prev = bridgePermText.get(eid) ?? '';
@@ -466,6 +469,32 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
           stateManager.setPermissionMode(eid, resolvedMode);
         }
       }
+
+      // Detect active state so snapshot overrides stale 'waiting' while the transcript
+      // hasn't yet received the first update from the new turn.
+      // Two signals — use whichever is present:
+      //   1. Status bar "esc to interrupt" — appears during normal working/tool-use
+      //   2. Spinner pattern "word… (Ns" — appears during extended thinking when the
+      //      full TUI stops repainting and only sends spinner updates
+      {
+        const tail = (bridgePermText.get(eid) ?? '').slice(-2048);
+        const tailLines = tail.split('\n');
+        let isActive = false;
+        for (let i = tailLines.length - 1; i >= 0; i--) {
+          const line = tailLines[i];
+          if (/\(shift\+tab to cycle\)/i.test(line)) {
+            // Status bar present — check for "esc to interrupt"
+            if (/esc to interrupt/i.test(line)) isActive = true;
+            break;
+          }
+          // Spinner line: "· Crunching… (31s" or "* Drizzling… (47s · thinking with..."
+          if (/[·*]\s+\w+\u2026\s+\(\d/.test(line)) {
+            isActive = true;
+            break;
+          }
+        }
+        if (isActive) stateManager.setPtyActive(eid);
+      }
     }
   });
 
@@ -480,13 +509,18 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     for (let i = 0; i < 10 && bridgeIdOverrides.has(currentId); i++) currentId = bridgeIdOverrides.get(currentId)!;
     if (!stateManager.isBridge(currentId)) return; // session gone, stop retrying
     if (outputConnectFailed) {
-      // Pipe didn't exist yet (bridge not running) — retry after 3s in case it comes up.
-      console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}, will retry...`);
-      setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 3000);
+      const nextFailures = consecutiveFailures + 1;
+      // Give up after 20 consecutive failures (~60s) — bridge is permanently dead
+      if (nextFailures >= 20) {
+        console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}, giving up after ${nextFailures} failures`);
+        return;
+      }
+      console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}, will retry... (${nextFailures}/20)`);
+      setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName, nextFailures), 3000);
     } else {
-      // Clean disconnect — reconnect quickly.
+      // Clean disconnect — reconnect quickly, reset failure counter.
       console.log(`[bridge] output pipe disconnected for ${sessionId.slice(0, 8)}, will reconnect...`);
-      setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName), 2000);
+      setTimeout(() => connectBridgeOutputSocket(sessionId, pipeAddr, pipeName, 0), 2000);
     }
   });
 }
@@ -576,10 +610,11 @@ async function getScreenText(sessionId: string, pid: number): Promise<string | n
   if (stateManager.isBridge(sessionId)) {
     return bufferToText(ptyOutputBuffer.get(sessionId) ?? []);
   }
-  // Embedded PTY sessions: ptyOutputBuffer is keyed by the PTY session ID
-  const ptyId = claudeToPtyId.get(sessionId);
+  // Embedded PTY sessions: resolve ovrId from session, then ptyId
+  const session = stateManager.getSession(sessionId);
+  const ptyId = session?.overlordId ? ovrToPty.get(session.overlordId) : undefined;
   if (ptyId) {
-    return bufferToText(ptyOutputBuffer.get(ptyId) ?? []);
+    return bufferToText(ptyOutputBuffer.get(ptyId) ?? ptyOutputBuffer.get(session!.overlordId) ?? []);
   }
   // Plain/IDE sessions: try Windows console API
   const { readScreen } = await import('./pty/consoleInjector.js');
@@ -606,8 +641,8 @@ const sessionCtx: SessionEventContext = {
   ptyManager,
   aiClassifier,
   wsSessionMap,
-  ptyToClaudeId,
-  claudeToPtyId,
+  ovrToPty,
+  ptyToOvr,
   pendingPtyByPid,
   pendingPtyByResumeId,
   pendingCloneInfo,
@@ -685,8 +720,8 @@ wirePtyEvents({
   ptyManager,
   stateManager,
   wsSessionMap,
-  ptyToClaudeId,
-  claudeToPtyId,
+  ovrToPty,
+  ptyToOvr,
   pendingPtyByPid,
   pendingPtyByResumeId,
   ptyOutputBuffer,
@@ -698,19 +733,21 @@ wirePtyEvents({
 // Bridge pipe events → broadcast to clients (same flow as PTY output)
 bridgeManager.on('connected', (sessionId: string) => {
   const isReconnect = computeIsReconnect(linkedBridgeSessions, sessionId);
-  console.log(`[bridge] connected event for ${sessionId.slice(0, 8)}, broadcasting terminal:linked${isReconnect ? ' (reconnect/replay)' : ''}`);
-  broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId, ...(isReconnect ? { replay: true } : {}) });
+  const ovrId = stateManager.getSession(sessionId)?.overlordId ?? sessionId;
+  console.log(`[bridge] connected event for ${sessionId.slice(0, 8)} ovrId=${ovrId}, broadcasting terminal:linked${isReconnect ? ' (reconnect/replay)' : ''}`);
+  broadcastRaw({ type: 'terminal:linked', ovrId, ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId, ...(isReconnect ? { replay: true } : {}) });
 });
 
 bridgeManager.on('output', (sessionId: string, data: Buffer) => {
-  // Buffer for replay on reconnect
-  let buf = ptyOutputBuffer.get(sessionId);
-  if (!buf) { buf = []; ptyOutputBuffer.set(sessionId, buf); }
+  // Buffer for replay on reconnect (keyed by ovrId for consistency with embedded PTY)
+  const ovrId = stateManager.getSession(sessionId)?.overlordId ?? sessionId;
+  let buf = ptyOutputBuffer.get(ovrId);
+  if (!buf) { buf = []; ptyOutputBuffer.set(ovrId, buf); }
   buf.push(data);
   if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
 
   const encoded = data.toString('base64');
-  broadcastRaw({ type: 'terminal:output', sessionId, data: encoded });
+  broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: encoded });
 });
 
 bridgeManager.on('disconnected', (sessionId: string) => {
@@ -794,12 +831,13 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
   console.log(`[deleteSession] marked ${sessionId} as deleted in blocklist`);
 
   // 6. Clean up PTY maps so stale entries don't replay on WS reconnect
-  const ptyId = claudeToPtyId.get(sessionId);
-  if (ptyId) {
-    claudeToPtyId.delete(sessionId);
-    ptyToClaudeId.delete(ptyId);
+  const ovrId = stateManager.getSession(sessionId)?.overlordId;
+  const ptyId = ovrId ? ovrToPty.get(ovrId) : undefined;
+  if (ptyId && ovrId) {
+    ovrToPty.delete(ovrId);
+    ptyToOvr.delete(ptyId);
     ptyManager.kill(ptyId);
-    console.log(`[deleteSession] cleaned up PTY maps for pty=${ptyId}`);
+    console.log(`[deleteSession] cleaned up PTY maps ovrId=${ovrId} pty=${ptyId}`);
   }
 
   // 6b. Clean up bridge state
@@ -821,8 +859,8 @@ setupWebSocketHandler(wss, {
   stateManager,
   ptyManager,
   wsSessionMap,
-  ptyToClaudeId,
-  claudeToPtyId,
+  ovrToPty,
+  ptyToOvr,
   pendingPtyByPid,
   pendingPtyByResumeId,
   pendingCloneInfo,
@@ -841,7 +879,7 @@ registerApiRoutes(
   app,
   stateManager,
   ptyManager,
-  { ptyToClaudeId, claudeToPtyId, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo },
+  { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo },
   deleteSession,
   aiClassifier.generateCompletionSummary.bind(aiClassifier),
   ptyOutputBuffer,

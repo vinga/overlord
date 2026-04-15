@@ -54,9 +54,8 @@ export function App() {
   }, []); // stable — no deps needed, reads ref at call time
 
   const handleSessionReplaced = useCallback((oldId: string, newId: string) => {
-    // If we're currently viewing the old session, auto-follow to the new one
-    setSelectedSessionId(prev => prev === oldId ? newId : prev);
-    // Transfer custom name, auto name, and room order to the new session ID
+    // ovrId is stable across /clear — no need to migrate selectedSessionId.
+    // Transfer custom name and room order (keyed by Claude UUID) to the new session ID.
     migrateNames(oldId, newId);
     migrateRoomOrder(oldId, newId);
   }, [migrateNames, migrateRoomOrder]);
@@ -137,7 +136,8 @@ export function App() {
 
   // Auto-select PTY sessions in DetailPanel when they are spawned/resumed.
   // For pty-xxx IDs (pre-linking), immediately show the terminal panel.
-  // When terminal:linked fires, activePtySessionId switches from 'pty-xxx' to real claudeSessionId.
+  // When terminal:linked fires, activePtySessionId switches to the claudeSessionId —
+  // we resolve its ovrId from the snapshot so selectedSessionId stays as an ovrId.
   useEffect(() => {
     if (!activePtySessionId) return;
     if (activePtySessionId.startsWith('pty-')) {
@@ -147,20 +147,34 @@ export function App() {
       setSelectedRoomId(null);
       return;
     }
-    const linkedId = activePtySessionId;
+    const claudeId = activePtySessionId;
     setActivePtySessionId(null);
-    setSelectedSessionId(linkedId);
+    // Resolve ovrId — prefer it over the raw claudeId for stable routing
+    const all = snapshot?.rooms.flatMap(r => r.sessions) ?? [];
+    const linked = all.find(s => s.sessionId === claudeId);
+    setSelectedSessionId(linked?.overlordId ?? claudeId);
     setSelectedSubagentId(undefined);
     setSelectedRoomId(null);
-  }, [activePtySessionId]);
+  }, [activePtySessionId, snapshot]);
 
-  // Derive the live session from the current snapshot so activityFeed stays fresh
-  const selectedSession = useMemo<Session | null>(() =>
-    selectedSessionId != null
-      ? (snapshot?.rooms.flatMap(r => r.sessions).find(s => s.sessionId === selectedSessionId) ?? null)
-      : null,
-    [snapshot, selectedSessionId]
-  );
+  // Upgrade legacy Claude UUID hash → ovrId once snapshot arrives.
+  // Runs once per UUID-style selectedSessionId; no-op if already an ovrId.
+  useEffect(() => {
+    if (!selectedSessionId || selectedSessionId.startsWith('ovr-') || selectedSessionId.startsWith('pty-')) return;
+    if (!snapshot) return;
+    const all = snapshot.rooms.flatMap(r => r.sessions);
+    const sess = all.find(s => s.sessionId === selectedSessionId);
+    if (sess?.overlordId) setSelectedSessionId(sess.overlordId);
+  }, [selectedSessionId, snapshot]);
+
+  // Derive the live session from the current snapshot so activityFeed stays fresh.
+  // selectedSessionId is now an ovrId (ovr-xxx) — match on overlordId first, fall back
+  // to sessionId for pre-ovrId hashes or pending pty-xxx IDs.
+  const selectedSession = useMemo<Session | null>(() => {
+    if (selectedSessionId == null) return null;
+    const all = snapshot?.rooms.flatMap(r => r.sessions) ?? [];
+    return all.find(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId) ?? null;
+  }, [snapshot, selectedSessionId]);
 
   const selectedRoom: Room | null =
     selectedRoomId != null
@@ -168,10 +182,12 @@ export function App() {
       : null;
 
   function handleSelectSession(session: Session, subagentId?: string, timestamp?: string) {
-    setSelectedSessionId(session.sessionId);
+    // Use ovrId as the stable session key; fall back to sessionId for sessions without one
+    const id = session.overlordId ?? session.sessionId;
+    setSelectedSessionId(id);
     setSelectedSubagentId(subagentId);
     setSelectedRoomId(null);
-    setScrollTarget(timestamp ? { sessionId: session.sessionId, timestamp } : null);
+    setScrollTarget(timestamp ? { sessionId: id, timestamp } : null);
   }
 
   function handleRoomClick(roomId: string) {

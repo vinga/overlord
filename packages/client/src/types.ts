@@ -64,6 +64,8 @@ interface Task {
 
 interface Session {
   sessionId: string;
+  overlordId?: string;       // stable identity across /clear and compaction
+  sessionHistory?: Array<{ sessionId: string; attachedAt: number }>;  // all Claude UUIDs ever attached
   provider?: SessionProvider;
   slug?: string;
   proposedName?: string;
@@ -139,14 +141,10 @@ interface TerminalErrorMessage {
 
 interface TerminalLinkedMessage {
   type: 'terminal:linked';
+  ovrId: string;           // stable overlord session ID (persists across /clear, compaction)
   ptySessionId: string;
   claudeSessionId: string;
-}
-
-interface TerminalSessionReplacedMessage {
-  type: 'terminal:session-replaced';
-  oldSessionId: string;
-  newSessionId: string;
+  replay?: boolean;
 }
 
 interface TerminalClearMessage {
@@ -160,7 +158,6 @@ type TerminalMessage =
   | TerminalExitMessage
   | TerminalErrorMessage
   | TerminalLinkedMessage
-  | TerminalSessionReplacedMessage
   | TerminalClearMessage;
 
 // Typed snapshot message (server → client)
@@ -207,6 +204,7 @@ type LogEventType =
   | 'session:resumed'
   | 'session:killed'
   | 'pty:started'
+  | 'pty:linked'
   | 'clear:detected'
   | 'info';
 
@@ -244,6 +242,7 @@ export type {
   Room,
   OfficeSnapshot,
   TerminalMessage,
+  TerminalLinkedMessage,
   TerminalClearMessage,
   TerminalSpawnMode,
   SnapshotMessage,
