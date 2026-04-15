@@ -6,6 +6,21 @@ Code changes require a manual restart (tsx watch removed). Vite HMR still handle
 
 **IMPORTANT:** Only kill processes bound to ports 3000/5173 — do NOT kill all node processes, as that destroys active Claude sessions.
 
+## Health check (use this to verify, not `lsof -i :3000`)
+
+**Gotcha:** `lsof -i :3000` prints the port as `hbci` (its IANA service name) on macOS, so grepping for `:3000` in the output misses it. Always pass `-P` (disables port-name resolution) or just hit the HTTP endpoint.
+
+```bash
+# Reliable: HTTP probe — returns 200 when server is healthy
+curl -sS -o /dev/null -w "server:%{http_code}\n" http://localhost:3000/api/info
+
+# Reliable: numeric port listing
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+lsof -nP -iTCP:5173 -sTCP:LISTEN
+```
+
+Treat `server:200` as the single source of truth. Bridge `ENOENT` spam in the log from stale pipes is normal and does NOT mean the server failed to start — check for `Overlord server listening on http://localhost:3000` in the log instead.
+
 ## macOS
 
 ```bash
@@ -20,8 +35,14 @@ npm run dev --workspace=packages/server > /tmp/overlord-server.log 2>&1 &
 # Start client
 npm run dev --workspace=packages/client > /tmp/overlord-client.log 2>&1 &
 
-sleep 4
-curl -s http://localhost:3000/api/info && echo "" && lsof -ti:5173 | head -1 && echo "Both up"
+# Wait until server answers (up to ~15s) instead of a fixed sleep
+for i in {1..15}; do
+  code=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:3000/api/info)
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+echo "server:$code  client:$(lsof -nP -iTCP:5173 -sTCP:LISTEN | tail -n +2 | wc -l | tr -d ' ')"
+grep -m1 "Overlord server listening" /tmp/overlord-server.log || echo "WARN: listening line not found"
 echo "Logs: /tmp/overlord-server.log and /tmp/overlord-client.log"
 ```
 

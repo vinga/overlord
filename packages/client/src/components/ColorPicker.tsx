@@ -5,12 +5,12 @@ import styles from './ColorPicker.module.css';
 const DEFAULT_COLOR = 'hsl(30, 75%, 55%)';
 
 const PRESETS: string[] = [
-  'hsl(30, 75%, 55%)',   // orange (default)
-  'hsl(195, 75%, 60%)',  // cyan-blue
   'hsl(0, 75%, 58%)',    // red
+  'hsl(30, 75%, 55%)',   // orange (default)
+  'hsl(175, 60%, 48%)',  // teal
+  'hsl(195, 75%, 60%)',  // cyan-blue
   'hsl(280, 60%, 62%)',  // purple
   'hsl(340, 72%, 60%)',  // pink
-  'hsl(175, 60%, 48%)',  // teal
 ];
 
 function parseHue(color: string): number {

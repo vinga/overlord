@@ -173,10 +173,23 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
 
   // Track task IDs where title generation has already been attempted this run (avoid infinite retries)
   const titleAttempted = new Set<string>();
+  let titlePruneTick = 0;
 
   // Periodic state refresh — re-evaluate all session states every 3s
   // (smallest state threshold is 3s, so polling must be at least that frequent)
   setInterval(() => {
+    // Prune titleAttempted every ~60s so completed/abandoned taskIds don't accumulate forever.
+    if (++titlePruneTick >= 20 && titleAttempted.size > 0) {
+      titlePruneTick = 0;
+      const liveTaskIds = new Set<string>();
+      for (const id of ctx.stateManager.getAllSessionIds()) {
+        const t = ctx.stateManager.getSession(id)?.currentTask?.taskId;
+        if (t) liveTaskIds.add(t);
+      }
+      for (const taskId of titleAttempted) {
+        if (!liveTaskIds.has(taskId)) titleAttempted.delete(taskId);
+      }
+    }
     for (const sessionId of ctx.stateManager.getAllSessionIds()) {
       const session = ctx.stateManager.getSession(sessionId);
       if (session?.state === 'closed') continue;

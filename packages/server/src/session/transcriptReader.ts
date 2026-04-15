@@ -39,6 +39,25 @@ export function clearTranscriptCache(filePath: string): void {
   compactCountCache.delete(filePath);
 }
 
+/** Drop every cached entry tied to a specific session. Called on session delete / GC. */
+export function clearSessionCaches(
+  sessionId: string,
+  transcriptPath?: string | null,
+  cwd?: string,
+): void {
+  proposedNameCache.delete(sessionId);
+  if (transcriptPath) {
+    transcriptCache.delete(transcriptPath);
+    compactCountCache.delete(transcriptPath);
+    const subagentsDir = path.join(path.dirname(transcriptPath), sessionId, 'subagents');
+    subagentsDirCache.delete(subagentsDir);
+  }
+  if (cwd) {
+    const fallbackSubagentsDir = path.join(os.homedir(), '.claude', 'projects', cwdToSlug(cwd), sessionId, 'subagents');
+    subagentsDirCache.delete(fallbackSubagentsDir);
+  }
+}
+
 /**
  * Mark a transcript file as dirty — called by chokidar when the file changes.
  * The next readTranscriptState() call will re-read the file instead of
@@ -382,7 +401,7 @@ function buildToolDurations(lines: string[]): Map<string, number> {
   return durationMs;
 }
 
-const MAX_RESULT_LENGTH = 2000;
+const MAX_RESULT_LENGTH = 3000;
 
 function buildToolResults(lines: string[]): Map<string, { content: string; isError: boolean }> {
   const results = new Map<string, { content: string; isError: boolean }>();

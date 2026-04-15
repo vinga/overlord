@@ -25,7 +25,6 @@ export interface WsHandlerContext {
   openTerminalWindow: (cwd: string, command: string, title?: string, sessionId?: string, useBridge?: boolean) => Promise<void>;
   autoResumePtySessions: () => Promise<void>;
   getLogBuffer: () => unknown[];
-  bridgeInjectQueue: Map<string, Array<{ text: string; resolve: () => void }>>;
 }
 
 
@@ -50,7 +49,6 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     openTerminalWindow,
     autoResumePtySessions,
     getLogBuffer,
-    bridgeInjectQueue,
   } = ctx;
 
   let autoResumeTriggered = false;

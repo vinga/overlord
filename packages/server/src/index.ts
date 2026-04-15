@@ -170,9 +170,15 @@ function migrateBridgeSession(oldId: string, newId: string): void {
 // Pending bridge connections for new sessions (marker → temp pipe name)
 // When a new session appears with ___BRG:<marker> in its name, we link it to the bridge pipe.
 const pendingBridgeByMarker = new Map<string, { pipeName: string; timestamp: number }>();
+const PENDING_BRIDGE_MARKER_TTL_MS = 60_000;
 
-// Bridge injection queue (kept for potential future use)
-const bridgeInjectQueue = new Map<string, Array<{ text: string; resolve: () => void }>>();
+/** Drop stale entries whose matching session never arrived (e.g. user closed terminal before spawn). */
+function pruneStalePendingBridgeMarkers(): void {
+  const cutoff = Date.now() - PENDING_BRIDGE_MARKER_TTL_MS;
+  for (const [marker, entry] of pendingBridgeByMarker) {
+    if (entry.timestamp < cutoff) pendingBridgeByMarker.delete(marker);
+  }
+}
 
 // Helper: open a terminal window via overlord-bridge for reliable injection
 async function openTerminalWindow(cwd: string, command: string, title?: string, sessionId?: string, useBridge: boolean = true): Promise<void> {
@@ -198,6 +204,7 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       } else {
         // Embed a unique marker in the command's --name flag for reliable matching
         const bridgeMarker = `brg-${Date.now().toString(36)}`;
+        pruneStalePendingBridgeMarkers();
         pendingBridgeByMarker.set(bridgeMarker, { pipeName, timestamp: Date.now() });
         command = command.replace(/--name "([^"]*)"/, `--name "$1___BRG:${bridgeMarker}"`);
       }
@@ -850,6 +857,12 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
     stateManager.setBridgeActive(sessionId, false);
     linkedBridgeSessions.delete(sessionId);
+    // Drop /clear-migration forwarding entries so old chains don't accumulate.
+    // Removes the deleted id as a key and any entry whose value points at it.
+    bridgeIdOverrides.delete(sessionId);
+    for (const [k, v] of bridgeIdOverrides) {
+      if (v === sessionId) bridgeIdOverrides.delete(k);
+    }
     console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }
 
@@ -875,7 +888,6 @@ setupWebSocketHandler(wss, {
   openTerminalWindow,
   autoResumePtySessions,
   getLogBuffer: getBuffer,
-  bridgeInjectQueue,
 });
 
 // API routes (moved to apiRoutes.ts)

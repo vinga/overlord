@@ -51,7 +51,7 @@ import {
   readSubagents,
   readSlug,
   readProposedName,
-  clearProposedNameCache,
+  clearSessionCaches,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
 import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask } from '../ai/taskStorage.js';
@@ -94,8 +94,8 @@ export class StateManager {
   private deletedSessionIds: Set<string> = new Set();
   private readonly deletedFile = path.join(os.homedir(), '.claude', 'overlord', 'deleted-sessions.json');
   private knownSessionsFile: string;
+  private static readonly IDE_NAME_CACHE_CAP = 64;
   private ideNameCache = new Map<string, { mtimeMs: number; result: { name: string; idePid: number } | undefined }>();
-  private parentPidCache = new Map<number, number | null>(); // sessionPid → parentPid
   /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
   private processSnapshot = new Map<number, { parentPid: number; name: string }>();
   private processSnapshotAge = 0;
@@ -142,10 +142,6 @@ export class StateManager {
   private refreshProcessSnapshot(): void {
     this.processSnapshot = getAllProcessInfo();
     this.processSnapshotAge = Date.now();
-    // Populate the legacy parentPidCache from the snapshot
-    for (const [pid, info] of this.processSnapshot) {
-      this.parentPidCache.set(pid, info.parentPid);
-    }
   }
 
   private onChange(): void {
@@ -416,8 +412,9 @@ export class StateManager {
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
     } catch { /* ignore */ }
-    clearProposedNameCache(sessionId);
-    const deletedOvrId = this.sessions.get(sessionId)?.overlordId;
+    const deletedSession = this.sessions.get(sessionId);
+    clearSessionCaches(sessionId, deletedSession?.transcriptPath, deletedSession?.cwd);
+    const deletedOvrId = deletedSession?.overlordId;
     if (deletedOvrId) {
       this.colorOverrides.delete(deletedOvrId);
       this.saveColors();
@@ -511,7 +508,11 @@ export class StateManager {
     const lastPtyAt = this.lastPtyActivityAt.get(sessionId);
     const ptyIsRecent = lastPtyAt != null && Date.now() - lastPtyAt < 5000;
     const bridgeActive = this.bridgeActiveOverride.has(sessionId);
-    const state: WorkerState = (transcriptState === 'waiting' && (ptyIsRecent || bridgeActive) && transcript !== undefined) ? 'working' : transcriptState;
+    // Also require the transcript to have at least one activity item — a brand-new
+    // session (transcript file exists but empty) should stay 'waiting' even though
+    // the bridge/PTY emits output during Claude Code's own startup screen.
+    const hasMessages = transcript?.activityFeed !== undefined;
+    const state: WorkerState = (transcriptState === 'waiting' && (ptyIsRecent || bridgeActive) && transcript !== undefined && hasMessages) ? 'working' : transcriptState;
     const lastActivity = transcript?.lastActivity ?? new Date().toISOString();
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
@@ -651,14 +652,15 @@ export class StateManager {
 
   remove(sessionId: string): void {
     this.pendingClearSessions.delete(sessionId);
-    if (this.sessions.has(sessionId)) {
-      const ovrId = this.sessions.get(sessionId)?.overlordId;
+    const existing = this.sessions.get(sessionId);
+    if (existing) {
+      const ovrId = existing.overlordId;
       // Only remove from sessionsByOvrId if this session is still the active one for this ovrId
       if (ovrId && this.sessionsByOvrId.get(ovrId) === sessionId) {
         this.sessionsByOvrId.delete(ovrId);
       }
       this.sessions.delete(sessionId);
-      clearProposedNameCache(sessionId);
+      clearSessionCaches(sessionId, existing.transcriptPath, existing.cwd);
       this.saveKnownSessions();
       this.onChange();
     }
@@ -999,7 +1001,10 @@ export class StateManager {
       clearCompletionHint(sessionId);
       changed = true;
     }
-    if (session.state === 'waiting') {
+    // Only promote to 'working' if the session has prior activity — otherwise a
+    // brand-new embedded session (which may emit spurious terminal input during
+    // startup) would flip to 'working' before the user has actually typed anything.
+    if (session.state === 'waiting' && session.activityFeed && session.activityFeed.length > 0) {
       session.state = 'working';
       changed = true;
     }
@@ -1277,6 +1282,7 @@ export class StateManager {
       // Remove haiku/internal worker sessions — they have pid=0 and cwd inside ~/.claude
       const cwdNorm = session.cwd.toLowerCase().replace(/\\/g, '/');
       if (cwdNorm.includes('/.claude/') && session.pid === 0) {
+        clearSessionCaches(sessionId, session.transcriptPath, session.cwd);
         this.sessions.delete(sessionId);
         anyChanged = true;
         continue;
@@ -1285,10 +1291,16 @@ export class StateManager {
       if (session.state === 'closed' && session.pid === 0) {
         const lastActivityAge = now - new Date(session.lastActivity ?? session.startedAt).getTime();
         if (lastActivityAge > thirtyMin) {
+          clearSessionCaches(sessionId, session.transcriptPath, session.cwd);
           this.sessions.delete(sessionId);
           anyChanged = true;
         }
       }
+    }
+    // Prune processSnapshot of PIDs that no longer exist (cap growth from fallback inserts).
+    // Cheap guard: if snapshot is much larger than session count, refresh it.
+    if (this.processSnapshot.size > 2000) {
+      this.refreshProcessSnapshot();
     }
     if (anyChanged) this.onChange();
   }
@@ -1588,6 +1600,11 @@ export class StateManager {
     } catch {
       // ignore
     }
+    if (this.ideNameCache.size >= StateManager.IDE_NAME_CACHE_CAP) {
+      // FIFO eviction: drop the oldest insertion (Map iteration order)
+      const firstKey = this.ideNameCache.keys().next().value;
+      if (firstKey !== undefined) this.ideNameCache.delete(firstKey);
+    }
     this.ideNameCache.set(cacheKey, { mtimeMs: dirMtime, result });
     return result;
   }
@@ -1683,7 +1700,6 @@ export class StateManager {
           if (!isNaN(parentPid)) {
             const info = { parentPid, name };
             this.processSnapshot.set(pid, info);
-            this.parentPidCache.set(pid, parentPid);
             return info;
           }
         }
