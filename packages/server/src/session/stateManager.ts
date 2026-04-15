@@ -101,6 +101,7 @@ export class StateManager {
   private processSnapshotAge = 0;
   /** Sessions awaiting /clear replacement — transcript refresh is suppressed until replaced. */
   private pendingClearSessions = new Set<string>();
+  getPendingClearSessions(): string[] { return [...this.pendingClearSessions]; }
   private colorOverrides = new Map<string, string>(); // ovrId → color (persisted to data/colors.json)
   private readonly colorsFile = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../data/colors.json');
   /** Sessions that had /clear injected via UI — maps cwd → { sessionId, timestamp } for the next new transcript. */

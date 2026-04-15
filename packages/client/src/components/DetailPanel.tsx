@@ -1333,9 +1333,13 @@ const currentDisplayName =
     const feed = selectedSession.activityFeed ?? [];
     const targetIdx = feed.findIndex(item => item.timestamp === scrollTarget);
     const isNearTop = targetIdx >= 0 && targetIdx < 10;
+    // Target may be in older history that's been trimmed out of activityFeed,
+    // or may live inside a subagent's feed rendered inline — either way we
+    // need to fetch earlier messages so the scroll handler can find it.
+    const notInFeed = targetIdx === -1;
 
     // Load earlier messages if target is near the top of the trimmed feed
-    if (isNearTop && feed.length > 0 && feed[0].timestamp) {
+    if ((isNearTop || notInFeed) && feed.length > 0 && feed[0].timestamp) {
       const firstTs = feed[0].timestamp;
       fetch(`/api/sessions/${selectedSession.sessionId}/activity-before?timestamp=${encodeURIComponent(firstTs)}&limit=50`)
         .then(r => r.json())

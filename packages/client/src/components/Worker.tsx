@@ -132,7 +132,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       {!minimal && needsPermission && !isSubagent && (
         <div className={styles.permissionBadge}>⚠ approval</div>
       )}
-      {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting') && (
+      {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && (
         <div
           className={`${styles.indicator} ${styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
@@ -156,6 +156,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
               needsPermission={needsPermission}
               styles={styles}
             />
+          )}
+          {state === 'closed' && userAccepted && (
+            <span className={styles.bubbleDone}>closed · done</span>
           )}
         </div>
       )}

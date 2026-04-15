@@ -118,6 +118,7 @@ export function registerApiRoutes(
       ptyToOvr: Object.fromEntries(ptyToOvr),
       pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
       pendingPtyByResumeId: Object.fromEntries([...pendingPtyByResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
+      pendingClearSessions: stateManager.getPendingClearSessions(),
       bridgeSessions: Object.keys(stateManager.deriveBridgeRegistry()),
       bridgeConnected: Object.keys(stateManager.deriveBridgeRegistry()).map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),
     });
