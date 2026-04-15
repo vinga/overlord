@@ -594,7 +594,11 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
     return 0;
   };
 
-  // Build sorted sessions list respecting custom order
+  // Build sorted sessions list respecting custom order.
+  // Ordering is keyed by overlordId (stable across /clear and --resume) so
+  // resuming a session doesn't reshuffle its slot. Falls back to sessionId
+  // for any session without an overlordId.
+  const orderKey = (s: Session): string => s.overlordId ?? s.sessionId;
   const allSessions = room.sessions;
 
   const storedOrder = getOrder(roomKey);
@@ -603,10 +607,10 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   if (storedOrder.length > 0) {
     const orderedMap = new Map(storedOrder.map((id, idx) => [id, idx]));
     const inOrder = allSessions
-      .filter(s => orderedMap.has(s.sessionId))
-      .sort((a, b) => (orderedMap.get(a.sessionId) ?? 0) - (orderedMap.get(b.sessionId) ?? 0));
+      .filter(s => orderedMap.has(orderKey(s)))
+      .sort((a, b) => (orderedMap.get(orderKey(a)) ?? 0) - (orderedMap.get(orderKey(b)) ?? 0));
     const notInOrder = allSessions
-      .filter(s => !orderedMap.has(s.sessionId))
+      .filter(s => !orderedMap.has(orderKey(s)))
       .sort((a, b) => idlePriority(a) - idlePriority(b));
     sortedSessions = [...inOrder, ...notInOrder];
   } else {
@@ -615,7 +619,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
 
   const handleDrop = (targetId: string) => {
     if (!draggedId || draggedId === targetId) return;
-    const currentOrder = sortedSessions.map(s => s.sessionId);
+    const currentOrder = sortedSessions.map(orderKey);
     const fromIdx = currentOrder.indexOf(draggedId);
     const toIdx = currentOrder.indexOf(targetId);
     const newOrder = [...currentOrder];
@@ -725,8 +729,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
       {!collapsed && <div className={styles.desks}>
         {sortedSessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;
-          const isDragging = draggedId === session.sessionId;
-          const isDragOver = dragOverId === session.sessionId && draggedId !== session.sessionId;
+          const sessionOrderKey = orderKey(session);
+          const isDragging = draggedId === sessionOrderKey;
+          const isDragOver = dragOverId === sessionOrderKey && draggedId !== sessionOrderKey;
           return (
             <div
               key={session.sessionId}
@@ -737,9 +742,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                 isDragOver ? styles.dragOver : '',
               ].filter(Boolean).join(' ')}
               draggable={true}
-              onDragStart={() => setDraggedId(session.sessionId)}
-              onDragOver={(e) => { e.preventDefault(); setDragOverId(session.sessionId); }}
-              onDrop={(e) => { e.preventDefault(); handleDrop(session.sessionId); }}
+              onDragStart={() => setDraggedId(sessionOrderKey)}
+              onDragOver={(e) => { e.preventDefault(); setDragOverId(sessionOrderKey); }}
+              onDrop={(e) => { e.preventDefault(); handleDrop(sessionOrderKey); }}
               onDragEnd={() => { setDraggedId(null); setDragOverId(null); }}
             >
               <span className={styles.dragHandle} aria-hidden="true">⠿</span>
