@@ -7,8 +7,10 @@ Recurring bugs and their fixes. Each issue documents root cause, symptoms, and r
 | Issue | Area | Status |
 |-------|------|--------|
 | [@file autocomplete consumes \r on inject](at-file-autocomplete-enter-race.md) | Injection / Bridge | Fixed (3-step sequence) |
+| [React Ink treats `text + \r` as paste, drops submit](react-ink-paste-batching.md) | Injection / PTY + Bridge | Fixed (split writes, length-proportional delay) |
 | [Bridge sessions taking PTY stdin path](bridge-session-pty-path.md) | Injection / Bridge | Fixed (`!isBridge` guard) |
 | [Queued messages silently lost](queued-messages-lost.md) | Injection / WebSocket | Fixed (boolean return) |
+| ["Queued" badge stuck on long sessions](queued-badge-stuck-on-long-sessions.md) | Injection / Client state | Fixed (timestamp + newest-msg lookup) |
 | [Pending messages disappear on session switch](pending-messages-lost-on-session-switch.md) | Injection / Client state | Fixed (per-session map) |
 
 ## Terminal / PTY

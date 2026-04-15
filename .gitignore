@@ -35,3 +35,6 @@ npm-debug.log*
 
 # PowerShell scripts (local dev tooling, not part of the project)
 **/*.ps1
+
+# Runtime state (notes, colors, etc.)
+packages/server/data/

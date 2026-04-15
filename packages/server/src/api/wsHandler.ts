@@ -7,7 +7,7 @@ import { injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe, getBridgePath
 import { injectViaMac } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
-import { scheduleBridgeInject } from '../pty/injectScheduler.js';
+import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -314,39 +314,22 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const ptyId = ovrToPty.get(ovrId);
         if (!isBridge && ptyId && ptyManager.has(ptyId)) {
           console.log(`[inject] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptyId.slice(0, 8)} text="${text}"`);
-          // PTY injection: always send text and \r as SEPARATE writes.
-          // React Ink (Claude Code's TUI) batches a large atomic write (text+\r)
-          // as "paste" and ignores the trailing \r as a submit. Splitting into two
-          // writes with a short delay ensures \r arrives as a distinct keypress event.
           const ptyWrite = (data: string): boolean => {
             console.log(`[inject] pty write bytes=${data.length} ends=${JSON.stringify(data.slice(-2))} ovrId=${ovrId.slice(0, 8)}`);
             try { return ptyManager.write(ptyId, data); } catch { return false; }
           };
-          if (!ptyWrite(text)) {
-            console.log(`[inject] pty write failed, falling back to OS inject ovrId=${ovrId.slice(0, 8)}`);
-            macOrConsole(text, extraEnter).catch((err: Error) => {
-              sendToClient(ws, { type: 'terminal:error', sessionId: ovrId, message: err.message });
-            });
-            return;
-          }
-          // Send \r (and possibly a second \r for @file autocomplete) after a delay.
-          // 80 ms for plain text; 400 ms for extraEnter (autocomplete select).
-          const firstEnterDelay = extraEnter ? 400 : 80;
-          setTimeout(() => {
-            if (!ptyManager.has(ptyId)) return;
-            if (!ptyWrite('\r')) {
-              console.log(`[inject] pty deferred \\r failed, falling back to OS inject ovrId=${ovrId.slice(0, 8)}`);
-              macOrConsole('\r', false).catch(() => {});
-              return;
-            }
-            if (!extraEnter) { console.log(`[inject] pty ok ovrId=${ovrId.slice(0, 8)}`); return; }
-            // Second \r to submit after autocomplete selects the @file path
-            setTimeout(() => {
-              if (!ptyManager.has(ptyId)) return;
-              if (!ptyWrite('\r')) macOrConsole('\r', false).catch(() => {});
-              else console.log(`[inject] pty ok ovrId=${ovrId.slice(0, 8)}`);
-            }, 300);
-          }, firstEnterDelay);
+          scheduleInject(
+            ptyWrite,
+            () => ptyManager.has(ptyId),
+            (data, initial) => {
+              console.log(`[inject] pty ${initial ? 'initial' : 'deferred \\r'} failed, falling back to OS inject ovrId=${ovrId.slice(0, 8)}`);
+              macOrConsole(data, initial ? extraEnter : false).catch((err: Error) => {
+                if (initial) sendToClient(ws, { type: 'terminal:error', sessionId: ovrId, message: err.message });
+              });
+            },
+            text,
+            extraEnter,
+          );
           return;
         }
 

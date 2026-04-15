@@ -44,21 +44,25 @@ text  →  [400ms]  →  \r (select)  →  [300ms]  →  \r (submit)
 
 ### extraEnter gating
 
-`extraEnter` is now derived from `text.includes('@')` — only true when the message actually contains a file reference. Plain text uses immediate `text + '\r'`.
+`extraEnter` is now derived from `text.includes('@')` — only true when the message actually contains a file reference.
 
 Set in `DetailPanel.handleSend()`:
 ```ts
 const sent = injectText(sessionId, full, full.includes('@'));
 ```
 
+**Note:** the "plain text uses atomic `text + '\r'`" path described in older versions of this doc is gone. React Ink treats atomic `text + '\r'` as a paste and drops the submit, so plain text is now **also** split into two writes with a length-proportional delay. See [react-ink-paste-batching.md](react-ink-paste-batching.md).
+
 ### Extracted to injectScheduler.ts
 
-The timing logic was extracted from `wsHandler.ts` into `packages/server/src/pty/injectScheduler.ts`:
+The timing logic lives in `packages/server/src/pty/injectScheduler.ts`:
 
 - `shouldUseExtraEnter(text)` — returns `text.includes('@')`
-- `scheduleInject(write, isAlive, text, extraEnter)` — handles both paths, guards against PTY death between steps
+- `computeFirstEnterDelay(text, extraEnter)` — shared delay formula used by both paths
+- `scheduleInject(write, isAlive, onWriteFail, text, extraEnter)` — sync PTY path (used by `wsHandler.ts` `terminal:inject` PTY branch)
+- `scheduleBridgeInject(pipeSend, fallback, enterFallback, text, extraEnter)` — async bridge path
 
-`wsHandler.ts` now calls `scheduleInject(...)` instead of inlining the setTimeout chain.
+Both functions implement the three-step `text → \r (select) → \r (submit)` sequence when `extraEnter=true`.
 
 ## Image Paste Flow
 

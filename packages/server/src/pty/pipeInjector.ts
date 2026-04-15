@@ -53,7 +53,7 @@ class BridgeConnectionManager extends EventEmitter {
   connect(sessionId: string): void {
     if (this.connections.has(sessionId)) return;
 
-    const pp = pipePath(sessionId);
+    const pp = this.pipeAddrs.get(sessionId) ?? pipePath(sessionId);
     console.log(`[bridge-pipe] connecting to ${pp}`);
 
     const socket = net.connect(pp, () => {
@@ -96,7 +96,8 @@ class BridgeConnectionManager extends EventEmitter {
       socket.destroy();
       this.connections.delete(sessionId);
     }
-    this.pipeAddrs.delete(sessionId);
+    // NOTE: pipeAddrs is metadata for reconnection, not a liveness flag — keep it.
+    // Use clearPipeAddr() explicitly when the session is truly gone.
   }
 
   /** Write input to the bridge pipe */
@@ -191,7 +192,7 @@ export async function injectViaPipe(sessionId: string, text: string): Promise<bo
   // Fallback: try a one-shot connection (bridge exists but we haven't connected yet)
   try {
     return await new Promise<boolean>((resolve) => {
-      const pp = pipePath(sessionId);
+      const pp = bridgeManager.getPipeAddr(sessionId);
       const socket = net.connect(pp, () => {
         socket.write(text, (err) => {
           socket.destroy();

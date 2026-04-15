@@ -101,11 +101,14 @@ export class StateManager {
   private processSnapshotAge = 0;
   /** Sessions awaiting /clear replacement — transcript refresh is suppressed until replaced. */
   private pendingClearSessions = new Set<string>();
-  private colorOverrides = new Map<string, string>(); // sessionId → color preserved across /clear
+  private colorOverrides = new Map<string, string>(); // ovrId → color (persisted to data/colors.json)
+  private readonly colorsFile = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../data/colors.json');
   /** Sessions that had /clear injected via UI — maps cwd → { sessionId, timestamp } for the next new transcript. */
   private pendingClearReplacements = new Map<string, { sessionId: string; timestamp: number }>();
   /** Timestamp of last PTY output per session — used to override stale 'waiting' state. */
   private lastPtyActivityAt = new Map<string, number>();
+  /** Bridge sessions forced to 'working' state — persists until explicitly cleared. */
+  private bridgeActiveOverride = new Set<string>();
   /** Timestamp when pending PTY input started (user typing without Enter) — cleared on Enter. */
   private ptyInputPendingSince = new Map<string, number>();
   /** Stable ovrId → current active claudeSessionId. Updated by transferSessionState. */
@@ -128,6 +131,7 @@ export class StateManager {
     this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.loadAccepted();
     this.loadDeleted();
+    this.loadColors();
     this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
     this.loadKnownSessions();
     this.loadPendingResumes();
@@ -237,9 +241,9 @@ export class StateManager {
         }
         cleaned.push(entry);
         // Pre-populate as closed; SessionWatcher will update active ones
-        const color = this.sessionColor(entry.sessionId);
         const storedOvrId = (entry.overlordId as string | undefined) ?? this.generateOvrId();
         this.sessionsByOvrId.set(storedOvrId, entry.sessionId);
+        const color = this.sessionColorByOvrId(storedOvrId);
         const storedHistory = (entry.sessionHistory as Array<{ sessionId: string; attachedAt: number }> | undefined)
           ?? [{ sessionId: entry.sessionId, attachedAt: entry.startedAt ?? Date.now() }];
         this.sessions.set(entry.sessionId, {
@@ -412,7 +416,11 @@ export class StateManager {
       fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
     } catch { /* ignore */ }
     clearProposedNameCache(sessionId);
-    this.colorOverrides.delete(sessionId);
+    const deletedOvrId = this.sessions.get(sessionId)?.overlordId;
+    if (deletedOvrId) {
+      this.colorOverrides.delete(deletedOvrId);
+      this.saveColors();
+    }
     this.sessions.delete(sessionId);
     this.saveKnownSessions();
     this.onChange();
@@ -501,7 +509,8 @@ export class StateManager {
     // should start as 'waiting' even though the PTY emits an initial prompt.
     const lastPtyAt = this.lastPtyActivityAt.get(sessionId);
     const ptyIsRecent = lastPtyAt != null && Date.now() - lastPtyAt < 5000;
-    const state: WorkerState = (transcriptState === 'waiting' && ptyIsRecent && transcript !== undefined) ? 'working' : transcriptState;
+    const bridgeActive = this.bridgeActiveOverride.has(sessionId);
+    const state: WorkerState = (transcriptState === 'waiting' && (ptyIsRecent || bridgeActive) && transcript !== undefined) ? 'working' : transcriptState;
     const lastActivity = transcript?.lastActivity ?? new Date().toISOString();
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
@@ -514,7 +523,8 @@ export class StateManager {
     const proposedName = resolvedName?.startsWith('<local-command-caveat') ? undefined : resolvedName;
 
     const subagents = readSubagents(cwd, sessionId, transcriptPath);
-    const color = this.sessionColor(sessionId);
+    // Color resolution deferred until after overlordId is computed below
+    let color = this.sessionColor(sessionId);
     const ideInfo = this.readIdeInfo(cwd);
     // Only tag as IDE if the session process is actually a child of the IDE process
     const isIdeSession = ideInfo != null && raw.pid > 0 && this.isChildOfIde(raw.pid, ideInfo.idePid);
@@ -579,6 +589,7 @@ export class StateManager {
 
     // Preserve overlordId across updates; generate once on first creation.
     const overlordId = existingSession?.overlordId ?? this.generateOvrId();
+    color = this.sessionColorByOvrId(overlordId);
     // Preserve sessionHistory; initialize with first entry on creation.
     const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
       existingSession?.sessionHistory ?? [{ sessionId, attachedAt: Date.now() }];
@@ -639,7 +650,6 @@ export class StateManager {
 
   remove(sessionId: string): void {
     this.pendingClearSessions.delete(sessionId);
-    this.colorOverrides.delete(sessionId);
     if (this.sessions.has(sessionId)) {
       const ovrId = this.sessions.get(sessionId)?.overlordId;
       // Only remove from sessionsByOvrId if this session is still the active one for this ovrId
@@ -697,11 +707,9 @@ export class StateManager {
     if (!newHasRealName && oldSession.proposedName) {
       newSession.proposedName = oldSession.proposedName;
     }
-    // Preserve color: carry over the old session's color (override or computed)
-    const oldColor = this.colorOverrides.get(oldSessionId) ?? this.sessionColor(oldSessionId);
-    this.colorOverrides.set(newSessionId, oldColor);
-    // Also update the already-baked color field on the session object (addOrUpdate set it before transferSessionState ran)
-    if (newSession) newSession.color = oldColor;
+    // Color is keyed by ovrId and inherited via overlordId below — no transfer needed here.
+    // Just refresh the baked color field on the session object in case an override exists.
+    newSession.color = this.sessionColorByOvrId(newSession.overlordId || oldSession.overlordId);
     // Preserve position in sort order — inherit old session's startedAt so server-side
     // sort (by startedAt) keeps the cleared session at the same index it occupied before.
     newSession.startedAt = oldSession.startedAt;
@@ -1175,6 +1183,16 @@ export class StateManager {
     this.lastPtyActivityAt.set(sessionId, Date.now());
   }
 
+  /** Persistently mark a bridge session as active (spinner detected). Cleared when idle prompt seen. */
+  setBridgeActive(sessionId: string, active: boolean): void {
+    if (active) {
+      this.bridgeActiveOverride.add(sessionId);
+    } else {
+      this.bridgeActiveOverride.delete(sessionId);
+    }
+    this.onChange();
+  }
+
   /** Mark that the user has typed non-Enter input in the PTY terminal. */
   setPtyInputPending(sessionId: string): void {
     if (!this.ptyInputPendingSince.has(sessionId)) {
@@ -1259,7 +1277,6 @@ export class StateManager {
       const cwdNorm = session.cwd.toLowerCase().replace(/\\/g, '/');
       if (cwdNorm.includes('/.claude/') && session.pid === 0) {
         this.sessions.delete(sessionId);
-        this.colorOverrides.delete(sessionId);
         anyChanged = true;
         continue;
       }
@@ -1268,7 +1285,6 @@ export class StateManager {
         const lastActivityAge = now - new Date(session.lastActivity ?? session.startedAt).getTime();
         if (lastActivityAge > thirtyMin) {
           this.sessions.delete(sessionId);
-          this.colorOverrides.delete(sessionId);
           anyChanged = true;
         }
       }
@@ -1363,14 +1379,50 @@ export class StateManager {
     return Array.from(this.sessions.keys());
   }
 
+  /** Default avatar color for new sessions. */
+  private static readonly DEFAULT_COLOR = 'hsl(30, 75%, 55%)';
+
+  /** Look up the color for a session by claudeSessionId. Resolves ovrId internally. */
   sessionColor(sessionId: string): string {
-    if (this.colorOverrides.has(sessionId)) return this.colorOverrides.get(sessionId)!;
-    let hash = 0;
-    for (let i = 0; i < sessionId.length; i++) {
-      hash = (hash * 31 + sessionId.charCodeAt(i)) >>> 0;
-    }
-    const hue = hash % 360;
-    return `hsl(${hue}, 65%, 55%)`;
+    const ovrId = this.sessions.get(sessionId)?.overlordId;
+    if (ovrId && this.colorOverrides.has(ovrId)) return this.colorOverrides.get(ovrId)!;
+    return StateManager.DEFAULT_COLOR;
+  }
+
+  /** Look up the color for an ovrId directly. */
+  sessionColorByOvrId(ovrId: string): string {
+    return this.colorOverrides.get(ovrId) ?? StateManager.DEFAULT_COLOR;
+  }
+
+  /** Set a custom color for a session (keyed by its ovrId) and persist. */
+  setSessionColor(sessionId: string, color: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session?.overlordId) return false;
+    this.colorOverrides.set(session.overlordId, color);
+    session.color = color;
+    this.saveColors();
+    this.onChange();
+    return true;
+  }
+
+  private loadColors(): void {
+    try {
+      if (!fs.existsSync(this.colorsFile)) return;
+      const data = JSON.parse(fs.readFileSync(this.colorsFile, 'utf-8')) as Record<string, string>;
+      for (const [ovrId, color] of Object.entries(data)) {
+        this.colorOverrides.set(ovrId, color);
+      }
+    } catch { /* ignore */ }
+  }
+
+  private saveColors(): void {
+    try {
+      const dir = path.dirname(this.colorsFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const obj: Record<string, string> = {};
+      for (const [ovrId, color] of this.colorOverrides) obj[ovrId] = color;
+      fs.writeFileSync(this.colorsFile, JSON.stringify(obj, null, 2), 'utf-8');
+    } catch { /* ignore */ }
   }
 
   async loadClosedSessionsFromTranscripts(): Promise<void> {
@@ -1444,7 +1496,6 @@ export class StateManager {
 
           const proposedName = readProposedName(sessionId, transcriptPath);
           const subagents = readSubagents(cwd, sessionId, transcriptPath);
-          const color = this.sessionColor(sessionId);
 
           // Recover startedAt from first transcript entry
           let startedAt = 0;
@@ -1461,6 +1512,7 @@ export class StateManager {
 
           const recoveredOvrId = this.generateOvrId();
           this.sessionsByOvrId.set(recoveredOvrId, sessionId);
+          const color = this.sessionColorByOvrId(recoveredOvrId);
           const session: Session = {
             sessionId,
             overlordId: recoveredOvrId,

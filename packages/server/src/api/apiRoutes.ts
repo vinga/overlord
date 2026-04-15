@@ -515,6 +515,16 @@ export function registerApiRoutes(
     res.json({ skills, agents });
   });
 
+  // Color: PUT /api/sessions/:sessionId/color — set avatar color for a session (persisted by ovrId)
+  app.put('/api/sessions/:sessionId/color', express.json(), (req, res) => {
+    const { sessionId } = req.params;
+    const color = typeof req.body?.color === 'string' ? req.body.color.trim() : '';
+    if (!color) { res.status(400).json({ error: 'color required' }); return; }
+    const ok = stateManager.setSessionColor(sessionId, color);
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true });
+  });
+
   // Notes: GET /api/notes — all notes (for bulk display in worker cards)
   app.get('/api/notes', (_req, res) => {
     res.json(loadNotes());

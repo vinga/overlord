@@ -5,6 +5,7 @@ import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet }
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
+import { ColorPicker } from './ColorPicker';
 import { Worker } from './Worker';
 import { ConsolePreview } from './ConsolePreview';
 import styles from './DetailPanel.module.css';
@@ -12,6 +13,15 @@ import { SessionCommands } from './SessionCommands';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
+
+// Open all links in new tab
+marked.use({
+  hooks: {
+    postprocess(html: string) {
+      return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
+    },
+  },
+});
 
 const MARKDOWN_CACHE_MAX = 500;
 const markdownCache = new Map<string, string>();
@@ -764,11 +774,31 @@ interface FeedSegmentsProps {
   cwd?: string;
   subagents?: Subagent[];
   onSelectSubagent?: (agentId: string) => void;
+  scrollTargetTs?: string;
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
+
+  // Auto-expand any multi-tool group that contains the scroll target so its
+  // children are in the DOM and the scroll handler can find them.
+  useEffect(() => {
+    if (!scrollTargetTs) return;
+    const toExpand: number[] = [];
+    segments.forEach((seg, idx) => {
+      if (seg.type === 'toolGroup' && seg.items.length > 1 &&
+          seg.items.some(t => t.timestamp === scrollTargetTs)) {
+        toExpand.push(idx);
+      }
+    });
+    if (toExpand.length === 0) return;
+    setExpandedToolGroups(prev => {
+      const next = new Set(prev);
+      for (const idx of toExpand) next.add(idx);
+      return next;
+    });
+  }, [scrollTargetTs, segments]);
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
   const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
@@ -1003,7 +1033,12 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
         const groupTotalMs = seg.items.reduce((sum, t) => sum + (t.durationMs ?? 0), 0);
         const hasGroupDuration = seg.items.some(t => t.durationMs !== undefined);
         return (
-          <div key={segIdx} className={styles.toolGroup} data-ts={seg.items[0]?.timestamp}>
+          <div
+            key={segIdx}
+            className={styles.toolGroup}
+            data-ts={seg.items[0]?.timestamp}
+            data-ts-list={seg.items.map(t => t.timestamp).filter(Boolean).join(' ')}
+          >
             <button
               className={styles.toolGroupHeader}
               onClick={() => {
@@ -1063,7 +1098,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                 return next;
               }) : undefined;
               return (
-                <React.Fragment key={ti}>
+                <div key={ti} data-ts={tool.timestamp} style={{ display: 'contents' }}>
                   <ToolEntry
                     tool={tool}
                     diffKey={diffKey}
@@ -1100,7 +1135,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                       )}
                     </div>
                   )}
-                </React.Fragment>
+                </div>
               );
             })}
           </div>
@@ -1205,6 +1240,7 @@ export function DetailPanel({
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
   const [notesContent, setNotesContent] = useState('');
+  const [notesPreview, setNotesPreview] = useState(false);
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notesSessionIdRef = useRef<string | undefined>(undefined);
   const [isEditing, setIsEditing] = useState(false);
@@ -1309,20 +1345,49 @@ const currentDisplayName =
         .catch(() => { /* ignore */ });
     }
 
-    // Scroll after a short delay to allow render
+    // Scroll after a short delay to allow render (first pass). If the target
+    // isn't in the DOM yet (e.g. collapsed tool group just got expanded via
+    // FeedSegments.scrollTargetTs effect), retry a second time.
+    const attemptScroll = (): boolean => {
+      const container = transcriptRef.current;
+      if (!container) return false;
+      const escaped = CSS.escape(scrollTarget);
+      // Prefer exact data-ts match. Fall back to a tool group whose
+      // data-ts-list contains this timestamp (word-separated).
+      let el = container.querySelector<HTMLElement>(`[data-ts="${escaped}"]`);
+      if (!el) el = container.querySelector<HTMLElement>(`[data-ts-list~="${escaped}"]`);
+      if (!el) return false;
+      // Walk past display:contents (zero-rect) wrappers to the first real child.
+      let rectEl: HTMLElement = el;
+      while (rectEl.getBoundingClientRect().height === 0 && rectEl.firstElementChild) {
+        rectEl = rectEl.firstElementChild as HTMLElement;
+      }
+      if (rectEl.getBoundingClientRect().height === 0) return false;
+      isAtBottomRef.current = false;
+      // Manual scroll: center the target in the container viewport.
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = rectEl.getBoundingClientRect();
+      const offset =
+        targetRect.top - containerRect.top + container.scrollTop
+        - container.clientHeight / 2 + targetRect.height / 2;
+      container.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' });
+      rectEl.classList.add('searchHighlight');
+      setTimeout(() => rectEl.classList.remove('searchHighlight'), 2000);
+      return true;
+    };
+
     const tid = setTimeout(() => {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const container = transcriptRef.current;
-          if (!container) return;
-          const el = container.querySelector<HTMLElement>(`[data-ts="${CSS.escape(scrollTarget)}"]`);
-          if (el) {
-            isAtBottomRef.current = false;
-            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            el.classList.add('searchHighlight');
-            setTimeout(() => el.classList.remove('searchHighlight'), 2000);
+          if (attemptScroll()) {
+            onScrollTargetConsumed?.();
+            return;
           }
-          onScrollTargetConsumed?.();
+          // Retry after a longer delay to let auto-expand + older-message fetch settle.
+          setTimeout(() => {
+            attemptScroll();
+            onScrollTargetConsumed?.();
+          }, 250);
         });
       });
     }, 80);
@@ -1732,7 +1797,18 @@ const currentDisplayName =
                 {/* Sticky header */}
                 <div className={styles.panelHeader}>
                   <div className={styles.headerWithAvatar}>
-                    <WorkerAvatar sessionId={selectedSession.sessionId} color={selectedSession.color} size={44} />
+                    <ColorPicker
+                      sessionId={selectedSession.sessionId}
+                      color={selectedSession.color}
+                      size={44}
+                      onChange={(newColor) => {
+                        void fetch(`/api/sessions/${selectedSession.sessionId}/color`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ color: newColor }),
+                        });
+                      }}
+                    />
                   <div className={styles.headerMain}>
                   <div className={styles.nameRow}>
                     {isEditing ? (
@@ -1929,6 +2005,7 @@ const currentDisplayName =
                                   cwd={selectedSession.cwd}
                                   subagents={selectedSession.subagents}
                                   onSelectSubagent={(agentId) => onSelectSession?.(selectedSession, agentId)}
+                                  scrollTargetTs={scrollTarget ?? undefined}
                                 />
                               </div>
                             ) : (
@@ -2242,26 +2319,43 @@ const currentDisplayName =
                 {/* Tab: Notes */}
                 {activeTab === 'notes' && (
                   <div className={styles.notesTab}>
-                    <textarea
-                      className={styles.notesTextarea}
-                      value={notesContent}
-                      placeholder="Add notes…"
-                      onChange={e => {
-                        const value = e.target.value;
-                        setNotesContent(value);
-                        if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
-                        const sessionId = selectedSession.sessionId;
-                        notesSaveTimerRef.current = setTimeout(() => {
-                          fetch(`/api/sessions/${sessionId}/notes`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ notes: value }),
-                          }).then(() => {
-                            updateNoteFirstLine(sessionId, value);
-                          }).catch(() => {});
-                        }, 500);
-                      }}
-                    />
+                    <div className={styles.notesToolbar}>
+                      <button
+                        className={`${styles.notesToggleBtn} ${!notesPreview ? styles.notesToggleActive : ''}`}
+                        onClick={() => setNotesPreview(false)}
+                      >Edit</button>
+                      <button
+                        className={`${styles.notesToggleBtn} ${notesPreview ? styles.notesToggleActive : ''}`}
+                        onClick={() => setNotesPreview(true)}
+                      >Preview</button>
+                    </div>
+                    {notesPreview ? (
+                      <div
+                        className={`${styles.notesPreview} ${styles.markdownContent}`}
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(notesContent || '*No notes yet.*') }}
+                      />
+                    ) : (
+                      <textarea
+                        className={styles.notesTextarea}
+                        value={notesContent}
+                        placeholder="Add notes…"
+                        onChange={e => {
+                          const value = e.target.value;
+                          setNotesContent(value);
+                          if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+                          const sessionId = selectedSession.sessionId;
+                          notesSaveTimerRef.current = setTimeout(() => {
+                            fetch(`/api/sessions/${sessionId}/notes`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ notes: value }),
+                            }).then(() => {
+                              updateNoteFirstLine(sessionId, value);
+                            }).catch(() => {});
+                          }, 500);
+                        }}
+                      />
+                    )}
                   </div>
                 )}
 

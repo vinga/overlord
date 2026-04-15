@@ -472,28 +472,31 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
 
       // Detect active state so snapshot overrides stale 'waiting' while the transcript
       // hasn't yet received the first update from the new turn.
-      // Two signals — use whichever is present:
-      //   1. Status bar "esc to interrupt" — appears during normal working/tool-use
-      //   2. Spinner pattern "word… (Ns" — appears during extended thinking when the
-      //      full TUI stops repainting and only sends spinner updates
+      // Uses a persistent flag (setBridgeActive) rather than a TTL so extended thinking
+      // (which may produce sparse output) doesn't flicker back to 'waiting'.
+      // Two active signals:
+      //   1. Status bar "esc to interrupt" — normal working/tool-use
+      //   2. Spinner pattern "· Word… (Ns" — extended thinking (no full repaint)
+      // Cleared when status bar is present WITHOUT "esc to interrupt" (idle prompt).
       {
         const tail = (bridgePermText.get(eid) ?? '').slice(-2048);
         const tailLines = tail.split('\n');
-        let isActive = false;
+        let activeSignal: boolean | null = null; // null = no signal yet
         for (let i = tailLines.length - 1; i >= 0; i--) {
           const line = tailLines[i];
           if (/\(shift\+tab to cycle\)/i.test(line)) {
-            // Status bar present — check for "esc to interrupt"
-            if (/esc to interrupt/i.test(line)) isActive = true;
+            // Status bar: active iff "esc to interrupt" present
+            activeSignal = /esc to interrupt/i.test(line);
             break;
           }
           // Spinner line: "· Crunching… (31s" or "* Drizzling… (47s · thinking with..."
-          if (/[·*]\s+\w+\u2026\s+\(\d/.test(line)) {
-            isActive = true;
+          if (/[·*·]\s+\w+[.\u2026]+\s*\(\d/.test(line)) {
+            activeSignal = true;
             break;
           }
         }
-        if (isActive) stateManager.setPtyActive(eid);
+        if (activeSignal === true) stateManager.setBridgeActive(eid, true);
+        else if (activeSignal === false) stateManager.setBridgeActive(eid, false);
       }
     }
   });
@@ -845,6 +848,7 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     bridgeManager.disconnect(sessionId);
     stateManager.setBridgePipe(sessionId, '');
     bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
+    stateManager.setBridgeActive(sessionId, false);
     linkedBridgeSessions.delete(sessionId);
     console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }

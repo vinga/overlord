@@ -63,6 +63,21 @@ export function App() {
   const { snapshot, connected, connecting, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
   const terminal = useTerminal(sendMessage, (id) => setActivePtySessionId(id));
 
+  const snapshotBridgeIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const room of snapshot?.rooms ?? []) {
+      for (const s of room.sessions) {
+        if (s.sessionType === 'bridge') ids.add(s.overlordId ?? s.sessionId);
+      }
+    }
+    return ids;
+  }, [snapshot]);
+
+  const isBridgeSession = useCallback(
+    (ovrId: string) => terminal.isBridgeSession(ovrId) || snapshotBridgeIds.has(ovrId),
+    [terminal, snapshotBridgeIds]
+  );
+
   // Build display names: proposedName from server > custom name from user > fallback
   // autoNames are only used for populating the spawn input, not for display.
   const displayNames = useMemo(() => {
@@ -320,7 +335,7 @@ export function App() {
         onClose={handleClose}
         connected={connected}
         isPtySession={terminal.isPtySession}
-        isBridgeSession={terminal.isBridgeSession}
+        isBridgeSession={isBridgeSession}
         pty={{
           sendInput: terminal.sendInput,
           injectText: terminal.injectText,

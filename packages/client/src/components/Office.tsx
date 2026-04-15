@@ -3,6 +3,7 @@ import type { OfficeSnapshot, Session } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
+import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './Office.module.css';
 
 interface OfficeProps {
@@ -44,11 +45,37 @@ function formatUpdatedAt(updatedAt: string): string {
 export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
+  const notesSummaries = useNotesSummaries();
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const sessionMatches = useCallback((s: Session, q: string): boolean => {
+    const displayName = customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? '';
+    const fields: (string | undefined)[] = [
+      displayName,
+      s.lastMessage,
+      s.currentTask?.title,
+      s.currentTaskLabel,
+      notesSummaries.get(s.sessionId),
+      ...(s.completionSummaries ?? []).map(t => t.title),
+      ...(s.subagents ?? []).flatMap(a => [a.agentType, a.description, a.lastActivity]),
+    ];
+    return fields.some(f => typeof f === 'string' && f.toLowerCase().includes(q));
+  }, [customNames, notesSummaries]);
 
   const visibleRooms = useMemo(() => {
-    const filtered = rooms.filter(room => room.sessions.length > 0);
+    const q = searchQuery.trim().toLowerCase();
+    let filtered = rooms.filter(room => room.sessions.length > 0);
+    if (q) {
+      filtered = filtered
+        .map(room => {
+          if (room.name.toLowerCase().includes(q) || room.cwd.toLowerCase().includes(q)) return room;
+          const sessions = room.sessions.filter(s => sessionMatches(s, q));
+          return sessions.length > 0 ? { ...room, sessions } : null;
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+    }
     return sortRooms(filtered);
-  }, [rooms, sortRooms]);
+  }, [rooms, sortRooms, searchQuery, sessionMatches]);
 
   // Register any room IDs not yet in persisted order (side-effect free from render)
   useEffect(() => {
@@ -95,6 +122,14 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
       <header className={styles.header}>
         <OverlordLogo />
+        <input
+          type="text"
+          className={styles.searchInput}
+          placeholder="Search agents…"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); } }}
+        />
         {onOpenDirectoryPicker && (
           <button className={styles.newSessionBtn} onClick={onOpenDirectoryPicker}>
             + New Session
