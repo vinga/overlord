@@ -1105,6 +1105,38 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
   const cached = proposedNameCache.get(sessionId);
   if (cached !== undefined) return cached;
 
+  // Strategy 0: authoritative customTitle header in transcript (set at spawn
+  // via --name). Strip ___OVR:/___BRG: markers. This is the most reliable
+  // source — survives PID file deletion on session close.
+  if (!isCodexTranscript(transcriptPath)) {
+    try {
+      const fd = fs.openSync(transcriptPath, 'r');
+      try {
+        const buf = Buffer.alloc(2048);
+        const bytesRead = fs.readSync(fd, buf, 0, 2048, 0);
+        const firstChunk = buf.toString('utf-8', 0, bytesRead);
+        const firstLine = firstChunk.split('\n')[0];
+        if (firstLine && firstLine.trim()) {
+          try {
+            const parsed = JSON.parse(firstLine) as { type?: string; customTitle?: string };
+            if (parsed.type === 'custom-title' && typeof parsed.customTitle === 'string') {
+              let title = parsed.customTitle;
+              if (title.includes('___OVR:')) title = title.split('___OVR:')[0];
+              if (title.includes('___BRG:')) title = title.split('___BRG:')[0];
+              title = title.trim();
+              if (title.length > 0 && !title.startsWith('<local-command-caveat')) {
+                proposedNameCache.set(sessionId, title);
+                return title;
+              }
+            }
+          } catch { /* not valid JSON — fall through */ }
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch { /* transcript unreadable — fall through */ }
+  }
+
   if (isCodexTranscript(transcriptPath)) {
     try {
       const fd = fs.openSync(transcriptPath, 'r');

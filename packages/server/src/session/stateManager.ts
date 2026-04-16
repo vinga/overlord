@@ -381,23 +381,35 @@ export class StateManager {
       fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
       const entries = [...this.sessions.values()]
         .filter(s => !s.isWorker && !s.cwd.toLowerCase().replace(/\\/g, '/').includes('/.claude/'))
-        .map(s => ({
-          sessionId: s.sessionId,
-          overlordId: s.overlordId,
-          sessionHistory: s.sessionHistory,
-          provider: s.provider,
-          cwd: s.cwd,
-          sessionType: s.sessionType,
-          replacedBy: s.replacedBy,
-          startedAt: s.startedAt,
-          pid: s.pid,
-          proposedName: s.proposedName,
-          resumedFrom: s.resumedFrom,
-          userAccepted: s.userAccepted,
-          bridgePipeName: s.bridgePipeName,
-          bridgeMarker: s.bridgeMarker,
-          transcriptPath: s.transcriptPath,
-        }));
+        .map(s => {
+          // Backfill proposedName from transcript customTitle if missing —
+          // prevents closed sessions from falling back to sessionId.slice(0,8)
+          // in the UI after the PID file is gone.
+          if (!s.proposedName && s.transcriptPath) {
+            const recovered = readProposedName(s.sessionId, s.transcriptPath);
+            if (recovered) {
+              s.proposedName = recovered;
+              log('name:recovered', 'Recovered proposedName for known-session', { sessionId: s.sessionId, sessionName: recovered });
+            }
+          }
+          return {
+            sessionId: s.sessionId,
+            overlordId: s.overlordId,
+            sessionHistory: s.sessionHistory,
+            provider: s.provider,
+            cwd: s.cwd,
+            sessionType: s.sessionType,
+            replacedBy: s.replacedBy,
+            startedAt: s.startedAt,
+            pid: s.pid,
+            proposedName: s.proposedName,
+            resumedFrom: s.resumedFrom,
+            userAccepted: s.userAccepted,
+            bridgePipeName: s.bridgePipeName,
+            bridgeMarker: s.bridgeMarker,
+            transcriptPath: s.transcriptPath,
+          };
+        });
       fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
       this.saveBridgeRegistry();
     } catch { /* ignore */ }
@@ -830,6 +842,75 @@ export class StateManager {
     oldSession.bridgeMarker = undefined;
     oldSession.ptySessionId = undefined;
     this.saveKnownSessions();
+  }
+
+  /**
+   * Detect a sid-revert pattern: sessionHistory already contains `candidateSid`
+   * at an earlier position than the current active sid for this ovrId. Returns
+   * true when a raw 'changed' event with `candidateSid` should be treated as a
+   * revert (e.g., post-compaction rebind to original transcript) rather than a
+   * forward /clear. Caller must additionally check pid + startedAt.
+   */
+  isRevertCandidate(ovrId: string, candidateSid: string): boolean {
+    const activeSid = this.sessionsByOvrId.get(ovrId);
+    if (!activeSid || activeSid === candidateSid) return false;
+    if (this.deletedSessionIds.has(candidateSid)) return false;
+    const active = this.sessions.get(activeSid);
+    const history = active?.sessionHistory;
+    if (!history || history.length < 2) return false;
+    const activeEntry = history.find(e => e.sessionId === activeSid);
+    const candidateEntry = history.find(e => e.sessionId === candidateSid);
+    if (!activeEntry || !candidateEntry) return false;
+    return candidateEntry.attachedAt < activeEntry.attachedAt;
+  }
+
+  /**
+   * Revert the ovrId pointer back to an earlier sid in its history. Used when
+   * Claude auto-compaction (or similar) rebinds the session file to the
+   * original transcript after a /clear. Transfers live connection metadata
+   * forward from the interim session, clears replacedBy on the target, and
+   * removes the interim entry from the map (but keeps it in sessionHistory).
+   */
+  revertToSid(interimSessionId: string, targetSessionId: string): void {
+    const interim = this.sessions.get(interimSessionId);
+    const target = this.sessions.get(targetSessionId);
+    if (!interim || !target) {
+      log('sid:revert', 'Revert skipped — missing session', { sessionId: targetSessionId, sessionName: target?.proposedName ?? targetSessionId.slice(0, 8), extra: `interim=${interimSessionId.slice(0, 8)} target=${targetSessionId.slice(0, 8)} interimFound=${!!interim} targetFound=${!!target}` });
+      return;
+    }
+    const ovrId = interim.overlordId;
+    if (!ovrId) return;
+
+    // Transfer live connection metadata forward: whatever was on interim
+    // is the most recent truth (bridge pipe handle, PTY link, tty).
+    if (interim.bridgePipeName) target.bridgePipeName = interim.bridgePipeName;
+    if (interim.bridgeMarker) target.bridgeMarker = interim.bridgeMarker;
+    if (interim.bridgeTty) target.bridgeTty = interim.bridgeTty;
+    if (interim.ptySessionId) target.ptySessionId = interim.ptySessionId;
+    if (interim.sessionType !== 'plain') target.sessionType = interim.sessionType;
+
+    // Promote target back to active: clear replacedBy, inherit liveness state.
+    target.replacedBy = undefined;
+    target.overlordId = ovrId;
+    target.state = interim.state;
+    target.pid = interim.pid;
+    // Keep target.startedAt as-is (original spawn time). Do NOT overwrite with
+    // interim.startedAt — we want chronological integrity preserved.
+    // Do NOT touch target.resumedFrom — leave it as whatever it was before
+    // the interim session was born (typically undefined for the original).
+    // Do NOT touch target.sessionHistory — the merged history from the forward
+    // transferSessionState is correct; we just point back at an earlier entry.
+
+    this.sessionsByOvrId.set(ovrId, targetSessionId);
+
+    // Remove interim from the live session map. It remains referenced in
+    // sessionHistory as a past attachment.
+    this.sessions.delete(interimSessionId);
+    clearSessionCaches(interimSessionId, interim.transcriptPath, interim.cwd);
+
+    log('sid:revert', 'Reverted ovrId to prior sid', { sessionId: targetSessionId, sessionName: target.proposedName ?? targetSessionId.slice(0, 8), extra: `ovrId=${ovrId} interim=${interimSessionId.slice(0, 8)} target=${targetSessionId.slice(0, 8)}` });
+    this.saveKnownSessions();
+    this.onChange();
   }
 
   setBridgeTty(sessionId: string, tty: string): void {

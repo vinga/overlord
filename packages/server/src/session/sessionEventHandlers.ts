@@ -288,16 +288,28 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
       // --resume or pid reuse does not.
       const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId, raw.startedAt);
       if (oldSession && oldSession.sessionId !== raw.sessionId) {
+        // Revert detection: if raw.sessionId is an EARLIER entry in the
+        // ovrId's sessionHistory, this is a sid-revert (auto-compaction
+        // rebinding to the original transcript), not a forward /clear.
+        // Skip transferSessionState; promote the prior sid back to active.
+        const ovrId = oldSession.overlordId;
+        if (ovrId && ctx.stateManager.isRevertCandidate(ovrId, raw.sessionId)) {
+          ctx.stateManager.suppressBroadcast();
+          ctx.stateManager.revertToSid(oldSession.sessionId, raw.sessionId);
+          ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId, ovrId });
+          if (ctx.stateManager.isBridge(raw.sessionId)) {
+            ctx.migrateBridgeSession?.(oldSession.sessionId, raw.sessionId);
+          }
+          ctx.stateManager.resumeBroadcast();
+          return;
+        }
+
         ctx.stateManager.suppressBroadcast();
         ctx.stateManager.addOrUpdate({ ...raw, startedAt: oldSession.startedAt });
         ctx.stateManager.transferSessionState(oldSession.sessionId, raw.sessionId);
         const newOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? raw.sessionId;
         ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: oldSession.sessionId, newSessionId: raw.sessionId, ovrId: newOvrId });
-        if (oldSession.resumedFrom === raw.sessionId) {
-          ctx.stateManager.remove(oldSession.sessionId);
-        } else {
-          closeOrRemoveReplaced(ctx, oldSession.sessionId);
-        }
+        closeOrRemoveReplaced(ctx, oldSession.sessionId);
         // Migrate bridge session if needed
         if (ctx.stateManager.isBridge(oldSession.sessionId)) {
           ctx.migrateBridgeSession?.(oldSession.sessionId, raw.sessionId);
