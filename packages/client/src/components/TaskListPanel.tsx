@@ -1,6 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import { marked } from 'marked';
 import type { Room, Session, Task } from '../types';
 import styles from './TaskListPanel.module.css';
+
+const planMarkdownCache = new Map<string, string>();
+function renderPlanMarkdown(text: string): string {
+  const cached = planMarkdownCache.get(text);
+  if (cached !== undefined) return cached;
+  const html = marked.parse(text, { breaks: true, async: false }) as string;
+  if (planMarkdownCache.size > 200) planMarkdownCache.clear();
+  planMarkdownCache.set(text, html);
+  return html;
+}
 
 type Tab = 'agents' | 'tasks' | 'skills';
 type Filter = 'done' | 'awaiting';
@@ -49,6 +60,7 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
   const [skillsData, setSkillsData] = useState<SkillsData | null>(null);
   const [copiedSkill, setCopiedSkill] = useState<string | null>(null);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+  const [expandedPlans, setExpandedPlans] = useState<Set<string>>(new Set());
   const isResizingRef = React.useRef(false);
   const [isResizing, setIsResizing] = useState(false);
 
@@ -280,22 +292,41 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                 <div className={styles.sectionLabel}>Done</div>
                 {doneTasks.map(({ session, task, text, completedAt }, i) => {
                   const isAccepted = task.accepted ?? false;
+                  const isPlan = task.kind === 'plan';
+                  const planKey = `${session.sessionId}-${task.taskId}`;
+                  const isPlanExpanded = expandedPlans.has(planKey);
+                  const togglePlan = () => setExpandedPlans(prev => {
+                    const next = new Set(prev);
+                    if (next.has(planKey)) next.delete(planKey); else next.add(planKey);
+                    return next;
+                  });
                   return (
-                  <div key={`${session.sessionId}-${i}`} className={`${styles.row} ${styles.rowDone}`} onClick={() => handleSelect(session)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') handleSelect(session); }}>
-                    <span className={styles.rowIcon} style={{ color: isAccepted ? '#22c55e' : '#f59e0b' }}>✓</span>
+                  <React.Fragment key={`${session.sessionId}-${i}`}>
+                  <div
+                    className={`${styles.row} ${styles.rowDone}`}
+                    onClick={() => isPlan ? togglePlan() : handleSelect(session)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={e => { if (e.key === 'Enter') { isPlan ? togglePlan() : handleSelect(session); } }}
+                  >
+                    <span className={styles.rowIcon} style={{ color: isPlan ? '#a78bfa' : (isAccepted ? '#22c55e' : '#f59e0b') }}>{isPlan ? '◆' : '✓'}</span>
                     <div className={styles.rowBody}>
-                      <div className={styles.rowTitle}>{text || getSessionDisplayName(session, customNames)}</div>
-                      {task.summary && task.title && <div className={styles.rowText}>{task.summary}</div>}
+                      <div className={styles.rowTitle}>
+                        {text || getSessionDisplayName(session, customNames)}
+                        {isPlan && <span className={styles.planBadge}>plan</span>}
+                        {isPlan && <span className={styles.planChevron}>{isPlanExpanded ? '▾' : '▸'}</span>}
+                      </div>
+                      {!isPlan && task.summary && task.title && <div className={styles.rowText}>{task.summary}</div>}
                       <div className={styles.rowMeta}>
                         <span className={styles.metaSession}>{task.sessionName ?? getSessionDisplayName(session, customNames)}</span>
                         <span className={styles.metaDot}>·</span>
                         <span className={styles.metaTime}>{relativeTime(completedAt)}</span>
-                        {!isAccepted && (
+                        {!isPlan && !isAccepted && (
                           <><span className={styles.metaDot}>·</span><span className={styles.metaReview}>review</span></>
                         )}
                       </div>
                     </div>
-                    {!isAccepted && (
+                    {!isPlan && !isAccepted && (
                       <button
                         className={styles.rowAcceptBtn}
                         onClick={(e) => {
@@ -311,6 +342,13 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                       </button>
                     )}
                   </div>
+                  {isPlan && isPlanExpanded && task.planContent && (
+                    <div
+                      className={styles.planContent}
+                      dangerouslySetInnerHTML={{ __html: renderPlanMarkdown(task.planContent) }}
+                    />
+                  )}
+                  </React.Fragment>
                   );
                 })}
               </section>

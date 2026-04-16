@@ -119,7 +119,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // Generate a unique sessionId for this PTY session
         const sessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-        stateManager.trackPendingPtySpawn(cwd);
+        // Pass the ptyId so stateManager can flag this as a fresh spawn and
+        // skip the cwd-keyed pendingResumes lookup in addOrUpdate (which
+        // would otherwise contaminate this fresh session with a stale
+        // resume entry from another PTY in the same cwd).
+        stateManager.trackPendingPtySpawn(cwd, sessionId);
 
         const sessions = wsSessionMap.get(ws);
         if (sessions) sessions.add(sessionId);

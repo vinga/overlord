@@ -59,6 +59,46 @@ export function createTask(cwd: string, sessionId: string, sessionName: string |
   return task;
 }
 
+/**
+ * Creates a plan-kind task from a detected ExitPlanMode tool_use. Dedupes on
+ * planToolUseId — returns the existing task if already persisted. The plan is
+ * stored as a completed task (plans are artifacts, not work items).
+ */
+export function createPlanTask(
+  cwd: string,
+  sessionId: string,
+  sessionName: string | undefined,
+  planToolUseId: string,
+  planContent: string,
+  createdAt: string,
+): Task | undefined {
+  const existing = readRoomTasks(cwd);
+  const dup = existing.find(t => t.planToolUseId === planToolUseId);
+  if (dup) return dup;
+  const sessionTaskCount = existing.filter(t => t.sessionId === sessionId).length;
+  const title = deriveTitleFromPlan(planContent);
+  const task: Task = {
+    taskId: `${sessionId}-${sessionTaskCount + 1}`,
+    sessionId,
+    sessionName,
+    state: 'done',
+    kind: 'plan',
+    title,
+    createdAt,
+    completedAt: createdAt,
+    planContent,
+    planToolUseId,
+  };
+  writeRoomTasks(cwd, [task, ...existing]);
+  return task;
+}
+
+function deriveTitleFromPlan(plan: string): string {
+  const firstLine = plan.split('\n').map(l => l.trim()).find(l => l.length > 0) ?? 'Plan';
+  const stripped = firstLine.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '');
+  return stripped.length > 80 ? stripped.slice(0, 77) + '…' : stripped;
+}
+
 /** Updates a task by taskId in the room file, returns the full updated array. */
 export function updateTask(cwd: string, taskId: string, patch: Partial<Task>): Task[] {
   const tasks = readRoomTasks(cwd);

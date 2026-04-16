@@ -60,6 +60,9 @@ interface Task {
   createdAt: string;
   completedAt?: string;
   accepted?: boolean;
+  kind?: 'task' | 'plan'; // undefined = 'task'
+  planContent?: string;   // full plan markdown (kind='plan')
+  planToolUseId?: string; // dedup key from ExitPlanMode tool_use.id
 }
 
 interface Session {

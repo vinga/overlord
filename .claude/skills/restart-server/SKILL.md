@@ -24,22 +24,22 @@ Treat `server:200` as the single source of truth. Bridge `ENOENT` spam in the lo
 ## macOS
 
 ```bash
-# Kill ONLY processes on ports 3000 and 5173
+# Kill ONLY processes on ports 3000 and 5173 — no fixed sleep afterwards.
+# The restart poll below will wait for the new server to actually answer,
+# which is both faster (no wasted idle) and more reliable.
 kill -9 $(lsof -ti:3000) 2>/dev/null; kill -9 $(lsof -ti:5173) 2>/dev/null
 
-sleep 1
-
-# Start server
+# Start server + client in parallel
 npm run dev --workspace=packages/server > /tmp/overlord-server.log 2>&1 &
-
-# Start client
 npm run dev --workspace=packages/client > /tmp/overlord-client.log 2>&1 &
 
-# Wait until server answers (up to ~15s) instead of a fixed sleep
-for i in {1..15}; do
-  code=$(curl -sS -o /dev/null -w "%{http_code}" http://localhost:3000/api/info)
+# Poll the health endpoint every 100ms for up to ~15s. Fine granularity matters:
+# the server is usually ready in ~1.3s, so a 1s sleep rounds up to ~2s of wasted wait.
+code=000
+for i in $(seq 1 150); do
+  code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 1 http://localhost:3000/api/info 2>/dev/null)
   [ "$code" = "200" ] && break
-  sleep 1
+  sleep 0.1
 done
 echo "server:$code  client:$(lsof -nP -iTCP:5173 -sTCP:LISTEN | tail -n +2 | wc -l | tr -d ' ')"
 grep -m1 "Overlord server listening" /tmp/overlord-server.log || echo "WARN: listening line not found"

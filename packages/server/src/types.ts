@@ -57,6 +57,9 @@ export interface Task {
   createdAt: string;      // ISO
   completedAt?: string;   // ISO
   accepted?: boolean;
+  kind?: 'task' | 'plan'; // undefined = 'task' (back-compat)
+  planContent?: string;   // full plan markdown (kind='plan')
+  planToolUseId?: string; // dedup key from ExitPlanMode tool_use.id
 }
 
 export interface Session {
@@ -74,6 +77,7 @@ export interface Session {
   lastMessage?: string;
   activityFeed?: ActivityItem[];
   ptyCompactItems?: ActivityItem[];  // compact items sourced from PTY output, merged into activityFeed
+  ptyCompactBaseline?: number;  // compactCount at the moment PTY detected "Compacting conversation"; keeps isCompacting sticky until a new boundary lands
   model?: string;
   inputTokens?: number;
   compactCount?: number;

@@ -54,7 +54,7 @@ import {
   clearSessionCaches,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
-import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask } from '../ai/taskStorage.js';
+import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask, createPlanTask } from '../ai/taskStorage.js';
 import type { Task } from '../types.js';
 
 function normalizePath(p: string): string {
@@ -88,6 +88,16 @@ export class StateManager {
   private broadcastSuppressed = false;
   private pendingResumes = new Map<string, { resumeSessionId: string; timestamp: number }>();
   private pendingPtySpawns: Map<string, number> = new Map(); // cwd → timestamp
+  /**
+   * ptyIds spawned as FRESH sessions (terminal:start, not terminal:resume),
+   * mapped to insertion timestamp for TTL cleanup. Used by addOrUpdate to
+   * skip the cwd-keyed pendingResumes lookup and prevent stale resume state
+   * from contaminating an unrelated fresh spawn. Entries are not consumed
+   * on lookup because a single PTY may trigger multiple addOrUpdate calls
+   * (initial add + subsequent changed events).
+   */
+  private freshPtySpawns = new Map<string, number>();
+  private static readonly FRESH_PTY_TTL_MS = 5 * 60 * 1000;
   private acceptedSessions: Set<string> = new Set();
   private readonly acceptedFile = path.join(os.homedir(), '.claude', 'overlord-accepted.json');
   private readonly pendingResumesFile = path.join(os.homedir(), '.claude', 'overlord', 'pending-resumes.json');
@@ -461,8 +471,22 @@ export class StateManager {
     return undefined;
   }
 
-  trackPendingPtySpawn(cwd: string): void {
-    this.pendingPtySpawns.set(normalizePath(cwd), Date.now());
+  trackPendingPtySpawn(cwd: string, ptySessionId?: string): void {
+    const now = Date.now();
+    this.pendingPtySpawns.set(normalizePath(cwd), now);
+    if (ptySessionId) {
+      this.freshPtySpawns.set(ptySessionId, now);
+      // Evict expired fresh markers opportunistically so the map does not grow.
+      for (const [key, ts] of this.freshPtySpawns) {
+        if (now - ts > StateManager.FRESH_PTY_TTL_MS) this.freshPtySpawns.delete(key);
+      }
+      // A fresh spawn in this cwd invalidates any stale pendingResume
+      // that was never consumed — it can no longer belong to this PTY.
+      if (this.pendingResumes.has(normalizePath(cwd))) {
+        this.pendingResumes.delete(normalizePath(cwd));
+        this.savePendingResumes();
+      }
+    }
   }
 
   addOrUpdate(raw: RawSession): { isNewWaiting: boolean; lastMessage?: string } {
@@ -503,12 +527,21 @@ export class StateManager {
       return { isNewWaiting: false };
     }
 
+    // Extract the ptyId marker from raw.name (format: `[name]___OVR:<ptyId>`).
+    // Used to distinguish fresh PTY spawns from resumes so the cwd-keyed
+    // pendingResumes lookup below doesn't contaminate a fresh session with a
+    // stale resume entry from the same cwd. The marker is NOT consumed —
+    // a single PTY can trigger multiple addOrUpdate calls (initial add plus
+    // subsequent changed events) and all of them must see the flag.
+    const markerMatch = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[1] : undefined;
+    const isFreshSpawn = markerMatch !== undefined && this.freshPtySpawns.has(markerMatch);
+
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
     let resumedFrom: string | undefined;
     if (existingSession?.resumedFrom) {
       resumedFrom = existingSession.resumedFrom;
-    } else {
+    } else if (!isFreshSpawn) {
       const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
       if (pendingEntry && Date.now() - pendingEntry.timestamp < 60000) {
         resumedFrom = pendingEntry.resumeSessionId;
@@ -516,6 +549,11 @@ export class StateManager {
         this.savePendingResumes();
       }
     }
+    // Guard against self-loop: when `--resume X` keeps the same sessionId
+    // (Claude takes over the parent sid), the pending resume target equals
+    // the incoming sid. Leaving resumedFrom === sessionId breaks transcript
+    // fallback resolution and persists a broken record to known-sessions.
+    if (resumedFrom === sessionId) resumedFrom = undefined;
 
     // Read transcript — own first, then fall back to resumed-from (for --resume which appends to parent)
     const transcriptPath = raw.transcriptPath ?? resolveTranscriptPath({
@@ -602,6 +640,17 @@ export class StateManager {
       }
     }
 
+    // Persist any approved plans detected in the transcript as plan-kind Tasks.
+    // Dedupes on planToolUseId so repeated readTranscriptState calls are idempotent.
+    const newPlans: Task[] = [];
+    if (transcript?.detectedPlans && transcript.detectedPlans.length > 0) {
+      const displayName = proposedName ?? slug ?? sessionId.slice(0, 8);
+      for (const p of transcript.detectedPlans) {
+        const persisted = createPlanTask(cwd, sessionId, displayName, p.planToolUseId, p.plan, p.timestamp ?? new Date().toISOString());
+        if (persisted) newPlans.push(persisted);
+      }
+    }
+
     // Load persisted tasks on first encounter; preserve in-memory on updates.
     // If this is a resumed session, merge parent tasks so history carries over.
     let completionSummaries: Task[] | undefined;
@@ -615,6 +664,12 @@ export class StateManager {
     } else {
       completionSummaries = existingSession?.completionSummaries;
       currentTask = existingSession?.currentTask;
+      // Merge newly-persisted plan tasks into in-memory completionSummaries.
+      if (newPlans.length > 0) {
+        const existingIds = new Set((completionSummaries ?? []).map(t => t.taskId));
+        const toAdd = newPlans.filter(t => !existingIds.has(t.taskId));
+        if (toAdd.length > 0) completionSummaries = [...toAdd, ...(completionSummaries ?? [])];
+      }
     }
 
     // Preserve overlordId across updates; generate once on first creation.
@@ -838,6 +893,34 @@ export class StateManager {
     const slug = session.slug ?? readSlug(transcriptPath);
     const proposedName = session.proposedName ?? readProposedName(sessionId, transcriptPath);
 
+    // In-place /clear detection: the transcript file was rewritten smaller on
+    // disk, which for append-only jsonl means the session reset its context.
+    // This happens when /clear runs inside a `--resume`'d session because
+    // Claude Code keeps the same sessionId and truncates the existing file
+    // instead of creating a new one — so none of the sid-change based /clear
+    // paths (sessionEventHandlers 'changed', stale-transcript poll, pending-
+    // clear orphan) ever fire. Drop stale pre-clear state on the same session.
+    if (result.transcriptTruncated) {
+      session.activityFeed = undefined;
+      session.lastMessage = undefined;
+      session.currentTask = undefined;
+      session.currentTaskLabel = undefined;
+      session.ptyCompactItems = undefined;
+      session.ptyCompactBaseline = undefined;
+      session.compactCount = undefined;
+      session.isCompacting = undefined;
+      session.needsPermission = undefined;
+      session.permissionPromptText = undefined;
+      session.isLimitPrompt = undefined;
+      session.completionHint = undefined;
+      session.completionHintByUser = false;
+      clearCompletionHint(sessionId);
+      log('clear:detected', 'In-place transcript truncation', {
+        sessionId,
+        sessionName: session.proposedName ?? sessionId.slice(0, 8),
+      });
+    }
+
     let changed =
       session.state !== result.state ||
       session.lastActivity !== result.lastActivity ||
@@ -903,7 +986,15 @@ export class StateManager {
       session.model = result.model;
       session.inputTokens = result.inputTokens;
       session.compactCount = result.compactCount;
-      session.isCompacting = result.isCompacting;
+      // Keep isCompacting sticky while PTY has seen "Compacting conversation…"
+      // and the transcript hasn't yet recorded a new compact_boundary.
+      const baseline = session.ptyCompactBaseline;
+      const boundaryLanded = baseline !== undefined && (result.compactCount ?? 0) > baseline;
+      if (boundaryLanded) {
+        session.ptyCompactBaseline = undefined;
+      }
+      const stickyCompacting = baseline !== undefined && !boundaryLanded;
+      session.isCompacting = result.isCompacting || stickyCompacting;
       // Only overwrite permissionMode from transcript if screen hasn't locked it recently
       if (result.permissionMode && !(session.permissionModeLockedUntil && Date.now() < session.permissionModeLockedUntil)) {
         session.permissionMode = result.permissionMode;
@@ -1209,6 +1300,12 @@ export class StateManager {
     if (!session.activityFeed) session.activityFeed = [];
     session.activityFeed.unshift(item);
     session.isCompacting = true;
+    // Snapshot the current compactCount — refreshTranscript will keep
+    // isCompacting sticky until compactCount advances past this baseline,
+    // i.e. a real compact_boundary lands in the transcript.
+    if (session.ptyCompactBaseline === undefined) {
+      session.ptyCompactBaseline = session.compactCount ?? 0;
+    }
     this.onChange();
   }
 

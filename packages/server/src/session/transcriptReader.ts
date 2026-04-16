@@ -490,6 +490,14 @@ export function readTranscriptState(filePath: string): {
   lastUserIsDone?: boolean;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
+  // true iff the file on disk is smaller than the last cached size — a signal
+  // that the transcript was rewritten in place (e.g. /clear inside a --resume'd
+  // session, which keeps the same sessionId and same file path). Jsonl
+  // transcripts are append-only under normal operation, so shrinkage ⇒ clear.
+  transcriptTruncated?: boolean;
+  // Approved plans detected via ExitPlanMode tool_use in this transcript.
+  // stateManager dedupes on planToolUseId and persists as plan-kind Tasks.
+  detectedPlans?: Array<{ planToolUseId: string; plan: string; timestamp?: string }>;
 } {
   if (isCodexTranscript(filePath)) {
     return readCodexTranscriptState(filePath);
@@ -510,6 +518,11 @@ export function readTranscriptState(filePath: string): {
     // Medium path: stat the file to check mtime/size
     const stat = fs.statSync(filePath);
     const fileModifiedMs = stat.mtimeMs;
+    // Shrinkage signal: jsonl transcripts are append-only, so a smaller file
+    // size than last read means the file was rewritten (e.g. /clear inside a
+    // --resume'd session, which keeps the same sessionId). Callers use this
+    // to drop stale pre-clear state (activityFeed, currentTask, etc.).
+    const transcriptTruncated = cached !== undefined && stat.size < cached.fileSize;
 
     // File unchanged (same mtime AND size, not dirty) → re-evaluate time-based state only
     if (cached && !cached.dirty && cached.mtimeMs === fileModifiedMs && cached.fileSize === stat.size) {
@@ -553,6 +566,7 @@ export function readTranscriptState(filePath: string): {
     // Build unified activityFeed (messages + tools in chronological order) and extract lastMessage
     let lastMessage: string | undefined;
     const activityFeed: ActivityItem[] = [];
+    const detectedPlans: Array<{ planToolUseId: string; plan: string; timestamp?: string }> = [];
 
     // Extract model and inputTokens from the last assistant event
     let model: string | undefined;
@@ -636,6 +650,21 @@ export function readTranscriptState(filePath: string): {
                 if (block.type === 'tool_use' && block.name) {
                   const desc = describeInput(block.input);
                   const item: ActivityItem = { kind: 'tool', toolName: block.name as string, content: desc };
+                  // Capture approved plans from ExitPlanMode tool_use
+                  if (block.name === 'ExitPlanMode' && block.input && typeof block.input === 'object') {
+                    const planText = (block.input as Record<string, unknown>).plan;
+                    const toolUseId = (block as Record<string, unknown>).id as string | undefined;
+                    if (typeof planText === 'string' && planText.trim().length > 0 && toolUseId) {
+                      const res = toolResults.get(toolUseId);
+                      // Approved iff tool_result exists and contains "approved" (Claude Code
+                      // writes "The user has approved your plan."). Skip if no result yet
+                      // (still pending) or if rejected ("doesn't want to proceed").
+                      const approved = res !== undefined && !res.isError && /approved/i.test(res.content);
+                      if (approved) {
+                        detectedPlans.push({ planToolUseId: toolUseId, plan: planText, timestamp: parsed.timestamp });
+                      }
+                    }
+                  }
                   if (block.input && typeof block.input === 'object') {
                     const inp = block.input as Record<string, unknown>;
                     if (block.name === 'Edit') {
@@ -828,6 +857,8 @@ export function readTranscriptState(filePath: string): {
       lastUserIsDone: lastUserIsDone || undefined,
       permissionMode,
       pendingQuestion,
+      transcriptTruncated: transcriptTruncated || undefined,
+      detectedPlans: detectedPlans.length > 0 ? detectedPlans : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;

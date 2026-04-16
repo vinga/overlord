@@ -63,7 +63,7 @@ export function registerApiRoutes(
     const cwd = String(req.body?.cwd ?? process.cwd());
     const name = req.body?.name ? String(req.body.name) : undefined;
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    stateManager.trackPendingPtySpawn(cwd);
+    stateManager.trackPendingPtySpawn(cwd, ptySessionId);
     const args = ['--name', `${name ? name + '___OVR:' : '___OVR:'}${ptySessionId}`];
     try {
       ptyManager.spawn(ptySessionId, cwd, 80, 24, args);

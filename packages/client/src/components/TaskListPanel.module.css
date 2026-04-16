@@ -312,6 +312,95 @@
   border-color: rgba(212, 175, 55, 0.5);
 }
 
+/* ── Plan artifact rows ────────────────────────────────────────────── */
+
+.planBadge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #c4b5fd;
+  background: rgba(167, 139, 250, 0.14);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.planChevron {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.35);
+  margin-left: 4px;
+}
+
+.planContent {
+  margin: 0 16px 12px 44px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(167, 139, 250, 0.22);
+  background: rgba(167, 139, 250, 0.05);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.82);
+  max-height: 520px;
+  overflow-y: auto;
+  word-break: break-word;
+}
+.planContent h1,
+.planContent h2,
+.planContent h3,
+.planContent h4 {
+  color: #e8e8e8;
+  font-weight: 700;
+  margin: 14px 0 6px;
+  line-height: 1.3;
+}
+.planContent h1 { font-size: 16px; }
+.planContent h2 { font-size: 14px; color: #d4af37; }
+.planContent h3 { font-size: 13px; color: #c4b5fd; }
+.planContent h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255,255,255,0.55); }
+.planContent h1:first-child,
+.planContent h2:first-child,
+.planContent h3:first-child { margin-top: 0; }
+.planContent p { margin: 6px 0; }
+.planContent ul,
+.planContent ol { margin: 6px 0 6px 20px; padding: 0; }
+.planContent li { margin: 3px 0; }
+.planContent code {
+  font-family: 'SF Mono', 'Fira Mono', monospace;
+  font-size: 12px;
+  background: rgba(255,255,255,0.08);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #f0d98a;
+}
+.planContent pre {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+.planContent pre code {
+  background: none;
+  padding: 0;
+  color: rgba(255,255,255,0.85);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.planContent blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid rgba(167, 139, 250, 0.5);
+  color: rgba(255,255,255,0.6);
+  font-style: italic;
+}
+.planContent a { color: #d4af37; text-decoration: none; }
+.planContent a:hover { text-decoration: underline; }
+.planContent strong { color: #ffffff; font-weight: 700; }
+.planContent hr { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 10px 0; }
+
 /* ── Search tab ──────────────────────────────────────────────────────── */
 
 .searchPane {

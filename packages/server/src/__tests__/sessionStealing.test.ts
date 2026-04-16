@@ -125,6 +125,146 @@ describe('session stealing — findSessionByPid startedAt guard', () => {
   });
 });
 
+describe('session stealing — fresh spawn does not inherit stale pendingResume from same cwd', () => {
+  it('marks fresh PTY spawn via trackPendingPtySpawn(cwd, ptyId) so addOrUpdate skips pendingResumes', async () => {
+    const sm = await freshStateManager();
+    const cwd = '/tmp/projects/overlord';
+    const parentSid = 'jovian-parent';
+
+    // Earlier in the session, user resumed Jovian — pendingResume is set.
+    sm.trackPendingResume(cwd, parentSid);
+
+    // Later, user creates a fresh session in the same cwd. The fresh spawn
+    // is registered with its ptyId so addOrUpdate can identify it.
+    const freshPtyId = 'pty-fresh-123';
+    sm.trackPendingPtySpawn(cwd, freshPtyId);
+
+    // The fresh PTY's session file arrives. Its name contains the marker.
+    sm.addOrUpdate({
+      sessionId: 'gale-sid',
+      pid: 72957,
+      cwd,
+      startedAt: 9999,
+      name: `Gale___OVR:${freshPtyId}`,
+    });
+
+    const gale = sm.getSession('gale-sid');
+    // Gale must NOT have inherited Jovian's resumedFrom from the stale
+    // pendingResume entry.
+    expect(gale?.resumedFrom).toBeUndefined();
+  });
+
+  it('fresh marker survives multiple addOrUpdate calls for the same PTY', async () => {
+    const sm = await freshStateManager();
+    const cwd = '/tmp/projects/overlord';
+    sm.trackPendingResume(cwd, 'stale-parent');
+    const freshPtyId = 'pty-multi-call';
+    sm.trackPendingPtySpawn(cwd, freshPtyId);
+
+    // trackPendingPtySpawn with a ptyId must also nuke stale pendingResume.
+    expect(sm.hasPendingResume(cwd)).toBe(false);
+
+    // First addOrUpdate (e.g. 'added' event).
+    sm.addOrUpdate({
+      sessionId: 'neda-sid',
+      pid: 100,
+      cwd,
+      startedAt: 1000,
+      name: `Neda___OVR:${freshPtyId}`,
+    });
+    expect(sm.getSession('neda-sid')?.resumedFrom).toBeUndefined();
+
+    // Second addOrUpdate (e.g. 'changed' event) — marker must still be
+    // recognized as fresh (not consumed on first call).
+    sm.addOrUpdate({
+      sessionId: 'neda-sid',
+      pid: 100,
+      cwd,
+      startedAt: 1000,
+      name: `Neda___OVR:${freshPtyId}`,
+    });
+    expect(sm.getSession('neda-sid')?.resumedFrom).toBeUndefined();
+  });
+
+  it('a real resume still populates resumedFrom (no marker in raw.name → falls through to pendingResumes)', async () => {
+    const sm = await freshStateManager();
+    const cwd = '/tmp/projects/overlord';
+    const parentSid = 'jovian-parent';
+
+    sm.trackPendingResume(cwd, parentSid);
+
+    // Resume spawns a PTY but does NOT mark it as fresh. The session settles
+    // with a new sid; addOrUpdate picks up the pending resume.
+    sm.addOrUpdate({
+      sessionId: 'new-resume-sid',
+      pid: 1234,
+      cwd,
+      startedAt: 5555,
+      // no name with fresh marker
+    });
+
+    expect(sm.getSession('new-resume-sid')?.resumedFrom).toBe(parentSid);
+  });
+});
+
+describe('session stealing — resumedFrom self-loop guard', () => {
+  it('does not set resumedFrom when the pending resume target equals the incoming sessionId', async () => {
+    const sm = await freshStateManager();
+    const cwd = '/tmp/projects/overlord';
+    const sid = 'viktor-sid';
+
+    // User clicks Resume on Viktor — pendingResume[cwd] = viktor-sid
+    sm.trackPendingResume(cwd, sid);
+
+    // `--resume` spawns Claude which takes over the same sid (common when
+    // the old process was already dead). Incoming sessionId matches the
+    // pending resume target.
+    sm.addOrUpdate({ sessionId: sid, pid: 77849, cwd, startedAt: 1000 });
+
+    const v = sm.getSession(sid);
+    expect(v).toBeDefined();
+    // Self-loop must not persist — resumedFrom pointing at self breaks
+    // transcript fallback resolution.
+    expect(v?.resumedFrom).toBeUndefined();
+  });
+});
+
+describe('/clear inside --resumed session — in-place transcript truncation', () => {
+  it('readTranscriptState flags transcriptTruncated when file shrinks between reads', async () => {
+    const reader = await import('../session/transcriptReader.js');
+    const transcriptPath = path.join(tmpHome, '.claude', 'projects', 'clear-test.jsonl');
+
+    // Pre-clear: a few turns in the transcript.
+    const lines = [];
+    for (let i = 0; i < 10; i++) {
+      lines.push(JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: `msg ${i}` },
+        timestamp: new Date(Date.now() - (10 - i) * 1000).toISOString(),
+        sessionId: 'viktor',
+      }));
+    }
+    fs.writeFileSync(transcriptPath, lines.join('\n') + '\n');
+    const first = reader.readTranscriptState(transcriptPath);
+    expect(first.transcriptTruncated).toBeUndefined();
+
+    // /clear rewrites the same file smaller. Force a distinct mtime so the
+    // reader doesn't take the unchanged fast path.
+    const later = Date.now() / 1000 + 1;
+    fs.writeFileSync(transcriptPath, JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: 'hey there' },
+      timestamp: new Date().toISOString(),
+      sessionId: 'viktor',
+    }) + '\n');
+    fs.utimesSync(transcriptPath, later, later);
+    reader.markTranscriptDirty(transcriptPath);
+
+    const second = reader.readTranscriptState(transcriptPath);
+    expect(second.transcriptTruncated).toBe(true);
+  });
+});
+
 describe('session stealing — end-to-end Willow/Isolde scenario', () => {
   it('Isolde does not inherit Willow\'s ovrId when both --resume the same parent', async () => {
     const sm = await freshStateManager();

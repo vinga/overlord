@@ -227,6 +227,81 @@ When a PTY resume spawns Claude and it fails/retries, each attempt creates tempo
 
 **Fix:** CWD-based /clear detection removed from both `sessionEventHandlers.ts` (added handler) and `transcriptWatcher.ts` (handleTranscriptAdded). The remaining PID-based and in-place detection paths also check `hasActiveResumeInProgress()` as a safety guard.
 
+### Session stealing — concurrent `--resume` overwrites pid, swaps ovrId (FIXED)
+
+**Symptom:** A newly spawned session inherits another session's `overlordId`, transcript, proposedName, or conversation. Reported cases: Isolde stole from Willow; Galdeth, Gale, Neda, Kagami all showed cross-session contamination. Sometimes a fresh spawn shows a completely unrelated conversation.
+
+**Root cause (two independent races):**
+
+1. **Concurrent `--resume` pid overwrite.** When two PTYs `--resume` the same parent sessionId within seconds of each other, each one's `{pid}.json` transiently reports the *parent* sid with its own fresh pid/startedAt before Claude rewrites it with a new sid. The session watcher fires `addOrUpdate({sessionId: parentSid, pid: newPid, ...})`, which used to overwrite the in-memory entry's pid. Then `findSessionByPid(newPid, ...)` matched the wrong (stolen) entry, and `transferSessionState` moved the ovrId to the interloper. Willow/Isolde was the canonical case.
+
+2. **cwd-keyed `pendingResumes` contamination.** `pendingResumes` is keyed by cwd (legacy). A stale resume entry left in the map could attach its `resumedFrom` to an *unrelated fresh spawn* that later happened in the same cwd. The fresh spawn would then load the parent's transcript and inherit its proposedName. This is a violation of the "NEVER match by cwd" rule — the cwd key is still there for backwards compat but must be gated.
+
+**Fixes (all in `packages/server/src/session/stateManager.ts`):**
+
+- **pid overwrite guard in `addOrUpdate`:** reject an incoming `{sid, pid, startedAt}` if an existing session has the same sid but different pid AND different startedAt AND is still `state !== 'closed'`. A legitimate resume of a dead session is allowed (closed → replacement keeps lineage). A live session cannot have its pid silently swapped.
+
+- **`startedAt` gate on `findSessionByPid`:** the caller (/clear detection in `sessionEventHandlers.ts` added/changed handlers) passes `raw.startedAt`, and the lookup requires it to match. Pid reuse by the OS or a concurrent `--resume` produces a fresh `startedAt`, so no false match. A genuine `/clear` rewrites the file in place and preserves `startedAt`, so real clears still match.
+
+- **`startedAt` gate on stale-transcript /clear detection** (`transcriptWatcher.ts`): same principle — only treat a sessionId change as a `/clear` when `startedAt` is preserved.
+
+- **`freshPtySpawns` map with 5-minute TTL:** `trackPendingPtySpawn(cwd, ptySessionId)` registers the ptyId as a fresh spawn. `addOrUpdate` extracts the ptyId from the `___OVR:<ptyId>` marker in `raw.name` and, if present in `freshPtySpawns`, skips the cwd-keyed `pendingResumes` lookup entirely. **The marker is NOT consumed on lookup** — a single PTY triggers multiple `addOrUpdate` calls (initial `add` + later `change` events) and all of them must see the flag.
+
+- **Proactive `pendingResumes[cwd]` invalidation:** `trackPendingPtySpawn(cwd, ptyId)` also deletes any stale `pendingResumes[cwd]` entry — if a new PTY is about to spawn in this cwd, no older pending resume can legitimately belong to it.
+
+- **Call sites updated:** `wsHandler.ts` `terminal:spawn` and `apiRoutes.ts` debug spawn endpoint both pass the generated `ptySessionId` to `trackPendingPtySpawn`, so the fresh-marker path activates for all fresh-starts. `terminal:resume` does NOT call it — resumes correctly fall through to the `pendingResumes` path.
+
+**Tests:** `packages/server/src/__tests__/sessionStealing.test.ts` (10 tests): pid-overwrite rejection, normal update, closed-session replacement, findSessionByPid startedAt gate, excludeSessionId, fresh-marker skipping pendingResumes, multi-call marker persistence, real resume still populates resumedFrom, Willow/Isolde end-to-end.
+
+**How to identify this bug if it recurs:**
+1. Check `known-sessions.json` for two entries with the same proposedName but different sids/ovrIds — classification is content-based, so a shared name means a shared transcript.
+2. Check the new session's `resumedFrom` field — if it points to an unrelated parent in the same cwd, the `pendingResumes` gate failed.
+3. Search server log for `[stateManager] rejecting conflicting update` — the guard is firing (expected for concurrent resume) or NOT firing (guard regressed).
+4. Search log for `[marker-check] ... alreadyLinked=false` followed by `[pty:linked] PTY linked via name marker` — the marker path is working.
+
+**What NOT to do if this recurs:** do NOT add cwd-based matching, do NOT shorten the freshPtySpawns TTL below ~minutes, do NOT consume the marker on first lookup.
+
+---
+
+### /clear inside `--resume`'d session — conversation desyncs from PTY (FIXED)
+
+**Symptom:** After running `/clear` inside a session that was started via `--resume`, the Terminal PTY tab shows the fresh post-clear prompt, but the Conversation panel still shows the pre-clear activity feed, last message, and task. State is frozen. Viktor (`4936ee59`, `ovr-gxvkqioz`) was the canonical repro.
+
+**Root cause:** When `/clear` runs inside a `--resume`'d session, Claude Code **keeps the same `sessionId`** and **rewrites the same transcript `.jsonl` file in place** (truncated, fresh content). All 4 pre-existing /clear detection paths key off a *sessionId change*:
+
+1. `sessionEventHandlers` 'changed' handler — expects new sid with same pid → ❌ sid unchanged
+2. Stale-transcript 3s poll — expects `raw.sessionId !== sessionId` → ❌ sid unchanged
+3. Startup PID-file comparison — not startup → ❌ n/a
+4. UI pending-clear via `consumePendingClearReplacement` — expects a **new** orphan `.jsonl` to appear → ❌ same path, no new file
+
+Result: server's in-memory `activityFeed`, `lastMessage`, `currentTask`, `ptyCompactItems`, etc. stayed at pre-clear values while the transcript on disk was a fresh short file. `refreshTranscript` read the small file correctly but the stale pre-clear state was never wiped.
+
+**Secondary bug found during diagnosis:** `resumedFrom` self-loop. When `--resume X` kept the same sid X (common when the old process had already died and the new one takes over), `addOrUpdate` saw incoming `sessionId: X` and `pendingResumes[cwd] === X`, then set `resumedFrom: X`. A self-reference persisted to `known-sessions.json` and broke transcript-path fallback resolution.
+
+**Fixes:**
+
+- **In-place transcript truncation detection** — `readTranscriptState` now returns `transcriptTruncated: true` when `stat.size < cached.fileSize`. Jsonl transcripts are append-only in normal flow, so a shrink on disk is an unambiguous signal of rewrite-in-place (/clear). This is the **4th /clear detection path**, scoped strictly to "same-sid transcript shrink" — it does NOT touch session matching, ovrIds, or any inter-session mapping.
+
+- **`refreshTranscript` wipes stale state when flag is set:** `activityFeed`, `lastMessage`, `currentTask`, `currentTaskLabel`, `ptyCompactItems`, `ptyCompactBaseline`, `compactCount`, `isCompacting`, `needsPermission`, `permissionPromptText`, `isLimitPrompt`, `completionHint`, `completionHintByUser`. Also clears the persisted completion hint. Logs `[clear:detected] In-place transcript truncation`.
+
+- **`resumedFrom === sessionId` guard** in `addOrUpdate`: after resolving `resumedFrom` (from existing session or `pendingResumes[cwd]`), if it equals the incoming `sessionId`, drop it to `undefined`. Prevents the self-loop from being persisted.
+
+**Why this does not reintroduce stealing/proliferation:**
+- Truncation detection only affects a **single existing session's own fields** — never creates a new `Session`, never calls `transferSessionState`, never touches `overlordId`, `pid`, `startedAt`, `findSessionByPid`, `pendingResumes`, or `freshPtySpawns`.
+- Self-loop guard only clears a broken scalar field; no linking/matching logic.
+- Tested alongside the stealing tests (same test file, shared `freshStateManager` fixture).
+
+**Diagnostic steps if this recurs:**
+1. Check `ls -l` on the transcript file — is its mtime recent but size smaller than expected?
+2. `grep -c '"type":"summary"' <transcript.jsonl>` — pre-clear transcripts typically have summary entries; fresh post-clear ones have 0 and only a handful of lines.
+3. Check `{pid}.json` in `~/.claude/sessions/` — if `sessionId` field is unchanged from before /clear, the sid-change detection paths cannot fire and this 4th path is the only one that will.
+4. Grep server log for `clear:detected` + `In-place transcript truncation` — the new path should log it.
+5. If `known-sessions.json` has `resumedFrom` equal to `sessionId`, the self-loop guard regressed.
+
+**What NOT to do:** do NOT add cwd-based matching or content scanning as a 5th detection path; do NOT remove the `transcriptTruncated` signal in favor of mtime-only heuristics (mtime alone can't distinguish append from rewrite).
+
+---
+
 ### Bridge session marked closed after /clear — health check too aggressive (FIXED)
 
 **Symptom:** A bridge session (e.g. "Ulyana") shows as `closed` even though its PID is alive and the bridge process is running. Happens specifically after `/clear` is run inside the session.

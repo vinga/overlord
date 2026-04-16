@@ -1282,7 +1282,6 @@ export function DetailPanel({
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
   const [notesContent, setNotesContent] = useState('');
-  const [notesPreview, setNotesPreview] = useState(false);
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notesSessionIdRef = useRef<string | undefined>(undefined);
   const [isEditing, setIsEditing] = useState(false);
@@ -1314,6 +1313,7 @@ export function DetailPanel({
   const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [expandedPlanTasks, setExpandedPlanTasks] = useState<Set<string>>(new Set());
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
@@ -2397,43 +2397,26 @@ const currentDisplayName =
                 {/* Tab: Notes */}
                 {activeTab === 'notes' && (
                   <div className={styles.notesTab}>
-                    <div className={styles.notesToolbar}>
-                      <button
-                        className={`${styles.notesToggleBtn} ${!notesPreview ? styles.notesToggleActive : ''}`}
-                        onClick={() => setNotesPreview(false)}
-                      >Edit</button>
-                      <button
-                        className={`${styles.notesToggleBtn} ${notesPreview ? styles.notesToggleActive : ''}`}
-                        onClick={() => setNotesPreview(true)}
-                      >Preview</button>
-                    </div>
-                    {notesPreview ? (
-                      <div
-                        className={`${styles.notesPreview} ${styles.markdownContent}`}
-                        dangerouslySetInnerHTML={{ __html: renderMarkdown(notesContent || '*No notes yet.*') }}
-                      />
-                    ) : (
-                      <textarea
-                        className={styles.notesTextarea}
-                        value={notesContent}
-                        placeholder="Add notes…"
-                        onChange={e => {
-                          const value = e.target.value;
-                          setNotesContent(value);
-                          if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
-                          const sessionId = selectedSession.sessionId;
-                          notesSaveTimerRef.current = setTimeout(() => {
-                            fetch(`/api/sessions/${sessionId}/notes`, {
-                              method: 'PUT',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ notes: value }),
-                            }).then(() => {
-                              updateNoteFirstLine(sessionId, value);
-                            }).catch(() => {});
-                          }, 500);
-                        }}
-                      />
-                    )}
+                    <textarea
+                      className={styles.notesTextarea}
+                      value={notesContent}
+                      placeholder="Add notes…"
+                      onChange={e => {
+                        const value = e.target.value;
+                        setNotesContent(value);
+                        if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+                        const sessionId = selectedSession.sessionId;
+                        notesSaveTimerRef.current = setTimeout(() => {
+                          fetch(`/api/sessions/${sessionId}/notes`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ notes: value }),
+                          }).then(() => {
+                            updateNoteFirstLine(sessionId, value);
+                          }).catch(() => {});
+                        }, 500);
+                      }}
+                    />
                   </div>
                 )}
 
@@ -2742,20 +2725,38 @@ const currentDisplayName =
                             </div>
                             );
                           })()}
-                          {(selectedSession.completionSummaries ?? []).map((task, i) => (
-                            <div key={i} className={styles.summaryRow_}>
-                              <span className={styles.summaryRowIcon} style={{ color: task.accepted ? '#22c55e' : '#f59e0b' }}>✓</span>
+                          {(selectedSession.completionSummaries ?? []).map((task, i) => {
+                            const isPlan = task.kind === 'plan';
+                            const planKey = task.taskId;
+                            const isExpanded = expandedPlanTasks.has(planKey);
+                            const togglePlan = () => setExpandedPlanTasks(prev => {
+                              const next = new Set(prev);
+                              if (next.has(planKey)) next.delete(planKey); else next.add(planKey);
+                              return next;
+                            });
+                            return (
+                            <React.Fragment key={i}>
+                            <div
+                              className={styles.summaryRow_}
+                              onClick={isPlan ? togglePlan : undefined}
+                              style={isPlan ? { cursor: 'pointer' } : undefined}
+                            >
+                              <span className={styles.summaryRowIcon} style={{ color: isPlan ? '#a78bfa' : (task.accepted ? '#22c55e' : '#f59e0b') }}>{isPlan ? '◆' : '✓'}</span>
                               <div style={{ flex: 1, minWidth: 0 }}>
-                                {task.title && <div className={styles.summaryRowText} style={{ fontWeight: 500 }}>{task.title}</div>}
-                                {task.summary && <div className={styles.summaryRowText} style={{ opacity: 0.7, fontSize: '11px' }}>{task.summary}</div>}
+                                {task.title && <div className={styles.summaryRowText} style={{ fontWeight: 500 }}>
+                                  {task.title}
+                                  {isPlan && <span style={{ marginLeft: 6, fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#c4b5fd', background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.35)', borderRadius: 3, padding: '1px 5px' }}>plan</span>}
+                                  {isPlan && <span style={{ marginLeft: 4, fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>{isExpanded ? '▾' : '▸'}</span>}
+                                </div>}
+                                {!isPlan && task.summary && <div className={styles.summaryRowText} style={{ opacity: 0.7, fontSize: '11px' }}>{task.summary}</div>}
                                 {!task.title && !task.summary && <span className={styles.summaryRowText}>—</span>}
                                 {task.sessionName && <div style={{ fontSize: '10px', color: 'rgba(180,180,200,0.4)', marginTop: 1 }}>{task.sessionName}</div>}
                               </div>
-                              {!task.accepted && (
+                              {!isPlan && !task.accepted && (
                                 <span style={{ fontSize: '11px', color: '#f59e0b', opacity: 0.8, marginRight: 4 }}>· review</span>
                               )}
                               <span className={styles.summaryRowTime}>{formatRelativeTime(task.completedAt ?? task.createdAt)}</span>
-                              {!task.accepted && (
+                              {!isPlan && !task.accepted && (
                                 <button
                                   className={styles.summaryRowAcceptBtn}
                                   onClick={(e) => {
@@ -2767,7 +2768,15 @@ const currentDisplayName =
                                 </button>
                               )}
                             </div>
-                          ))}
+                            {isPlan && isExpanded && task.planContent && (
+                              <div
+                                className={styles.planContent}
+                                dangerouslySetInnerHTML={{ __html: renderMarkdown(task.planContent) }}
+                              />
+                            )}
+                            </React.Fragment>
+                            );
+                          })}
                         </div>
                       )}
                     </section>

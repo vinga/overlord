@@ -34,6 +34,73 @@ interface OfficeProps {
   platform?: string;
 }
 
+function HeaderMenu({ onNewSession, onLogs }: { onNewSession?: () => void; onLogs?: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  if (!onNewSession && !onLogs) return null;
+
+  return (
+    <div ref={ref} className={styles.headerMenu}>
+      <button
+        className={styles.headerMenuBtn}
+        onClick={() => setOpen(o => !o)}
+        title="Menu"
+        aria-label="Menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <svg width="14" height="12" viewBox="0 0 14 12" fill="currentColor">
+          <rect y="0" width="14" height="1.75" rx="0.875" />
+          <rect y="5.125" width="14" height="1.75" rx="0.875" />
+          <rect y="10.25" width="14" height="1.75" rx="0.875" />
+        </svg>
+      </button>
+      {open && (
+        <div className={styles.headerMenuDropdown} role="menu">
+          {onNewSession && (
+            <button
+              className={styles.headerMenuItem}
+              onClick={() => { setOpen(false); onNewSession(); }}
+              role="menuitem"
+            >
+              <span className={styles.headerMenuItemIcon}>+</span>
+              <span className={styles.headerMenuItemLabel}>New session</span>
+              <span className={styles.headerMenuItemHint}>Pick a directory</span>
+            </button>
+          )}
+          {onLogs && (
+            <button
+              className={styles.headerMenuItem}
+              onClick={() => { setOpen(false); onLogs(); }}
+              role="menuitem"
+            >
+              <span className={styles.headerMenuItemIcon}>
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 2.5h7L13 5.5v8a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5z" />
+                  <path d="M10 2.5V5a.5.5 0 0 0 .5.5H13" />
+                  <path d="M5.5 8.5h5M5.5 10.75h5M5.5 6.25h2" />
+                </svg>
+              </span>
+              <span className={styles.headerMenuItemLabel}>Logs</span>
+              <span className={styles.headerMenuItemHint}>Server events</span>
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function formatUpdatedAt(updatedAt: string): string {
   try {
     const date = new Date(updatedAt);
@@ -145,16 +212,10 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             </svg>
           </button>
         )}
-        {onOpenDirectoryPicker && (
-          <button className={styles.newSessionBtn} onClick={onOpenDirectoryPicker}>
-            + New Session
-          </button>
-        )}
-        {onLogsClick && (
-          <button className={styles.logsBtn} onClick={onLogsClick}>
-            Logs
-          </button>
-        )}
+        <HeaderMenu
+          onNewSession={onOpenDirectoryPicker}
+          onLogs={onLogsClick}
+        />
       </header>
       <div className={styles.content}>
         {!hasRooms ? (
