@@ -60,6 +60,7 @@ export interface Task {
   kind?: 'task' | 'plan'; // undefined = 'task' (back-compat)
   planContent?: string;   // full plan markdown (kind='plan')
   planToolUseId?: string; // dedup key from ExitPlanMode tool_use.id
+  planStatus?: 'approved' | 'rejected' | 'pending'; // only for kind='plan'
 }
 
 export interface Session {
@@ -111,6 +112,7 @@ export interface Session {
   bridgePipeName?: string;   // e.g. "overlord-new-mnqs8m2f" — the named pipe identifier
   bridgeMarker?: string;     // e.g. "brg-mnqs8m2f" — the ___BRG: marker from session name
   bridgeTty?: string;        // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
+  bridgeDead?: boolean;      // true when output pipe exhausted all retries — terminal feed is gone
 
   // PTY/embedded connection metadata (populated when sessionType === 'embedded')
   ptySessionId?: string;     // e.g. "pty-abc123" — the PTY manager's session ID

@@ -15,6 +15,7 @@ interface WorkerProps {
   completionSummaries?: Task[];
   userAccepted?: boolean;
   needsPermission?: boolean;
+  bridgeDead?: boolean;
   currentTaskLabel?: string;
   currentTask?: Task;
   isWorker?: boolean;
@@ -54,7 +55,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, currentTaskLabel, currentTask, isWorker, ptyInputPendingSince, notesSummary, onClick, onRename }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, bridgeDead, currentTaskLabel, currentTask, isWorker, ptyInputPendingSince, notesSummary, onClick, onRename }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -131,6 +132,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
     >
       {!minimal && needsPermission && !isSubagent && (
         <div className={styles.permissionBadge}>⚠ approval</div>
+      )}
+      {!minimal && bridgeDead && !isSubagent && (
+        <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
       {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && (
         <div

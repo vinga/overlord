@@ -71,10 +71,18 @@ export function createPlanTask(
   planToolUseId: string,
   planContent: string,
   createdAt: string,
+  planStatus: 'approved' | 'rejected' | 'pending' = 'approved',
 ): Task | undefined {
   const existing = readRoomTasks(cwd);
   const dup = existing.find(t => t.planToolUseId === planToolUseId);
-  if (dup) return dup;
+  if (dup) {
+    // Update status if it changed (e.g. pending → approved)
+    if (dup.planStatus !== planStatus) {
+      dup.planStatus = planStatus;
+      writeRoomTasks(cwd, existing);
+    }
+    return dup;
+  }
   const sessionTaskCount = existing.filter(t => t.sessionId === sessionId).length;
   const title = deriveTitleFromPlan(planContent);
   const task: Task = {
@@ -88,6 +96,7 @@ export function createPlanTask(
     completedAt: createdAt,
     planContent,
     planToolUseId,
+    planStatus,
   };
   writeRoomTasks(cwd, [task, ...existing]);
   return task;

@@ -63,6 +63,7 @@ interface Task {
   kind?: 'task' | 'plan'; // undefined = 'task'
   planContent?: string;   // full plan markdown (kind='plan')
   planToolUseId?: string; // dedup key from ExitPlanMode tool_use.id
+  planStatus?: 'approved' | 'rejected' | 'pending'; // only for kind='plan'
 }
 
 interface Session {
@@ -89,6 +90,7 @@ interface Session {
   resumedFrom?: string;
   sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide';
   bridgeTty?: string;         // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
+  bridgeDead?: boolean;       // output pipe exhausted retries — terminal feed is gone
   needsPermission?: boolean;
   permissionPromptText?: string;
   isLimitPrompt?: boolean;

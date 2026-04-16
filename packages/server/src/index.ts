@@ -403,6 +403,8 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       // producing a fresh full-screen repaint that fills the buffer from scratch.
       ptyOutputBuffer.delete(sessionId);
       console.log(`[bridge] output socket connected for ${sessionId.slice(0, 8)}`);
+      // Clear bridgeDead flag — pipe is alive again.
+      stateManager.clearBridgeDead(sessionId);
       const isOutputReconnect = computeIsReconnect(linkedBridgeSessions, sessionId);
       broadcastRaw({ type: 'terminal:linked', ptySessionId: `bridge-${sessionId}`, claudeSessionId: sessionId, ...(isOutputReconnect ? { replay: true } : {}) });
       // No server-side health check: idle sessions (blank prompt after /clear, waiting for input)
@@ -523,6 +525,7 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       // Give up after 20 consecutive failures (~60s) — bridge is permanently dead
       if (nextFailures >= 20) {
         console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}, giving up after ${nextFailures} failures`);
+        stateManager.setBridgeDead(currentId);
         return;
       }
       console.log(`[bridge] output pipe dead for ${sessionId.slice(0, 8)}, will retry... (${nextFailures}/20)`);

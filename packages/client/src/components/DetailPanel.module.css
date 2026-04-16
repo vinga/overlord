@@ -66,6 +66,146 @@
   text-transform: uppercase;
 }
 
+/* Panel search (in tab bar) */
+.panelSearchWrap {
+  display: flex;
+  align-items: center;
+}
+
+.panelSearchBtn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.panelSearchBtn:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.panelSearchInputWrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.panelSearchInput {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e8e8e8;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  width: 150px;
+  padding: 2px 0;
+}
+
+.panelSearchInput::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.panelSearchInput::selection {
+  background: rgba(212, 175, 55, 0.35);
+  color: #fff;
+}
+
+.panelSearchCount {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(212, 175, 55, 0.7);
+  flex-shrink: 0;
+}
+
+.panelSearchClose {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.panelSearchClose:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Panel search results dropdown */
+.panelSearchResults {
+  background: rgba(30, 30, 30, 0.97);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  max-height: 240px;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+
+.panelSearchEmpty {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.3);
+  padding: 12px 16px;
+  text-align: center;
+}
+
+.panelSearchRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.panelSearchRow:hover {
+  background: rgba(212, 175, 55, 0.08);
+}
+
+.panelSearchRole {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.35);
+  min-width: 50px;
+}
+
+.panelSearchRole_user {
+  color: rgba(156, 163, 175, 0.8);
+}
+
+.panelSearchRole_assistant {
+  color: rgba(167, 139, 250, 0.8);
+}
+
+.panelSearchRole_tool {
+  color: rgba(212, 175, 55, 0.8);
+}
+
+.panelSearchExcerpt {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.panelSearchExcerpt strong {
+  color: #ec4899;
+  font-weight: 600;
+}
+
 .backdrop {
   position: fixed;
   inset: 0;
@@ -421,6 +561,54 @@
   color: #ddd;
 }
 
+.bridgeDeadBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  background: rgba(220, 120, 50, 0.12);
+  border-bottom: 1px solid rgba(220, 120, 50, 0.25);
+  color: #dc7832;
+  font-size: 12px;
+}
+
+.bridgeDeadActions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bridgeDeadKillResume {
+  background: rgba(220, 120, 50, 0.2);
+  border: 1px solid rgba(220, 120, 50, 0.4);
+  border-radius: 5px;
+  color: #dc7832;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 10px;
+  font-weight: 500;
+}
+
+.bridgeDeadKillResume:hover {
+  background: rgba(220, 120, 50, 0.3);
+}
+
+.bridgeDeadKill {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  color: #888;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+.bridgeDeadKill:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #aaa;
+}
+
 .emptyFeedHint {
   display: flex;
   flex-direction: column;
@@ -563,6 +751,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border: 1px solid transparent;
+  padding: 0 4px;
+  margin: 0;
 }
 
 .nameInput {
@@ -572,14 +763,23 @@
   border-radius: 4px;
   color: #e8e8e8;
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 14px;
-  padding: 4px 8px;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 0 4px;
+  margin: 0;
   outline: none;
+  line-height: inherit;
+  box-sizing: border-box;
 }
 
 .nameInput:focus {
   border-color: rgba(212, 175, 55, 0.7);
   box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.15);
+}
+
+.nameInput::selection {
+  background: rgba(212, 175, 55, 0.35);
+  color: #fff;
 }
 
 .nameBtn {

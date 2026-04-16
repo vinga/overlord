@@ -58,10 +58,10 @@ export function SessionCommands({ cwd, name, sessionId, bridgePath, label }: Pro
   let bridgeCmd: string;
 
   if (sessionId) {
-    // Resume: --resume handles CWD internally, so no cd needed in the bridge variant
+    // Resume: include cd so copy-pasted commands run from the correct directory
     const marker = sessionId.slice(0, 8);
     directCmd = `cd "${cwd}" && claude --resume ${sessionId} --name "${name}"`;
-    bridgeCmd = `${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
+    bridgeCmd = `cd "${cwd}" && ${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
   } else {
     // New session: include cd in both variants
     const marker = newMarkerRef.current;

@@ -326,6 +326,12 @@
   padding: 1px 5px;
 }
 
+.planStatusIcon {
+  margin-left: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .planChevron {
   font-size: 10px;
   color: rgba(255, 255, 255, 0.35);

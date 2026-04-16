@@ -640,13 +640,13 @@ export class StateManager {
       }
     }
 
-    // Persist any approved plans detected in the transcript as plan-kind Tasks.
+    // Persist plans detected in the transcript as plan-kind Tasks.
     // Dedupes on planToolUseId so repeated readTranscriptState calls are idempotent.
     const newPlans: Task[] = [];
     if (transcript?.detectedPlans && transcript.detectedPlans.length > 0) {
       const displayName = proposedName ?? slug ?? sessionId.slice(0, 8);
       for (const p of transcript.detectedPlans) {
-        const persisted = createPlanTask(cwd, sessionId, displayName, p.planToolUseId, p.plan, p.timestamp ?? new Date().toISOString());
+        const persisted = createPlanTask(cwd, sessionId, displayName, p.planToolUseId, p.plan, p.timestamp ?? new Date().toISOString(), p.planStatus);
         if (persisted) newPlans.push(persisted);
       }
     }
@@ -845,6 +845,21 @@ export class StateManager {
     session.bridgePipeName = pipeName;
     if (marker !== undefined) session.bridgeMarker = marker;
     this.saveKnownSessions();
+    this.onChange();
+  }
+
+  setBridgeDead(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.bridgeDead = true;
+    log('bridge:dead', 'Bridge pipe permanently lost', { sessionId, sessionName: session.proposedName ?? sessionId.slice(0, 8) });
+    this.onChange();
+  }
+
+  clearBridgeDead(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.bridgeDead) return;
+    session.bridgeDead = undefined;
     this.onChange();
   }
 

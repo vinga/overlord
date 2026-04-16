@@ -497,7 +497,7 @@ export function readTranscriptState(filePath: string): {
   transcriptTruncated?: boolean;
   // Approved plans detected via ExitPlanMode tool_use in this transcript.
   // stateManager dedupes on planToolUseId and persists as plan-kind Tasks.
-  detectedPlans?: Array<{ planToolUseId: string; plan: string; timestamp?: string }>;
+  detectedPlans?: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }>;
 } {
   if (isCodexTranscript(filePath)) {
     return readCodexTranscriptState(filePath);
@@ -566,7 +566,7 @@ export function readTranscriptState(filePath: string): {
     // Build unified activityFeed (messages + tools in chronological order) and extract lastMessage
     let lastMessage: string | undefined;
     const activityFeed: ActivityItem[] = [];
-    const detectedPlans: Array<{ planToolUseId: string; plan: string; timestamp?: string }> = [];
+    const detectedPlans: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }> = [];
 
     // Extract model and inputTokens from the last assistant event
     let model: string | undefined;
@@ -656,13 +656,15 @@ export function readTranscriptState(filePath: string): {
                     const toolUseId = (block as Record<string, unknown>).id as string | undefined;
                     if (typeof planText === 'string' && planText.trim().length > 0 && toolUseId) {
                       const res = toolResults.get(toolUseId);
-                      // Approved iff tool_result exists and contains "approved" (Claude Code
-                      // writes "The user has approved your plan."). Skip if no result yet
-                      // (still pending) or if rejected ("doesn't want to proceed").
-                      const approved = res !== undefined && !res.isError && /approved/i.test(res.content);
-                      if (approved) {
-                        detectedPlans.push({ planToolUseId: toolUseId, plan: planText, timestamp: parsed.timestamp });
+                      let planStatus: 'approved' | 'rejected' | 'pending';
+                      if (res === undefined) {
+                        planStatus = 'pending';
+                      } else if (!res.isError && /approved/i.test(res.content)) {
+                        planStatus = 'approved';
+                      } else {
+                        planStatus = 'rejected';
                       }
+                      detectedPlans.push({ planToolUseId: toolUseId, plan: planText, timestamp: parsed.timestamp, planStatus });
                     }
                   }
                   if (block.input && typeof block.input === 'object') {

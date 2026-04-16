@@ -314,13 +314,20 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
                       <div className={styles.rowTitle}>
                         {text || getSessionDisplayName(session, customNames)}
                         {isPlan && <span className={styles.planBadge}>plan</span>}
+                        {isPlan && task.planStatus && (
+                          <span className={styles.planStatusIcon} style={{
+                            color: task.planStatus === 'approved' ? '#22c55e' : task.planStatus === 'rejected' ? '#ef4444' : '#6b7280',
+                          }}>
+                            {task.planStatus === 'approved' ? '✓' : task.planStatus === 'rejected' ? '✗' : '◌'}
+                          </span>
+                        )}
                         {isPlan && <span className={styles.planChevron}>{isPlanExpanded ? '▾' : '▸'}</span>}
                       </div>
                       {!isPlan && task.summary && task.title && <div className={styles.rowText}>{task.summary}</div>}
                       <div className={styles.rowMeta}>
                         <span className={styles.metaSession}>{task.sessionName ?? getSessionDisplayName(session, customNames)}</span>
                         <span className={styles.metaDot}>·</span>
-                        <span className={styles.metaTime}>{relativeTime(completedAt)}</span>
+                        <span className={styles.metaTime} title={new Date(completedAt).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}>{relativeTime(completedAt)}</span>
                         {!isPlan && !isAccepted && (
                           <><span className={styles.metaDot}>·</span><span className={styles.metaReview}>review</span></>
                         )}

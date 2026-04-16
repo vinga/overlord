@@ -17,7 +17,7 @@
 
 /* Lift for non-animated states */
 .worker:not(.working):hover {
-  transform: translateY(-3px);
+  transform: translateY(0);
 }
 
 .worker:focus-visible .svg {
@@ -60,12 +60,14 @@
   -webkit-box-orient: vertical;
   line-height: 1.35;
   max-height: 2.7em;
+  border: 1px solid transparent;
+  padding: 2px 6px;
 }
 
 .labelEdit {
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   color: #e5e7eb;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(212, 175, 55, 0.5);
@@ -76,6 +78,14 @@
   width: 100%;
   outline: none;
   box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.15);
+  margin-top: 4px;
+  line-height: 1.35;
+  box-sizing: border-box;
+}
+
+.labelEdit::selection {
+  background: rgba(212, 175, 55, 0.35);
+  color: #fff;
 }
 
 .completionSummary {
@@ -329,6 +339,23 @@
   letter-spacing: 0.04em;
   white-space: nowrap;
   animation: fade-bubble 1.5s ease-in-out infinite;
+}
+
+.bridgeDeadBadge {
+  position: absolute;
+  top: -52px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(220, 120, 50, 0.15);
+  border: 1px solid rgba(220, 120, 50, 0.4);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: #dc7832;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
 /* Pending terminal input: user typed but hasn't pressed Enter for >5s */

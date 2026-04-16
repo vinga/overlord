@@ -10,6 +10,7 @@ import { Worker } from './Worker';
 import { ConsolePreview } from './ConsolePreview';
 import styles from './DetailPanel.module.css';
 import { SessionCommands } from './SessionCommands';
+import { searchFeed, BoldExcerpt } from '../lib/search';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
@@ -1276,7 +1277,7 @@ export function DetailPanel({
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
     isAtBottomRef.current = atBottom;
     // Once the user scrolls back to the bottom, release the scroll target
-    if (atBottom && scrollTarget) onScrollTargetConsumed?.();
+    if (atBottom && effectiveScrollTarget) { setInternalScrollTarget(undefined); setInternalScrollQuery(undefined); onScrollTargetConsumed?.(); }
   }
 
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes'>('conversation');
@@ -1288,12 +1289,19 @@ export function DetailPanel({
   const [editValue, setEditValue] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
+  const [panelSearchOpen, setPanelSearchOpen] = useState(false);
+  const [panelSearchQuery, setPanelSearchQuery] = useState('');
+  const [internalScrollTarget, setInternalScrollTarget] = useState<string | undefined>();
+  const [internalScrollQuery, setInternalScrollQuery] = useState<string | undefined>();
+  const panelSearchRef = useRef<HTMLInputElement>(null);
+  // Effective scroll target: internal (panel search) takes priority over external (global search)
+  const effectiveScrollTarget = internalScrollTarget ?? scrollTarget;
+  const effectiveScrollQuery = internalScrollQuery ?? scrollQuery;
   const [localSent, setLocalSent] = useState<string[]>([]);
   const realCountAtFirstSend = useRef<number | null>(null);
   const sendTimestampMs = useRef<number | null>(null);
   const [sendInput2, setSendInput2] = useState('');
   const [showQuickMenu, setShowQuickMenu] = useState(false);
-  const [quickMenuError, setQuickMenuError] = useState<string | null>(null);
   const quickMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!showQuickMenu) return;
@@ -1367,7 +1375,7 @@ const currentDisplayName =
 
   // When scrollTarget is set: switch to conversation tab, fetch older messages if needed, then scroll
   useEffect(() => {
-    if (!scrollTarget || !selectedSession) return;
+    if (!effectiveScrollTarget || !selectedSession) return;
 
     // Eagerly disable auto-scroll-to-bottom so subsequent feed updates
     // (tab switch, activity-before fetch, live activityFeed) don't stomp
@@ -1378,7 +1386,7 @@ const currentDisplayName =
     setActiveTab('conversation');
 
     const feed = selectedSession.activityFeed ?? [];
-    const targetIdx = feed.findIndex(item => item.timestamp === scrollTarget);
+    const targetIdx = feed.findIndex(item => item.timestamp === effectiveScrollTarget);
     const isNearTop = targetIdx >= 0 && targetIdx < 10;
     // Target may be in older history that's been trimmed out of activityFeed,
     // or may live inside a subagent's feed rendered inline — either way we
@@ -1402,7 +1410,7 @@ const currentDisplayName =
     const attemptScroll = (): boolean => {
       const container = transcriptRef.current;
       if (!container) return false;
-      const escaped = CSS.escape(scrollTarget);
+      const escaped = CSS.escape(effectiveScrollTarget);
       // Prefer exact data-ts match. Fall back to a tool group whose
       // data-ts-list contains this timestamp (word-separated).
       let el = container.querySelector<HTMLElement>(`[data-ts="${escaped}"]`);
@@ -1418,7 +1426,7 @@ const currentDisplayName =
 
       // If we have the search query, try to find the matching text inside and
       // highlight only that span. Otherwise fall back to highlighting the row.
-      const q = scrollQuery?.trim() ?? '';
+      const q = effectiveScrollQuery?.trim() ?? '';
       const highlightEl: HTMLElement = q ? (highlightMatchingText(rectEl, q) ?? rectEl) : rectEl;
 
       // Scroll every scrollable ancestor between the highlight and the outer
@@ -1454,24 +1462,30 @@ const currentDisplayName =
       return true;
     };
 
+    const consumeTarget = () => {
+      setInternalScrollTarget(undefined);
+      setInternalScrollQuery(undefined);
+      onScrollTargetConsumed?.();
+    };
+
     const tid = setTimeout(() => {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           if (attemptScroll()) {
-            onScrollTargetConsumed?.();
+            consumeTarget();
             return;
           }
           // Retry after a longer delay to let auto-expand + older-message fetch settle.
           setTimeout(() => {
             attemptScroll();
-            onScrollTargetConsumed?.();
+            consumeTarget();
           }, 250);
         });
       });
     }, 80);
     return () => clearTimeout(tid);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollTarget, scrollQuery]);
+  }, [effectiveScrollTarget, effectiveScrollQuery]);
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
@@ -1496,8 +1510,8 @@ const currentDisplayName =
     prevSessionIdRef.current = selectedSession?.sessionId;
 
     // Don't scroll to bottom if we have a scroll target (search result click)
-    isAtBottomRef.current = !scrollTarget;
-    const raf = scrollTarget ? undefined : requestAnimationFrame(() => {
+    isAtBottomRef.current = !effectiveScrollTarget;
+    const raf = effectiveScrollTarget ? undefined : requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (transcriptRef.current) {
           transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
@@ -1534,8 +1548,10 @@ const currentDisplayName =
     setKilling(false);
     setConfirmKill(false);
     setResuming(false);
+    setPanelSearchOpen(false);
+    setPanelSearchQuery('');
     // Don't reset to conversation tab if a scroll target will switch us there
-    if (!scrollTarget) setActiveTab('conversation');
+    if (!effectiveScrollTarget) setActiveTab('conversation');
     setSubagentActiveTab('conversation');
     return () => { if (raf !== undefined) cancelAnimationFrame(raf); };
   }, [selectedSession?.sessionId, selectedSubagentId]);
@@ -1681,6 +1697,12 @@ const currentDisplayName =
     ...realFeed,
     ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
   ];
+
+  const panelSearchResults = useMemo(() => {
+    const q = panelSearchQuery.trim();
+    if (!q || !panelSearchOpen) return [];
+    return searchFeed(mergedFeed, q);
+  }, [panelSearchQuery, panelSearchOpen, mergedFeed]);
 
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
   const isAbandoned = selectedSession != null && selectedSession.state === 'closed' && (Date.now() - new Date(selectedSession.lastActivity).getTime()) > 30 * 60 * 1000;
@@ -2062,7 +2084,111 @@ const currentDisplayName =
                       )}
                     </button>
                   )}
+
+                  {/* In-panel search */}
+                  <div className={styles.panelSearchWrap} style={{ marginLeft: 'auto' }}>
+                    {panelSearchOpen ? (
+                      <div className={styles.panelSearchInputWrap}>
+                        <input
+                          ref={panelSearchRef}
+                          type="text"
+                          className={styles.panelSearchInput}
+                          placeholder="Search this session…"
+                          value={panelSearchQuery}
+                          onChange={e => setPanelSearchQuery(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Escape') { setPanelSearchOpen(false); setPanelSearchQuery(''); }
+                          }}
+                        />
+                        {panelSearchQuery && (
+                          <span className={styles.panelSearchCount}>
+                            {panelSearchResults.length}
+                          </span>
+                        )}
+                        <button
+                          className={styles.panelSearchClose}
+                          onClick={() => { setPanelSearchOpen(false); setPanelSearchQuery(''); }}
+                          title="Close (Esc)"
+                        >✕</button>
+                      </div>
+                    ) : (
+                      <button
+                        className={styles.panelSearchBtn}
+                        onClick={() => { setPanelSearchOpen(true); setTimeout(() => panelSearchRef.current?.focus(), 30); }}
+                        title="Search this session (Ctrl+F)"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                          <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+                          <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {/* Panel search results dropdown */}
+                {panelSearchOpen && panelSearchQuery.trim() && (
+                  <div className={styles.panelSearchResults}>
+                    {panelSearchResults.length === 0 ? (
+                      <div className={styles.panelSearchEmpty}>No matches</div>
+                    ) : (
+                      panelSearchResults.map((match, i) => {
+                        const role = match.item.role ?? match.item.kind;
+                        const roleLabel = match.item.kind === 'tool' ? (match.item.toolName ?? 'tool') : role;
+                        return (
+                          <div
+                            key={i}
+                            className={styles.panelSearchRow}
+                            onClick={() => {
+                              if (match.item.timestamp) {
+                                setInternalScrollTarget(match.item.timestamp);
+                                setInternalScrollQuery(panelSearchQuery.trim());
+                              }
+                            }}
+                          >
+                            <span className={`${styles.panelSearchRole} ${styles[`panelSearchRole_${role}`] ?? ''}`}>
+                              {roleLabel}
+                            </span>
+                            <span className={styles.panelSearchExcerpt}>
+                              <BoldExcerpt text={match.excerpt} ranges={match.boldRanges} />
+                            </span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+                {/* Bridge dead banner */}
+                {selectedSession.bridgeDead && selectedSession.state !== 'closed' && (
+                  <div className={styles.bridgeDeadBanner}>
+                    <span>Bridge pipe lost — terminal feed disconnected.</span>
+                    <div className={styles.bridgeDeadActions}>
+                      <button
+                        className={styles.bridgeDeadKillResume}
+                        onClick={() => {
+                          fetch(`/api/sessions/${selectedSession.sessionId}/kill-process`, { method: 'POST' })
+                            .then(() => {
+                              // Wait for process to die, then resume
+                              setTimeout(() => {
+                                onResumeSession?.(selectedSession.sessionId, selectedSession.cwd);
+                              }, 1500);
+                            });
+                        }}
+                      >
+                        Kill &amp; Resume
+                      </button>
+                      <button
+                        className={styles.bridgeDeadKill}
+                        onClick={() => {
+                          fetch(`/api/sessions/${selectedSession.sessionId}/kill-process`, { method: 'POST' });
+                        }}
+                      >
+                        Kill
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Tab: Conversation */}
                 {activeTab === 'conversation' && (
@@ -2083,7 +2209,7 @@ const currentDisplayName =
                                   cwd={selectedSession.cwd}
                                   subagents={selectedSession.subagents}
                                   onSelectSubagent={(agentId) => onSelectSession?.(selectedSession, agentId)}
-                                  scrollTargetTs={scrollTarget ?? undefined}
+                                  scrollTargetTs={effectiveScrollTarget ?? undefined}
                                 />
                               </div>
                             ) : (
@@ -2209,8 +2335,8 @@ const currentDisplayName =
                         </div>
                       )}
                       <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''} ${selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' ? styles.sendAreaDisabled : ''}`}>
-                        {(sessionError || quickMenuError) && (
-                          <div className={styles.sendError}>{quickMenuError ?? sessionError}</div>
+                        {sessionError && (
+                          <div className={styles.sendError}>{sessionError}</div>
                         )}
                         {showConvoResumePrompt && onResumeSession && selectedSession.state === 'closed' && (
                           <div className={styles.convoResumeOverlay}>
@@ -2257,11 +2383,6 @@ const currentDisplayName =
                                   onMouseDown={e => {
                                     e.preventDefault();
                                     setShowQuickMenu(false);
-                                    if (selectedSession?.state !== 'waiting') {
-                                      setQuickMenuError('Session is busy — wait for it to finish.');
-                                      setTimeout(() => setQuickMenuError(null), 3000);
-                                      return;
-                                    }
                                     sendText("Briefly summarize this conversation — what did we just work on and what were the last changes we made? Keep it short.");
                                   }}
                                 >
@@ -2596,7 +2717,7 @@ const currentDisplayName =
                         const safeName = currentDisplayName.replace(/"/g, '-');
                         const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
                         const directCmd = `cd "${selectedSession.cwd}" && claude --resume ${sid} --name "${currentDisplayName}"`;
-                        const bridgeCmd = `${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sid} --name "${safeName}___BRG:${marker}"`;
+                        const bridgeCmd = `cd "${selectedSession.cwd}" && ${bridgeBin} --pipe overlord-${marker} -- claude --resume ${sid} --name "${safeName}___BRG:${marker}"`;
 
                         const modeRows: { key: 'overlord' | 'terminal' | 'bridged'; label: string; cmd: string | null; available: boolean }[] = [
                           { key: 'overlord', label: 'Overlord', cmd: null,       available: !!onResumeSession },
@@ -2746,6 +2867,11 @@ const currentDisplayName =
                                 {task.title && <div className={styles.summaryRowText} style={{ fontWeight: 500 }}>
                                   {task.title}
                                   {isPlan && <span style={{ marginLeft: 6, fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#c4b5fd', background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.35)', borderRadius: 3, padding: '1px 5px' }}>plan</span>}
+                                  {isPlan && task.planStatus && (
+                                    <span style={{ marginLeft: 5, fontSize: '11px', fontWeight: 600, color: task.planStatus === 'approved' ? '#22c55e' : task.planStatus === 'rejected' ? '#ef4444' : '#6b7280' }}>
+                                      {task.planStatus === 'approved' ? '✓' : task.planStatus === 'rejected' ? '✗' : '◌'}
+                                    </span>
+                                  )}
                                   {isPlan && <span style={{ marginLeft: 4, fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>{isExpanded ? '▾' : '▸'}</span>}
                                 </div>}
                                 {!isPlan && task.summary && <div className={styles.summaryRowText} style={{ opacity: 0.7, fontSize: '11px' }}>{task.summary}</div>}
@@ -2755,7 +2881,7 @@ const currentDisplayName =
                               {!isPlan && !task.accepted && (
                                 <span style={{ fontSize: '11px', color: '#f59e0b', opacity: 0.8, marginRight: 4 }}>· review</span>
                               )}
-                              <span className={styles.summaryRowTime}>{formatRelativeTime(task.completedAt ?? task.createdAt)}</span>
+                              <span className={styles.summaryRowTime} title={new Date(task.completedAt ?? task.createdAt).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}>{formatRelativeTime(task.completedAt ?? task.createdAt)}</span>
                               {!isPlan && !task.accepted && (
                                 <button
                                   className={styles.summaryRowAcceptBtn}

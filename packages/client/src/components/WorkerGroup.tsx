@@ -69,6 +69,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           completionSummaries={session.completionSummaries}
           userAccepted={session.userAccepted}
           needsPermission={session.needsPermission}
+          bridgeDead={session.bridgeDead}
           currentTaskLabel={session.currentTaskLabel}
           currentTask={session.currentTask}
           isWorker={session.isWorker}
