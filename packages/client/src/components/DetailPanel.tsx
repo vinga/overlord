@@ -1814,7 +1814,7 @@ const currentDisplayName =
               const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
               const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
               const totalK = (contextWindow / 1000).toFixed(0);
-              const fillColor = pct >= 80 ? '#ef4444' : pct >= 50 ? '#f59e0b' : selectedSession.color;
+              const fillColor = selectedSession.color;
               const compactCount = selectedSession.compactCount ?? 0;
               const tooltip = `Context: ${usedK}k / ${totalK}k · ${pct.toFixed(0)}%${compactCount > 0 ? ` · ${compactCount}× compacted` : ''}${selectedSession.isCompacting ? ' · compacting…' : ''}`;
               return (
@@ -2733,7 +2733,7 @@ const currentDisplayName =
                         const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
                         const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
                         const totalK = (contextWindow / 1000).toFixed(0);
-                        const barColor = pct >= 80 ? '#ef4444' : pct >= 50 ? '#f59e0b' : '#22c55e';
+                        const barColor = selectedSession.color;
                         const compactCount = selectedSession.compactCount ?? 0;
                         return (
                           <div className={styles.field}>

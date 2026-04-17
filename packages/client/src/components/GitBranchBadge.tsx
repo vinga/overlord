@@ -119,7 +119,7 @@ export function GitBranchBadge({ branch, cwd, aheadBehind, gitWarning, pullReque
   }, [open, anchor, status, loading, error]);
 
   return (
-    <>
+    <div className={styles.wrap}>
       <span
         ref={spanRef}
         className={styles.badge}
@@ -136,19 +136,24 @@ export function GitBranchBadge({ branch, cwd, aheadBehind, gitWarning, pullReque
         {showAheadBehind && aheadBehind!.behind > 0 && (
           <span className={styles.pillBehind} title={`${aheadBehind!.behind} commits behind ${aheadBehind!.base ?? 'base'}`}>↓{aheadBehind!.behind}</span>
         )}
-        {pullRequest && (
-          <span
-            className={`${styles.pillPr} ${prStateClass(pullRequest)}`}
-            title={`PR #${pullRequest.number} ${pullRequest.isDraft ? '(Draft)' : pullRequest.state}`}
-          >
-            <PullRequestIcon/>
-            <span>#{pullRequest.number}</span>
-          </span>
-        )}
         {gitWarning && (
           <span className={styles.pillWarn} title={gitWarning} aria-label="Git warning">!</span>
         )}
       </span>
+      {pullRequest && (
+        <a
+          className={`${styles.pillPr} ${prStateClass(pullRequest)}`}
+          href={pullRequest.url}
+          target="_blank"
+          rel="noreferrer"
+          onClick={e => e.stopPropagation()}
+          onMouseDown={e => e.stopPropagation()}
+          title={`Open PR #${pullRequest.number} · ${pullRequest.isDraft ? 'Draft' : pullRequest.state}\n${pullRequest.title}`}
+        >
+          <PullRequestIcon/>
+          <span>#{pullRequest.number}</span>
+        </a>
+      )}
       {open && ReactDOM.createPortal(
         <div
           ref={tooltipRef}
@@ -165,7 +170,7 @@ export function GitBranchBadge({ branch, cwd, aheadBehind, gitWarning, pullReque
         </div>,
         document.body
       )}
-    </>
+    </div>
   );
 }
 
@@ -254,17 +259,26 @@ function TooltipBody({ branch, status, loading, error, gitWarning, aheadBehind, 
       {status.pullRequest && (
         <PrRow pr={status.pullRequest}/>
       )}
-      {status.lastCommit && (
-        <div className={styles.commitRow}>
-          <div className={styles.commitMeta}>
-            <CommitIcon className={styles.commitIcon}/>
-            <span className={styles.commitHash}>{status.lastCommit.hash}</span>
-            <span className={styles.commitAuthor}>{status.lastCommit.author}</span>
-            <span className={styles.commitTime}>· {status.lastCommit.relativeTime}</span>
+      {status.lastCommit && (() => {
+        const lastIsUnpushed = status.unpushedCommits.some(c => c.hash === status.lastCommit!.hash);
+        const lastLabel = lastIsUnpushed
+          ? { text: 'Unpushed', cls: styles.statusUnpushed }
+          : status.upstream
+            ? { text: 'Pushed', cls: styles.statusPushed }
+            : null;
+        return (
+          <div className={styles.commitRow}>
+            <div className={styles.commitMeta}>
+              <CommitIcon className={styles.commitIcon}/>
+              <span className={styles.commitHash}>{status.lastCommit.hash}</span>
+              <span className={styles.commitAuthor}>{status.lastCommit.author}</span>
+              <span className={styles.commitTime}>· {status.lastCommit.relativeTime}</span>
+              {lastLabel && <span className={`${styles.commitStatus} ${lastLabel.cls}`}>{lastLabel.text}</span>}
+            </div>
+            <div className={styles.commitSubject}>{status.lastCommit.subject}</div>
           </div>
-          <div className={styles.commitSubject}>{status.lastCommit.subject}</div>
-        </div>
-      )}
+        );
+      })()}
       {status.unpushedCommits.length > 0 && (
         <div className={styles.section}>
           <div className={styles.sectionHeader}>

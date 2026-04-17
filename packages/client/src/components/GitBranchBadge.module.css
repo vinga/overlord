@@ -1,3 +1,10 @@
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -60,6 +67,17 @@
   padding: 1px 6px;
   border-radius: 3px;
   flex-shrink: 0;
+  cursor: pointer;
+  text-decoration: none;
+  transition: filter 0.12s, transform 0.12s;
+}
+
+.pillPr:hover {
+  filter: brightness(1.25);
+}
+
+.pillPr:active {
+  transform: translateY(0.5px);
 }
 
 .pillPrOpen   { color: #22c55e; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.25); }
@@ -226,6 +244,29 @@
   flex-shrink: 0;
 }
 
+.commitStatus {
+  margin-left: auto;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.statusUnpushed {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.statusPushed {
+  color: rgba(34, 197, 94, 0.85);
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.22);
+}
+
 .sectionIcon {
   opacity: 0.8;
   color: #3b82f6;
@@ -268,11 +309,8 @@
   gap: 8px;
   text-decoration: none;
   margin-bottom: 10px;
-  padding: 7px 9px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  transition: background 0.12s, border-color 0.12s;
+  padding: 2px 0;
+  color: inherit;
 }
 
 .prIcon {
@@ -302,9 +340,12 @@
   flex-shrink: 0;
 }
 
-.prRow:hover {
-  background: rgba(212, 175, 55, 0.06);
-  border-color: rgba(212, 175, 55, 0.22);
+.prRow:hover .prTitle {
+  color: rgba(255, 255, 255, 1);
+}
+
+.prRow:hover .prNumber {
+  color: #d4af37;
 }
 
 .prState {
