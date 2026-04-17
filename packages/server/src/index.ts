@@ -24,6 +24,7 @@ import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
+import { feedCompactDetector, clearCompactDetector } from './pty/compactDetect.js';
 import type { OfficeSnapshot } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -440,6 +441,13 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     const broadcastId = stateManager.getSession(eid)?.overlordId ?? eid;
     broadcastRaw({ type: 'terminal:output', sessionId: broadcastId, data: data.toString('base64') });
 
+    // Detect "Compacting conversation" in bridge output — mirrors the PTY path so bridge
+    // sessions also surface the compact state in the Conversation tab before the
+    // compact_boundary event lands in the transcript.
+    feedCompactDetector(eid, data.toString('utf8'), (line) => {
+      stateManager.addPtyCompact(broadcastId, line);
+    });
+
     // Update rolling plain-text buffer for permission detection
     const prev = bridgePermText.get(eid) ?? '';
     const appended = prev + stripAnsi(data.toString('utf8'));
@@ -519,6 +527,7 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
   outputSocket.on('close', () => {
     let currentId = sessionId;
     for (let i = 0; i < 10 && bridgeIdOverrides.has(currentId); i++) currentId = bridgeIdOverrides.get(currentId)!;
+    clearCompactDetector(currentId);
     if (!stateManager.isBridge(currentId)) return; // session gone, stop retrying
     if (outputConnectFailed) {
       const nextFailures = consecutiveFailures + 1;

@@ -89,12 +89,65 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       const content = fs.readFileSync(filePath, 'utf-8');
       const lines = content.split('\n');
       let cwd: string | undefined;
+      let customTitle: string | undefined;
       for (const line of lines.slice(0, 15)) {
         if (!line.trim()) continue;
         try {
           const entry = JSON.parse(line) as Record<string, unknown>;
-          if (entry.cwd && typeof entry.cwd === 'string') { cwd = entry.cwd; break; }
+          if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd;
+          if (!customTitle && typeof entry.customTitle === 'string') customTitle = entry.customTitle;
+          if (cwd && customTitle) break;
         } catch { /* skip malformed */ }
+      }
+
+      // Marker-based fallback /clear detection: when Claude Code creates a new transcript
+      // for /clear but does NOT update {pid}.json (observed for bridge sessions), the PID
+      // paths miss it. The new transcript preserves the original ___BRG:<marker> or
+      // ___OVR:<ptyId> in customTitle, so we can find the live session and replace in place.
+      const matchedOldSession: { sessionId: string; cwd: string; pid: number; startedAt: number; proposedName?: string; isBridge: boolean } | null = (() => {
+        if (!customTitle) return null;
+        if (customTitle.includes('___BRG:')) {
+          const marker = customTitle.split('___BRG:')[1];
+          if (!marker) return null;
+          const s = ctx.stateManager.findActiveBridgeByMarker(marker);
+          if (!s || s.sessionId === newSessionId) return null;
+          return { sessionId: s.sessionId, cwd: s.cwd, pid: s.pid, startedAt: s.startedAt, proposedName: s.proposedName, isBridge: true };
+        }
+        if (customTitle.includes('___OVR:')) {
+          const ptyId = customTitle.split('___OVR:')[1];
+          if (!ptyId) return null;
+          const ovrId = ctx.sessionCtx.ptyToOvr.get(ptyId);
+          if (!ovrId) return null;
+          const s = ctx.stateManager.getActiveClaudeByOvr(ovrId);
+          if (!s || s.sessionId === newSessionId) return null;
+          return { sessionId: s.sessionId, cwd: s.cwd, pid: s.pid, startedAt: s.startedAt, proposedName: s.proposedName, isBridge: false };
+        }
+        return null;
+      })();
+
+      if (matchedOldSession) {
+        const oldName = matchedOldSession.proposedName ?? matchedOldSession.sessionId.slice(0, 8);
+        ctx.stateManager.suppressBroadcast();
+        ctx.stateManager.undelete(newSessionId);
+        const existingNew = ctx.stateManager.getSession(newSessionId);
+        if (existingNew && existingNew.pid === 0) ctx.stateManager.remove(newSessionId);
+        ctx.stateManager.addOrUpdate({
+          sessionId: newSessionId,
+          pid: matchedOldSession.pid,
+          cwd: cwd ?? matchedOldSession.cwd,
+          startedAt: matchedOldSession.startedAt,
+        });
+        ctx.stateManager.transferName(matchedOldSession.sessionId, newSessionId);
+        const ovrId = ctx.stateManager.getSession(newSessionId)?.overlordId ?? newSessionId;
+        if (matchedOldSession.isBridge) {
+          ctx.sessionCtx.migrateBridgeSession?.(matchedOldSession.sessionId, newSessionId);
+        }
+        ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: matchedOldSession.sessionId, newSessionId, ovrId });
+        ctx.stateManager.markDeleted(matchedOldSession.sessionId);
+        ctx.stateManager.resumeBroadcast();
+        log('clear:detected', 'Marker fallback /clear detected', { sessionId: newSessionId, sessionName: oldName, extra: `${matchedOldSession.isBridge ? 'BRG' : 'OVR'} ${matchedOldSession.sessionId.slice(0, 8)} → ${newSessionId.slice(0, 8)}` });
+        handleTranscriptFile(filePath);
+        return;
       }
 
       if (cwd) {

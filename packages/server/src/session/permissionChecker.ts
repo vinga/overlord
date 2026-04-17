@@ -121,12 +121,16 @@ export function startPermissionChecker(
       if (!session) continue;
       // Only check sessions that might be stuck
       if (session.state === 'closed') continue;
+      // In bypassPermissions mode, Claude never actually prompts — any screen text
+      // matching the prompt pattern is stale buffer content. Skip the setNeedsPermission
+      // path to avoid oscillation with stateManager clearing it on every transcript tick.
+      const isBypass = session.permissionMode === 'bypassPermissions';
       try {
         const text = getScreenText
           ? await getScreenText(id, session.pid)
           : (readScreen ? await readScreen(session.pid) : null);
         const hasPrompt = text ? looksLikePermissionPrompt(text) : false;
-        if (hasPrompt) {
+        if (hasPrompt && !isBypass) {
           // Prompt detected: set flag and reset miss counter
           missCount.set(id, 0);
           stateManager.setNeedsPermission(id, true, cleanText(extractPromptBlock(text!)));
@@ -136,7 +140,7 @@ export function startPermissionChecker(
           missCount.set(id, (missCount.get(id) ?? 0) + 1);
         }
         // Rate-limit prompt: surface it in the UI so the user can dismiss manually
-        if (text && RATE_LIMIT_PATTERN.test(text)) {
+        if (text && RATE_LIMIT_PATTERN.test(text) && !isBypass) {
           if (!hasPrompt) {
             // Not already flagged as a normal permission prompt — flag as limit prompt
             stateManager.setNeedsPermission(id, true, cleanText(extractPromptBlock(text)), true);

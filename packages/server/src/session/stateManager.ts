@@ -4,6 +4,7 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
+import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { log } from '../logger.js';
 
 /**
@@ -948,6 +949,22 @@ export class StateManager {
     return this.sessions.get(sessionId)?.sessionType === 'bridge';
   }
 
+  /** Find the active (non-deleted, non-closed) bridge session matching the given marker.
+   *  Matches either by stored bridgeMarker, or by deriving the pipeName from the marker
+   *  and comparing to bridgePipeName (handles legacy sessions that lack bridgeMarker). */
+  findActiveBridgeByMarker(marker: string): Session | undefined {
+    const derivedPipe = derivePipeNameFromMarker(marker);
+    for (const session of this.sessions.values()) {
+      if (this.deletedSessionIds.has(session.sessionId)) continue;
+      if (session.state === 'closed') continue;
+      if (session.sessionType !== 'bridge') continue;
+      if (session.bridgeMarker === marker || session.bridgePipeName === derivedPipe) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
   deriveBridgeRegistry(): Record<string, string> {
     const registry: Record<string, string> = {};
     for (const session of this.sessions.values()) {
@@ -977,14 +994,26 @@ export class StateManager {
   refreshTranscript(sessionId: string): { becameWaiting: boolean; lastMessage?: string; becameWorking: boolean; leftWorking: boolean; transcriptStale: boolean } {
     const session = this.sessions.get(sessionId);
     if (!session || session.state === 'closed') return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
-    // Suppress re-read until /clear replacement is detected (prevents old transcript re-populating feed)
-    if (this.pendingClearSessions.has(sessionId)) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
-
     const transcriptPath = resolveTranscriptPath(session);
     if (!transcriptPath) return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
 
     const prevState = session.state;
     const result = readTranscriptState(transcriptPath);
+
+    // Suppress re-read until /clear replacement is detected (prevents old transcript
+    // re-populating feed). BUT: if the transcript was truncated in place (same sid,
+    // smaller file — typical for /clear inside a --resume'd session), that IS the
+    // replacement event. Clear the pending flag and proceed normally.
+    if (this.pendingClearSessions.has(sessionId)) {
+      if (result.transcriptTruncated) {
+        this.pendingClearSessions.delete(sessionId);
+        // Also consume the pending clear replacement entry so the transcript
+        // watcher doesn't later match an unrelated orphan to this session.
+        this.consumePendingClearReplacement(session.cwd);
+      } else {
+        return { becameWaiting: false, becameWorking: false, leftWorking: false, transcriptStale: false };
+      }
+    }
     const subagents = readSubagents(session.cwd, sessionId, transcriptPath);
     const slug = session.slug ?? readSlug(transcriptPath);
     const proposedName = session.proposedName ?? readProposedName(sessionId, transcriptPath);
@@ -1382,8 +1411,9 @@ export class StateManager {
     this.onChange();
   }
 
-  addPtyCompact(sessionId: string, text: string): void {
-    const session = this.sessions.get(sessionId);
+  addPtyCompact(sessionIdOrOvr: string, text: string): void {
+    // Callers pass either a Claude sessionId or an overlordId — resolve to the active session.
+    const session = this.sessions.get(sessionIdOrOvr) ?? this.getActiveClaudeByOvr(sessionIdOrOvr);
     if (!session) return;
     const item: import('../types.js').ActivityItem = {
       kind: 'compact',

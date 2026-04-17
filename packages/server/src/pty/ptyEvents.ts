@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { PtyManager } from './ptyManager.js';
 import type { StateManager } from '../session/stateManager.js';
+import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -15,11 +16,6 @@ export interface PtyEventsContext {
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
 }
-
-// Rolling plain-text buffer per PTY session for cross-chunk pattern detection.
-// Stores stripped text (no ANSI), capped at COMPACT_DETECT_BUF_SIZE chars.
-const compactDetectBuf = new Map<string, string>();
-const COMPACT_DETECT_BUF_SIZE = 500;
 
 // Rolling stripped-text buffer for active-state detection (status bar + spinner line).
 const activeDetectBuf = new Map<string, string>();
@@ -48,7 +44,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       ctx.ptyOutputBuffer.set(ptySessionId, buf);
       // Repaint redraws the full terminal state — stale partial text in the compact
       // detect buffer would combine with new chunks and cause false positives.
-      compactDetectBuf.delete(ptySessionId);
+      clearCompactDetector(ptySessionId);
       activeDetectBuf.delete(ptySessionId);
     }
 
@@ -62,25 +58,9 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
 
     // Detect "Compacting conversation" in PTY output — set isCompacting immediately,
     // before the compact_boundary event lands in the transcript.
-    // Use a rolling text buffer to handle the text arriving split across chunks.
-    {
-      const stripped = data
-        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
-        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
-        .replace(/\x1b[^[\]]/g, '')
-        .replace(/\x1b/g, '')
-        .replace(/[^\x20-\x7e\n\t\r]/g, '');
-      const prev = compactDetectBuf.get(ptySessionId) ?? '';
-      const combined = (prev + stripped).slice(-COMPACT_DETECT_BUF_SIZE);
-      compactDetectBuf.set(ptySessionId, combined);
-      if (combined.includes('Compacting conversation')) {
-        const match = combined.match(/Compacting conversation[^\n]*/);
-        const compactLine = match ? match[0].trim() : 'Compacting conversation…';
-        ctx.stateManager.addPtyCompact(ovrId, compactLine);
-        // Clear buffer after detection to avoid duplicate triggers
-        compactDetectBuf.set(ptySessionId, '');
-      }
-    }
+    feedCompactDetector(ptySessionId, data, (line) => {
+      ctx.stateManager.addPtyCompact(ovrId, line);
+    });
 
     // Detect active state (status bar "esc to interrupt" / spinner line)
     // so the UI flips from 'waiting' → 'working' without waiting for the next
@@ -142,7 +122,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         break;
       }
     }
-    compactDetectBuf.delete(ptySessionId);
+    clearCompactDetector(ptySessionId);
     activeDetectBuf.delete(ptySessionId);
 
     // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
