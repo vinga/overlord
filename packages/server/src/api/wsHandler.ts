@@ -8,6 +8,7 @@ import { injectViaMac } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
+import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -239,6 +240,97 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         return;
       }
 
+      if (type === 'terminal:spawn-raw') {
+        const cwd = String(msg.cwd ?? process.cwd());
+        const cols = Number(msg.cols ?? 80);
+        const rows = Number(msg.rows ?? 24);
+        const name = msg.name ? String(msg.name) : undefined;
+
+        if (!fs.existsSync(cwd)) {
+          fs.mkdirSync(cwd, { recursive: true });
+          console.log(`[spawn-raw] created directory: ${cwd}`);
+        }
+
+        const rawId = `raw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const shell = process.platform === 'win32'
+          ? (process.env.COMSPEC || 'powershell.exe')
+          : (process.env.SHELL || '/bin/bash');
+
+        stateManager.addRawSession(rawId, cwd, 0, name);
+        writeShellHistoryMeta(rawId, { cwd, name });
+        ovrToPty.set(rawId, rawId);
+        ptyToOvr.set(rawId, rawId);
+
+        const sessions = wsSessionMap.get(ws);
+        if (sessions) { sessions.add(rawId); }
+
+        broadcastRaw({ type: 'terminal:spawned', sessionId: rawId, pid: 0 });
+
+        try {
+          ptyManager.spawn(rawId, cwd, cols, rows, [], shell);
+          const pid = ptyManager.getPid(rawId) ?? 0;
+          if (pid) stateManager.setPid(rawId, pid);
+          log('pty:started', 'Raw shell started', { sessionId: rawId, sessionName: name ?? 'shell', extra: `shell=${shell} pid=${pid}` });
+          // Broadcast terminal:linked right away — no session file to wait for.
+          broadcastRaw({ type: 'terminal:linked', ovrId: rawId, ptySessionId: rawId, claudeSessionId: rawId });
+        } catch (err) {
+          stateManager.remove(rawId);
+          ovrToPty.delete(rawId);
+          ptyToOvr.delete(rawId);
+          sendToClient(ws, {
+            type: 'terminal:error',
+            sessionId: rawId,
+            message: `Raw shell spawn failed: ${(err as Error).message}`,
+          });
+        }
+        return;
+      }
+
+      if (type === 'terminal:restart-shell') {
+        const ovrId = String(msg.sessionId ?? '');
+        const cols = Number(msg.cols ?? 80);
+        const rows = Number(msg.rows ?? 24);
+        const session = stateManager.getSession(ovrId);
+        if (!session || session.sessionType !== 'raw') {
+          sendToClient(ws, { type: 'terminal:error', sessionId: ovrId, message: 'Not a raw shell session' });
+          return;
+        }
+        const cwd = session.cwd;
+        if (!fs.existsSync(cwd)) {
+          fs.mkdirSync(cwd, { recursive: true });
+        }
+        const shell = process.platform === 'win32'
+          ? (process.env.COMSPEC || 'powershell.exe')
+          : (process.env.SHELL || '/bin/bash');
+
+        ovrToPty.set(ovrId, ovrId);
+        ptyToOvr.set(ovrId, ovrId);
+        const sessions = wsSessionMap.get(ws);
+        if (sessions) { sessions.add(ovrId); }
+
+        try {
+          ptyManager.spawn(ovrId, cwd, cols, rows, [], shell);
+          const pid = ptyManager.getPid(ovrId) ?? 0;
+          stateManager.reviveRawToWorking(ovrId, pid);
+          writeShellHistoryMeta(ovrId, { cwd, name: session.proposedName });
+          log('pty:started', 'Raw shell restarted', { sessionId: ovrId, sessionName: session.proposedName ?? 'shell', extra: `shell=${shell} pid=${pid}` });
+          // Dim separator banner before the new shell starts emitting output.
+          const banner = `\r\n\x1b[2m── shell restarted · ${new Date().toISOString()} ──\x1b[0m\r\n`;
+          broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: Buffer.from(banner).toString('base64') });
+          // replay=true so the client doesn't wipe the visible scrollback on link.
+          broadcastRaw({ type: 'terminal:linked', ovrId, ptySessionId: ovrId, claudeSessionId: ovrId, replay: true });
+        } catch (err) {
+          ovrToPty.delete(ovrId);
+          ptyToOvr.delete(ovrId);
+          sendToClient(ws, {
+            type: 'terminal:error',
+            sessionId: ovrId,
+            message: `Raw shell restart failed: ${(err as Error).message}`,
+          });
+        }
+        return;
+      }
+
       if (type === 'terminal:input') {
         const ovrId = String(msg.sessionId ?? '');
         const data = String(msg.data ?? '');
@@ -417,13 +509,27 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const buf = ptyOutputBuffer.get(ptySessionId ?? '') ?? ptyOutputBuffer.get(ovrId);
         const cols = Number(msg.cols || 0);
         const rows = Number(msg.rows || 0);
-        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} cols=${cols} rows=${rows}`);
-        if (buf && buf.length > 0) {
+        const isRaw = claudeSession?.sessionType === 'raw';
+        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} cols=${cols} rows=${rows} raw=${isRaw}`);
+        // Raw sessions with a disk log: replay from disk when no live buffer is available.
+        // This covers both historyOnly revived sessions and fresh reconnects where the
+        // in-memory ring buffer was lost across a server restart.
+        if (isRaw && (!buf || buf.length === 0) && hasShellHistory(ovrId)) {
+          const diskLog = readShellHistory(ovrId);
+          const banner = claudeSession?.historyOnly
+            ? `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} · click "Restart shell" to start a live session ──\x1b[0m\r\n`
+            : `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} ──\x1b[0m\r\n`;
+          const payload = Buffer.concat([diskLog, Buffer.from(banner)]).toString('base64');
+          sendToClient(ws, { type: 'terminal:history-dump', sessionId: ovrId, data: payload });
+        } else if (buf && buf.length > 0) {
           const encoded = Buffer.concat(buf).toString('base64');
           sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
         }
-        // SIGWINCH nudge: causes the TUI to emit a fresh full-screen repaint
-        if (nudgeId) {
+        // SIGWINCH nudge: causes the TUI to emit a fresh full-screen repaint.
+        // Raw shells have no TUI — a SIGWINCH makes bash/zsh re-print the prompt,
+        // which duplicates in scrollback on every replay. Skip nudge for raw;
+        // explicit terminal:resize still resizes the PTY when xterm dims change.
+        if (nudgeId && !isRaw) {
           ptyManager.resize(nudgeId, cols > 0 ? cols : 80, rows > 0 ? rows : 24);
           console.log(`[terminal:replay] nudged ${nudgeId.slice(0, 8)}`);
         }

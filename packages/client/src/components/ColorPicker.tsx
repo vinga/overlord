@@ -22,10 +22,11 @@ interface Props {
   sessionId: string;
   color: string;
   size?: number;
+  isRaw?: boolean;
   onChange: (color: string) => void;
 }
 
-export function ColorPicker({ sessionId, color, size = 44, onChange }: Props) {
+export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
@@ -55,7 +56,7 @@ export function ColorPicker({ sessionId, color, size = 44, onChange }: Props) {
         onClick={() => setOpen(v => !v)}
         title="Change color"
       >
-        <WorkerAvatar sessionId={sessionId} color={color} size={size} />
+        <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} />
       </button>
       {open && (
         <div className={styles.popover} role="dialog" aria-label="Choose color">

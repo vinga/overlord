@@ -79,12 +79,14 @@ export interface Session {
   activityFeed?: ActivityItem[];
   ptyCompactItems?: ActivityItem[];  // compact items sourced from PTY output, merged into activityFeed
   ptyCompactBaseline?: number;  // compactCount at the moment PTY detected "Compacting conversation"; keeps isCompacting sticky until a new boundary lands
+  ptyCompactBaselineAt?: number;  // Date.now() of baseline snapshot; used for TTL safety release
+  ptyCompactBoundarySeen?: boolean;  // transcript's isCompacting seen true while baseline held — release when it goes back to false
   model?: string;
   inputTokens?: number;
   compactCount?: number;
   isCompacting?: boolean;
   ideName?: string;
-  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide';
+  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
   replacedBy?: string;
   color: string;
   subagents: Subagent[];
@@ -118,6 +120,10 @@ export interface Session {
   ptySessionId?: string;     // e.g. "pty-abc123" — the PTY manager's session ID
   transcriptPath?: string;
 
+  // Raw shell history-only marker — revived from disk log on startup, no live PTY.
+  // User can click "Restart shell" in DetailPanel to spawn a fresh shell at original cwd.
+  historyOnly?: boolean;
+
   // PTY input tracking — set when user types in the terminal without pressing Enter
   ptyInputPendingSince?: number;  // ms epoch when pending input started; cleared on Enter
 }
@@ -127,6 +133,20 @@ export interface Room {
   name: string;
   cwd: string;
   sessions: Session[];
+  gitBranch?: string;
+  pullRequest?: {
+    number: number;
+    url: string;
+    title: string;
+    state: string;
+    isDraft: boolean;
+  };
+  aheadBehind?: {
+    ahead: number;
+    behind: number;
+    base: string | null;
+  };
+  gitWarning?: string;  // present when gh/git ahead-behind/pr lookup failed
 }
 
 export interface OfficeSnapshot {

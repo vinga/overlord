@@ -35,14 +35,17 @@ const CLAUDE_BIN = resolveClaude();
 export class PtyManager extends EventEmitter {
   private sessions = new Map<string, import('node-pty').IPty>();
 
-  spawn(sessionId: string, cwd: string, cols: number, rows: number, args: string[] = [], _retryCount = 0): void {
+  spawn(sessionId: string, cwd: string, cols: number, rows: number, args: string[] = [], executable?: string, _retryCount = 0): void {
     if (!pty) {
       this.emit('error', sessionId, 'node-pty is not available on this system');
       return;
     }
     const MAX_RETRIES = 4;
     const spawnedAt = Date.now();
-    const ptyProcess = pty.spawn(CLAUDE_BIN, args, {
+    const bin = executable ?? CLAUDE_BIN;
+    // Raw shells don't retry on quick exit — user may deliberately type `exit`.
+    const allowRetry = executable === undefined;
+    const ptyProcess = pty.spawn(bin, args, {
       name: 'xterm-color',
       cols,
       rows,
@@ -51,14 +54,18 @@ export class PtyManager extends EventEmitter {
     });
     this.sessions.set(sessionId, ptyProcess);
     this.emit('pid-ready', sessionId, ptyProcess.pid);
-    ptyProcess.onData((data) => this.emit('output', sessionId, data));
+    let lastOutput = '';
+    ptyProcess.onData((data) => {
+      lastOutput = (lastOutput + data).slice(-500); // keep last 500 chars
+      this.emit('output', sessionId, data);
+    });
     ptyProcess.onExit(({ exitCode }) => {
       this.sessions.delete(sessionId);
       const aliveMs = Date.now() - spawnedAt;
       // If PTY died within 3s, likely a ConPTY AttachConsole race — retry
-      if (aliveMs < 3000 && _retryCount < MAX_RETRIES) {
-        console.warn(`[PtyManager] PTY ${sessionId.slice(0, 12)} exited after ${aliveMs}ms (code ${exitCode}), retrying (${_retryCount + 1}/${MAX_RETRIES})...`);
-        setTimeout(() => this.spawn(sessionId, cwd, cols, rows, args, _retryCount + 1), 500 * (_retryCount + 1));
+      if (allowRetry && aliveMs < 3000 && _retryCount < MAX_RETRIES) {
+        console.warn(`[PtyManager] PTY ${sessionId.slice(0, 12)} exited after ${aliveMs}ms (code ${exitCode}), retrying (${_retryCount + 1}/${MAX_RETRIES})...\n  lastOutput: ${JSON.stringify(lastOutput.trim().slice(-200))}`);
+        setTimeout(() => this.spawn(sessionId, cwd, cols, rows, args, executable, _retryCount + 1), 500 * (_retryCount + 1));
         return;
       }
       this.emit('exit', sessionId, exitCode ?? 0);
@@ -87,5 +94,13 @@ export class PtyManager extends EventEmitter {
 
   has(sessionId: string): boolean {
     return this.sessions.has(sessionId);
+  }
+
+  /** Gracefully kill all PTY sessions (used during server shutdown). */
+  killAll(): void {
+    for (const [id, proc] of this.sessions) {
+      try { proc.kill(); } catch { /* ignore */ }
+      this.sessions.delete(id);
+    }
   }
 }

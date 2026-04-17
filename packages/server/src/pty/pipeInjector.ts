@@ -100,6 +100,13 @@ class BridgeConnectionManager extends EventEmitter {
     // Use clearPipeAddr() explicitly when the session is truly gone.
   }
 
+  /** Disconnect all bridge sessions (used during server shutdown). */
+  disconnectAll(): void {
+    for (const sessionId of [...this.connections.keys()]) {
+      this.disconnect(sessionId);
+    }
+  }
+
   /** Write input to the bridge pipe */
   write(sessionId: string, data: string): boolean {
     const socket = this.connections.get(sessionId);

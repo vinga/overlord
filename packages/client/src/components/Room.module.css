@@ -152,6 +152,11 @@
   max-width: 280px;
 }
 
+.titleSpacer {
+  flex: 1;
+  min-width: 8px;
+}
+
 .desks {
   display: flex;
   flex-wrap: wrap;
@@ -277,6 +282,12 @@
   background: rgba(255, 255, 255, 0.04);
   border-color: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.35);
+}
+
+.deskLaunchBadge[data-category="shell"] {
+  background: rgba(148, 163, 184, 0.1);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: rgba(148, 163, 184, 0.85);
 }
 
 

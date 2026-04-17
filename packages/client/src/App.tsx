@@ -7,6 +7,7 @@ import { useRoomOrder } from './hooks/useRoomOrder';
 import type { Session, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
 import { DetailPanel } from './components/DetailPanel';
+import { PtyTerminalPanel } from './components/PtyTerminalPanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
 import { DirectoryPickerDialog } from './components/DirectoryPickerDialog';
@@ -252,6 +253,8 @@ export function App() {
     setShowDirectoryPicker(false);
     if (mode === 'embedded') {
       terminal.spawnSession(cwd, 80, 24, name || undefined);
+    } else if (mode === 'raw') {
+      terminal.spawnRawShell(cwd, 80, 24, name || undefined);
     } else {
       terminal.openNewTerminal(cwd, name || undefined, mode);
     }
@@ -337,7 +340,26 @@ export function App() {
         suggestedName={dirPickerSuggestedName}
         bridgePath={snapshot?.bridgePath}
       />
-      {!selectedRoom && <DetailPanel
+      {!selectedRoom && (selectedSession?.sessionType === 'raw' || (selectedSessionId?.startsWith('raw-') && !selectedSession)) ? (
+        <PtyTerminalPanel
+          sessionId={selectedSessionId ?? selectedSession?.sessionId ?? ''}
+          session={selectedSession ?? undefined}
+          customName={displayNames[selectedSession?.sessionId ?? '']}
+          isExited={terminal.exitedSessions.has(selectedSessionId ?? '')}
+          sendInput={terminal.sendInput}
+          resizePty={terminal.resizePty}
+          registerOutputHandler={terminal.registerOutputHandler}
+          onKill={(sessionId) => {
+            terminal.killSession(sessionId);
+            handleClose();
+          }}
+          onRestart={(sessionId) => terminal.restartShell(sessionId)}
+          onRename={rename}
+          onClose={handleClose}
+          panelWidth={panelWidth}
+          onPanelWidthChange={setPanelWidth}
+        />
+      ) : !selectedRoom && <DetailPanel
         selectedSession={selectedSession}
         selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}

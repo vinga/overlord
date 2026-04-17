@@ -1353,7 +1353,6 @@ export function DetailPanel({
   const realCountPerSession = useRef<Map<string, number | null>>(new Map());
   const sendTsPerSession = useRef<Map<string, number | null>>(new Map());
   const prevSessionIdRef = useRef<string | undefined>(undefined);
-  const [showConvoResumePrompt, setShowConvoResumePrompt] = useState(false);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expandedPlanTasks, setExpandedPlanTasks] = useState<Set<string>>(new Set());
@@ -2415,29 +2414,6 @@ const currentDisplayName =
                         {sessionError && (
                           <div className={styles.sendError}>{sessionError}</div>
                         )}
-                        {showConvoResumePrompt && onResumeSession && selectedSession.state === 'closed' && (
-                          <div className={styles.convoResumeOverlay}>
-                            <div className={styles.convoResumePrompt}>
-                              <span className={styles.convoResumeText}>
-                                This session has exited. Resume it?
-                              </span>
-                              <div className={styles.convoResumeActions}>
-                                <button
-                                  className={styles.convoResumeButtonPrimary}
-                                  onClick={() => { setShowConvoResumePrompt(false); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }}
-                                >
-                                  Resume Session
-                                </button>
-                                <button
-                                  className={styles.convoResumeButtonSecondary}
-                                  onClick={() => setShowConvoResumePrompt(false)}
-                                >
-                                  Dismiss
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        )}
                         {pastedImage && (
                           <div className={styles.imagePreview}>
                             <img src={pastedImage.previewUrl} alt="pasted" className={styles.imagePreviewImg} />
@@ -2477,7 +2453,7 @@ const currentDisplayName =
                               if (selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded') { e.preventDefault(); return; }
                               if (selectedSession.state === 'closed') {
                                 e.preventDefault();
-                                if (onResumeSession) setShowConvoResumePrompt(true);
+                                if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
                               }
                               if (e.key === 'Escape') {
@@ -2496,14 +2472,15 @@ const currentDisplayName =
                               }
                             }}
                             onFocus={() => {
-                              if (selectedSession.state === 'closed' && onResumeSession) {
-                                setShowConvoResumePrompt(true);
+                              if (selectedSession.state === 'closed' && onResumeSession && !resuming) {
+                                setResuming(true);
+                                onResumeSession(selectedSession.sessionId, selectedSession.cwd);
                               }
                             }}
                             onPaste={async e => {
                               if (selectedSession.state === 'closed') {
                                 e.preventDefault();
-                                if (onResumeSession) setShowConvoResumePrompt(true);
+                                if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
                               }
                               const imageItem = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'));
@@ -2536,7 +2513,7 @@ const currentDisplayName =
                             className={styles.sendButton}
                             onClick={() => {
                               if (selectedSession.state === 'closed') {
-                                if (onResumeSession) setShowConvoResumePrompt(true);
+                                if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
                               }
                               if (!connected) return;

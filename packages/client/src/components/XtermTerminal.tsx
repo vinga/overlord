@@ -112,7 +112,9 @@ export function XtermTerminal({
     }, cols ?? term.cols, rows ?? term.rows);
 
     // Register immediately with current (possibly 80×24) dimensions so output starts
-    // flowing into the scrollback. We'll re-register after fit to send the right size.
+    // flowing into the scrollback. After fit, send onResize to update the PTY — but
+    // don't re-register (re-registering sends another replay which duplicates scrollback
+    // content for raw shells that don't use an alt-screen TUI).
     let unregister = makeHandler();
 
     // Fit once dimensions are positive (element visible). ResizeObserver handles both:
@@ -122,14 +124,8 @@ export function XtermTerminal({
       const el = containerRef.current;
       if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
       fitAddon.fit();
-      if (!fitted) {
-        // First fit: re-register with correct dimensions so terminal:replay uses real size
-        fitted = true;
-        unregister();
-        unregister = makeHandler(term.cols, term.rows);
-      } else {
-        onResize(term.cols, term.rows);
-      }
+      if (!fitted) fitted = true;
+      onResize(term.cols, term.rows);
     };
 
     // Also try immediately in case the container is already visible

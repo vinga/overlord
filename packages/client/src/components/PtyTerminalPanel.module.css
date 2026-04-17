@@ -39,13 +39,13 @@
 
 .header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   padding: 12px 14px 11px 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   flex-shrink: 0;
   background: #0e0e18;
-  gap: 8px;
+  gap: 10px;
 }
 
 .headerLeft {
@@ -88,7 +88,8 @@
 }
 
 .sessionName {
-  font-size: 14px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 18px;
   font-weight: 600;
   color: #e8e8e8;
   white-space: nowrap;
@@ -98,7 +99,8 @@
 }
 
 .nameInput {
-  font-size: 14px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 18px;
   font-weight: 600;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(88, 166, 255, 0.4);
@@ -137,6 +139,30 @@
 
 .iconBtnActive {
   color: #58a6ff;
+}
+
+.restartBtn {
+  background: rgba(88, 166, 255, 0.12);
+  border: 1px solid rgba(88, 166, 255, 0.35);
+  color: #9ac9ff;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 150ms, border-color 150ms, color 150ms;
+  flex-shrink: 0;
+}
+
+.restartBtn:hover {
+  background: rgba(88, 166, 255, 0.2);
+  border-color: rgba(88, 166, 255, 0.55);
+  color: #c8e0ff;
 }
 
 .closeButton {

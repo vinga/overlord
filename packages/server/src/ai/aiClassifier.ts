@@ -154,8 +154,21 @@ export class AiClassifier {
     try {
       const transcriptPath = findTranscriptPathAnywhere(sessionId);
       if (!transcriptPath) return;
-      const content = fs.readFileSync(transcriptPath, 'utf-8');
-      const lines = content.split('\n').filter(l => l.trim());
+      // Read only the tail of the transcript (max 512KB) to avoid OOM on large files.
+      // Previous code read the entire file — a 50MB transcript would allocate ~150MB
+      // (file string + split array + parse), and multiple sessions doing this simultaneously
+      // caused the server to hit the V8 heap limit.
+      const MAX_READ = 512 * 1024;
+      const stat = fs.statSync(transcriptPath);
+      const readSize = Math.min(stat.size, MAX_READ);
+      const buf = Buffer.alloc(readSize);
+      const fd = fs.openSync(transcriptPath, 'r');
+      fs.readSync(fd, buf, 0, readSize, Math.max(0, stat.size - readSize));
+      fs.closeSync(fd);
+      const tail = buf.toString('utf-8');
+      const lines = tail.split('\n').filter(l => l.trim());
+      // Drop first line if we started mid-file (may be partial)
+      if (stat.size > MAX_READ && lines.length > 1) lines.shift();
       // Collect last 10 assistant messages for context
       const msgs: string[] = [];
       for (let i = lines.length - 1; i >= 0 && msgs.length < 10; i--) {

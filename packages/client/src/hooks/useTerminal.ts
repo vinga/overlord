@@ -11,6 +11,8 @@ function decodeBase64(b64: string): Uint8Array {
 export interface UseTerminalResult {
   handleTerminalMessage: (msg: TerminalMessage) => void;
   spawnSession: (cwd: string, cols?: number, rows?: number, name?: string) => void;
+  spawnRawShell: (cwd: string, cols?: number, rows?: number, name?: string) => void;
+  restartShell: (sessionId: string, cols?: number, rows?: number) => void;
   resumeSession: (resumeSessionId: string, cwd: string, cols?: number, rows?: number) => void;
   sendInput: (ovrId: string, data: string) => void;
   injectText: (ovrId: string, text: string, extraEnter?: boolean) => boolean;
@@ -106,6 +108,19 @@ export function useTerminal(
       if (handler) {
         handler(new TextEncoder().encode('\x1bc'));
       }
+    } else if (msg.type === 'terminal:history-dump') {
+      // Revived raw-shell history: clear the terminal and write the disk log.
+      const handler = outputHandlers.current.get(msg.sessionId);
+      const bytes = (() => { try { return decodeBase64(msg.data); } catch { return new TextEncoder().encode(msg.data); } })();
+      if (handler) {
+        handler(new TextEncoder().encode('\x1bc'));
+        handler(bytes);
+      } else {
+        const buf = outputBuffer.current.get(msg.sessionId) ?? [];
+        buf.push(new TextEncoder().encode('\x1bc'));
+        buf.push(bytes);
+        outputBuffer.current.set(msg.sessionId, buf);
+      }
     } else if (msg.type === 'terminal:linked') {
       // ovrId is the stable overlord session ID; all state should be keyed by it.
       // ptySessionId was a temporary ID used before linking (added by terminal:spawned).
@@ -152,6 +167,26 @@ export function useTerminal(
   const spawnSession = useCallback(
     (cwd: string, cols = 80, rows = 24, name?: string) => {
       sendMessage({ type: 'terminal:spawn', cwd, cols, rows, name });
+    },
+    [sendMessage]
+  );
+
+  const spawnRawShell = useCallback(
+    (cwd: string, cols = 80, rows = 24, name?: string) => {
+      sendMessage({ type: 'terminal:spawn-raw', cwd, cols, rows, name });
+    },
+    [sendMessage]
+  );
+
+  const restartShell = useCallback(
+    (sessionId: string, cols = 80, rows = 24) => {
+      setExitedSessions((prev) => {
+        if (!prev.has(sessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(sessionId);
+        return next;
+      });
+      sendMessage({ type: 'terminal:restart-shell', sessionId, cols, rows });
     },
     [sendMessage]
   );
@@ -268,6 +303,8 @@ export function useTerminal(
   return {
     handleTerminalMessage,
     spawnSession,
+    spawnRawShell,
+    restartShell,
     resumeSession,
     sendInput,
     injectText,

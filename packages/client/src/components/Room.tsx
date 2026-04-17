@@ -8,6 +8,7 @@ import styles from './Room.module.css';
 import dialogStyles from './DirectoryPickerDialog.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
+import { GitBranchBadge } from './GitBranchBadge';
 
 // 300 distinctive names for new sessions — pick a random unused one
 export const SESSION_NAMES = [
@@ -214,12 +215,14 @@ function RoomSpawnDialog({ cwd, initialName, onSpawn, onCancel, onCopyAndClose }
     embedded: null,
     bridge: `cd "${cwd}" && "${bridgePath}" --pipe overlord-${marker} -- claude --name ${safeName}___BRG:${marker}`,
     plain: `cd "${cwd}" && claude --name "${name.trim()}"`,
+    raw: null,
   };
 
   const modeRows: { key: TerminalSpawnMode; label: string; tooltip: string }[] = [
     { key: 'embedded', label: 'Overlord', tooltip: 'Spawns a PTY session managed entirely inside Overlord. No terminal window needed — inject messages, view output, and monitor state directly from the UI.' },
     { key: 'bridge',   label: 'Bridge',   tooltip: 'Opens Terminal.app with a named-pipe relay. Overlord can inject messages and track the session while you keep full terminal control.' },
     { key: 'plain',    label: 'Direct',   tooltip: 'Opens Terminal.app running claude directly. No relay — Overlord monitors via session files only. Use when bridge is not needed.' },
+    { key: 'raw',      label: 'Shell',    tooltip: 'Embedded terminal running a plain shell — no Claude, no LLM. Useful for manual tasks: git, file ops, running scripts.' },
   ];
 
   return ReactDOM.createPortal(
@@ -682,6 +685,16 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
               );
             })}
           </div>
+        )}
+        <div className={styles.titleSpacer} />
+        {room.gitBranch && (
+          <GitBranchBadge
+            branch={room.gitBranch}
+            cwd={room.cwd}
+            aheadBehind={room.aheadBehind}
+            gitWarning={room.gitWarning}
+            pullRequest={room.pullRequest}
+          />
         )}
         {onSpawnDirect && (
           <button

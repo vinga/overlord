@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session, WorkerState } from '../types';
 import { XtermTerminal } from './XtermTerminal';
+import { ColorPicker } from './ColorPicker';
 import styles from './PtyTerminalPanel.module.css';
 
-const STORAGE_KEY = 'pty-panel-width';
+// Match DetailPanel's sizing and storage key so width persists across panel types.
+const STORAGE_KEY = 'overlord:panelWidth';
 const MIN_WIDTH = 320;
-const MAX_WIDTH = 1400;
-const DEFAULT_WIDTH = 600;
+const MAX_WIDTH = 900;
+const DEFAULT_WIDTH = 680;
 
 function getSavedWidth(): number {
   try {
@@ -51,7 +53,11 @@ interface PtyTerminalPanelProps {
   resizePty: (sessionId: string, cols: number, rows: number) => void;
   registerOutputHandler: (sessionId: string, handler: (data: Uint8Array) => void) => () => void;
   onKill: (sessionId: string) => void;
+  onRestart?: (sessionId: string) => void;
   onRename?: (sessionId: string, name: string) => void;
+  onClose?: () => void;
+  panelWidth?: number;
+  onPanelWidthChange?: (width: number) => void;
 }
 
 export function PtyTerminalPanel({
@@ -63,10 +69,24 @@ export function PtyTerminalPanel({
   resizePty,
   registerOutputHandler,
   onKill,
+  onRestart,
   onRename,
+  onClose,
+  panelWidth,
+  onPanelWidthChange,
 }: PtyTerminalPanelProps) {
   const [open, setOpen] = useState(false);
-  const [width, setWidth] = useState(getSavedWidth);
+  const controlled = panelWidth !== undefined;
+  const [internalWidth, setInternalWidth] = useState(getSavedWidth);
+  const width = controlled ? panelWidth! : internalWidth;
+  const setWidth = (next: number | ((prev: number) => number)) => {
+    if (controlled) {
+      const resolved = typeof next === 'function' ? next(panelWidth!) : next;
+      onPanelWidthChange?.(resolved);
+    } else {
+      setInternalWidth(next);
+    }
+  };
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
@@ -147,8 +167,22 @@ export function PtyTerminalPanel({
 
       {/* Header */}
       <div className={styles.header}>
+        {session && (
+          <ColorPicker
+            sessionId={session.sessionId}
+            color={session.color}
+            size={34}
+            isRaw
+            onChange={(newColor) => {
+              void fetch(`/api/sessions/${session.sessionId}/color`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ color: newColor }),
+              });
+            }}
+          />
+        )}
         <div className={styles.headerLeft}>
-          <span className={styles.label}>PTY Terminal</span>
           {isEditing ? (
             <div className={styles.nameEditRow}>
               <input
@@ -180,13 +214,31 @@ export function PtyTerminalPanel({
           >
             {detailsOpen ? '▴' : '▾'}
           </button>
+          {session?.historyOnly && onRestart && (
+            <button
+              className={styles.restartBtn}
+              onClick={() => onRestart(sessionId)}
+              title="Restart shell in original folder"
+            >
+              ↻ Restart shell
+            </button>
+          )}
           <button
-            className={styles.closeButton}
+            className={styles.iconBtn}
             onClick={() => onKill(sessionId)}
             title="Kill session"
           >
-            ×
+            ⏻
           </button>
+          {onClose && (
+            <button
+              className={styles.closeButton}
+              onClick={onClose}
+              title="Close panel"
+            >
+              ×
+            </button>
+          )}
         </div>
       </div>
 

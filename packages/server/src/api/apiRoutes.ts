@@ -31,6 +31,7 @@ import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector
 import { injectViaMac } from '../pty/macInjector.js';
 import { findTranscriptPathAnywhere, readActivityBefore } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
+import { readGitStatus } from '../git/gitStatus.js';
 import { log } from '../logger.js';
 
 export interface PtyMaps {
@@ -56,6 +57,19 @@ export function registerApiRoutes(
   // Server info endpoint — returns bridge binary path and platform
   app.get('/api/info', (_req, res) => {
     res.json({ bridgePath: getBridgePath(), platform: process.platform });
+  });
+
+  // Git status for a room cwd. Only allowed for cwds matching a known room
+  // to prevent arbitrary path probing from the browser.
+  app.get('/api/git/status', async (req, res) => {
+    const cwd = String(req.query.cwd ?? '');
+    if (!cwd) return res.status(400).json({ error: 'cwd required' });
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) return res.status(404).json({ error: 'unknown cwd' });
+    const status = await readGitStatus(cwd);
+    if (!status) return res.status(404).json({ error: 'not a git repo' });
+    res.json(status);
   });
 
   // Debug endpoint: spawn a test session

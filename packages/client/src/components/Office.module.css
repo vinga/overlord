@@ -137,6 +137,10 @@
 .searchInput::placeholder {
   color: rgba(255, 255, 255, 0.35);
 }
+.searchInput:hover {
+  border-color: rgba(212, 175, 55, 0.35);
+  background: rgba(255, 255, 255, 0.06);
+}
 .searchInput:focus {
   border-color: rgba(212, 175, 55, 0.4);
   background: rgba(255, 255, 255, 0.06);

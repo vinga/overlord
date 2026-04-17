@@ -73,6 +73,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           currentTaskLabel={session.currentTaskLabel}
           currentTask={session.currentTask}
           isWorker={session.isWorker}
+          isRaw={session.sessionType === 'raw'}
           ptyInputPendingSince={session.ptyInputPendingSince}
           notesSummary={notesMap.get(session.sessionId)}
           onClick={() => onSelectSession(session)}

@@ -2,6 +2,7 @@ import type { WebSocket } from 'ws';
 import type { PtyManager } from './ptyManager.js';
 import type { StateManager } from '../session/stateManager.js';
 import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
+import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -55,6 +56,12 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // Broadcast using ovrId as sessionId so clients keyed by ovrId receive it
     ctx.broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: encoded });
     ctx.stateManager.setPtyActive(ovrId);
+
+    // Tee raw-shell output to disk for history persistence across restarts.
+    const sess = ctx.stateManager.getSession(ovrId);
+    if (sess?.sessionType === 'raw') {
+      appendShellHistory(ovrId, Buffer.from(data));
+    }
 
     // Detect "Compacting conversation" in PTY output — set isCompacting immediately,
     // before the compact_boundary event lands in the transcript.
@@ -150,6 +157,15 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     for (const [, sessions] of ctx.wsSessionMap) {
       sessions.delete(ptySessionId);
       sessions.delete(ovrId);
+    }
+
+    // Raw shell sessions: mark as historyOnly closed so the user can still view
+    // the scrollback and click "Restart shell". Log file on disk is the source
+    // of truth; it gets deleted only on explicit session delete or TTL sweep.
+    const exitedSession = ctx.stateManager.getSession(ovrId);
+    if (exitedSession?.sessionType === 'raw') {
+      ctx.stateManager.markClosed(ovrId);
+      ctx.stateManager.setHistoryOnly?.(ovrId, true);
     }
   });
 

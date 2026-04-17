@@ -4,6 +4,9 @@ import * as os from 'os';
 import { execSync } from 'child_process';
 import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
+import { GitWatcher } from '../git/gitWatcher.js';
+import { PrCache } from '../git/prCache.js';
+import { AheadBehindCache } from '../git/aheadBehindCache.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { log } from '../logger.js';
 
@@ -57,6 +60,17 @@ import {
 import type { RawSession } from './sessionWatcher.js';
 import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask, createPlanTask } from '../ai/taskStorage.js';
 import type { Task } from '../types.js';
+
+/** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
+function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
 
 function normalizePath(p: string): string {
   // Convert WSL path /mnt/c/... to c:/...
@@ -126,6 +140,9 @@ export class StateManager {
   /** Stable ovrId → current active claudeSessionId. Updated by transferSessionState. */
   private sessionsByOvrId = new Map<string, string>();
   readonly bridgePath: string;
+  private gitWatcher: GitWatcher;
+  private prCache: PrCache;
+  private aheadBehindCache: AheadBehindCache;
 
   private generateOvrId(): string {
     return 'ovr-' + Math.random().toString(36).slice(2, 10);
@@ -141,6 +158,9 @@ export class StateManager {
     this.bridgePath = getBridgePath();
     this.onChangeCallback = onChange;
     this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
+    this.gitWatcher = new GitWatcher(() => this.onChange());
+    this.prCache = new PrCache(() => this.onChange());
+    this.aheadBehindCache = new AheadBehindCache(() => this.onChange());
     this.loadAccepted();
     this.loadDeleted();
     this.loadColors();
@@ -314,6 +334,10 @@ export class StateManager {
             const s = this.sessions.get(entry.sessionId)!;
             s.activityFeed = result.activityFeed;
             if (result.lastActivity) s.lastActivity = result.lastActivity;
+            s.lastMessage = result.lastMessage;
+            s.model = result.model;
+            s.inputTokens = result.inputTokens;
+            s.compactCount = result.compactCount;
             // Do NOT override state — keep it 'closed'
           } catch { /* ignore */ }
         }
@@ -377,7 +401,7 @@ export class StateManager {
     }
   }
 
-  private saveKnownSessions(): void {
+  saveKnownSessions(): void {
     try {
       fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
       const entries = [...this.sessions.values()]
@@ -762,6 +786,92 @@ export class StateManager {
     }
   }
 
+  /**
+   * Register a raw-shell session (no Claude, no transcript). Uses a synthetic
+   * sessionId that also serves as ovrId and ptySessionId. The session is never
+   * persisted — it exists only in memory until the PTY exits.
+   */
+  addRawSession(sessionId: string, cwd: string, pid: number, proposedName?: string): Session {
+    const session: Session = {
+      sessionId,
+      overlordId: sessionId,
+      sessionHistory: [{ sessionId, attachedAt: Date.now() }],
+      provider: undefined,
+      proposedName,
+      pid,
+      startedAt: Date.now(),
+      cwd,
+      state: 'working',
+      lastActivity: new Date().toISOString(),
+      sessionType: 'raw',
+      color: this.sessionColorByOvrId(sessionId),
+      subagents: [],
+      ptySessionId: sessionId,
+    };
+    this.sessions.set(sessionId, session);
+    this.sessionsByOvrId.set(sessionId, sessionId);
+    this.onChange();
+    return session;
+  }
+
+  /**
+   * Revive a raw-shell session from disk history (no live PTY). The worker will
+   * show up in the office as closed/dormant with a "Restart shell" action.
+   */
+  addHistoryOnlyRawSession(sessionId: string, cwd: string, proposedName: string | undefined, lastActivity: number): Session {
+    const session: Session = {
+      sessionId,
+      overlordId: sessionId,
+      sessionHistory: [{ sessionId, attachedAt: lastActivity }],
+      provider: undefined,
+      proposedName,
+      pid: 0,
+      startedAt: lastActivity,
+      cwd,
+      state: 'closed',
+      lastActivity: new Date(lastActivity).toISOString(),
+      sessionType: 'raw',
+      color: this.sessionColorByOvrId(sessionId),
+      subagents: [],
+      ptySessionId: sessionId,
+      historyOnly: true,
+    };
+    this.sessions.set(sessionId, session);
+    this.sessionsByOvrId.set(sessionId, sessionId);
+    this.onChange();
+    return session;
+  }
+
+  clearHistoryOnly(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session && session.historyOnly) {
+      this.sessions.set(sessionId, { ...session, historyOnly: false });
+      this.onChange();
+    }
+  }
+
+  reviveRawToWorking(sessionId: string, pid: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.sessions.set(sessionId, {
+      ...session,
+      historyOnly: false,
+      state: 'working',
+      pid,
+      startedAt: Date.now(),
+      lastActivity: new Date().toISOString(),
+    });
+    this.onChange();
+  }
+
+  setHistoryOnly(sessionId: string, value: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (session && !!session.historyOnly !== value) {
+      this.sessions.set(sessionId, { ...session, historyOnly: value });
+      this.onChange();
+    }
+  }
+
   markClosed(sessionId: string): void {
     this.pendingClearSessions.delete(sessionId);
     const session = this.sessions.get(sessionId);
@@ -1032,6 +1142,8 @@ export class StateManager {
       session.currentTaskLabel = undefined;
       session.ptyCompactItems = undefined;
       session.ptyCompactBaseline = undefined;
+      session.ptyCompactBaselineAt = undefined;
+      session.ptyCompactBoundarySeen = undefined;
       session.compactCount = undefined;
       session.isCompacting = undefined;
       session.needsPermission = undefined;
@@ -1050,7 +1162,7 @@ export class StateManager {
       session.state !== result.state ||
       session.lastActivity !== result.lastActivity ||
       session.lastMessage !== result.lastMessage ||
-      JSON.stringify(session.activityFeed) !== JSON.stringify(result.activityFeed) ||
+      !shallowArrayEquals(session.activityFeed, result.activityFeed) ||
       session.model !== result.model ||
       session.inputTokens !== result.inputTokens ||
       session.compactCount !== result.compactCount ||
@@ -1058,7 +1170,7 @@ export class StateManager {
       session.needsPermission !== result.needsPermission ||
       session.slug !== slug ||
       session.proposedName !== proposedName ||
-      JSON.stringify(session.subagents) !== JSON.stringify(subagents);
+      !shallowArrayEquals(session.subagents, subagents);
 
     if (changed) {
       // Clear completionHint when leaving waiting state
@@ -1099,11 +1211,13 @@ export class StateManager {
           return !transcriptCompactTimes.some(tc => Math.abs(tc - t) < 60_000);
         });
         if (orphanPtyItems.length > 0) {
-          // Insert PTY compact items in chronological position
+          // Insert PTY compact items in chronological position.
+          // activityFeed is oldest-first (readTranscriptState uses unshift in backward scan),
+          // so ascending-time sort keeps that order.
           mergedFeed = [...mergedFeed, ...orphanPtyItems].sort((a, b) => {
             const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
             const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
-            return tb - ta; // newest first (feed uses unshift order)
+            return ta - tb;
           });
         }
       }
@@ -1113,10 +1227,23 @@ export class StateManager {
       session.compactCount = result.compactCount;
       // Keep isCompacting sticky while PTY has seen "Compacting conversation…"
       // and the transcript hasn't yet recorded a new compact_boundary.
+      // Release conditions (handle race where PTY fires after boundary already landed):
+      //   1. compactCount advanced past baseline — normal path
+      //   2. transcript's own isCompacting was seen true and has since gone false — boundary observed
+      //   3. TTL safety: baseline older than 5 minutes — avoid permanent stuck state
       const baseline = session.ptyCompactBaseline;
-      const boundaryLanded = baseline !== undefined && (result.compactCount ?? 0) > baseline;
+      if (baseline !== undefined && result.isCompacting) {
+        session.ptyCompactBoundarySeen = true;
+      }
+      const baselineAgeMs = session.ptyCompactBaselineAt ? Date.now() - session.ptyCompactBaselineAt : 0;
+      const countAdvanced = baseline !== undefined && (result.compactCount ?? 0) > baseline;
+      const boundaryObserved = baseline !== undefined && session.ptyCompactBoundarySeen === true && !result.isCompacting;
+      const ttlExpired = baseline !== undefined && baselineAgeMs > 90_000;
+      const boundaryLanded = countAdvanced || boundaryObserved || ttlExpired;
       if (boundaryLanded) {
         session.ptyCompactBaseline = undefined;
+        session.ptyCompactBaselineAt = undefined;
+        session.ptyCompactBoundarySeen = undefined;
       }
       const stickyCompacting = baseline !== undefined && !boundaryLanded;
       session.isCompacting = result.isCompacting || stickyCompacting;
@@ -1415,22 +1542,34 @@ export class StateManager {
     // Callers pass either a Claude sessionId or an overlordId — resolve to the active session.
     const session = this.sessions.get(sessionIdOrOvr) ?? this.getActiveClaudeByOvr(sessionIdOrOvr);
     if (!session) return;
+    // If the transcript already recorded a compact_boundary within the last 30s,
+    // this PTY detection is late — the compact already finished. Drop it entirely
+    // so we don't flip isCompacting back on and block sends.
+    const now = Date.now();
+    const recentTranscriptBoundary = (session.activityFeed ?? []).some(i =>
+      i.kind === 'compact' && i.compactMeta && i.timestamp &&
+      now - new Date(i.timestamp).getTime() < 30_000
+    );
+    if (recentTranscriptBoundary) return;
     const item: import('../types.js').ActivityItem = {
       kind: 'compact',
       content: text,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(now).toISOString(),
     };
     if (!session.ptyCompactItems) session.ptyCompactItems = [];
     session.ptyCompactItems.push(item);
-    // Immediately prepend to activityFeed so it shows in Conversation Tab right away
+    // activityFeed is oldest-first; append to the end so the compact item
+    // shows at the newest position in the Conversation Tab.
     if (!session.activityFeed) session.activityFeed = [];
-    session.activityFeed.unshift(item);
+    session.activityFeed.push(item);
     session.isCompacting = true;
     // Snapshot the current compactCount — refreshTranscript will keep
     // isCompacting sticky until compactCount advances past this baseline,
     // i.e. a real compact_boundary lands in the transcript.
     if (session.ptyCompactBaseline === undefined) {
       session.ptyCompactBaseline = session.compactCount ?? 0;
+      session.ptyCompactBaselineAt = now;
+      session.ptyCompactBoundarySeen = undefined;
     }
     this.onChange();
   }
@@ -1507,6 +1646,7 @@ export class StateManager {
     let anyChanged = false;
     for (const session of this.sessions.values()) {
       if (session.provider === 'codex' || session.pid <= 0) continue;
+      if (session.sessionType === 'raw') continue;
       if (!pids.has(session.pid) && session.state !== 'closed') {
         // Don't override transcript-based state if the session was recently active.
         // This prevents process-checker from fighting refreshTranscript when the PID
@@ -1634,6 +1774,29 @@ export class StateManager {
       room.sessions.sort((a, b) => a.startedAt - b.startedAt);
     }
 
+    // Attach git branch (and watch for changes) per room cwd
+    const activeCwds = new Set<string>();
+    for (const room of rooms) {
+      activeCwds.add(room.cwd);
+      const branch = this.gitWatcher.watch(room.cwd);
+      if (branch) {
+        room.gitBranch = branch;
+        const pr = this.prCache.get(room.cwd, branch);
+        if (pr) room.pullRequest = pr;
+        const ab = this.aheadBehindCache.get(room.cwd, branch);
+        if (ab) room.aheadBehind = ab;
+        const warnings: string[] = [];
+        const prErr = this.prCache.getError(room.cwd, branch);
+        if (prErr) warnings.push(`PR lookup: ${prErr}`);
+        const abErr = this.aheadBehindCache.getError(room.cwd, branch);
+        if (abErr) warnings.push(`ahead/behind: ${abErr}`);
+        if (warnings.length > 0) room.gitWarning = warnings.join(' · ');
+      }
+    }
+    this.gitWatcher.retain(activeCwds);
+    this.prCache.retain(activeCwds);
+    this.aheadBehindCache.retain(activeCwds);
+
     return {
       rooms,
       updatedAt: new Date().toISOString(),
@@ -1716,12 +1879,14 @@ export class StateManager {
   }
 
   async loadClosedSessionsFromTranscripts(): Promise<void> {
+    const t0 = Date.now();
     const projectsDir = path.join(os.homedir(), '.claude', 'projects');
     if (!fs.existsSync(projectsDir)) return;
 
     const slugDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name);
+    let scanned = 0, skippedAge = 0, loaded = 0;
 
     for (const slug of slugDirs) {
       const slugDir = path.join(projectsDir, slug);
@@ -1753,23 +1918,32 @@ export class StateManager {
         if (this.deletedSessionIds.has(sessionId)) continue;
 
         const transcriptPath = path.join(slugDir, file);
+        scanned++;
         try {
           // Fast skip: don't read files not modified in the last 24 hours.
           // stat.mtime is cheap; readFileSync on 1000+ files is the OOM culprit.
           const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
           try {
             const stat = fs.statSync(transcriptPath);
-            if (stat.mtime < oneDayAgo) continue;
+            if (stat.mtime < oneDayAgo) { skippedAge++; continue; }
           } catch { continue; }
 
-          // Read cwd from first line that has it (first line is file-history-snapshot with no cwd)
-          const lines = fs.readFileSync(transcriptPath, 'utf-8').split('\n');
+          // Read only the first few lines for cwd + startedAt (NOT the whole file)
+          const headBuf = Buffer.alloc(4096);
+          const fd = fs.openSync(transcriptPath, 'r');
+          const bytesRead = fs.readSync(fd, headBuf, 0, 4096, 0);
+          fs.closeSync(fd);
+          const headLines = headBuf.subarray(0, bytesRead).toString('utf-8').split('\n');
+
           let cwd: string | undefined;
-          for (const line of lines.slice(0, 10)) {
+          let startedAt = 0;
+          for (const line of headLines.slice(0, 10)) {
             if (!line.trim()) continue;
             try {
               const entry = JSON.parse(line);
-              if (entry.cwd) { cwd = entry.cwd as string; break; }
+              if (!cwd && entry.cwd) { cwd = entry.cwd as string; }
+              if (!startedAt && entry.timestamp) { startedAt = new Date(entry.timestamp).getTime(); }
+              if (cwd && startedAt) break;
             } catch { continue; }
           }
           if (!cwd) continue;
@@ -1778,7 +1952,7 @@ export class StateManager {
           const cwdNorm = cwd.toLowerCase().replace(/\\/g, '/');
           if (cwdNorm.includes('/.claude/')) continue;
 
-          // Read transcript state
+          // Read transcript state (reads only tail of file)
           const transcriptState = readTranscriptState(transcriptPath);
 
           // Skip sessions inactive for more than 24 hours (double-check via transcript content)
@@ -1786,19 +1960,6 @@ export class StateManager {
 
           const proposedName = readProposedName(sessionId, transcriptPath);
           const subagents = readSubagents(cwd, sessionId, transcriptPath);
-
-          // Recover startedAt from first transcript entry
-          let startedAt = 0;
-          for (const line of lines.slice(0, 5)) {
-            if (!line.trim()) continue;
-            try {
-              const entry = JSON.parse(line);
-              if (entry.timestamp) {
-                startedAt = new Date(entry.timestamp).getTime();
-                break;
-              }
-            } catch { continue; }
-          }
 
           const recoveredOvrId = this.generateOvrId();
           this.sessionsByOvrId.set(recoveredOvrId, sessionId);
@@ -1828,6 +1989,7 @@ export class StateManager {
           };
 
           this.sessions.set(sessionId, session);
+          loaded++;
         } catch {
           // Skip unreadable transcripts
           continue;
@@ -1835,8 +1997,61 @@ export class StateManager {
       }
     }
 
+    console.log(`[startup] loadClosedSessions: ${Date.now() - t0}ms | scanned=${scanned} skippedAge=${skippedAge} loaded=${loaded} total=${this.sessions.size}`);
     if (this.sessions.size > 0) {
       this.onChange();
+    }
+  }
+
+  /** Delete transcript files not modified in 7+ days and not used by any active session.
+   *  Worker transcripts (overlord-query-worker, overlord-haiku-worker) use a 1-day TTL. */
+  async cleanupStaleTranscripts(): Promise<void> {
+    const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    if (!fs.existsSync(projectsDir)) return;
+
+    const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+    const WORKER_STALE_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const activeIds = new Set(this.sessions.keys());
+    let deleted = 0;
+    let kept = 0;
+
+    const slugDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+
+    for (const slug of slugDirs) {
+      const isWorkerSlug = /worker/i.test(slug);
+      const cutoff = now - (isWorkerSlug ? WORKER_STALE_MS : STALE_MS);
+      const slugDir = path.join(projectsDir, slug);
+      let files: string[];
+      try { files = fs.readdirSync(slugDir); } catch { continue; }
+
+      for (const file of files) {
+        if (!file.endsWith('.jsonl')) continue;
+        const sessionId = file.replace('.jsonl', '');
+        if (!/^[0-9a-f-]{36}$/.test(sessionId)) continue;
+
+        // Never delete transcripts for active/known sessions
+        if (activeIds.has(sessionId)) { kept++; continue; }
+
+        const filePath = path.join(slugDir, file);
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.mtimeMs > cutoff) { kept++; continue; }
+          fs.unlinkSync(filePath);
+          // Also remove subagent dir if it exists
+          const subagentDir = path.join(slugDir, sessionId);
+          if (fs.existsSync(subagentDir)) {
+            fs.rmSync(subagentDir, { recursive: true, force: true });
+          }
+          deleted++;
+        } catch { /* skip unreadable */ }
+      }
+    }
+
+    if (deleted > 0) {
+      console.log(`[cleanup] deleted ${deleted} stale transcripts (workers>1d, others>7d), kept ${kept}`);
     }
   }
 

@@ -25,6 +25,7 @@ import { setupWebSocketHandler } from './api/wsHandler.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
 import { feedCompactDetector, clearCompactDetector } from './pty/compactDetect.js';
+import { listAll as listShellHistoryLogs, sweep as sweepShellHistory, enforceTotalCap as enforceShellHistoryCap, startPeriodicSweep as startShellHistorySweep, deleteLog as deleteShellHistoryLog } from './pty/shellHistoryLog.js';
 import type { OfficeSnapshot } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -397,9 +398,17 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
 }
 
 function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName: string, consecutiveFailures = 0): void {
+  // Track reconnect time so we can suppress stale "Compacting conversation" detection in
+  // the SIGWINCH-triggered repaint dump — the terminal may include old compact text that
+  // no longer corresponds to a fresh compact_boundary.
+  let reconnectAt = 0;
   // Send "OUTPT\n" handshake so bridge adds this socket to the broadcast list
   const outputSocket = net.connect(pipeAddr, () => {
     outputSocket.write('OUTPT\n', () => {
+      reconnectAt = Date.now();
+      // Clear the compact detector so buffered text from a previous connect doesn't
+      // combine with repaint bytes to form a false "Compacting conversation" match.
+      clearCompactDetector(sessionId);
       // Clear stale buffer — the bridge auto-nudges (SIGWINCH) when OUTPT connects,
       // producing a fresh full-screen repaint that fills the buffer from scratch.
       ptyOutputBuffer.delete(sessionId);
@@ -444,9 +453,14 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     // Detect "Compacting conversation" in bridge output — mirrors the PTY path so bridge
     // sessions also surface the compact state in the Conversation tab before the
     // compact_boundary event lands in the transcript.
-    feedCompactDetector(eid, data.toString('utf8'), (line) => {
-      stateManager.addPtyCompact(broadcastId, line);
-    });
+    // Suppress during the first 5s after reconnect: the SIGWINCH repaint may include stale
+    // "Compacting conversation" text from the scrollback that no new compact_boundary will clear.
+    const sinceConnectMs = reconnectAt > 0 ? Date.now() - reconnectAt : Infinity;
+    if (sinceConnectMs > 5000) {
+      feedCompactDetector(eid, data.toString('utf8'), (line) => {
+        stateManager.addPtyCompact(broadcastId, line);
+      });
+    }
 
     // Update rolling plain-text buffer for permission detection
     const prev = bridgePermText.get(eid) ?? '';
@@ -691,10 +705,34 @@ stateManager.detectClearOnStartup();
 // Reconnect to any bridge pipes that survived the server restart
 reconnectBridgePipes();
 
-// Load closed sessions from transcripts on startup
-stateManager.loadClosedSessionsFromTranscripts().catch(err => {
-  console.warn('[startup] failed to load closed sessions from transcripts:', err);
-});
+// Load closed sessions from transcripts on startup, then clean up stale ones
+stateManager.loadClosedSessionsFromTranscripts()
+  .then(() => stateManager.cleanupStaleTranscripts())
+  .catch(err => {
+    console.warn('[startup] failed to load/cleanup closed sessions:', err);
+  });
+
+// Revive raw-shell sessions from disk history logs (historyOnly). No PTYs spawned —
+// user must click "Restart shell" in DetailPanel to resume live I/O.
+try {
+  const logs = listShellHistoryLogs();
+  const isDeleted = (id: string) => stateManager.isDeleted(id);
+  for (const { sessionId, meta, mtime } of logs) {
+    if (isDeleted(sessionId)) {
+      deleteShellHistoryLog(sessionId);
+      continue;
+    }
+    if (stateManager.getSession(sessionId)) continue; // already in state
+    if (!meta) continue; // orphan with no meta — sweep will clean it up
+    stateManager.addHistoryOnlyRawSession(sessionId, meta.cwd, meta.name, mtime);
+  }
+  sweepShellHistory(id => !!stateManager.getSession(id));
+  enforceShellHistoryCap();
+  startShellHistorySweep(id => !!stateManager.getSession(id));
+  console.log(`[startup] revived ${logs.length} shell-history session(s)`);
+} catch (err) {
+  console.warn('[startup] shell-history revival failed:', (err as Error).message);
+}
 
 async function autoResumePtySessions(): Promise<void> {
   const sessions = stateManager.getPtySessionsToResume();
@@ -848,6 +886,13 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     }
   }
 
+  // 4b. Delete raw-shell history log + meta so it isn't revived on next startup
+  try {
+    deleteShellHistoryLog(sessionId);
+  } catch (err) {
+    console.warn(`[deleteSession] failed to delete shell history for ${sessionId}:`, (err as Error).message);
+  }
+
   // 5. Add to persistent deleted blocklist so this session is never resurrected on restart
   stateManager.markDeleted(sessionId);
   console.log(`[deleteSession] marked ${sessionId} as deleted in blocklist`);
@@ -934,11 +979,25 @@ httpServer.on('error', (err: NodeJS.ErrnoException) => {
   }
 });
 
-function shutdown() {
+function shutdown(signal: string) {
+  console.log(`[shutdown] received ${signal}, cleaning up...`);
+  // 1. Notify clients so they can show a reconnecting state
+  wss.clients.forEach(client => {
+    try { client.send(JSON.stringify({ type: 'server:shutdown' })); } catch { /* ignore */ }
+  });
+  // 2. Save known-sessions state so restart picks up where we left off
+  try { stateManager.saveKnownSessions(); } catch { /* ignore */ }
+  // 3. Kill embedded PTY sessions gracefully (SIGTERM, not SIGKILL)
+  //    so Claude CLI can clean up. Bridge sessions survive — they're external.
+  ptyManager.killAll();
+  // 4. Disconnect bridge sockets cleanly
+  bridgeManager.disconnectAll();
+  // 5. Close WS + HTTP
   wss.clients.forEach(client => client.terminate());
   wss.close();
   httpServer.close();
+  console.log(`[shutdown] done, exiting`);
   process.exit(0);
 }
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

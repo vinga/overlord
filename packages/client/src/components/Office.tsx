@@ -136,7 +136,14 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     if (q) {
       filtered = filtered
         .map(room => {
-          if (room.name.toLowerCase().includes(q) || room.cwd.toLowerCase().includes(q)) return room;
+          const roomFields: (string | undefined)[] = [
+            room.name,
+            room.cwd,
+            room.gitBranch,
+            room.pullRequest?.title,
+            room.pullRequest ? `#${room.pullRequest.number}` : undefined,
+          ];
+          if (roomFields.some(f => typeof f === 'string' && f.toLowerCase().includes(q))) return room;
           const sessions = room.sessions.filter(s => sessionMatches(s, q));
           return sessions.length > 0 ? { ...room, sessions } : null;
         })

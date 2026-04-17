@@ -2,7 +2,7 @@ type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
 type SessionProvider = 'claude' | 'codex';
 
 /** How a new terminal session should be spawned */
-type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain';
+type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw';
 
 type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
 
@@ -88,8 +88,9 @@ interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   resumedFrom?: string;
-  sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide';
+  sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
   bridgeTty?: string;         // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
+  historyOnly?: boolean;      // revived raw-shell session (disk log only, no live PTY)
   bridgeDead?: boolean;       // output pipe exhausted retries — terminal feed is gone
   needsPermission?: boolean;
   permissionPromptText?: string;
@@ -110,6 +111,20 @@ interface Room {
   name: string;           // basename of cwd
   cwd: string;
   sessions: Session[];
+  gitBranch?: string;
+  pullRequest?: {
+    number: number;
+    url: string;
+    title: string;
+    state: string;
+    isDraft: boolean;
+  };
+  aheadBehind?: {
+    ahead: number;
+    behind: number;
+    base: string | null;
+  };
+  gitWarning?: string;
 }
 
 interface OfficeSnapshot {
@@ -157,13 +172,20 @@ interface TerminalClearMessage {
   sessionId: string;
 }
 
+interface TerminalHistoryDumpMessage {
+  type: 'terminal:history-dump';
+  sessionId: string;
+  data: string; // base64-encoded raw output + banner
+}
+
 type TerminalMessage =
   | TerminalOutputMessage
   | TerminalSpawnedMessage
   | TerminalExitMessage
   | TerminalErrorMessage
   | TerminalLinkedMessage
-  | TerminalClearMessage;
+  | TerminalClearMessage
+  | TerminalHistoryDumpMessage;
 
 // Typed snapshot message (server → client)
 interface SnapshotMessage {
@@ -263,7 +285,7 @@ export type {
 
 // ── Session type helpers ──────────────────────────────────
 
-type LaunchCategory = 'pty' | 'bridge' | 'ide' | 'terminal';
+type LaunchCategory = 'pty' | 'bridge' | 'ide' | 'terminal' | 'shell';
 
 interface LaunchInfo {
   category: LaunchCategory;
@@ -279,6 +301,9 @@ function getLaunchInfo(
   const shortIde = (raw: string) =>
     raw.replace(/\s+(IDEA|Community|Ultimate|Professional|Enterprise|Educational|CE)\b.*/, '').trim();
 
+  if (session.sessionType === 'raw') {
+    return { category: 'shell', name: 'Shell' };
+  }
   if (session.sessionType === 'bridge') {
     const ideLabel = session.ideName ? shortIde(session.ideName) : undefined;
     return { category: 'bridge', name: ideLabel ?? 'Bridge' };
