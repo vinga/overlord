@@ -41,6 +41,40 @@ function formatModel(model: string): string {
   return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
 }
 
+function getFirstLineInfo(content: string): { index: number; text: string } {
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) return { index: i, text: lines[i] };
+  }
+  return { index: 0, text: '' };
+}
+
+function renderWithLinks(text: string, linkClass: string): React.ReactNode[] {
+  const urlRe = /(https?:\/\/[^\s]+)/g;
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let key = 0;
+  while ((match = urlRe.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+    parts.push(
+      <a
+        key={key++}
+        href={match[0]}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={linkClass}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {match[0]}
+      </a>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return parts;
+}
+
 function assistantLabel(provider?: Session['provider']): string {
   return provider === 'codex' ? 'codex' : 'claude';
 }
@@ -1285,11 +1319,12 @@ export function DetailPanel({
   const [notesContent, setNotesContent] = useState('');
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notesSessionIdRef = useRef<string | undefined>(undefined);
+  const [notesFirstEditing, setNotesFirstEditing] = useState(false);
+  const [notesFirstDraft, setNotesFirstDraft] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
-  const [panelSearchOpen, setPanelSearchOpen] = useState(false);
   const [panelSearchQuery, setPanelSearchQuery] = useState('');
   const [internalScrollTarget, setInternalScrollTarget] = useState<string | undefined>();
   const [internalScrollQuery, setInternalScrollQuery] = useState<string | undefined>();
@@ -1548,7 +1583,6 @@ const currentDisplayName =
     setKilling(false);
     setConfirmKill(false);
     setResuming(false);
-    setPanelSearchOpen(false);
     setPanelSearchQuery('');
     // Don't reset to conversation tab if a scroll target will switch us there
     if (!effectiveScrollTarget) setActiveTab('conversation');
@@ -1700,9 +1734,9 @@ const currentDisplayName =
 
   const panelSearchResults = useMemo(() => {
     const q = panelSearchQuery.trim();
-    if (!q || !panelSearchOpen) return [];
+    if (!q) return [];
     return searchFeed(mergedFeed, q);
-  }, [panelSearchQuery, panelSearchOpen, mergedFeed]);
+  }, [panelSearchQuery, mergedFeed]);
 
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
   const isAbandoned = selectedSession != null && selectedSession.state === 'closed' && (Date.now() - new Date(selectedSession.lastActivity).getTime()) > 30 * 60 * 1000;
@@ -2030,6 +2064,56 @@ const currentDisplayName =
                     );
                   })())}
                   </div>{/* headerWithAvatar */}
+                  {notesContent.trim() && (
+                    <div className={styles.notesFirstLineRow}>
+                      {notesFirstEditing ? (
+                        <input
+                          className={styles.notesFirstLineInput}
+                          value={notesFirstDraft}
+                          autoFocus
+                          onChange={(e) => setNotesFirstDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              (e.currentTarget as HTMLInputElement).blur();
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setNotesFirstEditing(false);
+                            }
+                          }}
+                          onBlur={() => {
+                            const sessionId = selectedSession.sessionId;
+                            const { index } = getFirstLineInfo(notesContent);
+                            const lines = notesContent.split('\n');
+                            while (lines.length <= index) lines.push('');
+                            lines[index] = notesFirstDraft;
+                            const next = lines.join('\n');
+                            setNotesContent(next);
+                            setNotesFirstEditing(false);
+                            if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+                            fetch(`/api/sessions/${sessionId}/notes`, {
+                              method: 'PUT',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ notes: next }),
+                            }).then(() => updateNoteFirstLine(sessionId, next)).catch(() => {});
+                          }}
+                        />
+                      ) : (
+                        <div
+                          className={styles.notesFirstLine}
+                          onClick={(e) => {
+                            const t = e.target as HTMLElement;
+                            if (t.closest('a')) return;
+                            setNotesFirstDraft(getFirstLineInfo(notesContent).text);
+                            setNotesFirstEditing(true);
+                          }}
+                          title="Click to edit"
+                        >
+                          {renderWithLinks(getFirstLineInfo(notesContent).text, styles.notesFirstLineLink)}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Tab bar */}
@@ -2087,47 +2171,40 @@ const currentDisplayName =
 
                   {/* In-panel search */}
                   <div className={styles.panelSearchWrap} style={{ marginLeft: 'auto' }}>
-                    {panelSearchOpen ? (
-                      <div className={styles.panelSearchInputWrap}>
-                        <input
-                          ref={panelSearchRef}
-                          type="text"
-                          className={styles.panelSearchInput}
-                          placeholder="Search this session…"
-                          value={panelSearchQuery}
-                          onChange={e => setPanelSearchQuery(e.target.value)}
-                          onKeyDown={e => {
-                            if (e.key === 'Escape') { setPanelSearchOpen(false); setPanelSearchQuery(''); }
-                          }}
-                        />
-                        {panelSearchQuery && (
+                    <div className={styles.panelSearchInputWrap}>
+                      <svg className={styles.panelSearchIcon} width="14" height="14" viewBox="0 0 16 16" fill="none">
+                        <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        ref={panelSearchRef}
+                        type="text"
+                        className={styles.panelSearchInput}
+                        placeholder="Search this session…"
+                        value={panelSearchQuery}
+                        onChange={e => setPanelSearchQuery(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') setPanelSearchQuery('');
+                        }}
+                      />
+                      {panelSearchQuery && (
+                        <>
                           <span className={styles.panelSearchCount}>
                             {panelSearchResults.length}
                           </span>
-                        )}
-                        <button
-                          className={styles.panelSearchClose}
-                          onClick={() => { setPanelSearchOpen(false); setPanelSearchQuery(''); }}
-                          title="Close (Esc)"
-                        >✕</button>
-                      </div>
-                    ) : (
-                      <button
-                        className={styles.panelSearchBtn}
-                        onClick={() => { setPanelSearchOpen(true); setTimeout(() => panelSearchRef.current?.focus(), 30); }}
-                        title="Search this session (Ctrl+F)"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                          <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
-                          <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                        </svg>
-                      </button>
-                    )}
+                          <button
+                            className={styles.panelSearchClose}
+                            onClick={() => setPanelSearchQuery('')}
+                            title="Clear (Esc)"
+                          >✕</button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Panel search results dropdown */}
-                {panelSearchOpen && panelSearchQuery.trim() && (
+                {panelSearchQuery.trim() && (
                   <div className={styles.panelSearchResults}>
                     {panelSearchResults.length === 0 ? (
                       <div className={styles.panelSearchEmpty}>No matches</div>

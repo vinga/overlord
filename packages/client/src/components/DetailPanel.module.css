@@ -72,29 +72,26 @@
   align-items: center;
 }
 
-.panelSearchBtn {
-  background: none;
-  border: none;
-  color: rgba(255, 255, 255, 0.3);
-  cursor: pointer;
-  padding: 6px 8px;
-  display: flex;
-  align-items: center;
-  transition: color 0.15s;
-}
-
-.panelSearchBtn:hover {
-  color: rgba(255, 255, 255, 0.7);
-}
-
 .panelSearchInputWrap {
   display: flex;
   align-items: center;
-  gap: 4px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(212, 175, 55, 0.3);
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 4px;
   padding: 2px 6px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.panelSearchInputWrap:hover,
+.panelSearchInputWrap:focus-within {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(212, 175, 55, 0.35);
+}
+
+.panelSearchIcon {
+  color: rgba(255, 255, 255, 0.35);
+  flex-shrink: 0;
 }
 
 .panelSearchInput {
@@ -3343,5 +3340,60 @@
 
 .notesTextarea::placeholder {
   color: rgba(255, 255, 255, 0.2);
+}
+
+.notesFirstLineRow {
+  margin-top: 10px;
+  padding-bottom: 12px;
+}
+
+.notesFirstLine {
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.62);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: text;
+  word-break: break-word;
+  white-space: pre-wrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+
+.notesFirstLine:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.notesFirstLineInput {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  outline: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: inherit;
+}
+
+.notesFirstLineInput:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.notesFirstLineLink {
+  color: #f5c518;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.notesFirstLineLink:hover {
+  color: #ffd84a;
 }
 
