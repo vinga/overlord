@@ -38,3 +38,6 @@ npm-debug.log*
 
 # Runtime state (notes, colors, etc.)
 packages/server/data/
+
+# V8 heap snapshots
+*.heapsnapshot
