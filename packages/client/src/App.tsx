@@ -42,7 +42,7 @@ export function App() {
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [archivedSession, setArchivedSession] = useState<Session | null>(null);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
-  const { customNames, rename, migrateSession: migrateNames } = useCustomNames();
+  const { rename, migrateSession: migrateNames } = useCustomNames();
   const { migrateSession: migrateRoomOrder } = useRoomOrder();
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -82,8 +82,8 @@ export function App() {
     [terminal, snapshotBridgeIds]
   );
 
-  // Build display names: proposedName from server > custom name from user > fallback
-  // autoNames are only used for populating the spawn input, not for display.
+  // Display names come from OverlordSession.proposedName via the snapshot.
+  // Renames PATCH the server; no client-side override layer.
   const displayNames = useMemo(() => {
     const names: Record<string, string> = {};
     if (snapshot) {
@@ -93,9 +93,8 @@ export function App() {
         }
       }
     }
-    // Custom names (user-set) override proposedName
-    return { ...names, ...customNames };
-  }, [snapshot, customNames]);
+    return names;
+  }, [snapshot]);
 
   // Sync state → URL hash
   const suppressHashChange = useRef(false);
@@ -109,8 +108,11 @@ export function App() {
     } else if (selectedRoomId) {
       hash = `#room/${selectedRoomId}`;
     }
+    const currentHash = window.location.hash;
+    if (currentHash === hash) return;
     suppressHashChange.current = true;
-    window.history.replaceState(null, '', hash || window.location.pathname);
+    const url = hash || window.location.pathname + window.location.search;
+    window.history.pushState(null, '', url);
     // Reset flag after microtask so it doesn't block real navigation
     queueMicrotask(() => { suppressHashChange.current = false; });
   }, [view, selectedSessionId, selectedSubagentId, selectedRoomId]);
@@ -164,6 +166,7 @@ export function App() {
       setSelectedSessionId(activePtySessionId);
       setSelectedSubagentId(undefined);
       setSelectedRoomId(null);
+      setActivePtySessionId(null);
       return;
     }
     const claudeId = activePtySessionId;
@@ -179,12 +182,21 @@ export function App() {
   // Upgrade legacy Claude UUID hash → ovrId once snapshot arrives.
   // Runs once per UUID-style selectedSessionId; no-op if already an ovrId.
   useEffect(() => {
-    if (!selectedSessionId || selectedSessionId.startsWith('ovr-') || selectedSessionId.startsWith('pty-')) return;
+    if (!selectedSessionId || selectedSessionId.startsWith('ovr-')) return;
     if (!snapshot) return;
+    // Clear dead pty-xxx selections (PTY exited and never linked to a real session)
+    if (selectedSessionId.startsWith('pty-') && terminal.exitedSessions.has(selectedSessionId)) {
+      const all = snapshot.rooms.flatMap(r => r.sessions);
+      if (!all.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId)) {
+        setSelectedSessionId(null);
+        return;
+      }
+    }
+    if (selectedSessionId.startsWith('pty-')) return;
     const all = snapshot.rooms.flatMap(r => r.sessions);
     const sess = all.find(s => s.sessionId === selectedSessionId);
     if (sess?.overlordId) setSelectedSessionId(sess.overlordId);
-  }, [selectedSessionId, snapshot]);
+  }, [selectedSessionId, snapshot, terminal.exitedSessions]);
 
   // Derive the live session from the current snapshot so activityFeed stays fresh.
   // selectedSessionId is now an ovrId (ovr-xxx) — match on overlordId first, fall back
@@ -327,6 +339,7 @@ export function App() {
       subagents: [],
       model: entry.model,
       sessionType: entry.sessionType,
+      intent: entry.intent,
       isArchived: true,
       archivedAt: entry.archivedAt,
       archivedGitBranch: entry.gitBranch,
@@ -391,10 +404,9 @@ export function App() {
         isPtySession={terminal.isPtySession}
         platform={snapshot?.platform ?? 'darwin'}
         onOpenDirectoryPicker={() => {
-          const usedNames = new Set([
-            ...Object.values(customNames),
-            ...(snapshot?.rooms.flatMap(r => r.sessions.map(s => s.proposedName)).filter(Boolean) ?? []),
-          ] as string[]);
+          const usedNames = new Set(
+            (snapshot?.rooms.flatMap(r => r.sessions.map(s => s.proposedName)).filter(Boolean) ?? []) as string[]
+          );
           const available = SESSION_NAMES.filter(n => !usedNames.has(n));
           const name = available.length > 0
             ? available[Math.floor(Math.random() * available.length)]
@@ -408,6 +420,7 @@ export function App() {
           snapshot={snapshot}
           customNames={displayNames}
           onSelectSession={(session, timestamp, query) => handleSelectSession(session, undefined, timestamp, query)}
+          onOpenArchive={(entry) => { void handleOpenArchive(entry); }}
           onClose={() => setShowAdvancedSearch(false)}
         />
       )}

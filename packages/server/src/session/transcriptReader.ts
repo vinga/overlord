@@ -69,6 +69,18 @@ export function markTranscriptDirty(filePath: string): void {
 }
 
 /**
+ * Re-evaluate isCompacting from the compactCountCache. The 5s window is
+ * time-dependent, so fast-path returns must not freeze this field — the
+ * compact_boundary can land within 5s of the final transcript write, which
+ * would otherwise strand `isCompacting: true` until the next file change.
+ */
+function reEvalCompactingFromCache(filePath: string): true | undefined {
+  const cc = compactCountCache.get(filePath);
+  if (cc?.lastCompactTimestamp === undefined) return undefined;
+  return Date.now() - cc.lastCompactTimestamp < 5000 ? true : undefined;
+}
+
+/**
  * Re-evaluate the time-dependent state from a cached stateHint without any file I/O.
  * Returns null if the state hasn't changed (caller can skip broadcasting).
  */
@@ -94,7 +106,10 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
       const state: WorkerState = ageSec < 5 ? 'working' : 'waiting';
       return { state };
     }
-    case 'assistant_text': return { state: ageSec < 3 ? 'working' : 'waiting' };
+    case 'assistant_text': {
+      const state: WorkerState = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
+      return { state };
+    }
     case 'tool_result':  return { state: ageSec < 8 ? 'working' : 'thinking' };
     case 'user_input':   return { state: ageSec < 8 ? 'working' : 'thinking' };
     case 'codex_reasoning': return { state: ageSec < 6 ? 'thinking' : 'working' };
@@ -509,8 +524,11 @@ export function readTranscriptState(filePath: string): {
     // Fast path: file not dirty and we checked recently → just re-evaluate time-based state
     if (cached && !cached.dirty && (now - cached.lastCheckedAt) < MIN_STAT_INTERVAL_MS) {
       const reEval = reEvalStateFromCache(cached);
-      if (reEval.state !== cached.result.state || reEval.needsPermission !== cached.result.needsPermission) {
-        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission };
+      const isCompacting = reEvalCompactingFromCache(filePath);
+      if (reEval.state !== cached.result.state
+          || reEval.needsPermission !== cached.result.needsPermission
+          || isCompacting !== cached.result.isCompacting) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting };
       }
       return cached.result;
     }
@@ -529,8 +547,11 @@ export function readTranscriptState(filePath: string): {
       cached.lastCheckedAt = now;
       cached.fileModifiedMs = fileModifiedMs;
       const reEval = reEvalStateFromCache(cached);
-      if (reEval.state !== cached.result.state || reEval.needsPermission !== cached.result.needsPermission) {
-        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission };
+      const isCompacting = reEvalCompactingFromCache(filePath);
+      if (reEval.state !== cached.result.state
+          || reEval.needsPermission !== cached.result.needsPermission
+          || isCompacting !== cached.result.isCompacting) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting };
       }
       return cached.result;
     }
@@ -672,6 +693,11 @@ export function readTranscriptState(filePath: string): {
                     if (block.name === 'Edit') {
                       if (typeof inp.old_string === 'string') item.oldString = inp.old_string.slice(0, MAX_CONTENT_LENGTH);
                       if (typeof inp.new_string === 'string') item.newString = inp.new_string.slice(0, MAX_CONTENT_LENGTH);
+                    } else if (block.name === 'Write') {
+                      if (typeof inp.content === 'string') {
+                        item.oldString = '';
+                        item.newString = inp.content.slice(0, MAX_CONTENT_LENGTH);
+                      }
                     }
                     // Store trimmed input JSON (truncate large string values)
                     const trimmed: Record<string, unknown> = {};
@@ -817,7 +843,7 @@ export function readTranscriptState(filePath: string): {
         }
       } else {
         stateHint = 'assistant_text';
-        state = ageSec < 3 ? 'working' : 'waiting';
+        state = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
       }
     } else if (lastTypedEvent?.type === 'user') {
       const userContent = lastTypedEvent.message as { content?: unknown } | undefined;

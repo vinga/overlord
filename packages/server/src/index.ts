@@ -15,9 +15,12 @@ import { PtyManager } from './pty/ptyManager.js';
 import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
 import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
+import { detectModeFromText } from './session/modeDetect.js';
 import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
+import { IntentSummarizer } from './ai/intentSummary.js';
+import { sessionStore } from './session/sessionStore.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
@@ -77,12 +80,6 @@ const BRIDGE_PERM_BUF_SIZE = 8192;
 
 // Last detected permission mode per bridge session — updated as text streams through
 const bridgePermMode = new Map<string, string>();
-// No >> prefix required — the (shift+tab to cycle) sentinel already ensures we're on the status bar line.
-const BRIDGE_PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-  { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
-  { pattern: /accept edits on/i, mode: 'acceptEdits' },
-  { pattern: /plan mode on/i, mode: 'plan' },
-];
 
 function stripAnsi(raw: string): string {
   const stripped = raw
@@ -477,22 +474,9 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     // Find the LAST such line and check if it contains a mode keyword.
     {
       const tail = (bridgePermText.get(eid) ?? '').slice(-2048);
-      const tailLines = tail.split('\n');
-      let detectedMode: string | undefined;
-      let statusBarFound = false;
-      for (let i = tailLines.length - 1; i >= 0; i--) {
-        const line = tailLines[i];
-        if (/\(shift\+tab to cycle\)/i.test(line)) {
-          statusBarFound = true;
-          for (const { pattern, mode } of BRIDGE_PERM_MODE_PATTERNS) {
-            if (pattern.test(line)) { detectedMode = mode; break; }
-          }
-          // detectedMode stays undefined if default mode (no keyword in status bar)
-          break;
-        }
-      }
-      if (statusBarFound) {
-        const resolvedMode = detectedMode ?? 'default';
+      const { sentinelFound, mode } = detectModeFromText(tail);
+      if (sentinelFound) {
+        const resolvedMode = mode ?? 'default';
         bridgePermMode.set(eid, resolvedMode);
         // Only reset to 'default' when session is at the interactive prompt (waiting).
         // During thinking/working, the full TUI may not be rendering the status bar.
@@ -626,12 +610,16 @@ function broadcastRaw(msg: object): void {
 // Wire up logger so it can broadcast log entries to all clients
 initLogger((entry) => broadcastRaw({ type: 'log:entry', entry }));
 
+// Hydrate in-memory mirror from disk.
+sessionStore.loadAll();
+
 // Setup state manager
 const stateManager = new StateManager(() => {
   broadcast(stateManager.getSnapshot());
 });
 
 const aiClassifier = new AiClassifier(stateManager);
+const intentSummarizer = new IntentSummarizer(stateManager);
 
 // Extract readable text from a raw terminal output buffer (last N chunks)
 function bufferToText(chunks: Buffer[]): string | null {
@@ -769,6 +757,7 @@ startTranscriptWatcher({
   stateManager,
   ptyManager,
   aiClassifier,
+  intentSummarizer,
   sessionCtx,
   broadcastRaw,
   pendingPtyByPid,
@@ -926,6 +915,10 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
   // 7. Always explicitly remove from state (don't rely on chokidar firing)
   stateManager.remove(sessionId);
   console.log(`[deleteSession] removed ${sessionId} from state`);
+
+  // 8. Drop the OverlordSession record (notes, intent, planTasks, archive fields).
+  //    Resolves sessionId → overlordId via the store's secondary index.
+  sessionStore.removeBySessionId(sessionId);
 }
 
 // WebSocket handler (moved to wsHandler.ts)
@@ -980,7 +973,7 @@ httpServer.on('error', (err: NodeJS.ErrnoException) => {
   }
 });
 
-function shutdown(signal: string) {
+async function shutdown(signal: string) {
   console.log(`[shutdown] received ${signal}, cleaning up...`);
   // 1. Notify clients so they can show a reconnecting state
   wss.clients.forEach(client => {
@@ -988,6 +981,8 @@ function shutdown(signal: string) {
   });
   // 2. Save known-sessions state so restart picks up where we left off
   try { stateManager.saveKnownSessions(); } catch { /* ignore */ }
+  // 2b. Flush any pending SessionStore writes so durable state lands on disk
+  try { await sessionStore.flushAll(); } catch { /* ignore */ }
   // 3. Kill embedded PTY sessions gracefully (SIGTERM, not SIGKILL)
   //    so Claude CLI can clean up. Bridge sessions survive — they're external.
   ptyManager.killAll();
@@ -1000,5 +995,5 @@ function shutdown(signal: string) {
   console.log(`[shutdown] done, exiting`);
   process.exit(0);
 }
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });

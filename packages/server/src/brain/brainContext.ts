@@ -34,6 +34,13 @@ export interface BrainSkill {
   path: string;
 }
 
+export interface BrainAgent {
+  name: string;
+  description: string;
+  source: 'user' | 'project';
+  path: string;
+}
+
 export interface BrainMcpServer {
   name: string;
   command: string | null;
@@ -53,6 +60,7 @@ export interface BrainContext {
   memory: BrainMemory;
   hooks: BrainHook[];
   skills: BrainSkill[];
+  agents: BrainAgent[];
   mcpServers: BrainMcpServer[];
   permissions: {
     allow: BrainPermissionRule[];
@@ -328,6 +336,41 @@ function collectSkills(cwd: string): BrainSkill[] {
   return [...project, ...user];
 }
 
+const AGENT_CANDIDATES = ['AGENT.md', 'SKILL.md', 'README.md'];
+
+function readAgentsFrom(root: string, source: BrainAgent['source']): BrainAgent[] {
+  if (!existsDir(root)) return [];
+  const out: BrainAgent[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch { return []; }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.isDirectory()) {
+      for (const candidate of AGENT_CANDIDATES) {
+        const mdPath = path.join(root, entry.name, candidate);
+        if (existsFile(mdPath)) {
+          const raw = readFileSafe(mdPath) ?? '';
+          out.push({ name: entry.name, description: extractDescription(raw), source, path: mdPath });
+          break;
+        }
+      }
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      const mdPath = path.join(root, entry.name);
+      const raw = readFileSafe(mdPath) ?? '';
+      out.push({ name: entry.name.replace(/\.md$/, ''), description: extractDescription(raw), source, path: mdPath });
+    }
+  }
+  return out;
+}
+
+function collectAgents(cwd: string): BrainAgent[] {
+  const home = os.homedir();
+  const project = readAgentsFrom(path.join(cwd, '.claude', 'agents'), 'project');
+  const user = readAgentsFrom(path.join(home, '.claude', 'agents'), 'user');
+  return [...project, ...user];
+}
+
 /** Returns the list of source files whose mtimes we track for cache invalidation. */
 function sourceFiles(cwd: string, ctx: BrainContext): string[] {
   const home = os.homedir();
@@ -351,7 +394,8 @@ function buildContext(cwd: string): BrainContext {
   const permissions = extractPermissions(settings);
   const mcpServers = extractMcpServers(settings);
   const skills = collectSkills(cwd);
-  return { cwd, identity, memory, hooks, skills, mcpServers, permissions };
+  const agents = collectAgents(cwd);
+  return { cwd, identity, memory, hooks, skills, agents, mcpServers, permissions };
 }
 
 export function getBrainContext(cwd: string): BrainContext {
@@ -366,4 +410,8 @@ export function getBrainContext(cwd: string): BrainContext {
   const sources = sourceFiles(cwd, context).map(p => ({ path: p, mtimeMs: safeStat(p) }));
   cache.set(cacheKey, { ts: now, context, sources });
   return context;
+}
+
+export function invalidateBrainCache(cwd: string): void {
+  cache.delete(cwd);
 }

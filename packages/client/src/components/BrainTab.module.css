@@ -294,6 +294,99 @@
   word-break: break-word;
 }
 
+.markdownContent {
+  background: #0a0a0a;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 12px 16px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #d4d0c4;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.markdownContent h1,
+.markdownContent h2,
+.markdownContent h3,
+.markdownContent h4 {
+  color: #e8e4d2;
+  font-weight: 600;
+  margin: 14px 0 6px;
+  letter-spacing: -0.005em;
+}
+.markdownContent h1 { font-size: 15px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 4px; }
+.markdownContent h2 { font-size: 13.5px; color: #d4af37; text-transform: uppercase; letter-spacing: 0.06em; }
+.markdownContent h3 { font-size: 12.5px; color: #c9b870; }
+.markdownContent h4 { font-size: 12px; color: #b8a65a; }
+
+.markdownContent p { margin: 6px 0; }
+.markdownContent ul,
+.markdownContent ol { margin: 6px 0; padding-left: 22px; }
+.markdownContent li { margin: 2px 0; }
+
+.markdownContent code {
+  background: rgba(212, 175, 55, 0.08);
+  color: #e8c97c;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.markdownContent pre {
+  background: #050505;
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.markdownContent pre code {
+  background: transparent;
+  color: #c8c5bd;
+  padding: 0;
+  font-size: 11.5px;
+}
+
+.markdownContent blockquote {
+  border-left: 3px solid rgba(212, 175, 55, 0.4);
+  padding: 2px 10px;
+  margin: 8px 0;
+  color: #b0ac9e;
+  background: rgba(212, 175, 55, 0.03);
+}
+
+.markdownContent a {
+  color: #d4af37;
+  text-decoration: none;
+}
+.markdownContent a:hover { text-decoration: underline; }
+
+.markdownContent strong { color: #e8e4d2; }
+.markdownContent em { color: #c9c4b5; }
+
+.markdownContent hr {
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  margin: 12px 0;
+}
+
+.markdownContent table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 11.5px;
+}
+.markdownContent th,
+.markdownContent td {
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 4px 8px;
+  text-align: left;
+}
+.markdownContent th { background: rgba(255,255,255,0.03); color: #d4af37; }
+
 .truncNote {
   font-size: 11px;
   color: #888;
@@ -344,3 +437,43 @@
 
 .permAllow { color: #88dd88; }
 .permDeny { color: #ff8888; }
+
+.editActions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 8px;
+}
+
+.editError {
+  color: #ff8888;
+  font-size: 11px;
+  margin-right: auto;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+.editTextarea {
+  width: 100%;
+  min-height: 320px;
+  background: #0a0a0a;
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #e8e4d2;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.editTextarea:focus {
+  border-color: #d4af37;
+}
+
+.editTextarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

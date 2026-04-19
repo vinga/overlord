@@ -41,8 +41,15 @@ export function closeOrRemoveReplaced(ctx: SessionEventContext, oldSessionId: st
  * Link a PTY session to a Claude session via ovrId.
  * Sets ovrToPty and ptyToOvr maps. No PTY migration is needed on /clear —
  * because the ovrId is stable and already points to the right PTY.
+ *
+ * If another ovrId previously owned this PTY, drop its stale ovrToPty entry so
+ * the two maps stay consistent (one-PTY-per-ovrId invariant on the reverse map).
  */
 function linkPtyToOvr(ctx: SessionEventContext, ovrId: string, ptySessionId: string): void {
+  const previousOvr = ctx.ptyToOvr.get(ptySessionId);
+  if (previousOvr && previousOvr !== ovrId && ctx.ovrToPty.get(previousOvr) === ptySessionId) {
+    ctx.ovrToPty.delete(previousOvr);
+  }
   ctx.ovrToPty.set(ovrId, ptySessionId);
   ctx.ptyToOvr.set(ptySessionId, ovrId);
 }

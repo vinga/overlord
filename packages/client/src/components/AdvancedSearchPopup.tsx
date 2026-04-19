@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import type { OfficeSnapshot, Session, Room } from '../types';
+import type { OfficeSnapshot, Session, Room, ArchiveEntry, ActivityItem } from '../types';
 import { searchFeed, BoldExcerpt, type SearchMatch } from '../lib/search';
 import styles from './AdvancedSearchPopup.module.css';
 
@@ -7,8 +7,22 @@ interface AdvancedSearchPopupProps {
   snapshot: OfficeSnapshot | null;
   customNames: Record<string, string>;
   onSelectSession: (session: Session, timestamp?: string, query?: string) => void;
+  onOpenArchive: (entry: ArchiveEntry, timestamp?: string, query?: string) => void;
   onClose: () => void;
 }
+
+interface ArchiveHit {
+  item: ActivityItem;
+  excerpt: string;
+  boldRanges: [number, number][];
+}
+
+interface ArchiveSearchResponse {
+  entries: Array<{ entry: ArchiveEntry; matches: ArchiveHit[] }>;
+  truncated: boolean;
+}
+
+const INCLUDE_ARCHIVED_KEY = 'overlord:searchIncludeArchived';
 
 interface SessionResult {
   key: string;
@@ -49,11 +63,23 @@ export function AdvancedSearchPopup({
   snapshot,
   customNames,
   onSelectSession,
+  onOpenArchive,
   onClose,
 }: AdvancedSearchPopupProps) {
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [includeArchived, setIncludeArchived] = useState<boolean>(() => {
+    try { return localStorage.getItem(INCLUDE_ARCHIVED_KEY) === '1'; } catch { return false; }
+  });
+  const [archiveResults, setArchiveResults] = useState<ArchiveSearchResponse | null>(null);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try { localStorage.setItem(INCLUDE_ARCHIVED_KEY, includeArchived ? '1' : '0'); } catch { /* ignore */ }
+  }, [includeArchived]);
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 20);
@@ -61,11 +87,54 @@ export function AdvancedSearchPopup({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (menuOpen) setMenuOpen(false);
+        else onClose();
+      }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDown(e: MouseEvent) {
+      if (menuWrapRef.current && !menuWrapRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (!includeArchived || q.length < 2) {
+      setArchiveResults(null);
+      setArchiveLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setArchiveLoading(true);
+      try {
+        const res = await fetch(`/api/archive/search?q=${encodeURIComponent(q)}`, { signal: controller.signal });
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as ArchiveSearchResponse;
+        setArchiveResults(body);
+      } catch (err) {
+        if ((err as { name?: string }).name !== 'AbortError') {
+          setArchiveResults({ entries: [], truncated: false });
+        }
+      } finally {
+        setArchiveLoading(false);
+      }
+    }, 250);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [query, includeArchived]);
 
   const results = useMemo<RoomResult[]>(() => {
     const q = query.trim();
@@ -115,6 +184,35 @@ export function AdvancedSearchPopup({
     <div className={styles.panel} role="dialog" aria-label="Advanced search">
       <div className={styles.header}>
         <h2 className={styles.title}>Advanced Search</h2>
+        <div className={styles.menuWrap} ref={menuWrapRef}>
+          <button
+            className={`${styles.iconBtn} ${includeArchived ? styles.iconBtn_active : ''}`}
+            onClick={() => setMenuOpen(v => !v)}
+            title="Search options"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+              <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"
+                stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </button>
+          {menuOpen && (
+            <div className={styles.menu} role="menu">
+              <label className={styles.menuItem} role="menuitemcheckbox" aria-checked={includeArchived}>
+                <span className={styles.menuCheck}>{includeArchived ? '✓' : ''}</span>
+                <span>Include archived sessions</span>
+                <input
+                  type="checkbox"
+                  checked={includeArchived}
+                  onChange={e => setIncludeArchived(e.target.checked)}
+                  style={{ display: 'none' }}
+                />
+              </label>
+            </div>
+          )}
+        </div>
         <button className={styles.closeBtn} onClick={onClose} title="Close (Esc)">✕</button>
       </div>
 
@@ -213,6 +311,81 @@ export function AdvancedSearchPopup({
             })}
           </div>
         ))}
+
+        {includeArchived && qTrimmed.length >= 2 && (
+          <div className={styles.roomGroup}>
+            <div className={`${styles.roomHeader} ${styles.roomHeader_archive}`}>
+              <span>Archive</span>
+              {archiveLoading && <span className={styles.archiveStatus}>searching…</span>}
+              {!archiveLoading && archiveResults && (
+                <span className={styles.roomCount}>
+                  · {archiveResults.entries.reduce((n, e) => n + e.matches.length, 0)} match
+                  {archiveResults.entries.reduce((n, e) => n + e.matches.length, 0) === 1 ? '' : 'es'}
+                  {archiveResults.truncated ? ' · showing first 300' : ''}
+                </span>
+              )}
+            </div>
+            {!archiveLoading && archiveResults && archiveResults.entries.length === 0 && (
+              <div className={styles.empty}>No archived hits.</div>
+            )}
+            {archiveResults?.entries.map(({ entry, matches }) => {
+              const key = `archive::${entry.sessionId}`;
+              const isExpanded = expanded.has(key);
+              const visibleMatches = isExpanded ? matches : matches.slice(0, 3);
+              const hasMore = matches.length > 3;
+              return (
+                <div key={key} className={styles.sessionGroup}>
+                  <div
+                    className={styles.sessionHeader}
+                    onClick={() => { onOpenArchive(entry, undefined, qTrimmed); onClose(); }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { onOpenArchive(entry, undefined, qTrimmed); onClose(); } }}
+                  >
+                    <span className={styles.archiveBadge}>ARCH</span>
+                    <span className={styles.sessionName}>{entry.name || entry.sessionId.slice(0, 8)}</span>
+                    <span className={styles.sessionParent}>{relativeTime(entry.archivedAt)}</span>
+                    <span className={styles.sessionBadge}>{matches.length}</span>
+                  </div>
+                  {visibleMatches.map((match, i) => {
+                    const role = match.item.role ?? match.item.kind;
+                    const roleLabel = match.item.kind === 'tool'
+                      ? (match.item.toolName ?? 'tool')
+                      : role;
+                    return (
+                      <div
+                        key={i}
+                        className={styles.fragment}
+                        onClick={() => { onOpenArchive(entry, match.item.timestamp, qTrimmed); onClose(); }}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { onOpenArchive(entry, match.item.timestamp, qTrimmed); onClose(); } }}
+                      >
+                        <span className={`${styles.fragmentRole} ${styles[`fragmentRole_${role}`] ?? ''}`}>
+                          {roleLabel}
+                        </span>
+                        <span className={styles.fragmentText}>
+                          <BoldExcerpt text={match.excerpt} ranges={match.boldRanges} />
+                        </span>
+                        {match.item.timestamp && (
+                          <span className={styles.fragmentTime}>{relativeTime(match.item.timestamp)}</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {hasMore && !isExpanded && (
+                    <button
+                      className={styles.showMore}
+                      onClick={() => setExpanded(prev => new Set([...prev, key]))}
+                    >
+                      {matches.length - 3} more match{matches.length - 3 === 1 ? '' : 'es'}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

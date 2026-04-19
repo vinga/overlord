@@ -1,5 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { marked } from 'marked';
 import styles from './BrainTab.module.css';
+
+const markdownCache = new Map<string, string>();
+function renderMarkdown(text: string): string {
+  const cached = markdownCache.get(text);
+  if (cached !== undefined) return cached;
+  const html = marked.parse(text, { breaks: true, async: false }) as string;
+  if (markdownCache.size > 200) markdownCache.clear();
+  markdownCache.set(text, html);
+  return html;
+}
+
+function stripFrontmatter(raw: string): string {
+  return raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+}
 
 type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'unknown';
 
@@ -30,6 +45,13 @@ interface BrainSkill {
   path: string;
 }
 
+interface BrainAgent {
+  name: string;
+  description: string;
+  source: 'user' | 'project';
+  path: string;
+}
+
 interface BrainMcpServer {
   name: string;
   command: string | null;
@@ -52,6 +74,7 @@ export interface BrainContext {
   };
   hooks: BrainHook[];
   skills: BrainSkill[];
+  agents: BrainAgent[];
   mcpServers: BrainMcpServer[];
   permissions: {
     allow: BrainPermissionRule[];
@@ -59,13 +82,14 @@ export interface BrainContext {
   };
 }
 
-type CardKey = 'identity' | 'memory' | 'hooks' | 'skills' | 'mcp' | 'permissions';
+type CardKey = 'identity' | 'memory' | 'hooks' | 'skills' | 'agents' | 'mcp' | 'permissions';
 
 const DEFAULT_OPEN: Record<CardKey, boolean> = {
   identity: true,
   memory: true,
   hooks: true,
   skills: false,
+  agents: false,
   mcp: false,
   permissions: false,
 };
@@ -165,13 +189,36 @@ function useFileContents(cwd: string) {
     }
   }, [cwd]);
 
-  return { files, load };
+  const save = useCallback(async (filePath: string, content: string): Promise<void> => {
+    const res = await fetch('/api/brain/file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd, path: filePath, content }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    const json = await res.json() as { totalLines: number };
+    setFiles(prev => ({
+      ...prev,
+      [filePath]: {
+        loading: false,
+        content,
+        error: null,
+        truncated: false,
+        totalLines: json.totalLines,
+      },
+    }));
+  }, [cwd]);
+
+  return { files, load, save };
 }
 
 export function BrainTab({ cwd }: { cwd: string }) {
   const { data, loading, error, refresh } = useBrainContext(cwd);
   const { state: cardOpen, toggle } = useCardState(cwd);
-  const { files, load: loadFile } = useFileContents(cwd);
+  const { files, load: loadFile, save: saveFile } = useFileContents(cwd);
   const [expandedFile, setExpandedFile] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
 
@@ -186,12 +233,13 @@ export function BrainTab({ cwd }: { cwd: string }) {
   }, [files, loadFile]);
 
   const counts = useMemo(() => {
-    if (!data) return { identity: 0, memory: 0, hooks: 0, skills: 0, mcp: 0, perm: 0 };
+    if (!data) return { identity: 0, memory: 0, hooks: 0, skills: 0, agents: 0, mcp: 0, perm: 0 };
     return {
       identity: data.identity.length,
       memory: data.memory.entries.length,
       hooks: data.hooks.length,
       skills: data.skills.length,
+      agents: data.agents.length,
       mcp: data.mcpServers.length,
       perm: data.permissions.allow.length + data.permissions.deny.length,
     };
@@ -223,6 +271,7 @@ export function BrainTab({ cwd }: { cwd: string }) {
   const filteredIdentity = data.identity.filter(f => matchesSearch(query, f.path, f.firstLine));
   const filteredMemory = data.memory.entries.filter(e => matchesSearch(query, e.name, e.description, e.type, e.file));
   const filteredSkills = data.skills.filter(s => matchesSearch(query, s.name, s.description, s.source, s.path));
+  const filteredAgents = data.agents.filter(s => matchesSearch(query, s.name, s.description, s.source, s.path));
   const filteredMcp = data.mcpServers.filter(s => matchesSearch(query, s.name, s.command, s.args.join(' '), s.source));
   const filteredAllow = data.permissions.allow.filter(p => matchesSearch(query, p.rule, p.source));
   const filteredDeny = data.permissions.deny.filter(p => matchesSearch(query, p.rule, p.source));
@@ -235,6 +284,7 @@ export function BrainTab({ cwd }: { cwd: string }) {
           <span className={styles.counter}><span className={styles.counterKey}>mem</span><span className={styles.counterVal}>{counts.memory}</span></span>
           <span className={styles.counter}><span className={styles.counterKey}>hooks</span><span className={styles.counterVal}>{counts.hooks}</span></span>
           <span className={styles.counter}><span className={styles.counterKey}>skills</span><span className={styles.counterVal}>{counts.skills}</span></span>
+          <span className={styles.counter}><span className={styles.counterKey}>agents</span><span className={styles.counterVal}>{counts.agents}</span></span>
           <span className={styles.counter}><span className={styles.counterKey}>mcp</span><span className={styles.counterVal}>{counts.mcp}</span></span>
           <span className={styles.counter}><span className={styles.counterKey}>perm</span><span className={styles.counterVal}>{counts.perm}</span></span>
         </div>
@@ -267,6 +317,9 @@ export function BrainTab({ cwd }: { cwd: string }) {
               expanded={!!expandedFile[f.path]}
               onToggle={() => toggleFile(f.path)}
               fileState={files[f.path]}
+              editable
+              asMarkdown
+              onSave={content => saveFile(f.path, content)}
             />
           ))}
         </Card>
@@ -291,6 +344,9 @@ export function BrainTab({ cwd }: { cwd: string }) {
               expanded={!!expandedFile[e.file]}
               onToggle={() => toggleFile(e.file)}
               fileState={files[e.file]}
+              editable
+              asMarkdown
+              onSave={content => saveFile(e.file, content)}
             />
           ))}
         </Card>
@@ -328,11 +384,39 @@ export function BrainTab({ cwd }: { cwd: string }) {
           {filteredSkills.length === 0 ? (
             <div className={styles.empty}>No skills found.</div>
           ) : filteredSkills.map(s => (
-            <div key={s.path} className={styles.row}>
-              <span className={styles.sourceBadge}>{s.source}</span>
-              <span className={styles.rowName}>{s.name}</span>
-              <span className={styles.rowDesc}>{s.description}</span>
-            </div>
+            <DefinitionRow
+              key={s.path}
+              source={s.source}
+              name={s.name}
+              description={s.description}
+              path={s.path}
+              expanded={!!expandedFile[s.path]}
+              onToggle={() => toggleFile(s.path)}
+              fileState={files[s.path]}
+              copyText={`/${s.name}`}
+            />
+          ))}
+        </Card>
+
+        <Card
+          title="Agents"
+          count={filteredAgents.length}
+          open={cardOpen.agents}
+          onToggle={() => toggle('agents')}
+        >
+          {filteredAgents.length === 0 ? (
+            <div className={styles.empty}>No agents found.</div>
+          ) : filteredAgents.map(a => (
+            <DefinitionRow
+              key={a.path}
+              source={a.source}
+              name={a.name}
+              description={a.description}
+              path={a.path}
+              expanded={!!expandedFile[a.path]}
+              onToggle={() => toggleFile(a.path)}
+              fileState={files[a.path]}
+            />
           ))}
         </Card>
 
@@ -413,7 +497,7 @@ function Card({ title, count, open, onToggle, children }: {
   );
 }
 
-function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggle, fileState }: {
+function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggle, fileState, editable, onSave, asMarkdown }: {
   path: string;
   name?: string;
   secondary?: string;
@@ -422,7 +506,51 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
   expanded: boolean;
   onToggle: () => void;
   fileState: FileViewState | undefined;
+  editable?: boolean;
+  onSave?: (content: string) => Promise<void>;
+  asMarkdown?: boolean;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!expanded) {
+      setEditing(false);
+      setSaveError(null);
+    }
+  }, [expanded]);
+
+  const content = fileState?.content ?? null;
+  const canEdit = !!editable && !!onSave && !fileState?.loading && !fileState?.error && content !== null && !fileState?.truncated;
+
+  const startEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDraft(content ?? '');
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setSaveError(null);
+  };
+
+  const commitSave = async () => {
+    if (!onSave) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(draft);
+      setEditing(false);
+    } catch (err) {
+      setSaveError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <div className={`${styles.row} ${styles.rowClickable}`} onClick={onToggle}>
@@ -437,9 +565,97 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
         <div className={styles.fileExpansion}>
           {fileState?.loading && <div className={styles.empty}>Loading…</div>}
           {fileState?.error && <div className={styles.empty} style={{ color: '#ff8888' }}>Error: {fileState.error}</div>}
+          {content !== null && !editing && (
+            <>
+              {canEdit && (
+                <div className={styles.editActions}>
+                  <button className={styles.refreshBtn} onClick={startEdit}>Edit</button>
+                </div>
+              )}
+              {asMarkdown ? (
+                <div
+                  className={styles.markdownContent}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(stripFrontmatter(content)) }}
+                />
+              ) : (
+                <pre className={styles.fileContent}>{content}</pre>
+              )}
+              {fileState?.truncated && (
+                <div className={styles.truncNote}>
+                  Showing first 500 of {fileState.totalLines} lines. Editing disabled while truncated.
+                </div>
+              )}
+            </>
+          )}
+          {content !== null && editing && (
+            <>
+              <textarea
+                className={styles.editTextarea}
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                spellCheck={false}
+                disabled={saving}
+              />
+              <div className={styles.editActions}>
+                {saveError && <span className={styles.editError}>Error: {saveError}</span>}
+                <button className={styles.refreshBtn} onClick={cancelEdit} disabled={saving}>Cancel</button>
+                <button className={styles.refreshBtn} onClick={() => void commitSave()} disabled={saving}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function DefinitionRow({ source, name, description, path, expanded, onToggle, fileState, copyText }: {
+  source: string;
+  name: string;
+  description: string;
+  path: string;
+  expanded: boolean;
+  onToggle: () => void;
+  fileState: FileViewState | undefined;
+  copyText?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <>
+      <div className={`${styles.row} ${styles.rowClickable}`} onClick={onToggle}>
+        <span className={styles.chevron} style={{ transform: expanded ? 'rotate(90deg)' : undefined }}>▶</span>
+        <span className={styles.sourceBadge}>{source}</span>
+        <span className={styles.rowName}>{name}</span>
+        <span className={styles.rowDesc}>{description}</span>
+        {copyText && (
+          <button
+            className={styles.refreshBtn}
+            style={{ padding: '2px 8px', fontSize: 11 }}
+            title={`Copy ${copyText}`}
+            onClick={e => {
+              e.stopPropagation();
+              navigator.clipboard.writeText(copyText).catch(() => {});
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className={styles.fileExpansion}>
+          {fileState?.loading && <div className={styles.empty}>Loading…</div>}
+          {fileState?.error && <div className={styles.empty} style={{ color: '#ff8888' }}>Error: {fileState.error}</div>}
           {fileState?.content !== undefined && fileState?.content !== null && (
             <>
-              <pre className={styles.fileContent}>{fileState.content}</pre>
+              <div
+                className={styles.markdownContent}
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(stripFrontmatter(fileState.content)) }}
+              />
+              <div className={styles.truncNote} style={{ fontFamily: 'ui-monospace, monospace', color: '#666' }}>{path}</div>
               {fileState.truncated && (
                 <div className={styles.truncNote}>
                   Showing first 500 of {fileState.totalLines} lines.

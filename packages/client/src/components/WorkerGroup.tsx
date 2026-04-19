@@ -1,6 +1,5 @@
 import React, { useState, memo } from 'react';
 import type { Session, WorkerState, Subagent } from '../types';
-import { getLaunchInfo } from '../types';
 import { Worker } from './Worker';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './WorkerGroup.module.css';
@@ -75,7 +74,6 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
   const [expanded] = useState(() => readExpanded(session.sessionId));
   const [overflowExpanded, setOverflowExpanded] = useState(false);
   const notesMap = useNotesSummaries();
-  const launch = getLaunchInfo(session);
 
   const allRecentSubagents = session.subagents.filter(s =>
     s.state === 'working' || s.state === 'thinking' ||
@@ -95,12 +93,13 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           name={displayName}
           state={session.state}
           color={session.color}
-          launchLabel={launch.name}
           provider={session.provider}
           completionHint={session.completionHint}
           completionSummaries={session.completionSummaries}
           userAccepted={session.userAccepted}
+          acknowledged={session.acknowledged}
           needsPermission={session.needsPermission}
+          isCompacting={session.isCompacting}
           bridgeDead={session.bridgeDead}
           currentTaskLabel={session.currentTaskLabel}
           currentTask={session.currentTask}
@@ -108,6 +107,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           isRaw={session.sessionType === 'raw'}
           ptyInputPendingSince={session.ptyInputPendingSince}
           notesSummary={notesMap.get(session.sessionId)}
+          intent={session.intent}
           onClick={() => onSelectSession(session)}
           onRename={onRename ? (name) => onRename(session.sessionId, name) : undefined}
         />

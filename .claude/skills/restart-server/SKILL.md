@@ -25,34 +25,52 @@ Treat `server:200` as the single source of truth. Bridge `ENOENT` spam in the lo
 
 ## macOS
 
+The entire kill+start sequence runs in a **detached subshell** (`nohup bash -c '...'`).
+This is critical: if the caller is an embedded PTY session, killing the server kills
+that session too. The detached subshell survives and finishes the restart.
+
 ```bash
-# Graceful shutdown: SIGTERM first (lets server save state + clean up PTYs),
-# escalate to SIGKILL after 2s if still alive.
-# NEVER start with kill -9 — it kills embedded agents without cleanup.
+# Write the restart script to a temp file so it runs detached from this shell.
+# This survives embedded PTY session death (server kill = session kill).
+cat > /tmp/overlord-restart.sh << 'SCRIPT'
+#!/bin/bash
+cd /Users/kamilamyczkowska/IdeaProjects/overlord
+
+# Graceful shutdown: SIGTERM first, escalate to SIGKILL after 2s.
 srv_pids=$(lsof -ti:3000 2>/dev/null); cli_pids=$(lsof -ti:5173 2>/dev/null)
 [ -n "$srv_pids" ] && kill $srv_pids 2>/dev/null
 [ -n "$cli_pids" ] && kill $cli_pids 2>/dev/null
 sleep 2
-# Force-kill anything that didn't exit gracefully
 srv_pids=$(lsof -ti:3000 2>/dev/null); cli_pids=$(lsof -ti:5173 2>/dev/null)
 [ -n "$srv_pids" ] && kill -9 $srv_pids 2>/dev/null
 [ -n "$cli_pids" ] && kill -9 $cli_pids 2>/dev/null
 
-# Start with nohup so processes survive shell/session exit (SIGHUP).
-# Without nohup, background jobs die when the parent Claude session ends.
-cd /Users/kamilamyczkowska/IdeaProjects/overlord
+# Start server + client
 nohup npm run dev --workspace=packages/server > /tmp/overlord-server.log 2>&1 &
 nohup npm run dev --workspace=packages/client > /tmp/overlord-client.log 2>&1 &
 
-# Poll the health endpoint every 100ms for up to ~15s.
+# Write result for the caller to read
 code=000
 for i in $(seq 1 150); do
   code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 1 http://localhost:3000/api/info 2>/dev/null)
   [ "$code" = "200" ] && break
   sleep 0.1
 done
-echo "server:$code  client:$(lsof -nP -iTCP:5173 -sTCP:LISTEN | tail -n +2 | wc -l | tr -d ' ')"
-grep -m1 "Overlord server listening" /tmp/overlord-server.log || echo "WARN: listening line not found"
+client=$(lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+echo "server:$code  client:$client" > /tmp/overlord-restart-result.txt
+SCRIPT
+chmod +x /tmp/overlord-restart.sh
+
+# Launch detached — survives even if this shell/session dies
+nohup /tmp/overlord-restart.sh > /dev/null 2>&1 &
+
+# Poll for the result file (written by the detached script)
+rm -f /tmp/overlord-restart-result.txt
+for i in $(seq 1 200); do
+  [ -f /tmp/overlord-restart-result.txt ] && break
+  sleep 0.1
+done
+cat /tmp/overlord-restart-result.txt 2>/dev/null || echo "server:pending (check /tmp/overlord-server.log)"
 echo "Logs: /tmp/overlord-server.log and /tmp/overlord-client.log"
 ```
 

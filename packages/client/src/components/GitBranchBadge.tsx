@@ -29,7 +29,6 @@ interface Props {
 
 export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) {
   const prResolved = pullRequest?.state === 'MERGED' || pullRequest?.state === 'CLOSED';
-  const [hover, setHover] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number; placement: 'bottom' | 'top' } | null>(null);
@@ -40,7 +39,7 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
   const tooltipRef = useRef<HTMLDivElement>(null);
   const fetchIdRef = useRef(0);
 
-  const open = hover || pinned;
+  const open = pinned;
 
   useEffect(() => {
     if (!pinned) return;
@@ -49,10 +48,9 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
       if (tooltipRef.current?.contains(t)) return;
       if (spanRef.current?.contains(t)) return;
       setPinned(false);
-      setHover(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setPinned(false); setHover(false); }
+      if (e.key === 'Escape') setPinned(false);
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
@@ -84,15 +82,10 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
       });
   }, [open, cwd, branch]);
 
-  const handleEnter = (e: React.MouseEvent<HTMLSpanElement>) => {
-    setAnchor(e.currentTarget.getBoundingClientRect());
-    setPos(null);
-    setHover(true);
-  };
-
   const handleBadgeClick = (e: React.MouseEvent<HTMLSpanElement>) => {
     e.stopPropagation();
     setAnchor(e.currentTarget.getBoundingClientRect());
+    setPos(null);
     setPinned(p => !p);
   };
 
@@ -124,8 +117,6 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
       <span
         ref={spanRef}
         className={styles.badge}
-        onMouseEnter={handleEnter}
-        onMouseLeave={() => setHover(false)}
         onClick={handleBadgeClick}
         title={gitWarning ?? undefined}
       >
@@ -158,8 +149,6 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
             top: pos?.top ?? -9999,
             visibility: pos ? 'visible' : 'hidden',
           }}
-          onMouseEnter={() => setHover(true)}
-          onMouseLeave={() => { if (!pinned) setHover(false); }}
         >
           <TooltipBody branch={branch} status={status} loading={loading} error={error} gitWarning={gitWarning} prResolved={prResolved} />
         </div>,

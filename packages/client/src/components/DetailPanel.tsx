@@ -288,12 +288,14 @@ function trimPath(fullPath: string, cwd?: string): string {
 }
 
 function computeDiff(oldStr: string, newStr: string): Array<{ type: 'removed' | 'added' | 'context', text: string }> {
-  const oldLines = oldStr.split('\n');
-  const newLines = newStr.split('\n');
   const result: Array<{ type: 'removed' | 'added' | 'context', text: string }> = [];
   // Simple: show removed lines then added lines (not LCS, but clear enough)
-  for (const line of oldLines) result.push({ type: 'removed', text: line });
-  for (const line of newLines) result.push({ type: 'added', text: line });
+  if (oldStr.length > 0) {
+    for (const line of oldStr.split('\n')) result.push({ type: 'removed', text: line });
+  }
+  if (newStr.length > 0) {
+    for (const line of newStr.split('\n')) result.push({ type: 'added', text: line });
+  }
   return result;
 }
 
@@ -587,7 +589,7 @@ function TaskHistory({ summaries, styles }: { summaries: Array<{ summary: string
   );
 }
 
-function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, onMarkDone, onAccept }: { state: WorkerState; activeSubagentCount?: number; completionHint?: 'done' | 'awaiting'; userAccepted?: boolean; onMarkDone?: () => void; onAccept?: () => void }) {
+function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, acknowledged, onMarkDone, onAccept, onToggleAck }: { state: WorkerState; activeSubagentCount?: number; completionHint?: 'done' | 'awaiting'; userAccepted?: boolean; acknowledged?: boolean; onMarkDone?: () => void; onAccept?: () => void; onToggleAck?: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -598,10 +600,16 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
   }, [menuOpen]);
 
   const isDone = state === 'waiting' && completionHint === 'done';
-  const color = isDone ? (userAccepted ? '#22c55e' : '#f59e0b') : STATE_COLORS[state];
-  const label = isDone ? (userAccepted ? 'done ✓' : 'done · review') : state;
+  const isAckedWaiting = state === 'waiting' && !!acknowledged && !isDone;
+  const color = isDone
+    ? (userAccepted ? '#22c55e' : '#f59e0b')
+    : (isAckedWaiting ? '#94a3b8' : STATE_COLORS[state]);
+  const label = isDone
+    ? (userAccepted ? 'done ✓' : 'done · review')
+    : (isAckedWaiting ? 'ack' : state);
 
-  const hasMenu = (isDone && !userAccepted && !!onAccept) || (!isDone && !!onMarkDone);
+  const canAck = state === 'waiting' && !isDone && !!onToggleAck;
+  const hasMenu = (isDone && !userAccepted && !!onAccept) || (!isDone && !!onMarkDone) || canAck;
 
   return (
     <>
@@ -613,24 +621,32 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
         >
           {label}
         </span>
-        {menuOpen && isDone && !userAccepted && onAccept && (
+        {menuOpen && hasMenu && (
           <div className={styles.badgeDoneMenu} onMouseDown={e => e.stopPropagation()}>
-            <button
-              className={styles.badgeDoneBtn}
-              onClick={() => { onAccept(); setMenuOpen(false); }}
-            >
-              ✓ Accept
-            </button>
-          </div>
-        )}
-        {menuOpen && !isDone && onMarkDone && (
-          <div className={styles.badgeDoneMenu} onMouseDown={e => e.stopPropagation()}>
-            <button
-              className={styles.badgeDoneBtn}
-              onClick={() => { onMarkDone(); setMenuOpen(false); }}
-            >
-              ✓ Mark as done
-            </button>
+            {isDone && !userAccepted && onAccept && (
+              <button
+                className={styles.badgeDoneBtn}
+                onClick={() => { onAccept(); setMenuOpen(false); }}
+              >
+                ✓ Accept
+              </button>
+            )}
+            {!isDone && onMarkDone && (
+              <button
+                className={styles.badgeDoneBtn}
+                onClick={() => { onMarkDone(); setMenuOpen(false); }}
+              >
+                ✓ Mark as done
+              </button>
+            )}
+            {canAck && (
+              <button
+                className={styles.badgeDoneBtn}
+                onClick={() => { onToggleAck!(); setMenuOpen(false); }}
+              >
+                {acknowledged ? '↺ Un-ack' : '✓ ACK'}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -721,7 +737,7 @@ function ToolEntry({
   isInlineExpanded,
   onToggleInline,
 }: ToolEntryProps) {
-  const hasDiff = tool.toolName === 'Edit' && tool.oldString !== undefined;
+  const hasDiff = (tool.toolName === 'Edit' || tool.toolName === 'Write') && tool.newString !== undefined;
   const isDiffExpanded = expandedDiffs.has(diffKey);
   const isArgsExpanded = expandedArgs.has(argsKey);
   const isResultExpanded = expandedResults.has(resultKey);
@@ -1261,7 +1277,11 @@ function ScrollJumpNav({ up, down, onUp, onDown, styles }: ScrollJumpNavProps) {
         aria-label={up?.label ?? 'Scroll up'}
         tabIndex={visible && up ? 0 : -1}
       >
-        <span className={styles.scrollJumpBtnArrow}>↑</span>
+        <span className={styles.scrollJumpBtnArrow} aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M3 7.5L6 4.5L9 7.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
         <span className={styles.scrollJumpBtnDots} aria-hidden="true">
           {up ? Array.from({ length: up.depth }).map((_, i) => (
             <span key={i} className={styles.scrollJumpBtnDot} />
@@ -1277,7 +1297,11 @@ function ScrollJumpNav({ up, down, onUp, onDown, styles }: ScrollJumpNavProps) {
         aria-label={down?.label ?? 'Scroll down'}
         tabIndex={visible && down ? 0 : -1}
       >
-        <span className={styles.scrollJumpBtnArrow}>↓</span>
+        <span className={styles.scrollJumpBtnArrow} aria-hidden="true">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
         <span className={styles.scrollJumpBtnDots} aria-hidden="true">
           {down ? Array.from({ length: down.depth }).map((_, i) => (
             <span key={i} className={styles.scrollJumpBtnDot} />
@@ -2292,6 +2316,7 @@ const currentDisplayName =
                       activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
                       completionHint={selectedSession.completionHint}
                       userAccepted={selectedSession.userAccepted}
+                      acknowledged={selectedSession.acknowledged}
                       onMarkDone={(() => {
                         const canMarkDone = selectedSession.state !== 'closed' && selectedSession.completionHint !== 'done' && !!onMarkDone;
                         return canMarkDone ? () => onMarkDone(selectedSession.sessionId) : undefined;
@@ -2300,6 +2325,9 @@ const currentDisplayName =
                         const isDone = selectedSession.completionHint === 'done' && !selectedSession.userAccepted;
                         return isDone && !!onAcceptSession ? () => onAcceptSession(selectedSession.sessionId) : undefined;
                       })()}
+                      onToggleAck={selectedSession.state === 'waiting' && selectedSession.completionHint !== 'done'
+                        ? () => { void fetch(`/api/sessions/${selectedSession.sessionId}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); }
+                        : undefined}
                     />
                     {(() => {
                       const l = getLaunchInfo(selectedSession, isPty);
@@ -2320,50 +2348,68 @@ const currentDisplayName =
                         <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
                       );
                     })()}
-                    {selectedSession.permissionMode && (
-                      <span
-                        className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
-                        data-mode={selectedSession.permissionMode}
-                        data-tooltip={
-                          selectedSession.permissionMode === 'bypassPermissions' ? 'Bypass all permissions — click to change' :
-                          selectedSession.permissionMode === 'acceptEdits' ? 'Auto-accept edits — click to change' :
-                          selectedSession.permissionMode === 'plan' ? 'Plan mode only — click to change' :
-                          'Ask for permissions (default) — click to change'
-                        }
-                        role="button"
-                        tabIndex={0}
-                        onClick={async () => {
-                          try {
-                            await fetch(`/api/sessions/${selectedSession.sessionId}/cycle-permission-mode`, {
-                              method: 'POST',
-                            });
-                          } catch { /* ignore */ }
-                        }}
-                      >
-                        {selectedSession.permissionMode === 'bypassPermissions' ? 'bypass' :
-                         selectedSession.permissionMode === 'acceptEdits' ? 'auto-edit' :
-                         selectedSession.permissionMode === 'plan' ? 'plan' :
-                         'ask'}
-                      </span>
-                    )}
+                    {selectedSession.permissionMode && (() => {
+                      const mode = selectedSession.permissionMode;
+                      const known = mode === 'bypassPermissions' || mode === 'acceptEdits' || mode === 'plan' || mode === 'default';
+                      const label =
+                        mode === 'bypassPermissions' ? 'bypass' :
+                        mode === 'acceptEdits' ? 'auto-edit' :
+                        mode === 'plan' ? 'plan' :
+                        mode === 'default' ? 'ask' :
+                        mode;
+                      const tooltip =
+                        mode === 'bypassPermissions' ? 'Bypass all permissions — click to change' :
+                        mode === 'acceptEdits' ? 'Auto-accept edits — click to change' :
+                        mode === 'plan' ? 'Plan mode only — click to change' :
+                        mode === 'default' ? 'Ask for permissions (default) — click to change' :
+                        `Mode: ${mode} — click to change`;
+                      return (
+                        <span
+                          className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
+                          data-mode={known ? mode : 'custom'}
+                          data-tooltip={tooltip}
+                          role="button"
+                          tabIndex={0}
+                          onClick={async () => {
+                            try {
+                              await fetch(`/api/sessions/${selectedSession.sessionId}/cycle-permission-mode`, {
+                                method: 'POST',
+                              });
+                            } catch { /* ignore */ }
+                          }}
+                        >
+                          {label}
+                        </span>
+                      );
+                    })()}
                     </>)}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   </div>{/* headerMain */}
-                  {selectedSession.currentTask && !selectedSession.isWorker && ((() => {
+                  {!selectedSession.isWorker && (selectedSession.intent || selectedSession.currentTask) && ((() => {
                     const task = selectedSession.currentTask;
-                    const ageMs = Date.now() - new Date(task.createdAt).getTime();
-                    const isGenerating = !task.title && ageMs < 20_000;
+                    const ageMs = task ? Date.now() - new Date(task.createdAt).getTime() : 0;
+                    const isGenerating = task && !task.title && ageMs < 20_000;
+                    const taskBody = task && (task.title
+                      ? task.title
+                      : isGenerating
+                      ? <em style={{ opacity: 0.4 }}>Generating title…</em>
+                      : null);
                     return (
                     <div className={styles.currentTaskCard}>
-                      <span className={styles.currentTaskTitle}>
-                        {task.title
-                          ? task.title
-                          : isGenerating
-                          ? <em style={{ opacity: 0.4 }}>Generating title…</em>
-                          : null}
-                      </span>
+                      {selectedSession.intent && (
+                        <span className={styles.currentTaskLine}>
+                          <span className={styles.currentTaskLabel}>Intent:</span>
+                          <span className={styles.currentTaskTitle}>{selectedSession.intent}</span>
+                        </span>
+                      )}
+                      {taskBody && (
+                        <span className={styles.currentTaskLine}>
+                          <span className={styles.currentTaskLabel}>Task:</span>
+                          <span className={styles.currentTaskTitle}>{taskBody}</span>
+                        </span>
+                      )}
                     </div>
                     );
                   })())}
@@ -2751,7 +2797,29 @@ const currentDisplayName =
                                   onMouseDown={e => {
                                     e.preventDefault();
                                     setShowQuickMenu(false);
-                                    sendText("Briefly summarize this conversation — what did we just work on and what were the last changes we made? Keep it short.");
+                                    sendText([
+                                      "Summarize this conversation in a compact status card.",
+                                      "",
+                                      "**Format (markdown):**",
+                                      "",
+                                      "### 🎯 Goal",
+                                      "One sentence — what the user set out to do.",
+                                      "",
+                                      "### 🔍 Root cause / key finding",
+                                      "1–2 sentences on the actual issue (not symptoms). Include the critical number/path.",
+                                      "",
+                                      "### ✏️ Changes",
+                                      "- `path/to/file.ts` — one-line description",
+                                      "- `path/to/other.ts` — one-line description",
+                                      "",
+                                      "### ⏭️ Next step",
+                                      "One sentence: what the user needs to do now (restart, review, test, nothing).",
+                                      "",
+                                      "**Rules:**",
+                                      "- Skip sections that don't apply (write nothing, not \"N/A\").",
+                                      "- Each line ≤ 100 chars. Total ≤ 150 words.",
+                                      "- File paths use backticks. No prose preamble, no closing summary.",
+                                    ].join("\n"));
                                   }}
                                 >
                                   Remind me where we left off

@@ -7,6 +7,8 @@ import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
+import { readRoomConfig } from './roomConfig.js';
+import { sessionStore } from './sessionStore.js';
 import { log } from '../logger.js';
 
 /**
@@ -57,7 +59,7 @@ import {
   clearSessionCaches,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
-import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask, createPlanTask } from '../ai/taskStorage.js';
+import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask, createPlanTask, saveAck, loadAck } from '../ai/taskStorage.js';
 import type { Task } from '../types.js';
 
 /** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
@@ -316,6 +318,7 @@ export class StateManager {
           bridgePipeName: entry.bridgePipeName,
           bridgeMarker: entry.bridgeMarker,
           transcriptPath: entry.transcriptPath,
+          acknowledged: loadAck(entry.sessionId),
         });
 
         // Load transcript for closed sessions so conversation history is visible after restart
@@ -747,6 +750,7 @@ export class StateManager {
       permissionApprovedAt: existingSession?.permissionApprovedAt,
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
+      acknowledged: state === 'waiting' ? (existingSession?.acknowledged ?? (isNew ? loadAck(sessionId) : false)) : false,
       completionSummaries,
       currentTask,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
@@ -760,6 +764,7 @@ export class StateManager {
 
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(overlordId, sessionId);
+    sessionStore.ensureFromLive(session);
     if (isNew) {
       this.saveKnownSessions();
     }
@@ -807,6 +812,7 @@ export class StateManager {
     };
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(sessionId, sessionId);
+    sessionStore.ensureFromLive(session);
     this.onChange();
     return session;
   }
@@ -835,6 +841,7 @@ export class StateManager {
     };
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(sessionId, sessionId);
+    sessionStore.ensureFromLive(session);
     this.onChange();
     return session;
   }
@@ -1149,6 +1156,8 @@ export class StateManager {
       session.completionHint = undefined;
       session.completionHintByUser = false;
       clearCompletionHint(sessionId);
+      session.acknowledged = false;
+      saveAck(sessionId, false);
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
@@ -1177,9 +1186,16 @@ export class StateManager {
         clearCompletionHint(sessionId);
         session.userAccepted = undefined;
         this.acceptedSessions.delete(sessionId);
+        if (session.acknowledged) {
+          session.acknowledged = false;
+          saveAck(sessionId, false);
+        }
       }
-      // Clear active task label when leaving working/thinking
-      if ((prevState === 'working' || prevState === 'thinking') && result.state !== 'working' && result.state !== 'thinking') {
+      // Clear active task label when leaving working/thinking.
+      // Exception: keep the last label when the session closes — worker cards
+      // preserve it alongside notes/intent/plan so you can still tell what a
+      // closed agent was last doing.
+      if ((prevState === 'working' || prevState === 'thinking') && result.state !== 'working' && result.state !== 'thinking' && result.state !== 'closed') {
         session.currentTaskLabel = undefined;
       }
       // Log state transition
@@ -1356,6 +1372,17 @@ export class StateManager {
     return true;
   }
 
+  /** Toggle the acknowledged flag — silences the pulsing WAITING bubble without marking done. */
+  toggleAckByUser(sessionId: string): boolean | null {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.state === 'closed') return null;
+    const next = !session.acknowledged;
+    session.acknowledged = next;
+    saveAck(sessionId, next);
+    this.onChange();
+    return next;
+  }
+
   clearHintOnInput(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -1367,6 +1394,11 @@ export class StateManager {
       this.acceptedSessions.delete(sessionId);
       this.saveAccepted();
       clearCompletionHint(sessionId);
+      changed = true;
+    }
+    if (session.acknowledged) {
+      session.acknowledged = false;
+      saveAck(sessionId, false);
       changed = true;
     }
     // Only promote to 'working' if the session has prior activity — otherwise a
@@ -1528,6 +1560,15 @@ export class StateManager {
   /** @deprecated No-op. Request summaries superseded by Task.title. */
   setRequestSummary(_sessionId: string, _summary: string): void { /* no-op */ }
 
+  /** Sets the rolling intent summary for a session and broadcasts the update. */
+  setIntent(sessionId: string, intent: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.intent === intent) return;
+    session.intent = intent;
+    this.onChange();
+  }
+
   setCompacting(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.isCompacting) return;
@@ -1571,19 +1612,28 @@ export class StateManager {
     this.onChange();
   }
 
+  /** Normalize an incoming id (may be ovrId or Claude sessionId) to the active Claude sessionId.
+   *  Override maps (lastPtyActivityAt, bridgeActiveOverride) are read by Claude sessionId in
+   *  addOrUpdate, so writers that receive ovrId must translate first. */
+  private toClaudeId(id: string): string {
+    return this.sessionsByOvrId.get(id) ?? id;
+  }
+
   /** Record PTY output activity for a session — overrides stale 'waiting' state in snapshot. */
   setPtyActive(sessionId: string): void {
-    this.lastPtyActivityAt.set(sessionId, Date.now());
-    this.promoteToWorkingIfWaiting(sessionId);
+    const claudeId = this.toClaudeId(sessionId);
+    this.lastPtyActivityAt.set(claudeId, Date.now());
+    this.promoteToWorkingIfWaiting(claudeId);
   }
 
   /** Persistently mark a bridge session as active (spinner detected). Cleared when idle prompt seen. */
   setBridgeActive(sessionId: string, active: boolean): void {
+    const claudeId = this.toClaudeId(sessionId);
     if (active) {
-      this.bridgeActiveOverride.add(sessionId);
-      this.promoteToWorkingIfWaiting(sessionId);
+      this.bridgeActiveOverride.add(claudeId);
+      this.promoteToWorkingIfWaiting(claudeId);
     } else {
-      this.bridgeActiveOverride.delete(sessionId);
+      this.bridgeActiveOverride.delete(claudeId);
     }
     this.onChange();
   }
@@ -1785,6 +1835,8 @@ export class StateManager {
         const prErr = this.prCache.getError(room.cwd, branch);
         if (prErr) room.gitWarning = `PR lookup: ${prErr}`;
       }
+      const cfg = readRoomConfig(room.cwd);
+      if (cfg.description) room.description = cfg.description;
     }
     this.gitWatcher.retain(activeCwds);
     this.prCache.retain(activeCwds);
@@ -1852,6 +1904,29 @@ export class StateManager {
     session.color = color;
     this.saveColors();
     this.onChange();
+    return true;
+  }
+
+  /**
+   * Rename a session. Updates the durable OverlordSession.proposedName and the
+   * live Session so the next snapshot carries the new name. Accepts both live
+   * and archived sessions — archived records patch through sessionStore only.
+   * Pass an empty string to clear the name.
+   */
+  setSessionName(sessionId: string, name: string): boolean {
+    const trimmed = name.trim();
+    const next = trimmed.length > 0 ? trimmed : undefined;
+
+    let rec = sessionStore.getBySessionId(sessionId);
+    const live = this.sessions.get(sessionId);
+    if (!rec && live) rec = sessionStore.ensureFromLive(live);
+    if (!rec) return false;
+
+    sessionStore.patch(rec.overlordId, { proposedName: next });
+    if (live) {
+      live.proposedName = next;
+      this.onChange();
+    }
     return true;
   }
 

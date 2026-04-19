@@ -101,10 +101,13 @@ export interface Session {
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
+  acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   completionSummaries?: Task[];
   userAccepted?: boolean;
   currentTaskLabel?: string;
   currentTask?: Task;
+  /** Rolling Haiku-generated summary of what the session is working on. Replaces requestSummary and completionSummary on the worker card. */
+  intent?: string;
   /** @deprecated Use Task.title instead. Kept for backwards-compat with aiClassifier. */
   requestSummary?: string;
   isWorker?: boolean;
@@ -131,6 +134,132 @@ export interface Session {
   loadedAt?: number;
 }
 
+/** One attached Claude session UUID in the overlord's lineage. */
+export interface LineageEntry {
+  sessionId: string;
+  attachedAt: number;
+  transcriptPath?: string;
+  reason?: 'initial' | 'clear' | 'compact' | 'resume';
+}
+
+/** Per-history-entry transcript copy made at archive time. */
+export interface ArchivedTranscript {
+  sessionId: string;
+  /** Path under `~/.claude/overlord/archive/{slug}/{overlordId}/{sid}.jsonl` */
+  path: string;
+}
+
+export interface PullRequestSnapshot {
+  number: number;
+  url: string;
+  title: string;
+  state: string;
+  isDraft: boolean;
+}
+
+/**
+ * Persisted per-overlord entity — one `{overlordId}.json`.
+ *   Active:   `~/.claude/overlord/overlord-sessions/{overlordId}.json`
+ *   Archived: `~/.claude/overlord/overlord-sessions-archive/{overlordId}.json`
+ *
+ * Keyed by `overlordId` (stable across /clear and /compact). Each /clear or /compact
+ * appends to `lineage.history` and updates `lineage.currentSessionId`.
+ *
+ * Durable work fields (intent, notes, tasks, hint/ack) are at the overlord level so
+ * they carry through clears; they never reset when a new sessionId attaches.
+ *
+ * Archived state is signalled two ways that must agree:
+ *   1. File lives in `overlord-sessions-archive/` (primary signal — cheap to list)
+ *   2. `archive` block is populated (frozen snapshot: roomId, name, gitBranch, PR, transcripts)
+ */
+export interface OverlordSession {
+  overlordId: string;
+  cwd: string;
+  startedAt: number;
+  color: string;
+  proposedName?: string;
+
+  /** Atomic unit — currentSessionId and history must stay in sync. */
+  lineage: {
+    currentSessionId: string;
+    history: LineageEntry[];
+  };
+
+  provider?: SessionProvider;
+  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  model?: string;
+  slug?: string;
+  resumedFrom?: string;
+  replacedBy?: string;
+  bridgeMarker?: string;
+  bridgePipeName?: string;
+  historyOnly?: boolean;
+  userAccepted?: boolean;
+
+  lastActivity?: string;
+  lastMessage?: string;
+
+  intent?: string;
+  intentTurnCount?: number;
+  intentUpdatedAt?: number;
+  notes?: string;
+  currentTask?: Task;
+  planTasks?: Task[];
+  completionSummaries?: Task[];
+  completionHint?: 'done';
+  acknowledged?: boolean;
+
+  /** Presence = archived. Written when the record moves to the archive dir. */
+  archive?: {
+    archivedAt: string;
+    roomId: string;
+    name: string;
+    gitBranch?: string;
+    pullRequest?: PullRequestSnapshot;
+    transcripts: ArchivedTranscript[];
+  };
+}
+
+/**
+ * Runtime-only session wrapper. Holds ephemeral fields (PTY handles, permissions,
+ * bridge connection state, pendingQuestion). Never persisted.
+ */
+export interface LiveSession {
+  overlord: OverlordSession;
+  pid: number;
+  state: WorkerState;
+  lastActivity: string;
+  lastMessage?: string;
+  activityFeed?: ActivityItem[];
+  subagents: Subagent[];
+  ptyCompactItems?: ActivityItem[];
+  ptyCompactBaseline?: number;
+  ptyCompactBaselineAt?: number;
+  ptyCompactBoundarySeen?: boolean;
+  inputTokens?: number;
+  compactCount?: number;
+  isCompacting?: boolean;
+  ideName?: string;
+  needsPermission?: boolean;
+  permissionPromptText?: string;
+  isLimitPrompt?: boolean;
+  permissionApprovedAt?: number;
+  permissionMode?: string;
+  permissionModeLockedUntil?: number;
+  pendingQuestion?: PendingQuestionSet;
+  completionHintByUser?: boolean;
+  manuallyDone?: boolean;
+  currentTaskLabel?: string;
+  requestSummary?: string;
+  isWorker?: boolean;
+  staleCount?: number;
+  bridgeTty?: string;
+  bridgeDead?: boolean;
+  ptySessionId?: string;
+  ptyInputPendingSince?: number;
+  loadedAt?: number;
+}
+
 export interface Room {
   id: string;
   name: string;
@@ -145,6 +274,7 @@ export interface Room {
     isDraft: boolean;
   };
   gitWarning?: string;  // present when gh/git pr lookup failed
+  description?: string;  // free-form per-room notes; first line renders in header
 }
 
 export interface OfficeSnapshot {

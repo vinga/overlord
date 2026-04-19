@@ -17,7 +17,7 @@
   border-radius: 5px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);
-  cursor: default;
+  cursor: pointer;
   max-width: 360px;
   min-width: 0;
   overflow: hidden;

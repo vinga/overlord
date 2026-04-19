@@ -11,8 +11,8 @@ interface ActivityItem {
   role?: 'user' | 'assistant';  // for kind='message'
   content: string;               // message text OR tool description
   toolName?: string;             // for kind='tool'
-  oldString?: string;            // for kind='tool' + toolName='Edit'
-  newString?: string;            // for kind='tool' + toolName='Edit'
+  oldString?: string;            // for kind='tool' + toolName='Edit' | 'Write' (Write sets '' to mean "new file")
+  newString?: string;            // for kind='tool' + toolName='Edit' | 'Write'
   isRedacted?: boolean;          // for kind='thinking'
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
@@ -98,10 +98,12 @@ interface Session {
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   completionHint?: 'done' | 'awaiting';
+  acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   completionSummaries?: Task[];
   userAccepted?: boolean;
   currentTaskLabel?: string;
   currentTask?: Task;
+  intent?: string;                // rolling Haiku-generated summary of what the session is doing
   isWorker?: boolean;
   ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter
   isArchived?: boolean;           // synthetic flag: session was archived and is being viewed read-only
@@ -124,6 +126,7 @@ interface Room {
     isDraft: boolean;
   };
   gitWarning?: string;
+  description?: string;
 }
 
 interface ArchiveEntry {
@@ -148,6 +151,8 @@ interface ArchiveEntry {
   lastMessage?: string;
   lastActivity?: string;
   model?: string;
+  intent?: string;
+  notes?: string;
 }
 
 interface OfficeSnapshot {

@@ -88,30 +88,6 @@
   color: #fff;
 }
 
-.metaChips {
-  margin-top: 4px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-.metaChip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-  background: rgba(148, 163, 184, 0.12);
-  color: #94a3b8;
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .completionSummary {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10px;
@@ -263,6 +239,33 @@
   50% { opacity: 1; }
 }
 
+
+/* Compacting bubble — violet, shown when isCompacting */
+.bubbleCompacting {
+  background: rgba(167, 139, 250, 0.15);
+  border: 1.5px solid rgba(167, 139, 250, 0.6);
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a78bfa;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(167, 139, 250, 0.25);
+}
+
+.bubbleCompacting::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px 4px 0;
+  border-style: solid;
+  border-color: rgba(167, 139, 250, 0.6) transparent transparent;
+}
 
 /* Done bubble — green, shown when completionHint === 'done' */
 .bubbleDone {
@@ -526,6 +529,17 @@
   margin-top: 2px;
   word-wrap: break-word;
   font-style: italic;
+}
+
+.intentDone {
+  color: rgba(34, 197, 94, 0.65);
+  font-style: normal;
+}
+
+.intentDone::before {
+  content: '✓ ';
+  color: rgba(34, 197, 94, 0.85);
+  font-weight: 600;
 }
 
 /* Done menu popup */

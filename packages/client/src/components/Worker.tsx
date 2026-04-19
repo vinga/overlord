@@ -1,5 +1,4 @@
 import React, { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import ReactDOM from 'react-dom';
 import type { WorkerState, Task, Session } from '../types';
 import styles from './Worker.module.css';
 import { WorkerPlanPill } from './WorkerPlanPill';
@@ -9,7 +8,6 @@ interface WorkerProps {
   name?: string;
   state: WorkerState;
   color: string;
-  launchLabel?: string;
   provider?: Session['provider'];
   isSubagent?: boolean;
   minimal?: boolean;
@@ -17,7 +15,9 @@ interface WorkerProps {
   completionHint?: 'done' | 'awaiting';
   completionSummaries?: Task[];
   userAccepted?: boolean;
+  acknowledged?: boolean;
   needsPermission?: boolean;
+  isCompacting?: boolean;
   bridgeDead?: boolean;
   currentTaskLabel?: string;
   currentTask?: Task;
@@ -25,6 +25,7 @@ interface WorkerProps {
   isRaw?: boolean;
   ptyInputPendingSince?: number;
   notesSummary?: string;
+  intent?: string;
   onClick: () => void;
   onRename?: (newName: string) => void;
 }
@@ -33,11 +34,12 @@ interface WaitingIndicatorProps {
   isSubagent: boolean;
   completionHint?: 'done' | 'awaiting';
   userAccepted?: boolean;
+  acknowledged?: boolean;
   needsPermission?: boolean;
   styles: Record<string, string>;
 }
 
-function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermission, styles }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledged, needsPermission, styles }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
   if (userAccepted) {
     return <span className={styles.bubbleDone}>done</span>;
@@ -46,6 +48,7 @@ function WaitingIndicator({ isSubagent, completionHint, userAccepted, needsPermi
     return <span className={styles.bubbleDonePending}>review</span>;
   }
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
+  if (acknowledged) return null;
   return <span className={styles.bubble}>waiting</span>;
 }
 
@@ -59,7 +62,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, launchLabel, provider, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, onClick, onRename }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, onClick, onRename }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -67,9 +70,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, laun
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(label);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [showDoneMenu, setShowDoneMenu] = useState(false);
-  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
-  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -86,28 +86,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, laun
     setIsEditing(false);
   }, [editValue, label, onRename]);
 
-  useEffect(() => {
-    if (!showDoneMenu) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setShowDoneMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showDoneMenu]);
-
   const handleIndicatorClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setMenuPos({ x: rect.left + rect.width / 2, y: rect.bottom + 6 });
-    setShowDoneMenu(true);
-  }, []);
-
-  const handleMarkDone = useCallback(async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setShowDoneMenu(false);
-    await fetch(`/api/sessions/${sessionId}/mark-done`, {
+    void fetch(`/api/sessions/${sessionId}/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
@@ -152,33 +133,40 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, laun
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
-      {!minimal && (state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && (
+      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && completionHint !== 'done' && !needsPermission) && (
         <div
-          className={`${styles.indicator} ${styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
+          className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
           style={!isSubagent && !userAccepted && !needsPermission ? { cursor: 'pointer' } : undefined}
         >
-          {state === 'working' && (
-            <span className={styles.workingDot} />
-          )}
-          {state === 'thinking' && (
-            <span className={styles.dots}>
-              <span className={styles.dot} />
-              <span className={styles.dot} />
-              <span className={styles.dot} />
-            </span>
-          )}
-          {state === 'waiting' && (
-            <WaitingIndicator
-              isSubagent={!!isSubagent}
-              completionHint={completionHint}
-              userAccepted={userAccepted}
-              needsPermission={needsPermission}
-              styles={styles}
-            />
-          )}
-          {state === 'closed' && userAccepted && (
-            <span className={styles.bubbleDone}>closed · done</span>
+          {isCompacting ? (
+            <span className={styles.bubbleCompacting}>compacting</span>
+          ) : (
+            <>
+              {state === 'working' && (
+                <span className={styles.workingDot} />
+              )}
+              {state === 'thinking' && (
+                <span className={styles.dots}>
+                  <span className={styles.dot} />
+                  <span className={styles.dot} />
+                  <span className={styles.dot} />
+                </span>
+              )}
+              {state === 'waiting' && (
+                <WaitingIndicator
+                  isSubagent={!!isSubagent}
+                  completionHint={completionHint}
+                  userAccepted={userAccepted}
+                  acknowledged={acknowledged}
+                  needsPermission={needsPermission}
+                  styles={styles}
+                />
+              )}
+              {state === 'closed' && userAccepted && (
+                <span className={styles.bubbleDone}>closed · done</span>
+              )}
+            </>
           )}
         </div>
       )}
@@ -265,19 +253,15 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, laun
           </span>
         )
       )}
-      {!minimal && !isSubagent && (launchLabel || provider === 'codex') && (
-        <div className={styles.metaChips}>
-          {launchLabel && <span className={styles.metaChip}>{launchLabel}</span>}
-          {provider === 'codex' && <span className={styles.metaChip}>Codex</span>}
-        </div>
-      )}
       {!minimal && !isSubagent && notesSummary && (
         <span className={styles.notesSummaryLine}><span className={styles.notesSummaryPrefix}>Notes:</span> {notesSummary}</span>
       )}
-      {!minimal && !isSubagent && currentTask?.title && completionHint !== 'done' && (
-        <span className={styles.requestSummary}>{currentTask.title}</span>
+      {!minimal && !isSubagent && intent && (
+        <span className={`${styles.requestSummary} ${state === 'closed' ? styles.intentDone : ''}`}>
+          <span className={styles.notesSummaryPrefix}>Intent:</span> {intent}
+        </span>
       )}
-      {!minimal && !isSubagent && currentTaskLabel && state !== 'closed' && (
+      {!minimal && !isSubagent && currentTaskLabel && (
         <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>
       )}
       {!minimal && latestPlan && (
@@ -287,22 +271,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, laun
           planStatus={latestPlan.planStatus ?? 'approved'}
           timestamp={latestPlan.completedAt ?? latestPlan.createdAt}
         />
-      )}
-      {!minimal && completionSummaries && completionSummaries.length > 0 && completionHint === 'done' && !isSubagent && (
-        <span className={styles.completionSummary}>{completionSummaries[0].summary}</span>
-      )}
-      {showDoneMenu && ReactDOM.createPortal(
-        <div
-          ref={menuRef}
-          className={styles.doneMenu}
-          style={{ position: 'fixed', left: menuPos.x, top: menuPos.y, transform: 'translateX(-50%)' }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button className={styles.doneMenuItem} onClick={handleMarkDone}>
-            ✓ Set to Done
-          </button>
-        </div>,
-        document.body
       )}
     </div>
   );

@@ -45,12 +45,6 @@ function statusLabel(s: Props['planStatus']): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function statusDotClass(s: Props['planStatus']): string {
-  if (s === 'approved') return styles.statusApproved;
-  if (s === 'rejected') return styles.statusRejected;
-  return styles.statusPending;
-}
-
 function statusPillClass(s: Props['planStatus']): string {
   if (s === 'approved') return styles.statusPillApproved;
   if (s === 'rejected') return styles.statusPillRejected;
@@ -58,14 +52,13 @@ function statusPillClass(s: Props['planStatus']): string {
 }
 
 export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Props) {
-  const [hover, setHover] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const pillRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
-  const open = hover || pinned;
+  const open = pinned;
 
   useEffect(() => {
     if (!pinned) return;
@@ -74,10 +67,9 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
       if (popoverRef.current?.contains(t)) return;
       if (pillRef.current?.contains(t)) return;
       setPinned(false);
-      setHover(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setPinned(false); setHover(false); }
+      if (e.key === 'Escape') setPinned(false);
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
@@ -105,15 +97,10 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
     setPos({ left, top });
   }, [open, anchor]);
 
-  const handleEnter = (e: React.MouseEvent<HTMLSpanElement>) => {
-    setAnchor(e.currentTarget.getBoundingClientRect());
-    setPos(null);
-    setHover(true);
-  };
-
   const handleClick = (e: React.MouseEvent<HTMLSpanElement>) => {
     e.stopPropagation();
     setAnchor(e.currentTarget.getBoundingClientRect());
+    setPos(null);
     setPinned(p => !p);
   };
 
@@ -122,13 +109,10 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
       <span
         ref={pillRef}
         className={styles.pill}
-        onMouseEnter={handleEnter}
-        onMouseLeave={() => setHover(false)}
         onClick={handleClick}
         title={title}
       >
         <PlanIcon className={styles.icon} />
-        <span className={`${styles.statusDot} ${statusDotClass(planStatus)}`} />
         <span className={styles.title}>{truncate(title, TITLE_MAX)}</span>
       </span>
       {open && ReactDOM.createPortal(
@@ -140,8 +124,6 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
             top: pos?.top ?? -9999,
             visibility: pos ? 'visible' : 'hidden',
           }}
-          onMouseEnter={() => setHover(true)}
-          onMouseLeave={() => { if (!pinned) setHover(false); }}
           onClick={(e) => e.stopPropagation()}
         >
           <div className={styles.popoverHeader}>

@@ -104,6 +104,11 @@ function ArchiveAvatar({ color, keyId }: { color: string; keyId: string }) {
   );
 }
 
+function extractFirstLine(content: string): string {
+  const raw = content.split('\n')[0] ?? '';
+  return raw.replace(/^[#>*\-_`~\s]+/, '').trim();
+}
+
 function lastActivityLabel(isoTimestamp: string): string {
   const diffMs = Date.now() - new Date(isoTimestamp).getTime();
   const diffMin = Math.floor(diffMs / 60000);
@@ -111,6 +116,51 @@ function lastActivityLabel(isoTimestamp: string): string {
   if (diffMin < 60) return `${diffMin}m`;
   const diffHour = Math.floor(diffMin / 60);
   return `${diffHour}h`;
+}
+
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function formatArchiveEntryTime(archivedAt: string): string {
+  const d = new Date(archivedAt);
+  const today0 = startOfDay(new Date());
+  const y0 = today0 - 86_400_000;
+  const t = d.getTime();
+  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (t >= today0) return hm;
+  if (t >= y0) return `yesterday ${hm}`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function groupArchiveByTime(entries: ArchiveEntry[]): Array<{ label: string; entries: ArchiveEntry[] }> {
+  const now = new Date();
+  const today0 = startOfDay(now);
+  const y0 = today0 - 86_400_000;
+  const d2 = today0 - 2 * 86_400_000;
+  const week0 = today0 - 7 * 86_400_000;
+  const month0 = today0 - 30 * 86_400_000;
+
+  const buckets: Record<string, ArchiveEntry[]> = {
+    Today: [], Yesterday: [], '2 days ago': [],
+    'Earlier this week': [], 'This month': [], Older: [],
+  };
+  const order = ['Today', 'Yesterday', '2 days ago', 'Earlier this week', 'This month', 'Older'];
+
+  const sorted = [...entries].sort((a, b) =>
+    new Date(b.archivedAt).getTime() - new Date(a.archivedAt).getTime()
+  );
+  for (const e of sorted) {
+    const t = new Date(e.archivedAt).getTime();
+    const key = t >= today0 ? 'Today'
+      : t >= y0 ? 'Yesterday'
+      : t >= d2 ? '2 days ago'
+      : t >= week0 ? 'Earlier this week'
+      : t >= month0 ? 'This month'
+      : 'Older';
+    buckets[key].push(e);
+  }
+  return order.filter(k => buckets[k].length > 0).map(label => ({ label, entries: buckets[label] }));
 }
 
 function InfoTooltip({ text }: { text: string }) {
@@ -364,16 +414,14 @@ interface RoomProps {
   onRoomDragEnd?: () => void;
 }
 
-function DeskMenu({ onDelete, onRename, onClone, onClear, onArchive, currentName }: { onDelete: () => void; onRename?: (name: string) => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; currentName?: string }) {
+function DeskMenu({ onDelete, onClone, onClear, onArchive }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void }) {
   const [open, setOpen] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [nameVal, setNameVal] = useState('');
   const ref = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (!open) return;
     function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setRenaming(false); }
+      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); }
     }
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -382,7 +430,7 @@ function DeskMenu({ onDelete, onRename, onClone, onClear, onArchive, currentName
   return (
     <div ref={ref} style={{ position: 'absolute', top: 4, right: 4, zIndex: 10 }}>
       <button
-        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); setRenaming(false); }}
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         style={{
           background: 'rgba(30,30,40,0.85)', border: '1px solid rgba(255,255,255,0.12)',
           borderRadius: 4, color: 'rgba(255,255,255,0.4)', width: 22, height: 22,
@@ -405,86 +453,52 @@ function DeskMenu({ onDelete, onRename, onClone, onClear, onArchive, currentName
           border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 4,
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 100, minWidth: 140,
         }}>
-          {renaming ? (
-            <div style={{ padding: '4px 8px' }}>
-              <input
-                autoFocus
-                value={nameVal}
-                onChange={(e) => setNameVal(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && nameVal.trim()) { onRename?.(nameVal.trim()); setOpen(false); setRenaming(false); }
-                  if (e.key === 'Escape') { setRenaming(false); }
-                }}
-                style={{
-                  background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.15)',
-                  borderRadius: 4, color: '#fff', padding: '4px 8px', fontSize: 12, width: '100%',
-                  outline: 'none', fontFamily: 'Inter, system-ui, sans-serif',
-                }}
-                placeholder="New name…"
-              />
-            </div>
-          ) : (
-            <>
-              {onRename && (
-                <button
-                  onClick={() => { setNameVal(currentName ?? ''); setRenaming(true); }}
-                  style={{
-                    display: 'block', width: '100%', padding: '8px 14px',
-                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                    fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-                >Rename</button>
-              )}
-              {onClone && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); setOpen(false); onClone(); }}
-                  style={{
-                    display: 'block', width: '100%', padding: '8px 14px',
-                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                    fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-                >Clone</button>
-              )}
-              {onClear && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); setOpen(false); onClear(); }}
-                  style={{
-                    display: 'block', width: '100%', padding: '8px 14px',
-                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                    fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(251,146,60,0.1)'; e.currentTarget.style.color = '#fb923c'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-                >Clear</button>
-              )}
-              {onArchive && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); setOpen(false); onArchive(); }}
-                  style={{
-                    display: 'block', width: '100%', padding: '8px 14px',
-                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                    fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-                >Archive</button>
-              )}
-              <button
-                onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }}
-                style={{
-                  display: 'block', width: '100%', padding: '8px 14px',
-                  background: 'none', border: 'none', color: '#ff6b6b',
-                  fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,107,107,0.1)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-              >Delete</button>
-            </>
+          {onClone && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpen(false); onClone(); }}
+              style={{
+                display: 'block', width: '100%', padding: '8px 14px',
+                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+            >Clone</button>
           )}
+          {onClear && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpen(false); onClear(); }}
+              style={{
+                display: 'block', width: '100%', padding: '8px 14px',
+                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(251,146,60,0.1)'; e.currentTarget.style.color = '#fb923c'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+            >Clear</button>
+          )}
+          {onArchive && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpen(false); onArchive(); }}
+              style={{
+                display: 'block', width: '100%', padding: '8px 14px',
+                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+            >Archive</button>
+          )}
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }}
+            style={{
+              display: 'block', width: '100%', padding: '8px 14px',
+              background: 'none', border: 'none', color: '#ff6b6b',
+              fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,107,107,0.1)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >Delete</button>
         </div>
       )}
     </div>
@@ -563,6 +577,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   const [terminalMode, setTerminalMode] = useState<TerminalSpawnMode>('bridge');
   const [showSpawnPanel, setShowSpawnPanel] = useState(false);
   const [spawnPanelName, setSpawnPanelName] = useState('');
+  const [namePrefix, setNamePrefix] = useState('');
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
@@ -624,6 +639,15 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
     const id = setInterval(() => setTick(t => t + 1), 30000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`)
+      .then(r => r.ok ? r.json() as Promise<{ prefix: string }> : null)
+      .then(cfg => { if (!cancelled && cfg) setNamePrefix(cfg.prefix ?? ''); })
+      .catch(() => { /* ignore */ });
+    return () => { cancelled = true; };
+  }, [room.cwd]);
 
   const spawnInputRef = useRef<HTMLInputElement>(null);
   const terminalSpawnInputRef = useRef<HTMLInputElement>(null);
@@ -701,8 +725,10 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
     setDragOverId(null);
   };
 
-  // Compute state counts for collapsed summary
+  // Compute state counts for collapsed summary.
+  // Acknowledged waiting sessions are silenced — they don't contribute to the waiting chip.
   const stateCounts = room.sessions.reduce<Record<string, number>>((acc, s) => {
+    if (s.state === 'waiting' && s.acknowledged && s.completionHint !== 'done' && !s.userAccepted) return acc;
     acc[s.state] = (acc[s.state] ?? 0) + 1;
     return acc;
   }, {});
@@ -731,16 +757,25 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             <polyline points="2 3 5 6 8 3" />
           </svg>
         </button>
-        <span
-          className={`${styles.roomName} ${onRoomClick ? styles.roomNameClickable : ''}`}
-          onClick={onRoomClick ? (e) => { e.stopPropagation(); onRoomClick(room.id); } : undefined}
-          role={onRoomClick ? 'button' : undefined}
-          tabIndex={onRoomClick ? 0 : undefined}
-          onKeyDown={onRoomClick ? (e) => { if (e.key === 'Enter') onRoomClick(room.id); } : undefined}
-          title={onRoomClick ? room.cwd : undefined}
-        >
-          {room.name}
-        </span>
+        <div className={styles.roomNameStack}>
+          <span
+            className={`${styles.roomName} ${onRoomClick ? styles.roomNameClickable : ''}`}
+            onClick={onRoomClick ? (e) => { e.stopPropagation(); onRoomClick(room.id); } : undefined}
+            role={onRoomClick ? 'button' : undefined}
+            tabIndex={onRoomClick ? 0 : undefined}
+            onKeyDown={onRoomClick ? (e) => { if (e.key === 'Enter') onRoomClick(room.id); } : undefined}
+            title={onRoomClick ? room.cwd : undefined}
+          >
+            {room.name}
+          </span>
+          {(() => {
+            const firstLine = room.description ? extractFirstLine(room.description) : '';
+            if (!firstLine) return null;
+            return (
+              <span className={styles.roomDescription} title={room.description}>{firstLine}</span>
+            );
+          })()}
+        </div>
         {collapsed && (
           <div className={styles.collapsedChips}>
             {(['working', 'thinking', 'waiting', 'closed'] as const).map(state => {
@@ -766,11 +801,21 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
         {onSpawnDirect && (
           <button
             className={styles.spawnButton}
-            onClick={(e) => {
+            onClick={async (e) => {
               e.stopPropagation();
-              const name = getNextName('');
-              setSpawnPanelName(name);
-              setShowSpawnPanel(p => !p);
+              if (showSpawnPanel) { setShowSpawnPanel(false); return; }
+              const baseName = getNextName('');
+              let fresh = namePrefix;
+              try {
+                const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`);
+                if (r.ok) {
+                  const cfg = await r.json() as { prefix?: string };
+                  fresh = cfg.prefix ?? '';
+                  setNamePrefix(fresh);
+                }
+              } catch { /* fall back to cached namePrefix */ }
+              setSpawnPanelName(fresh + baseName);
+              setShowSpawnPanel(true);
             }}
             title={`New session in ${room.cwd}`}
             aria-label="New session"
@@ -835,6 +880,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                   return (
                     <div className={styles.deskLaunchRow}>
                       <span className={styles.deskLaunchBadge} data-category={launch.category}>{launch.name}</span>
+                      {session.provider === 'codex' && (
+                        <span className={styles.deskLaunchBadge} data-category="codex">Codex</span>
+                      )}
                     </div>
                   );
                 })()}
@@ -842,7 +890,6 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
               {onDeleteSession && (
                 <DeskMenu
                   onDelete={() => onDeleteSession(session.sessionId)}
-                  onRename={onRenameSession ? (name) => onRenameSession(session.sessionId, name) : undefined}
                   onClone={onCloneSession && session.activityFeed && session.activityFeed.length > 0 ? () => onCloneSession(session.sessionId) : undefined}
                   onClear={session.state !== 'closed' ? () => {
                     fetch(`/api/sessions/${session.sessionId}/inject`, {
@@ -854,7 +901,6 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                     }).catch(() => setClearToast('error'));
                   } : undefined}
                   onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
-                  currentName={customNames[session.sessionId] ?? session.proposedName ?? session.sessionId.slice(0, 8)}
                 />
               )}
               <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} />
@@ -879,7 +925,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
           </button>
           {archiveExpanded && (
             <ul className={styles.archiveList}>
-              {archiveEntries.map(entry => {
+              {groupArchiveByTime(archiveEntries).flatMap(group => [
+                <li key={`__group__${group.label}`} className={styles.archiveGroupLabel}>{group.label}</li>,
+                ...group.entries.map(entry => {
                 const avatarColor = entry.color ?? 'hsl(30, 75%, 55%)';
                 const prLabel = entry.pullRequest ? `#${entry.pullRequest.number}` : null;
                 const branchLabel = entry.gitBranch ?? null;
@@ -914,17 +962,24 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                             </span>
                           )}
                           <span className={styles.archiveEntryTime}>
-                            {new Date(entry.archivedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                            {formatArchiveEntryTime(entry.archivedAt)}
                           </span>
                         </div>
+                        {entry.intent && (
+                          <div className={styles.archiveEntryIntent}>{entry.intent}</div>
+                        )}
                         {entry.lastMessage && (
                           <div className={styles.archiveEntryDesc}>{entry.lastMessage}</div>
+                        )}
+                        {entry.notes && (
+                          <div className={styles.archiveEntryNotes}>{entry.notes}</div>
                         )}
                       </div>
                     </button>
                   </li>
                 );
-              })}
+              })
+              ])}
             </ul>
           )}
         </div>

@@ -111,14 +111,14 @@ All work in this project follows **Spec Driven Development (SDD)**. This means:
 
 2. **Review the spec** — present the spec to the user and get explicit approval before proceeding. Do not start implementation until the spec is agreed upon.
 
-3. **Plan from the spec** — once the spec is approved, **always** derive an implementation plan directly from the spec. The plan is not freeform: every task maps to one or more acceptance criteria.
-   - Walk the spec in this order: **Server → Client → Acceptance Criteria (verification pass)**.
-   - Each Server / Client sub-section becomes one task (or a small ordered group of tasks).
-   - Add a final **Verify acceptance criteria** task listing each checkbox from the spec.
-   - Add a final **Browser / self-verify** task (Chrome DevTools MCP for UI; ad-hoc curl/Node for backend).
-   - Create the plan as `TaskCreate` entries — one task per step, in execution order, with dependencies via `addBlockedBy` when ordering matters.
-   - Present the plan to the user for confirmation before starting implementation.
-   - If the spec has no server component, skip Server tasks (same for Client). Never invent tasks outside the spec.
+3. **Plan from the spec** — once the spec is approved, **always** derive an implementation plan directly from the spec. The plan is not freeform: every step maps to one or more acceptance criteria.
+   - Write the plan to `specs/<feature-name>.plan.md` alongside the spec. It is a durable, versioned artifact — not an ephemeral task list.
+   - Walk the spec in this order: **Server → Client → Verification**.
+   - Group steps under `## Server`, `## Client`, `## Verification` headings. Each step is a checkbox with a one-line action and the AC line(s) it satisfies.
+   - Include a **Walk acceptance criteria** step and a **Browser / self-verify** step at the end.
+   - Also mirror the plan steps as `TaskCreate` entries for in-session progress tracking — the markdown is the canonical record, the tasks are the execution tracker.
+   - Present the plan file to the user for confirmation before starting implementation.
+   - If the spec has no server component, skip Server section (same for Client). Never invent steps outside the spec.
 
 4. **Implement against the spec** — write only what is needed to satisfy the spec. Do not add anything not covered by the acceptance criteria. Mark each task `in_progress` when starting, `completed` when done — one at a time.
 

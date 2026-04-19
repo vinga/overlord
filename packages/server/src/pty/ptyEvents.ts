@@ -3,6 +3,7 @@ import type { PtyManager } from './ptyManager.js';
 import type { StateManager } from '../session/stateManager.js';
 import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
 import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
+import { detectModeFromText } from '../session/modeDetect.js';
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -23,14 +24,6 @@ const activeDetectBuf = new Map<string, string>();
 const ACTIVE_DETECT_BUF_SIZE = 2048;
 
 export function wirePtyEvents(ctx: PtyEventsContext): void {
-  // Wire PtyManager events → broadcast to ALL connected clients
-  // so any tab can view the PTY terminal
-  const PERM_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-    { pattern: />>\s+bypass permissions on/i, mode: 'bypassPermissions' },
-    { pattern: />>\s+accept edits on/i, mode: 'acceptEdits' },
-    { pattern: />>\s+plan mode on/i, mode: 'plan' },
-  ];
-
   ctx.ptyManager.on('output', (ptySessionId: string, data: string) => {
     // Resolve ovrId for this PTY (set after linking; fall back to ptyId before link)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
@@ -98,19 +91,14 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       }
       if (activeSignal === true) ctx.stateManager.setBridgeActive(ovrId, true);
       else if (activeSignal === false) ctx.stateManager.setBridgeActive(ovrId, false);
-    }
 
-    // On repaint, detect permission mode and update immediately
-    if (isRepaint) {
-      const text = data.replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
-        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '').replace(/\x1b[^[\]]/g, '')
-        .replace(/\x1b/g, '').replace(/[^\x20-\x7e\n\t\r]/g, '');
-      let frameMode: string | undefined;
-      for (const { pattern, mode } of PERM_MODE_PATTERNS) {
-        if (pattern.test(text)) { frameMode = mode; break; }
+      // Detect permission mode on every data event using the rolling buffer.
+      // Shift+Tab rewrites the status bar but may not emit a BSU repaint marker,
+      // so gating this on isRepaint alone delays the pill update by hundreds of ms.
+      const { sentinelFound, mode } = detectModeFromText(combined);
+      if (sentinelFound) {
+        ctx.stateManager.setPermissionMode(ovrId, mode ?? 'default');
       }
-      const resolvedMode = frameMode ?? 'default';
-      ctx.stateManager.setPermissionMode(ovrId, resolvedMode);
     }
   });
 

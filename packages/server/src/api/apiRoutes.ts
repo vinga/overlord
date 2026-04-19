@@ -2,24 +2,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
+import { sessionStore } from '../session/sessionStore.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const NOTES_FILE = join(__dirname, '../../data/notes.json');
-
-function loadNotes(): Record<string, string> {
-  try {
-    if (!fs.existsSync(NOTES_FILE)) return {};
-    return JSON.parse(fs.readFileSync(NOTES_FILE, 'utf-8'));
-  } catch { return {}; }
-}
-
-function saveNotes(notes: Record<string, string>): void {
-  const dir = dirname(NOTES_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2), 'utf-8');
-}
 import { exec, execSync } from 'child_process';
 import express from 'express';
 import type { Express } from 'express';
@@ -28,12 +15,14 @@ import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
+import { detectModeFromText } from '../session/modeDetect.js';
 import { injectViaMac } from '../pty/macInjector.js';
 import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { archiveManager } from '../archive/archiveManager.js';
-import { getBrainContext } from '../brain/brainContext.js';
+import { getBrainContext, invalidateBrainCache } from '../brain/brainContext.js';
+import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
 import { log } from '../logger.js';
 
 export interface PtyMaps {
@@ -207,16 +196,27 @@ export function registerApiRoutes(
       if (!session) { res.status(404).json({ error: 'session not found' }); return; }
 
       try {
-        // Inject Shift+Tab to cycle the mode
-        if (stateManager.isBridge(sessionId)) {
-          await injectViaPipe(sessionId, '\x1b[Z');
-        } else if (process.platform === 'darwin') {
-          await injectViaMac(session.pid, '\x1b[Z', false);
-        } else {
-          await injectText(session.pid, '\x1b[Z', false, true);
+        // Inject Shift+Tab to cycle the mode.
+        // Prefer ptyManager.write for Overlord-spawned PTYs (CGEvent can't reach node-pty).
+        const ovrIdForPty = session.overlordId ?? sessionId;
+        const ptyIdForWrite = ovrToPty.get(ovrIdForPty);
+        const ptyWrote = ptyIdForWrite ? ptyManager.write(ptyIdForWrite, '\x1b[Z') : false;
+        console.log(`[cycle-perm] sid=${sessionId} ovr=${ovrIdForPty} ptyId=${ptyIdForWrite ?? '(none)'} ptyWrote=${ptyWrote} isBridge=${stateManager.isBridge(sessionId)} pid=${session.pid}`);
+        if (!ptyWrote) {
+          if (stateManager.isBridge(sessionId)) {
+            await injectViaPipe(sessionId, '\x1b[Z');
+          } else if (process.platform === 'darwin') {
+            await injectViaMac(session.pid, '\x1b[Z', false);
+          } else {
+            await injectText(session.pid, '\x1b[Z', false, true);
+          }
         }
 
-        // Wait for the TUI to update, then read screen
+        // Wait for the TUI to update, then read screen.
+        // 500ms kept for correctness on the Windows readScreen path — sampling too early
+        // returns the pre-click mode and setPermissionMode would overwrite the value the
+        // async paths already wrote. Perceived click latency is unaffected because
+        // ptyEvents / bridge buffer broadcast the new mode within ~50ms independently.
         await new Promise(r => setTimeout(r, 500));
         let text: string | null = null;
         const sess2 = stateManager.getSession(sessionId);
@@ -245,18 +245,12 @@ export function registerApiRoutes(
           text = await readScreen(session.pid);
         }
 
-        // Detect new mode from screen text
-        const PERMISSION_MODE_PATTERNS: Array<{ pattern: RegExp; mode: string }> = [
-          { pattern: /bypass permissions on/i, mode: 'bypassPermissions' },
-          { pattern: /accept edits on/i, mode: 'acceptEdits' },
-          { pattern: /plan mode on/i, mode: 'plan' },
-        ];
+        // Detect new mode from screen text (supports unknown/custom modes via status-bar sentinel).
         let newMode: string | undefined;
         if (text) {
-          for (const { pattern, mode } of PERMISSION_MODE_PATTERNS) {
-            if (pattern.test(text)) { newMode = mode; break; }
-          }
-          if (!newMode) newMode = 'default';
+          const { sentinelFound, mode } = detectModeFromText(text);
+          if (sentinelFound) newMode = mode;
+          else newMode = 'default';
         }
 
         if (newMode !== undefined) {
@@ -306,6 +300,14 @@ export function registerApiRoutes(
       void generateCompletionSummary(sessionId, session.lastMessage);
     }
     res.json({ ok: true });
+  });
+
+  // Toggle acknowledged — silences WAITING bubble without marking done
+  app.post('/api/sessions/:sessionId/ack', (req, res) => {
+    const { sessionId } = req.params;
+    const next = stateManager.toggleAckByUser(sessionId);
+    if (next === null) { res.status(404).json({ error: 'session not found or closed' }); return; }
+    res.json({ acknowledged: next });
   });
 
   // Regenerate request summary for a session
@@ -384,6 +386,32 @@ export function registerApiRoutes(
     }
   });
 
+  // Room config for a room (scoped by cwd). Stores per-room settings like the session prefix.
+  app.get('/api/room-config', (req, res) => {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    res.json(readRoomConfig(cwd));
+  });
+
+  app.post('/api/room-config', express.json(), (req, res) => {
+    const { cwd, prefix, description } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string };
+    if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
+    if (prefix !== undefined && typeof prefix !== 'string') { res.status(400).json({ error: 'prefix must be a string' }); return; }
+    if (description !== undefined && typeof description !== 'string') { res.status(400).json({ error: 'description must be a string' }); return; }
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    const current = readRoomConfig(cwd);
+    writeRoomConfig(cwd, {
+      prefix: prefix !== undefined ? prefix : current.prefix,
+      description: description !== undefined ? description : current.description,
+    });
+    res.json({ ok: true });
+  });
+
   // Brain context for a room (scoped by cwd). All brain fields are cwd-derived, so the
   // endpoint lives at the room level. Only known-room cwds are allowed to prevent probing.
   app.get('/api/brain', (req, res) => {
@@ -426,6 +454,45 @@ export function registerApiRoutes(
       const truncated = lines.length > LINE_CAP;
       const content = truncated ? lines.slice(0, LINE_CAP).join('\n') : raw;
       res.json({ path: resolved, content, totalLines: lines.length, truncated });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Brain: write a single editable file (CLAUDE.md or memory/*.md) back to disk.
+  // Scope mirrors GET /api/brain/file, then narrows further to editable file types.
+  app.put('/api/brain/file', express.json({ limit: '1mb' }), (req, res) => {
+    const { cwd, path: filePath, content } = (req.body ?? {}) as { cwd?: string; path?: string; content?: string };
+    if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
+    if (!filePath || typeof filePath !== 'string') { res.status(400).json({ error: 'path required' }); return; }
+    if (typeof content !== 'string') { res.status(400).json({ error: 'content must be a string' }); return; }
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    const resolved = resolve(filePath);
+    const homeDir = resolve(os.homedir(), '.claude');
+    const cwdResolved = resolve(cwd);
+    const inScope = resolved.startsWith(homeDir + '/') || resolved === homeDir
+      || resolved.startsWith(cwdResolved + '/') || resolved === cwdResolved;
+    if (!inScope) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
+    const isClaudeMd = basename(resolved) === 'CLAUDE.md';
+    const memoryRoot = resolve(os.homedir(), '.claude', 'projects');
+    const isMemoryFile = resolved.startsWith(memoryRoot + '/')
+      && resolved.endsWith('.md')
+      && resolved.split('/').includes('memory');
+    if (!isClaudeMd && !isMemoryFile) {
+      res.status(403).json({ error: 'path type not editable' });
+      return;
+    }
+    try {
+      if (fs.existsSync(resolved)) {
+        const stat = fs.statSync(resolved);
+        if (!stat.isFile()) { res.status(400).json({ error: 'not a file' }); return; }
+      }
+      fs.writeFileSync(resolved, content, 'utf-8');
+      invalidateBrainCache(cwd);
+      const totalLines = content.length === 0 ? 0 : content.split('\n').length;
+      res.json({ ok: true, path: resolved, totalLines });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -590,29 +657,43 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
-  // Notes: GET /api/notes — all notes (for bulk display in worker cards)
+  app.put('/api/sessions/:sessionId/name', express.json(), (req, res) => {
+    const { sessionId } = req.params;
+    const name = typeof req.body?.name === 'string' ? req.body.name : '';
+    const ok = stateManager.setSessionName(sessionId, name);
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // Notes: GET /api/notes — all notes (for bulk display in worker cards).
+  // Keyed by the overlord's current sessionId so the client can look up by its
+  // live session handle without knowing the overlordId.
   app.get('/api/notes', (_req, res) => {
-    res.json(loadNotes());
+    const out: Record<string, string> = {};
+    for (const rec of sessionStore.listActive()) {
+      if (typeof rec.notes === 'string' && rec.notes.length > 0) {
+        out[rec.lineage.currentSessionId] = rec.notes;
+      }
+    }
+    res.json(out);
   });
 
   // Notes: GET /api/sessions/:sessionId/notes
   app.get('/api/sessions/:sessionId/notes', (req, res) => {
     const { sessionId } = req.params;
-    const notes = loadNotes();
-    res.json({ notes: notes[sessionId] ?? '' });
+    res.json({ notes: sessionStore.getBySessionId(sessionId)?.notes ?? '' });
   });
 
   // Notes: PUT /api/sessions/:sessionId/notes
   app.put('/api/sessions/:sessionId/notes', express.json(), (req, res) => {
     const { sessionId } = req.params;
     const content = typeof req.body?.notes === 'string' ? req.body.notes : '';
-    const notes = loadNotes();
-    if (content === '') {
-      delete notes[sessionId];
-    } else {
-      notes[sessionId] = content;
+    let rec = sessionStore.getBySessionId(sessionId);
+    if (!rec) {
+      const live = stateManager.getSession(sessionId);
+      if (live) rec = sessionStore.ensureFromLive(live);
     }
-    saveNotes(notes);
+    if (rec) sessionStore.patch(rec.overlordId, { notes: content === '' ? undefined : content });
     res.json({ ok: true });
   });
 
@@ -647,10 +728,81 @@ export function registerApiRoutes(
         lastMessage: state.lastMessage,
         lastActivity: state.lastActivity,
         model: state.model,
+        intent: entry.intent,
+        notes: entry.notes,
       });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  // Archive: free-text search across all archived transcripts.
+  // Mirrors the client-side search logic in packages/client/src/lib/search.tsx.
+  app.get('/api/archive/search', (req, res) => {
+    const q = String(req.query.q ?? '').trim();
+    const limit = Math.min(1000, Math.max(1, parseInt(String(req.query.limit ?? '300'), 10) || 300));
+    if (q.length < 2) { res.json({ entries: [], truncated: false }); return; }
+    const qLower = q.toLowerCase();
+
+    function buildCorpus(item: { kind?: string; isRedacted?: boolean; content?: string; inputJson?: string }): string {
+      if (item.kind === 'thinking' && item.isRedacted) return '';
+      const parts: string[] = [item.content ?? ''];
+      if (item.inputJson) parts.push(item.inputJson);
+      return parts.join(' ');
+    }
+
+    function makeExcerpt(corpus: string, windowSize = 120): { text: string; start: number; end: number } {
+      const lower = corpus.toLowerCase();
+      const idx = lower.indexOf(qLower);
+      if (idx === -1) return { text: corpus.slice(0, windowSize), start: -1, end: -1 };
+      const half = Math.floor(windowSize / 2);
+      const from = Math.max(0, idx - half + Math.floor(q.length / 2));
+      const to = Math.min(corpus.length, from + windowSize);
+      const adjusted = Math.max(0, to - windowSize);
+      const text = (adjusted > 0 ? '…' : '') + corpus.slice(adjusted, to) + (to < corpus.length ? '…' : '');
+      const matchInExcerpt = idx - adjusted + (adjusted > 0 ? 1 : 0);
+      return { text, start: matchInExcerpt, end: matchInExcerpt + q.length };
+    }
+
+    const TRUNC = 400;
+    const entries: Array<{ entry: unknown; matches: unknown[] }> = [];
+    let total = 0;
+    let truncated = false;
+
+    for (const entry of archiveManager.list()) {
+      if (total >= limit) { truncated = true; break; }
+      if (!fs.existsSync(entry.transcriptPath)) continue;
+      let feed;
+      try {
+        feed = readTranscriptState(entry.transcriptPath).activityFeed ?? [];
+      } catch { continue; }
+      const matches: unknown[] = [];
+      for (const item of feed) {
+        if (total + matches.length >= limit) { truncated = true; break; }
+        const corpus = buildCorpus(item);
+        if (!corpus.toLowerCase().includes(qLower)) continue;
+        const { text, start, end } = makeExcerpt(corpus);
+        matches.push({
+          item: {
+            kind: item.kind,
+            role: item.role,
+            toolName: item.toolName,
+            timestamp: item.timestamp,
+            content: (item.content ?? '').slice(0, TRUNC),
+            inputJson: item.inputJson ? item.inputJson.slice(0, TRUNC) : undefined,
+            isRedacted: item.isRedacted,
+          },
+          excerpt: text,
+          boldRanges: start >= 0 ? [[start, end]] : [],
+        });
+      }
+      if (matches.length > 0) {
+        entries.push({ entry, matches });
+        total += matches.length;
+      }
+    }
+
+    res.json({ entries, truncated });
   });
 
   // Archive: archive a live session

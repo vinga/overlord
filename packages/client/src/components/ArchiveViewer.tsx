@@ -10,6 +10,8 @@ interface ArchiveTranscriptResponse {
   lastMessage?: string;
   lastActivity?: string;
   model?: string;
+  intent?: string;
+  notes?: string;
 }
 
 interface Props {
@@ -126,11 +128,23 @@ export function ArchiveViewer({ sessionId, onClose }: Props) {
     <div style={PANEL_STYLE} role="dialog" aria-label="Archived session">
       <div style={HEADER_STYLE}>
         <span style={BADGE}>Archived</span>
-        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
           <strong style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {data?.name ?? '…'}
           </strong>
-          <span style={{ fontSize: 11, color: '#9ca3af' }}>
+          {data?.intent && (
+            <span style={{ fontSize: 12, color: '#e5e7eb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ color: '#6b7280', letterSpacing: 0.4, textTransform: 'uppercase', fontSize: 10, marginRight: 6 }}>Intent</span>
+              <span style={{ fontStyle: 'italic' }}>{data.intent}</span>
+            </span>
+          )}
+          {data?.lastMessage && (
+            <span style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ color: '#6b7280', letterSpacing: 0.4, textTransform: 'uppercase', fontSize: 10, marginRight: 6 }}>Last message</span>
+              {data.lastMessage}
+            </span>
+          )}
+          <span style={{ fontSize: 11, color: '#6b7280' }}>
             {data?.archivedAt ? `archived ${formatDate(data.archivedAt)}` : ''}
           </span>
         </div>

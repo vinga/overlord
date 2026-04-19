@@ -1,34 +1,41 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { sessionStore } from '../session/sessionStore.js';
+import type { OverlordSession, ArchivedTranscript, PullRequestSnapshot } from '../types.js';
 
+/**
+ * Archive view built from an archived OverlordSession. Shape is kept close to the
+ * pre-refactor entry so existing callers keep working; new fields `transcripts`
+ * and `overlordId` expose the multi-transcript lineage.
+ *
+ * `transcriptPath` (singular) points at the current sessionId's archived copy for
+ * back-compat (legacy readers and the transcript-viewer route).
+ */
 export interface ArchiveEntry {
-  sessionId: string;
+  sessionId: string;       // current sessionId at archive time
+  overlordId: string;
   roomId: string;
   cwd: string;
   name: string;
   archivedAt: string;
-  transcriptPath: string;
+  transcriptPath: string;  // path of the current-session transcript (for back-compat)
+  transcripts: ArchivedTranscript[];  // full lineage of archived transcripts
   pid: number;
   provider?: string;
   sessionType?: string;
   startedAt?: number;
   color?: string;
   gitBranch?: string;
-  pullRequest?: {
-    number: number;
-    url: string;
-    title: string;
-    state: string;
-    isDraft: boolean;
-  };
+  pullRequest?: PullRequestSnapshot;
   lastMessage?: string;
   lastActivity?: string;
   model?: string;
+  intent?: string;
+  notes?: string;
 }
 
 const ARCHIVE_BASE = path.join(os.homedir(), '.claude', 'overlord', 'archive');
-const INDEX_FILE = path.join(ARCHIVE_BASE, 'index.json');
 
 export function cwdToSlug(cwd: string): string {
   return cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
@@ -38,31 +45,38 @@ function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+function toEntry(rec: OverlordSession): ArchiveEntry | null {
+  if (!rec.archive) return null;
+  const current = rec.archive.transcripts.find(t => t.sessionId === rec.lineage.currentSessionId);
+  const firstTranscript = rec.archive.transcripts[0];
+  const transcriptPath = current?.path ?? firstTranscript?.path ?? '';
+  return {
+    sessionId: rec.lineage.currentSessionId,
+    overlordId: rec.overlordId,
+    roomId: rec.archive.roomId,
+    cwd: rec.cwd,
+    name: rec.proposedName ?? rec.archive.name,
+    archivedAt: rec.archive.archivedAt,
+    transcriptPath,
+    transcripts: rec.archive.transcripts,
+    pid: 0,
+    provider: rec.provider,
+    sessionType: rec.sessionType,
+    startedAt: rec.startedAt,
+    color: rec.color,
+    gitBranch: rec.archive.gitBranch,
+    pullRequest: rec.archive.pullRequest,
+    lastMessage: rec.lastMessage,
+    lastActivity: rec.lastActivity,
+    model: rec.model,
+    intent: rec.intent,
+    notes: rec.notes,
+  };
+}
+
 export class ArchiveManager {
-  private entries: ArchiveEntry[] = [];
-
-  constructor() {
-    this.load();
-  }
-
-  private load(): void {
-    try {
-      if (!fs.existsSync(INDEX_FILE)) { this.entries = []; return; }
-      const raw = fs.readFileSync(INDEX_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      this.entries = Array.isArray(parsed) ? parsed : [];
-    } catch {
-      this.entries = [];
-    }
-  }
-
-  private save(): void {
-    ensureDir(ARCHIVE_BASE);
-    fs.writeFileSync(INDEX_FILE, JSON.stringify(this.entries, null, 2), 'utf-8');
-  }
-
   isArchived(sessionId: string): boolean {
-    return this.entries.some(e => e.sessionId === sessionId);
+    return !!sessionStore.getBySessionId(sessionId)?.archive;
   }
 
   archive(params: {
@@ -76,85 +90,110 @@ export class ArchiveManager {
     startedAt?: number;
     color?: string;
     gitBranch?: string;
-    pullRequest?: ArchiveEntry['pullRequest'];
+    pullRequest?: PullRequestSnapshot;
     lastMessage?: string;
     lastActivity?: string;
     model?: string;
   }): ArchiveEntry | null {
-    const existing = this.entries.find(e => e.sessionId === params.sessionId);
-    if (existing) return existing;
-
-    const slug = cwdToSlug(params.cwd);
-    const destDir = path.join(ARCHIVE_BASE, slug);
-    ensureDir(destDir);
-    const destPath = path.join(destDir, `${params.sessionId}.jsonl`);
+    const rec = sessionStore.getBySessionId(params.sessionId);
+    if (!rec) return null;                               // unknown overlord
+    if (rec.archive) return toEntry(rec);                // already archived — idempotent
 
     if (!params.sourceTranscriptPath || !fs.existsSync(params.sourceTranscriptPath)) {
       return null;
     }
-    try {
-      fs.copyFileSync(params.sourceTranscriptPath, destPath);
-    } catch {
-      return null;
-    }
 
-    const entry: ArchiveEntry = {
-      sessionId: params.sessionId,
+    const slug = cwdToSlug(params.cwd);
+    const destDir = path.join(ARCHIVE_BASE, slug, rec.overlordId);
+    ensureDir(destDir);
+
+    // Copy each lineage entry's transcript if it exists on disk.
+    // Current session: use the resolved sourceTranscriptPath the caller passed
+    // (which may have walked the --resume chain).
+    const transcripts: ArchivedTranscript[] = [];
+    for (const h of rec.lineage.history) {
+      const src = h.sessionId === params.sessionId ? params.sourceTranscriptPath : h.transcriptPath;
+      if (!src || !fs.existsSync(src)) continue;
+      const dest = path.join(destDir, `${h.sessionId}.jsonl`);
+      try {
+        fs.copyFileSync(src, dest);
+        transcripts.push({ sessionId: h.sessionId, path: dest });
+      } catch { /* skip this transcript */ }
+    }
+    if (transcripts.length === 0) return null;
+
+    // Also update durable fields from the caller (latest message/activity/model).
+    sessionStore.patch(rec.overlordId, {
+      lastMessage: params.lastMessage ?? rec.lastMessage,
+      lastActivity: params.lastActivity ?? rec.lastActivity,
+      model: params.model ?? rec.model,
+    });
+
+    const updated = sessionStore.archive(rec.overlordId, {
       roomId: slug,
-      cwd: params.cwd,
       name: params.name,
-      archivedAt: new Date().toISOString(),
-      transcriptPath: destPath,
-      pid: params.pid,
-      provider: params.provider,
-      sessionType: params.sessionType,
-      startedAt: params.startedAt,
-      color: params.color,
       gitBranch: params.gitBranch,
       pullRequest: params.pullRequest,
-      lastMessage: params.lastMessage,
-      lastActivity: params.lastActivity,
-      model: params.model,
-    };
-    this.entries.push(entry);
-    this.save();
-    return entry;
+      transcripts,
+    });
+    return updated ? toEntry(updated) : null;
   }
 
   list(): ArchiveEntry[] {
-    return [...this.entries].sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+    const out: ArchiveEntry[] = [];
+    for (const rec of sessionStore.listArchived()) {
+      const e = toEntry(rec);
+      if (e) out.push(e);
+    }
+    return out.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
   }
 
   listByRoom(roomId: string): ArchiveEntry[] {
-    return this.entries
-      .filter(e => e.roomId === roomId)
-      .sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
+    return this.list().filter(e => e.roomId === roomId);
   }
 
   get(sessionId: string): ArchiveEntry | null {
-    return this.entries.find(e => e.sessionId === sessionId) ?? null;
+    const rec = sessionStore.getBySessionId(sessionId);
+    return rec ? toEntry(rec) : null;
   }
 
   getArchivedSessionIds(): Set<string> {
-    return new Set(this.entries.map(e => e.sessionId));
+    const out = new Set<string>();
+    for (const rec of sessionStore.listArchived()) {
+      for (const h of rec.lineage.history) out.add(h.sessionId);
+    }
+    return out;
   }
 
   /**
-   * Restore an archived transcript back into ~/.claude/projects/{slug}/{sessionId}.jsonl
-   * so Claude CLI's `--resume` can find it. Does NOT touch the archive index.
-   * Returns the destination path, or null on failure.
+   * Restore the requested sessionId's archived transcript into
+   * `~/.claude/projects/{slug}/{sessionId}.jsonl` so `claude --resume` finds it.
+   * Other transcripts in the lineage are left under archive/.
    */
   restoreTranscript(sessionId: string): string | null {
-    const entry = this.get(sessionId);
-    if (!entry) return null;
-    if (!fs.existsSync(entry.transcriptPath)) return null;
-    const projectSlug = entry.cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
+    const rec = sessionStore.getBySessionId(sessionId);
+    const archived = rec?.archive?.transcripts.find(t => t.sessionId === sessionId);
+    if (!rec || !archived) return null;
+    if (!fs.existsSync(archived.path)) return null;
+    const projectSlug = rec.cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
     const destDir = path.join(os.homedir(), '.claude', 'projects', projectSlug);
     ensureDir(destDir);
     const destPath = path.join(destDir, `${sessionId}.jsonl`);
     if (fs.existsSync(destPath)) return destPath;
     try {
-      fs.copyFileSync(entry.transcriptPath, destPath);
+      // Rewrite sessionId in every line so `claude --resume {sessionId}` finds this file.
+      const raw = fs.readFileSync(archived.path, 'utf-8');
+      const rewritten = raw.split('\n').map(line => {
+        if (!line.trim()) return line;
+        try {
+          const obj = JSON.parse(line);
+          if (obj && typeof obj === 'object') obj.sessionId = sessionId;
+          return JSON.stringify(obj);
+        } catch {
+          return line;
+        }
+      }).join('\n');
+      fs.writeFileSync(destPath, rewritten, 'utf-8');
     } catch {
       return null;
     }
@@ -162,18 +201,20 @@ export class ArchiveManager {
   }
 
   /**
-   * Remove an entry from the archive index and delete its transcript file.
-   * Idempotent — returns false if the entry wasn't present.
+   * Unarchive: move the overlord back to the active dir and delete the archived
+   * transcript copies. Idempotent.
    */
   remove(sessionId: string): boolean {
-    const idx = this.entries.findIndex(e => e.sessionId === sessionId);
-    if (idx === -1) return false;
-    const entry = this.entries[idx];
-    this.entries.splice(idx, 1);
-    this.save();
-    try {
-      if (fs.existsSync(entry.transcriptPath)) fs.unlinkSync(entry.transcriptPath);
-    } catch { /* ignore */ }
+    const rec = sessionStore.getBySessionId(sessionId);
+    if (!rec?.archive) return false;
+    for (const t of rec.archive.transcripts) {
+      try { if (fs.existsSync(t.path)) fs.unlinkSync(t.path); } catch { /* ignore */ }
+    }
+    // Remove empty per-overlord archive dir.
+    const slug = rec.archive.roomId;
+    const overlordArchiveDir = path.join(ARCHIVE_BASE, slug, rec.overlordId);
+    try { fs.rmdirSync(overlordArchiveDir); } catch { /* not empty or missing — ignore */ }
+    sessionStore.unarchive(rec.overlordId);
     return true;
   }
 }

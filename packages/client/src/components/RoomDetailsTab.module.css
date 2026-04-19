@@ -1,0 +1,118 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px 20px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(212, 175, 55, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.textarea {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.5;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.textarea:focus {
+  border-color: rgba(212, 175, 55, 0.5);
+  background: rgba(212, 175, 55, 0.04);
+}
+
+.textarea::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.input {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  color: #e5e7eb;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+  line-height: 1.5;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.input:focus {
+  border-color: rgba(212, 175, 55, 0.5);
+  background: rgba(212, 175, 55, 0.04);
+}
+
+.input::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.hint {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.42);
+  line-height: 1.4;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.saved {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(34, 197, 94, 0.8);
+}
+
+.saveBtn {
+  padding: 6px 18px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(212, 175, 55, 0.1);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 6px;
+  color: #d4af37;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.saveBtn:hover:not(:disabled) {
+  background: rgba(212, 175, 55, 0.18);
+  border-color: rgba(212, 175, 55, 0.55);
+}
+
+.saveBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.error {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: #f87171;
+}

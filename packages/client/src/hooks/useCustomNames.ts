@@ -1,15 +1,8 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
-const STORAGE_KEY = 'overlord:customNames';
 const STORAGE_KEY_AUTO = 'overlord:autoNames';
-
-function load(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-  } catch {
-    return {};
-  }
-}
+const LEGACY_CUSTOM_KEY = 'overlord:customNames';
+const MIGRATION_DONE_KEY = 'overlord:customNames:migrated';
 
 function loadAuto(): Record<string, string> {
   try {
@@ -19,29 +12,46 @@ function loadAuto(): Record<string, string> {
   }
 }
 
-function save(names: Record<string, string>): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(names));
-}
-
 function saveAuto(names: Record<string, string>): void {
   localStorage.setItem(STORAGE_KEY_AUTO, JSON.stringify(names));
 }
 
 export function useCustomNames() {
-  const [customNames, setCustomNames] = useState<Record<string, string>>(load);
   const [autoNames, setAutoNames] = useState<Record<string, string>>(loadAuto);
 
   const rename = useCallback((sessionId: string, name: string) => {
-    setCustomNames((prev) => {
-      const next = { ...prev };
-      if (name.trim()) {
-        next[sessionId] = name.trim();
-      } else {
-        delete next[sessionId];
+    fetch(`/api/sessions/${encodeURIComponent(sessionId)}/name`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }).catch(err => console.error('rename failed', err));
+  }, []);
+
+  // One-shot migration: upload legacy localStorage renames to the server, then
+  // clear the key so future sessions can't drift.
+  useEffect(() => {
+    if (localStorage.getItem(MIGRATION_DONE_KEY)) return;
+    try {
+      const legacy = JSON.parse(localStorage.getItem(LEGACY_CUSTOM_KEY) ?? '{}') as Record<string, string>;
+      const entries = Object.entries(legacy).filter(([id, name]) => id && typeof name === 'string' && name.trim());
+      if (entries.length === 0) {
+        localStorage.setItem(MIGRATION_DONE_KEY, '1');
+        localStorage.removeItem(LEGACY_CUSTOM_KEY);
+        return;
       }
-      save(next);
-      return next;
-    });
+      Promise.allSettled(entries.map(([sid, name]) =>
+        fetch(`/api/sessions/${encodeURIComponent(sid)}/name`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        })
+      )).finally(() => {
+        localStorage.setItem(MIGRATION_DONE_KEY, '1');
+        localStorage.removeItem(LEGACY_CUSTOM_KEY);
+      });
+    } catch {
+      localStorage.setItem(MIGRATION_DONE_KEY, '1');
+    }
   }, []);
 
   const ensureAutoName = useCallback((session: { sessionId: string; sessionType?: string }) => {
@@ -55,25 +65,7 @@ export function useCustomNames() {
     });
   }, []);
 
-  const getDisplayName = useCallback(
-    (session: { sessionId: string; proposedName?: string; slug?: string }) =>
-      customNames[session.sessionId] ??
-      session.proposedName ??
-      autoNames[session.sessionId] ??
-      session.slug ??
-      session.sessionId.slice(0, 8),
-    [customNames, autoNames]
-  );
-
-  // Transfer both custom and auto name from oldId → newId (called on /clear)
   const migrateSession = useCallback((oldId: string, newId: string) => {
-    setCustomNames(prev => {
-      if (!prev[oldId]) return prev;
-      const next = { ...prev, [newId]: prev[oldId] };
-      delete next[oldId];
-      save(next);
-      return next;
-    });
     setAutoNames(prev => {
       if (!prev[oldId]) return prev;
       const next = { ...prev, [newId]: prev[oldId] };
@@ -83,5 +75,5 @@ export function useCustomNames() {
     });
   }, []);
 
-  return { customNames, autoNames, rename, getDisplayName, ensureAutoName, migrateSession };
+  return { autoNames, rename, ensureAutoName, migrateSession };
 }

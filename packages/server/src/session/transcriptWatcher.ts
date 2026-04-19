@@ -5,6 +5,7 @@ import chokidar from 'chokidar';
 import type { StateManager } from './stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import type { AiClassifier } from '../ai/aiClassifier.js';
+import type { IntentSummarizer } from '../ai/intentSummary.js';
 import type { SessionEventContext } from './sessionEventHandlers.js';
 import { markTranscriptDirty } from './transcriptReader.js';
 import { closeOrRemoveReplaced } from './sessionEventHandlers.js';
@@ -14,6 +15,7 @@ export interface TranscriptWatcherContext {
   stateManager: StateManager;
   ptyManager: PtyManager;
   aiClassifier: AiClassifier;
+  intentSummarizer: IntentSummarizer;
   sessionCtx: SessionEventContext;
   broadcastRaw: (msg: object) => void;
   pendingPtyByPid: Map<number, { ptySessionId: string; ws: unknown }>;
@@ -318,6 +320,11 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
           !currentSession.currentTask.title && !titleAttempted.has(currentSession.currentTask.taskId)) {
         titleAttempted.add(currentSession.currentTask.taskId);
         void ctx.aiClassifier.generateTaskTitle(sessionId, currentSession.currentTask.taskId);
+      }
+      // Rolling intent summary — generated for every non-closed, non-worker session.
+      // Debounced 2s per session; refreshed every ≥5 new user turns. Frozen on close.
+      if (currentSession && !currentSession.isWorker) {
+        ctx.intentSummarizer.maybeRefreshIntent(sessionId, currentSession.cwd);
       }
     }
   }, 3_000);

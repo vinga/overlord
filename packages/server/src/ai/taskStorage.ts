@@ -1,69 +1,55 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import type { Task } from '../types.js';
+import type { Task, OverlordSession } from '../types.js';
+import { sessionStore } from '../session/sessionStore.js';
 
-/** Convert a cwd path to a stable filesystem-safe slug for the room tasks file. */
-function cwdToRoomSlug(cwd: string): string {
-  return cwd
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-    .replace(/[^a-zA-Z0-9._-]/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 200);
+/**
+ * Task persistence. Sources of truth are the `planTasks`, `completionSummaries`,
+ * and `currentTask` fields on each `OverlordSession` (keyed by overlordId).
+ *
+ * Tasks live at the overlord level so they carry through /clear and /compact.
+ * API signatures keep the legacy `cwd` / `sessionId` params for caller compat;
+ * callers that only know a sessionId are resolved to the owning overlord via
+ * the sessionStore's secondary index.
+ */
+
+function gatherTasks(rec: OverlordSession | undefined): Task[] {
+  if (!rec) return [];
+  const out: Task[] = [];
+  if (rec.currentTask) out.push(rec.currentTask);
+  if (rec.planTasks) out.push(...rec.planTasks);
+  if (rec.completionSummaries) out.push(...rec.completionSummaries);
+  return out;
 }
 
-function getRoomTasksPath(cwd: string): string {
-  return path.join(os.homedir(), '.claude', 'overlord', 'rooms', `${cwdToRoomSlug(cwd)}.tasks.json`);
-}
-
-/** Read all tasks for a room (all sessions in that cwd). Newest-first. */
+/** Every task for every overlord whose cwd matches. */
 export function readRoomTasks(cwd: string): Task[] {
-  try {
-    const p = getRoomTasksPath(cwd);
-    if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, 'utf-8')) as Task[];
-    }
-    return [];
-  } catch {
-    return [];
+  const out: Task[] = [];
+  for (const rec of sessionStore.listActive()) {
+    if (rec.cwd !== cwd) continue;
+    out.push(...gatherTasks(rec));
   }
+  return out;
 }
 
-/** Read tasks for a specific session within a room. */
 export function readTasks(cwd: string, sessionId: string): Task[] {
-  return readRoomTasks(cwd).filter(t => t.sessionId === sessionId);
+  void cwd;
+  return gatherTasks(sessionStore.getBySessionId(sessionId));
 }
 
-export function writeRoomTasks(cwd: string, tasks: Task[]): void {
-  try {
-    const p = getRoomTasksPath(cwd);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(tasks, null, 2), 'utf-8');
-  } catch { /* silently swallow */ }
-}
-
-/** Creates a new active task for a session, prepends to room storage, returns the task. */
 export function createTask(cwd: string, sessionId: string, sessionName: string | undefined, createdAt: string): Task {
-  const existing = readRoomTasks(cwd);
-  const sessionTaskCount = existing.filter(t => t.sessionId === sessionId).length;
+  void cwd;
+  const rec = sessionStore.getBySessionId(sessionId);
+  const existingCount = gatherTasks(rec).length;
   const task: Task = {
-    taskId: `${sessionId}-${sessionTaskCount + 1}`,
+    taskId: `${sessionId}-${existingCount + 1}`,
     sessionId,
     sessionName,
     state: 'active',
     createdAt,
   };
-  writeRoomTasks(cwd, [task, ...existing]);
+  if (rec) sessionStore.patch(rec.overlordId, { currentTask: task });
   return task;
 }
 
-/**
- * Creates a plan-kind task from a detected ExitPlanMode tool_use. Dedupes on
- * planToolUseId — returns the existing task if already persisted. The plan is
- * stored as a completed task (plans are artifacts, not work items).
- */
 export function createPlanTask(
   cwd: string,
   sessionId: string,
@@ -73,20 +59,26 @@ export function createPlanTask(
   createdAt: string,
   planStatus: 'approved' | 'rejected' | 'pending' = 'approved',
 ): Task | undefined {
-  const existing = readRoomTasks(cwd);
-  const dup = existing.find(t => t.planToolUseId === planToolUseId);
-  if (dup) {
-    // Update status if it changed (e.g. pending → approved)
+  void cwd;
+  const rec = sessionStore.getBySessionId(sessionId);
+  if (!rec) return undefined;
+
+  const planTasks = [...(rec.planTasks ?? [])];
+  const dupIdx = planTasks.findIndex(t => t.planToolUseId === planToolUseId);
+  if (dupIdx !== -1) {
+    const dup = planTasks[dupIdx];
     if (dup.planStatus !== planStatus) {
-      dup.planStatus = planStatus;
-      writeRoomTasks(cwd, existing);
+      planTasks[dupIdx] = { ...dup, planStatus };
+      sessionStore.patch(rec.overlordId, { planTasks });
+      return planTasks[dupIdx];
     }
     return dup;
   }
-  const sessionTaskCount = existing.filter(t => t.sessionId === sessionId).length;
+
+  const totalCount = gatherTasks(rec).length;
   const title = deriveTitleFromPlan(planContent);
   const task: Task = {
-    taskId: `${sessionId}-${sessionTaskCount + 1}`,
+    taskId: `${sessionId}-${totalCount + 1}`,
     sessionId,
     sessionName,
     state: 'done',
@@ -98,7 +90,8 @@ export function createPlanTask(
     planToolUseId,
     planStatus,
   };
-  writeRoomTasks(cwd, [task, ...existing]);
+  planTasks.unshift(task);
+  sessionStore.patch(rec.overlordId, { planTasks });
   return task;
 }
 
@@ -108,53 +101,78 @@ function deriveTitleFromPlan(plan: string): string {
   return stripped.length > 80 ? stripped.slice(0, 77) + '…' : stripped;
 }
 
-/** Updates a task by taskId in the room file, returns the full updated array. */
+/** Patch a task by taskId; moves currentTask → completionSummaries when state becomes 'done'. */
 export function updateTask(cwd: string, taskId: string, patch: Partial<Task>): Task[] {
-  const tasks = readRoomTasks(cwd);
-  const idx = tasks.findIndex(t => t.taskId === taskId);
-  if (idx === -1) return tasks;
-  tasks[idx] = { ...tasks[idx], ...patch };
-  writeRoomTasks(cwd, tasks);
-  return tasks;
+  void cwd;
+  // Task ids are "{sessionId}-{n}". Recover the sessionId prefix.
+  const sessionId = taskId.split('-').slice(0, -1).join('-') || taskId;
+  const rec = sessionStore.getBySessionId(sessionId);
+  if (!rec) return [];
+
+  let currentTask = rec.currentTask;
+  let planTasks = rec.planTasks ? [...rec.planTasks] : undefined;
+  let completionSummaries = rec.completionSummaries ? [...rec.completionSummaries] : undefined;
+
+  if (currentTask?.taskId === taskId) {
+    const updated: Task = { ...currentTask, ...patch };
+    if (updated.state === 'done') {
+      completionSummaries = [updated, ...(completionSummaries ?? [])];
+      currentTask = undefined;
+    } else {
+      currentTask = updated;
+    }
+  } else if (planTasks) {
+    const i = planTasks.findIndex(t => t.taskId === taskId);
+    if (i !== -1) planTasks[i] = { ...planTasks[i], ...patch };
+  }
+
+  if (completionSummaries) {
+    const i = completionSummaries.findIndex(t => t.taskId === taskId);
+    if (i !== -1) completionSummaries[i] = { ...completionSummaries[i], ...patch };
+  }
+
+  sessionStore.patch(rec.overlordId, { currentTask, planTasks, completionSummaries });
+  const fresh = sessionStore.getByOverlordId(rec.overlordId);
+  return gatherTasks(fresh);
 }
 
-/** Accept a done task by completedAt timestamp. Returns updated session tasks or null if not found. */
 export function acceptTaskByCompletedAt(cwd: string, sessionId: string, completedAt: string): Task[] | null {
-  const tasks = readRoomTasks(cwd);
-  const idx = tasks.findIndex(t => t.sessionId === sessionId && t.completedAt === completedAt);
+  void cwd;
+  const rec = sessionStore.getBySessionId(sessionId);
+  if (!rec || !rec.completionSummaries) return null;
+  const idx = rec.completionSummaries.findIndex(t => t.completedAt === completedAt);
   if (idx === -1) return null;
-  tasks[idx] = { ...tasks[idx], accepted: true };
-  writeRoomTasks(cwd, tasks);
-  return tasks.filter(t => t.sessionId === sessionId && t.state === 'done');
+  const completionSummaries = [...rec.completionSummaries];
+  completionSummaries[idx] = { ...completionSummaries[idx], accepted: true };
+  sessionStore.patch(rec.overlordId, { completionSummaries });
+  return completionSummaries;
 }
 
-// ── Completion hint (per-session, unchanged) ─────────────────────────────────
-
-function getHintPath(sessionId: string): string {
-  return path.join(os.homedir(), '.claude', 'overlord', 'tasks', `${sessionId}.hint`);
-}
+// ── Completion hint ──────────────────────────────────────────────────────────
 
 export function saveCompletionHint(sessionId: string, hint: 'done'): void {
-  try {
-    const p = getHintPath(sessionId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, hint, 'utf-8');
-  } catch { /* ignore */ }
+  sessionStore.patchBySessionId(sessionId, { completionHint: hint });
 }
 
 export function loadCompletionHint(sessionId: string): 'done' | undefined {
-  try {
-    const content = fs.readFileSync(getHintPath(sessionId), 'utf-8').trim();
-    if (content === 'done') return 'done';
-  } catch { /* not found */ }
-  return undefined;
+  return sessionStore.getBySessionId(sessionId)?.completionHint;
 }
 
 export function clearCompletionHint(sessionId: string): void {
-  try { fs.unlinkSync(getHintPath(sessionId)); } catch { /* ignore */ }
+  sessionStore.patchBySessionId(sessionId, { completionHint: undefined });
 }
 
-// ── Legacy stubs ──────────────────────────────────────────────────────────────
+// ── Acknowledged flag ────────────────────────────────────────────────────────
+
+export function saveAck(sessionId: string, acknowledged: boolean): void {
+  sessionStore.patchBySessionId(sessionId, { acknowledged: acknowledged ? true : undefined });
+}
+
+export function loadAck(sessionId: string): boolean {
+  return sessionStore.getBySessionId(sessionId)?.acknowledged === true;
+}
+
+// ── Legacy stub ──────────────────────────────────────────────────────────────
 
 /** @deprecated Request summaries are replaced by Task.title. No-op kept for compat. */
 export function saveRequestSummary(_sessionId: string, _summary: string): void {
