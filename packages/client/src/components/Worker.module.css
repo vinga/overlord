@@ -88,6 +88,30 @@
   color: #fff;
 }
 
+.metaChips {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.metaChip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .completionSummary {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10px;
@@ -537,4 +561,3 @@
 .doneMenuItem:hover {
   background: rgba(34, 197, 94, 0.12);
 }
-

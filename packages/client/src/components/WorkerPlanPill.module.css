@@ -1,0 +1,178 @@
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.58);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  max-width: 163px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.pill:hover {
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(167, 139, 250, 0.3);
+  background: rgba(167, 139, 250, 0.06);
+}
+
+.icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+  color: #a78bfa;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.statusApproved { background: #22c55e; box-shadow: 0 0 4px rgba(34, 197, 94, 0.5); }
+.statusRejected { background: #ef4444; box-shadow: 0 0 4px rgba(239, 68, 68, 0.5); }
+.statusPending  { background: #6b7280; }
+
+.title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+/* Popover */
+.popover {
+  position: fixed;
+  z-index: 9999;
+  width: 480px;
+  max-width: calc(100vw - 16px);
+  background: #14141e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  pointer-events: auto;
+  animation: popIn 0.12s ease-out;
+}
+
+.popoverPinned {
+  border-color: rgba(167, 139, 250, 0.4);
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.popoverHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.statusPill {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.statusPillApproved { color: #22c55e; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3); }
+.statusPillRejected { color: #ef4444; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3); }
+.statusPillPending  { color: rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.18); }
+
+.popoverTitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popoverTime {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  flex-shrink: 0;
+}
+
+.popoverBody {
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.popoverBody::-webkit-scrollbar { width: 8px; }
+.popoverBody::-webkit-scrollbar-track { background: transparent; }
+.popoverBody::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 4px; }
+
+/* Plan markdown typography — mirrors DetailPanel .planContent */
+.planBody {
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+}
+
+.planBody h1,
+.planBody h2,
+.planBody h3,
+.planBody h4 { color: #e8e8e8; font-weight: 700; margin: 14px 0 6px; line-height: 1.3; }
+.planBody h1 { font-size: 15px; }
+.planBody h2 { font-size: 13px; color: #d4af37; }
+.planBody h3 { font-size: 12.5px; color: #c4b5fd; }
+.planBody h4 { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255,255,255,0.55); }
+.planBody h1:first-child,
+.planBody h2:first-child,
+.planBody h3:first-child { margin-top: 0; }
+.planBody p { margin: 6px 0; }
+.planBody ul,
+.planBody ol { margin: 6px 0 6px 20px; padding: 0; }
+.planBody li { margin: 3px 0; }
+.planBody code {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #f0abfc;
+}
+.planBody pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow-x: auto;
+}
+.planBody pre code { background: none; padding: 0; color: rgba(255,255,255,0.85); font-size: 11px; }
+.planBody blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid rgba(167,139,250,0.5); color: rgba(255,255,255,0.6); font-style: italic; }
+.planBody a { color: #d4af37; text-decoration: none; }
+.planBody a:hover { text-decoration: underline; }
+.planBody strong { color: #ffffff; font-weight: 700; }
+.planBody hr { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 10px 0; }

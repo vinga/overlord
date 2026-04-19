@@ -6,7 +6,6 @@ import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
-import { AheadBehindCache } from '../git/aheadBehindCache.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { log } from '../logger.js';
 
@@ -142,7 +141,6 @@ export class StateManager {
   readonly bridgePath: string;
   private gitWatcher: GitWatcher;
   private prCache: PrCache;
-  private aheadBehindCache: AheadBehindCache;
 
   private generateOvrId(): string {
     return 'ovr-' + Math.random().toString(36).slice(2, 10);
@@ -160,7 +158,6 @@ export class StateManager {
     this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.gitWatcher = new GitWatcher(() => this.onChange());
     this.prCache = new PrCache(() => this.onChange());
-    this.aheadBehindCache = new AheadBehindCache(() => this.onChange());
     this.loadAccepted();
     this.loadDeleted();
     this.loadColors();
@@ -1694,10 +1691,12 @@ export class StateManager {
         anyChanged = true;
         continue;
       }
-      // Remove old closed sessions with no activity for >30 minutes
+      // Remove old closed sessions with no activity for >30 minutes.
+      // Use loadedAt (set to Date.now() when session is added) so that sessions
+      // recovered from transcripts on startup aren't immediately GC'd.
       if (session.state === 'closed' && session.pid === 0) {
-        const lastActivityAge = now - new Date(session.lastActivity ?? session.startedAt).getTime();
-        if (lastActivityAge > thirtyMin) {
+        const age = now - (session.loadedAt ?? new Date(session.lastActivity ?? session.startedAt).getTime());
+        if (age > thirtyMin) {
           clearSessionCaches(sessionId, session.transcriptPath, session.cwd);
           this.sessions.delete(sessionId);
           anyChanged = true;
@@ -1783,19 +1782,12 @@ export class StateManager {
         room.gitBranch = branch;
         const pr = this.prCache.get(room.cwd, branch);
         if (pr) room.pullRequest = pr;
-        const ab = this.aheadBehindCache.get(room.cwd, branch);
-        if (ab) room.aheadBehind = ab;
-        const warnings: string[] = [];
         const prErr = this.prCache.getError(room.cwd, branch);
-        if (prErr) warnings.push(`PR lookup: ${prErr}`);
-        const abErr = this.aheadBehindCache.getError(room.cwd, branch);
-        if (abErr) warnings.push(`ahead/behind: ${abErr}`);
-        if (warnings.length > 0) room.gitWarning = warnings.join(' · ');
+        if (prErr) room.gitWarning = `PR lookup: ${prErr}`;
       }
     }
     this.gitWatcher.retain(activeCwds);
     this.prCache.retain(activeCwds);
-    this.aheadBehindCache.retain(activeCwds);
 
     return {
       rooms,
@@ -1807,6 +1799,11 @@ export class StateManager {
 
   getSession(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /** Exposed so on-demand git-status endpoint can share the single PR cache. */
+  getPrCache(): PrCache {
+    return this.prCache;
   }
 
   /**
@@ -1986,6 +1983,7 @@ export class StateManager {
             subagents,
             needsPermission: false,
             transcriptPath,
+            loadedAt: Date.now(),
           };
 
           this.sessions.set(sessionId, session);

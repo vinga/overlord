@@ -957,6 +957,7 @@ registerApiRoutes(
   aiClassifier.generateCompletionSummary.bind(aiClassifier),
   ptyOutputBuffer,
   aiClassifier.generateTaskTitle.bind(aiClassifier),
+  broadcastRaw,
 );
 
 // Start HTTP server

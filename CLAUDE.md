@@ -111,32 +111,88 @@ All work in this project follows **Spec Driven Development (SDD)**. This means:
 
 2. **Review the spec** — present the spec to the user and get explicit approval before proceeding. Do not start implementation until the spec is agreed upon.
 
-3. **Implement against the spec** — write only what is needed to satisfy the spec. Do not add anything not covered by the acceptance criteria.
+3. **Plan from the spec** — once the spec is approved, **always** derive an implementation plan directly from the spec. The plan is not freeform: every task maps to one or more acceptance criteria.
+   - Walk the spec in this order: **Server → Client → Acceptance Criteria (verification pass)**.
+   - Each Server / Client sub-section becomes one task (or a small ordered group of tasks).
+   - Add a final **Verify acceptance criteria** task listing each checkbox from the spec.
+   - Add a final **Browser / self-verify** task (Chrome DevTools MCP for UI; ad-hoc curl/Node for backend).
+   - Create the plan as `TaskCreate` entries — one task per step, in execution order, with dependencies via `addBlockedBy` when ordering matters.
+   - Present the plan to the user for confirmation before starting implementation.
+   - If the spec has no server component, skip Server tasks (same for Client). Never invent tasks outside the spec.
 
-4. **Verify against the spec** — confirm each acceptance criterion is met. If something cannot be verified, flag it.
+4. **Implement against the spec** — write only what is needed to satisfy the spec. Do not add anything not covered by the acceptance criteria. Mark each task `in_progress` when starting, `completed` when done — one at a time.
+
+5. **Verify against the spec** — confirm each acceptance criterion is met. If something cannot be verified, flag it.
 
 ### Spec Format
 
-When writing a spec, use this structure:
+Always use this structure — every section in this order, every time. Omit a section only by writing `_N/A_` under its heading; never delete or reorder.
 
 ```
 ## Spec: <feature name>
 
 **Goal:** One-sentence description of what this achieves.
 
-**Inputs / Triggers:** What initiates this behavior.
+**Placement:** Where in the UI / system this lives. If purely backend, write `_N/A_`.
 
-**Outputs / Side effects:** What the system produces or changes.
+---
 
-**Acceptance Criteria:**
-- [ ] Criterion 1
-- [ ] Criterion 2
-- ...
+### Inputs / Triggers
 
-**Out of scope:** What this spec explicitly does NOT cover.
+- Bullet list of what initiates this behavior (user action, event, schedule, lifecycle hook).
 
-**Open questions:** Anything needing clarification before implementation.
+### Outputs / Side effects
+
+- Bullet list of what the system produces, writes, broadcasts, or mutates.
+
+---
+
+### Server
+
+Sub-sections as needed (e.g. **New module**, **New endpoint**, **Data shape**, **Integration**, **Persistence**).
+Show TypeScript interfaces / pseudo-signatures inline. Describe algorithms as numbered steps.
+If the feature has no server component, write `_N/A_`.
+
+### Client
+
+Sub-sections as needed (e.g. **Types**, **Fetch / Hook**, **Render**, **Layout**, **Styling**, **UX rules**).
+Reference existing components / CSS modules by path. Describe new files explicitly.
+If the feature has no client component, write `_N/A_`.
+
+---
+
+### Acceptance Criteria
+
+Group by area. Every criterion is a verifiable statement.
+
+**Server**
+- [ ] …
+
+**Client**
+- [ ] …
+
+**Performance**
+- [ ] …
+
+---
+
+### Out of scope
+
+- Bullet list of things this spec explicitly does NOT cover.
+
+### Open questions
+
+Numbered list. Each question ends with a suggested answer to unblock review.
+1. Question? Suggest: …
 ```
+
+**Rules for writing the spec body:**
+
+- Every acceptance criterion must be objectively verifiable — no "feels right", no "looks good". Use concrete thresholds, counts, file paths, or exact strings.
+- Prefer concrete numbers over "reasonable" / "fast" / "small" (e.g. "≤60 chars", "<200ms p50", "N=5 turns").
+- Name files, endpoints, and types by exact path (e.g. `packages/server/src/ai/intentSummary.ts`, `GET /api/brain?cwd=...`).
+- Every open question ends with a `Suggest: …` so review can converge without another round trip.
+- Keep specs as files in `specs/<feature-name>.md`. Check for an existing spec before writing a new one.
 
 ### Rules
 

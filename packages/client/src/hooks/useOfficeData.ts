@@ -66,6 +66,12 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
             if (onTerminalMessageRef.current) {
               onTerminalMessageRef.current(data as unknown as TerminalMessage);
             }
+          } else if (data.type === 'archive:added') {
+            const detail = (data as unknown as { entry?: { roomId?: string } }).entry;
+            window.dispatchEvent(new CustomEvent('archive:changed', { detail: { roomId: detail?.roomId } }));
+          } else if (data.type === 'archive:removed') {
+            const detail = data as unknown as { roomId?: string };
+            window.dispatchEvent(new CustomEvent('archive:changed', { detail: { roomId: detail.roomId } }));
           } else if (data.type === 'session:replaced') {
             // Session replacement (e.g. Claude Code's /clear command)
             const msg = data as unknown as { type: string; oldSessionId: string; newSessionId: string };

@@ -9,6 +9,7 @@ import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
+import { archiveManager } from '../archive/archiveManager.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -607,6 +608,15 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             }
           }
           if (originalName) break;
+        }
+
+        // Fall back to archive entry (cloning a previously archived session)
+        if (!originalCwd) {
+          const archived = archiveManager.get(sessionId);
+          if (archived) {
+            originalName = originalName || archived.name;
+            originalCwd = archived.cwd;
+          }
         }
 
         const cwd = originalCwd || stateManager.getSession(sessionId)?.cwd || process.cwd();

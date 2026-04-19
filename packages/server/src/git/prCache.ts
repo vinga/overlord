@@ -50,6 +50,32 @@ export class PrCache {
     return entry.error;
   }
 
+  /**
+   * Like get(), but awaits the in-flight fetch on a cache miss and always
+   * returns a resolved value. Use this from user-triggered endpoints (the
+   * tooltip) where it's OK to wait for the network call.
+   */
+  async getOrFetch(cwd: string, branch: string | undefined): Promise<PrInfo | null> {
+    if (!branch) return null;
+    const cached = this.get(cwd, branch);
+    if (cached !== undefined) {
+      // May still have an inFlight refresh running — await it for freshness.
+      const entry = this.entries.get(cwd);
+      if (entry?.inFlight && entry.branch === branch) {
+        try { await entry.inFlight; } catch { /* ignore */ }
+        const latest = this.entries.get(cwd);
+        return latest?.branch === branch ? latest.value : cached;
+      }
+      return cached;
+    }
+    const entry = this.entries.get(cwd);
+    if (entry?.inFlight && entry.branch === branch) {
+      try { await entry.inFlight; } catch { /* ignore */ }
+    }
+    const latest = this.entries.get(cwd);
+    return latest?.branch === branch ? latest.value : null;
+  }
+
   retain(activeCwds: Set<string>): void {
     for (const cwd of this.entries.keys()) {
       if (!activeCwds.has(cwd)) this.entries.delete(cwd);

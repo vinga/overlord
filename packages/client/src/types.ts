@@ -104,6 +104,10 @@ interface Session {
   currentTask?: Task;
   isWorker?: boolean;
   ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter
+  isArchived?: boolean;           // synthetic flag: session was archived and is being viewed read-only
+  archivedAt?: string;            // ISO timestamp of archival (only when isArchived)
+  archivedGitBranch?: string;     // snapshot of branch at archive time
+  archivedPullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
 }
 
 interface Room {
@@ -119,12 +123,31 @@ interface Room {
     state: string;
     isDraft: boolean;
   };
-  aheadBehind?: {
-    ahead: number;
-    behind: number;
-    base: string | null;
-  };
   gitWarning?: string;
+}
+
+interface ArchiveEntry {
+  sessionId: string;
+  roomId: string;
+  cwd: string;
+  name: string;
+  archivedAt: string;       // ISO
+  pid: number;
+  provider?: SessionProvider;
+  sessionType?: Session['sessionType'];
+  startedAt?: number;
+  color?: string;
+  gitBranch?: string;
+  pullRequest?: {
+    number: number;
+    url: string;
+    title: string;
+    state: string;
+    isDraft: boolean;
+  };
+  lastMessage?: string;
+  lastActivity?: string;
+  model?: string;
 }
 
 interface OfficeSnapshot {
@@ -267,6 +290,7 @@ export type {
   PendingQuestionSet,
   PendingQuestionOption,
   Room,
+  ArchiveEntry,
   OfficeSnapshot,
   TerminalMessage,
   TerminalLinkedMessage,

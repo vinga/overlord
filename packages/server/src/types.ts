@@ -126,6 +126,9 @@ export interface Session {
 
   // PTY input tracking — set when user types in the terminal without pressing Enter
   ptyInputPendingSince?: number;  // ms epoch when pending input started; cleared on Enter
+
+  // Timestamp when session was added to state (used by GC to avoid premature removal)
+  loadedAt?: number;
 }
 
 export interface Room {
@@ -141,12 +144,7 @@ export interface Room {
     state: string;
     isDraft: boolean;
   };
-  aheadBehind?: {
-    ahead: number;
-    behind: number;
-    base: string | null;
-  };
-  gitWarning?: string;  // present when gh/git ahead-behind/pr lookup failed
+  gitWarning?: string;  // present when gh/git pr lookup failed
 }
 
 export interface OfficeSnapshot {

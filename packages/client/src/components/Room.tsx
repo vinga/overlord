@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
-import type { Room as RoomType, Session, TerminalSpawnMode } from '../types';
+import type { Room as RoomType, Session, TerminalSpawnMode, ArchiveEntry } from '../types';
 import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
 import { SessionCommands } from './SessionCommands';
@@ -74,6 +74,35 @@ export const SESSION_NAMES = [
   'Thornden','Emberveil','Frostmoor','Stonefield','Duskwood','Dawntide','Cloudrift','Nightveil','Sunrift','Stormrift',
   'Elspeth','Merewyn','Sunniva','Aldwyn','Wulfric','Edwyn','Aelwyn','Briseis','Calynda','Evadne',
 ];
+
+function lightenHsl(color: string, amount: number): string {
+  const m = color.match(/hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)/);
+  if (!m) return color;
+  const h = parseFloat(m[1]);
+  const s = parseFloat(m[2]);
+  const l = Math.min(100, parseFloat(m[3]) + amount);
+  return `hsl(${h}, ${s}%, ${l}%)`;
+}
+
+function ArchiveAvatar({ color, keyId }: { color: string; keyId: string }) {
+  const base = lightenHsl(color, 0);
+  const hi = lightenHsl(base, 25);
+  const gradId = `archgrad-${keyId}`;
+  return (
+    <svg width="18" height="20" viewBox="0 0 40 44" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0, opacity: 0.75 }}>
+      <defs>
+        <linearGradient id={gradId} x1="0%" y1="0%" x2="60%" y2="100%">
+          <stop offset="0%" stopColor={hi} />
+          <stop offset="100%" stopColor={base} />
+        </linearGradient>
+      </defs>
+      <circle cx="20" cy="10" r="9" fill={`url(#${gradId})`} />
+      <circle cx="16.5" cy="9.5" r="1.7" fill="rgba(0,0,0,0.55)" />
+      <circle cx="23.5" cy="9.5" r="1.7" fill="rgba(0,0,0,0.55)" />
+      <rect x="11" y="21" width="18" height="18" rx="3" fill={`url(#${gradId})`} />
+    </svg>
+  );
+}
 
 function lastActivityLabel(isoTimestamp: string): string {
   const diffMs = Date.now() - new Date(isoTimestamp).getTime();
@@ -322,6 +351,8 @@ interface RoomProps {
   onSpawnNameChange?: (name: string) => void;
   onSpawnCommit?: (name: string | null) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onArchiveSession?: (sessionId: string) => void;
+  onOpenArchive?: (entry: ArchiveEntry) => void;
   onRenameSession?: (sessionId: string, newName: string) => void;
   onCloneSession?: (sessionId: string) => void;
   onNewTerminalSession?: (cwd: string, mode?: TerminalSpawnMode) => void;
@@ -333,7 +364,7 @@ interface RoomProps {
   onRoomDragEnd?: () => void;
 }
 
-function DeskMenu({ onDelete, onRename, onClone, onClear, currentName }: { onDelete: () => void; onRename?: (name: string) => void; onClone?: () => void; onClear?: () => void; currentName?: string }) {
+function DeskMenu({ onDelete, onRename, onClone, onClear, onArchive, currentName }: { onDelete: () => void; onRename?: (name: string) => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; currentName?: string }) {
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameVal, setNameVal] = useState('');
@@ -430,6 +461,18 @@ function DeskMenu({ onDelete, onRename, onClone, onClear, currentName }: { onDel
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
                 >Clear</button>
               )}
+              {onArchive && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setOpen(false); onArchive(); }}
+                  style={{
+                    display: 'block', width: '100%', padding: '8px 14px',
+                    background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                    fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+                >Archive</button>
+              )}
               <button
                 onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }}
                 style={{
@@ -511,7 +554,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -522,6 +565,31 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   const [spawnPanelName, setSpawnPanelName] = useState('');
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
+  const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
+  const [archiveExpanded, setArchiveExpanded] = useState(false);
+
+  const fetchArchive = React.useCallback(() => {
+    fetch(`/api/archive/by-room/${encodeURIComponent(room.id)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(json => setArchiveEntries(Array.isArray(json.entries) ? json.entries : []))
+      .catch(() => { /* ignore */ });
+  }, [room.id]);
+
+  useEffect(() => { fetchArchive(); }, [fetchArchive]);
+
+  useEffect(() => {
+    function onChange(ev: Event) {
+      const detail = (ev as CustomEvent).detail as { roomId?: string } | undefined;
+      if (!detail?.roomId || detail.roomId === room.id) fetchArchive();
+    }
+    window.addEventListener('archive:changed', onChange);
+    return () => window.removeEventListener('archive:changed', onChange);
+  }, [fetchArchive, room.id]);
+
+  const handleArchive = onArchiveSession ? (sessionId: string) => {
+    onArchiveSession(sessionId);
+    setTimeout(fetchArchive, 500);
+  } : undefined;
   const { getOrder, setOrder } = useRoomOrder();
   const { isCollapsed, toggle } = useRoomCollapsed();
   const collapsed = isCollapsed(room.id);
@@ -691,7 +759,6 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
           <GitBranchBadge
             branch={room.gitBranch}
             cwd={room.cwd}
-            aheadBehind={room.aheadBehind}
             gitWarning={room.gitWarning}
             pullRequest={room.pullRequest}
           />
@@ -786,6 +853,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                       setClearToast(r.ok ? 'sent' : 'error');
                     }).catch(() => setClearToast('error'));
                   } : undefined}
+                  onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
                   currentName={customNames[session.sessionId] ?? session.proposedName ?? session.sessionId.slice(0, 8)}
                 />
               )}
@@ -794,6 +862,73 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
           );
         })}
       </div>}
+      {!collapsed && archiveEntries.length > 0 && (
+        <div className={styles.archiveFooter}>
+          <button
+            type="button"
+            className={styles.archivePill}
+            onClick={() => setArchiveExpanded(v => !v)}
+            aria-expanded={archiveExpanded}
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+              style={{ transform: archiveExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }}>
+              <polyline points="2 3 5 6 8 3" />
+            </svg>
+            <span>Archive</span>
+            <span className={styles.archiveCount}>{archiveEntries.length}</span>
+          </button>
+          {archiveExpanded && (
+            <ul className={styles.archiveList}>
+              {archiveEntries.map(entry => {
+                const avatarColor = entry.color ?? 'hsl(30, 75%, 55%)';
+                const prLabel = entry.pullRequest ? `#${entry.pullRequest.number}` : null;
+                const branchLabel = entry.gitBranch ?? null;
+                return (
+                  <li key={entry.sessionId}>
+                    <button
+                      type="button"
+                      className={styles.archiveEntry}
+                      onClick={() => onOpenArchive?.(entry)}
+                      title={new Date(entry.archivedAt).toLocaleString()}
+                    >
+                      <ArchiveAvatar color={avatarColor} keyId={entry.sessionId} />
+                      <div className={styles.archiveEntryBody}>
+                        <div className={styles.archiveEntryTopRow}>
+                          <span className={styles.archiveEntryName}>{entry.name}</span>
+                          {(branchLabel || prLabel) && (
+                            <span className={styles.archiveEntryBranch}>
+                              {branchLabel && (
+                                <span className={styles.archiveEntryBranchText}>
+                                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}>
+                                    <circle cx="5" cy="4" r="1.6" />
+                                    <circle cx="5" cy="12" r="1.6" />
+                                    <circle cx="12" cy="8" r="1.6" />
+                                    <path d="M5 5.6v4.8M6.5 12h2a2 2 0 0 0 2-2V9.6" strokeLinecap="round" />
+                                  </svg>
+                                  {branchLabel}
+                                </span>
+                              )}
+                              {prLabel && (
+                                <span className={styles.archiveEntryPr}>{prLabel}</span>
+                              )}
+                            </span>
+                          )}
+                          <span className={styles.archiveEntryTime}>
+                            {new Date(entry.archivedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                          </span>
+                        </div>
+                        {entry.lastMessage && (
+                          <div className={styles.archiveEntryDesc}>{entry.lastMessage}</div>
+                        )}
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

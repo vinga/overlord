@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { PrCache, PrInfo } from './prCache.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -8,6 +9,9 @@ export interface GitStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  base: string | null;
+  baseAhead: number;
+  baseBehind: number;
   staged: string[];
   modified: string[];
   untracked: string[];
@@ -15,18 +19,15 @@ export interface GitStatus {
   stashCount: number;
   lastCommit: { hash: string; subject: string; author: string; relativeTime: string } | null;
   unpushedCommits: Array<{ hash: string; subject: string; relativeTime: string }>;
-  pullRequest: { number: number; url: string; title: string; state: string; isDraft: boolean } | null;
+  pullRequest: PrInfo | null;
 }
-
-const prCache = new Map<string, { at: number; value: GitStatus['pullRequest'] }>();
-const PR_TTL_MS = 30_000;
 
 async function run(cwd: string, args: string[], timeoutMs = 3000): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
   return stdout;
 }
 
-export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
+export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitStatus | null> {
   try {
     // porcelain v2 includes branch info + all file status lines
     const out = await run(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all']);
@@ -98,13 +99,31 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
       } catch { /* ignore */ }
     }
 
-    const pullRequest = await readPullRequest(cwd, branch);
+    const pullRequest = await prCache.getOrFetch(cwd, branch ?? undefined);
+
+    // Ahead/behind vs the repo's base branch (origin/main, origin/master, or
+    // whatever origin/HEAD points to). Computed here so the tooltip has the
+    // answer without a second roundtrip.
+    let base: string | null = null;
+    let baseAhead = 0;
+    let baseBehind = 0;
+    try {
+      base = await resolveBase(cwd);
+      if (base) {
+        const ab = await run(cwd, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
+        const m = ab.trim().match(/^(\d+)\s+(\d+)/);
+        if (m) { baseBehind = parseInt(m[1], 10); baseAhead = parseInt(m[2], 10); }
+      }
+    } catch { /* ignore */ }
 
     return {
       branch,
       upstream,
       ahead,
       behind,
+      base,
+      baseAhead,
+      baseBehind,
       staged,
       modified,
       untracked,
@@ -119,30 +138,17 @@ export async function readGitStatus(cwd: string): Promise<GitStatus | null> {
   }
 }
 
-async function readPullRequest(cwd: string, branch: string | null): Promise<GitStatus['pullRequest']> {
-  if (!branch) return null;
-  const key = `${cwd}\x1f${branch}`;
-  const cached = prCache.get(key);
-  if (cached && Date.now() - cached.at < PR_TTL_MS) return cached.value;
+async function resolveBase(cwd: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'gh',
-      ['pr', 'view', branch, '--json', 'number,url,title,state,isDraft'],
-      { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }
-    );
-    const parsed = JSON.parse(stdout) as { number: number; url: string; title: string; state: string; isDraft: boolean };
-    const value = {
-      number: parsed.number,
-      url: parsed.url,
-      title: parsed.title,
-      state: parsed.state,
-      isDraft: !!parsed.isDraft,
-    };
-    prCache.set(key, { at: Date.now(), value });
-    return value;
-  } catch {
-    // gh not installed, not authed, or no PR — treat as none
-    prCache.set(key, { at: Date.now(), value: null });
-    return null;
+    const out = await run(cwd, ['symbolic-ref', 'refs/remotes/origin/HEAD'], 2000);
+    const m = out.trim().match(/^refs\/remotes\/(.+)$/);
+    if (m) return m[1];
+  } catch { /* not set */ }
+  for (const candidate of ['origin/main', 'origin/master']) {
+    try {
+      await run(cwd, ['rev-parse', '--verify', '--quiet', candidate], 2000);
+      return candidate;
+    } catch { /* next */ }
   }
+  return null;
 }

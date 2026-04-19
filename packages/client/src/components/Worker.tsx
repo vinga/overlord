@@ -1,13 +1,16 @@
-import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
+import React, { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import type { WorkerState, Task } from '../types';
+import type { WorkerState, Task, Session } from '../types';
 import styles from './Worker.module.css';
+import { WorkerPlanPill } from './WorkerPlanPill';
 
 interface WorkerProps {
   sessionId: string;
   name?: string;
   state: WorkerState;
   color: string;
+  launchLabel?: string;
+  provider?: Session['provider'];
   isSubagent?: boolean;
   minimal?: boolean;
   agentType?: string;
@@ -56,7 +59,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, onClick, onRename }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, launchLabel, provider, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, needsPermission, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, onClick, onRename }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -120,6 +123,18 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
 
   const isDone = state === 'waiting' && completionHint === 'done';
   const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}`;
+
+  const latestPlan = useMemo(() => {
+    if (isSubagent || !completionSummaries) return null;
+    const plans = completionSummaries.filter(t => t.kind === 'plan' && t.planContent);
+    if (plans.length === 0) return null;
+    const sorted = [...plans].sort((a, b) => {
+      const at = new Date(a.completedAt ?? a.createdAt).getTime();
+      const bt = new Date(b.completedAt ?? b.createdAt).getTime();
+      return bt - at;
+    });
+    return sorted[0];
+  }, [completionSummaries, isSubagent]);
 
   return (
     <div
@@ -250,6 +265,12 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
           </span>
         )
       )}
+      {!minimal && !isSubagent && (launchLabel || provider === 'codex') && (
+        <div className={styles.metaChips}>
+          {launchLabel && <span className={styles.metaChip}>{launchLabel}</span>}
+          {provider === 'codex' && <span className={styles.metaChip}>Codex</span>}
+        </div>
+      )}
       {!minimal && !isSubagent && notesSummary && (
         <span className={styles.notesSummaryLine}><span className={styles.notesSummaryPrefix}>Notes:</span> {notesSummary}</span>
       )}
@@ -258,6 +279,14 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, isSu
       )}
       {!minimal && !isSubagent && currentTaskLabel && state !== 'closed' && (
         <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>
+      )}
+      {!minimal && latestPlan && (
+        <WorkerPlanPill
+          title={latestPlan.title ?? 'Plan'}
+          planContent={latestPlan.planContent ?? ''}
+          planStatus={latestPlan.planStatus ?? 'approved'}
+          timestamp={latestPlan.completedAt ?? latestPlan.createdAt}
+        />
       )}
       {!minimal && completionSummaries && completionSummaries.length > 0 && completionHint === 'done' && !isSubagent && (
         <span className={styles.completionSummary}>{completionSummaries[0].summary}</span>

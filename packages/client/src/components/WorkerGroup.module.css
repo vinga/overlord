@@ -13,37 +13,123 @@
 
 .subagents {
   display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  justify-content: center;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
   gap: 4px;
-  position: relative;
-  margin-top: 2px;
+  width: 100%;
+  max-width: 175px;
+  margin-top: 6px;
 }
 
-.subagentWrapper {
-  transform: scale(0.56);
-  transform-origin: top center;
-  margin: 18px -22px -62px;
+.subagentRow {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 8px 3px 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  min-width: 0;
+}
+
+.subagentRow:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.subagentRow_closed {
+  opacity: 0.5;
+  filter: grayscale(0.6);
+}
+
+.subagentIcon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+}
+
+.subagentLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(220, 220, 230, 0.82);
+  line-height: 1.3;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.subagentDot {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a78bfa;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.8);
+  animation: subagent-pulse 1s ease-in-out infinite;
+}
+
+.subagentDotThinking {
+  animation-duration: 1.4s;
+}
+
+@keyframes subagent-pulse {
+  0%, 100% { transform: scale(0.85); opacity: 0.7; }
+  50% { transform: scale(1.15); opacity: 1; }
+}
+
+.subagentCheck {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #22c55e;
+  line-height: 1;
+  text-shadow: 0 0 6px rgba(34, 197, 94, 0.7);
+  background: rgba(10, 10, 20, 0.85);
+  border-radius: 50%;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .extraBadge {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(20, 14, 4, 0.9);
-  border: 1px solid rgba(212, 175, 55, 0.35);
-  color: rgba(212, 175, 55, 0.8);
+  height: 20px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: rgba(20, 14, 4, 0.7);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  color: rgba(212, 175, 55, 0.75);
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   align-self: center;
-  margin-left: 4px;
   cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.extraBadge:hover {
+  color: rgba(212, 175, 55, 1);
+  border-color: rgba(212, 175, 55, 0.55);
 }
 
 .collapseToggle {

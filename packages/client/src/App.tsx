@@ -4,7 +4,7 @@ import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
 import { useRoomOrder } from './hooks/useRoomOrder';
 
-import type { Session, TerminalMessage, TerminalSpawnMode } from './types';
+import type { ArchiveEntry, Session, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
 import { DetailPanel } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
@@ -40,6 +40,7 @@ export function App() {
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [archivedSession, setArchivedSession] = useState<Session | null>(null);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
   const { customNames, rename, migrateSession: migrateNames } = useCustomNames();
   const { migrateSession: migrateRoomOrder } = useRoomOrder();
@@ -190,9 +191,16 @@ export function App() {
   // to sessionId for pre-ovrId hashes or pending pty-xxx IDs.
   const selectedSession = useMemo<Session | null>(() => {
     if (selectedSessionId == null) return null;
+    // Prefer live snapshot over archivedSession so a just-resumed session
+    // replaces the archived placeholder the moment it appears.
     const all = snapshot?.rooms.flatMap(r => r.sessions) ?? [];
-    return all.find(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId) ?? null;
-  }, [snapshot, selectedSessionId]);
+    const live = all.find(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId);
+    if (live) return live;
+    if (archivedSession && archivedSession.sessionId === selectedSessionId) {
+      return archivedSession;
+    }
+    return null;
+  }, [snapshot, selectedSessionId, archivedSession]);
 
   const selectedRoom: Room | null =
     selectedRoomId != null
@@ -221,6 +229,7 @@ export function App() {
   function handleClose() {
     setSelectedSessionId(null);
     setSelectedSubagentId(undefined);
+    setArchivedSession(null);
   }
 
   function handleSpawnSession(cwd: string) {
@@ -268,8 +277,76 @@ export function App() {
     sendMessage({ type: 'session:clone', sessionId, cols: 120, rows: 30 });
   }
 
+  async function handleResumeArchived(sessionId: string, cwd: string) {
+    try {
+      const res = await fetch(`/api/archive/${sessionId}/unarchive`, { method: 'POST' });
+      if (!res.ok) { console.error('unarchive failed', await res.text()); return; }
+      // Keep the archived placeholder visible (with isArchived cleared) until the
+      // live session reappears in snapshot; otherwise the DetailPanel goes blank
+      // during the spawn gap and nothing is clickable.
+      setArchivedSession(prev => prev && prev.sessionId === sessionId ? { ...prev, isArchived: false, state: 'closed' } : prev);
+      window.dispatchEvent(new CustomEvent('archive:changed', { detail: {} }));
+      terminal.resumeSession(sessionId, cwd);
+    } catch (err) {
+      console.error('unarchive error', err);
+    }
+  }
+
+  async function handleCloneArchived(sessionId: string, _cwd: string) {
+    try {
+      const res = await fetch(`/api/archive/${sessionId}/clone-prepare`, { method: 'POST' });
+      if (!res.ok) { console.error('clone-prepare failed', await res.text()); return; }
+      sendMessage({ type: 'session:clone', sessionId, cols: 120, rows: 30 });
+    } catch (err) {
+      console.error('clone-prepare error', err);
+    }
+  }
+
   function handleAcceptSession(sessionId: string) {
     fetch(`/api/sessions/${sessionId}/accept`, { method: 'POST' }).catch(console.error);
+  }
+
+  function handleArchiveSession(sessionId: string) {
+    fetch(`/api/archive/${sessionId}`, { method: 'POST' }).catch(console.error);
+  }
+
+  function buildArchivedSession(entry: ArchiveEntry, activityFeed: Session['activityFeed']): Session {
+    return {
+      sessionId: entry.sessionId,
+      overlordId: entry.sessionId,
+      provider: entry.provider,
+      proposedName: entry.name,
+      pid: entry.pid,
+      startedAt: entry.startedAt ?? 0,
+      cwd: entry.cwd,
+      state: 'closed',
+      lastActivity: entry.lastActivity ?? entry.archivedAt,
+      lastMessage: entry.lastMessage,
+      activityFeed,
+      color: entry.color ?? 'hsl(30, 75%, 55%)',
+      subagents: [],
+      model: entry.model,
+      sessionType: entry.sessionType,
+      isArchived: true,
+      archivedAt: entry.archivedAt,
+      archivedGitBranch: entry.gitBranch,
+      archivedPullRequest: entry.pullRequest,
+    };
+  }
+
+  async function handleOpenArchive(entry: ArchiveEntry) {
+    setSelectedSessionId(entry.sessionId);
+    setSelectedSubagentId(undefined);
+    setSelectedRoomId(null);
+    // Show placeholder immediately so DetailPanel renders
+    setArchivedSession(buildArchivedSession(entry, []));
+    try {
+      const res = await fetch(`/api/archive/${entry.sessionId}/transcript`);
+      if (res.ok) {
+        const body = await res.json() as { activityFeed?: Session['activityFeed'] };
+        setArchivedSession(buildArchivedSession(entry, body.activityFeed ?? []));
+      }
+    } catch { /* ignore */ }
   }
 
   function handleAcceptTask(sessionId: string, completedAt: string) {
@@ -308,6 +385,8 @@ export function App() {
         onTerminalSpawnCommit={handleTerminalSpawnCommit}
         onDeleteSession={handleDeleteSession}
         onCloneSession={handleCloneSession}
+        onArchiveSession={handleArchiveSession}
+        onOpenArchive={handleOpenArchive}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
         platform={snapshot?.platform ?? 'darwin'}
@@ -379,7 +458,15 @@ export function App() {
         }}
         actions={{
           onDeleteSession: handleDeleteSession,
-          onResumeSession: (sessionId, cwd) => { terminal.resumeSession(sessionId, cwd); },
+          onResumeSession: (sessionId, cwd) => {
+            if (archivedSession && archivedSession.sessionId === sessionId) {
+              void handleResumeArchived(sessionId, cwd);
+            } else {
+              terminal.resumeSession(sessionId, cwd);
+            }
+          },
+          onResumeArchived: handleResumeArchived,
+          onCloneArchived: handleCloneArchived,
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),
           onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),
@@ -398,7 +485,7 @@ export function App() {
                 .sort((a, b) => b.startedAt - a.startedAt) ?? [])
             : []
         }
-        onSelectSession={(s, subagentId) => handleSelectSession(s, subagentId)}
+        onSelectSession={(s, subagentId, timestamp, query) => handleSelectSession(s, subagentId, timestamp, query)}
         customNames={displayNames}
         bridgePath={snapshot?.bridgePath}
         platform={snapshot?.platform ?? 'darwin'}

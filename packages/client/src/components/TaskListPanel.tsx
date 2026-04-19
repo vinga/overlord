@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { marked } from 'marked';
 import type { Room, Session, Task } from '../types';
 import styles from './TaskListPanel.module.css';
+import { BrainTab } from './BrainTab';
 
 const planMarkdownCache = new Map<string, string>();
 function renderPlanMarkdown(text: string): string {
@@ -13,7 +14,7 @@ function renderPlanMarkdown(text: string): string {
   return html;
 }
 
-type Tab = 'agents' | 'tasks' | 'skills';
+type Tab = 'agents' | 'tasks' | 'skills' | 'brain';
 type Filter = 'done' | 'awaiting';
 
 interface TaskListPanelProps {
@@ -185,6 +186,12 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
           onClick={() => setActiveTab('skills')}
         >
           Skills
+        </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'brain' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('brain')}
+        >
+          Brain
         </button>
       </div>
 
@@ -477,6 +484,11 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
               </section>
             )}
           </div>
+        )}
+
+        {/* ── BRAIN TAB ── */}
+        {activeTab === 'brain' && (
+          <BrainTab cwd={room.cwd} />
         )}
       </div>
     </div>

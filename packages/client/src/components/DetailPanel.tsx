@@ -79,6 +79,10 @@ function assistantLabel(provider?: Session['provider']): string {
   return provider === 'codex' ? 'codex' : 'claude';
 }
 
+function assistantDisplayName(provider?: Session['provider']): string {
+  return provider === 'codex' ? 'Codex' : 'Claude';
+}
+
 /** Renders user message content, replacing @<path> image references with clickable thumbnails */
 function UserMessageContent({ content, styles, expandedImages, onToggleImage }: {
   content: string;
@@ -191,6 +195,8 @@ interface PtyHandlers {
 interface SessionActions {
   onDeleteSession?: (sessionId: string) => void;
   onResumeSession?: (sessionId: string, cwd: string) => void;
+  onResumeArchived?: (sessionId: string, cwd: string) => void;
+  onCloneArchived?: (sessionId: string, cwd: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
   onFocusBridge?: (sessionId: string) => void;
@@ -213,7 +219,7 @@ interface DetailPanelProps {
   actions: SessionActions;
 
   siblingActiveSessions?: Session[];
-  onSelectSession?: (session: Session, subagentId?: string) => void;
+  onSelectSession?: (session: Session, subagentId?: string, timestamp?: string, query?: string) => void;
   customNames?: Record<string, string>;
   panelWidth: number;
   onPanelWidthChange?: (width: number) => void;
@@ -1229,6 +1235,59 @@ const STATE_ICONS: Record<string, string> = {
   abandoned: '⚠',
 };
 
+type JumpBtnInfo = { label: string; depth: number } | null;
+
+interface ScrollJumpNavProps {
+  up: JumpBtnInfo;
+  down: JumpBtnInfo;
+  onUp: () => void;
+  onDown: () => void;
+  styles: Record<string, string>;
+}
+
+function ScrollJumpNav({ up, down, onUp, onDown, styles }: ScrollJumpNavProps) {
+  const visible = up !== null || down !== null;
+  return (
+    <div
+      className={`${styles.scrollJumpNav} ${visible ? styles.scrollJumpNavVisible : ''}`}
+      aria-hidden={!visible}
+    >
+      <button
+        type="button"
+        className={styles.scrollJumpBtn}
+        onClick={onUp}
+        disabled={up === null}
+        title={up?.label ?? ''}
+        aria-label={up?.label ?? 'Scroll up'}
+        tabIndex={visible && up ? 0 : -1}
+      >
+        <span className={styles.scrollJumpBtnArrow}>↑</span>
+        <span className={styles.scrollJumpBtnDots} aria-hidden="true">
+          {up ? Array.from({ length: up.depth }).map((_, i) => (
+            <span key={i} className={styles.scrollJumpBtnDot} />
+          )) : null}
+        </span>
+      </button>
+      <button
+        type="button"
+        className={styles.scrollJumpBtn}
+        onClick={onDown}
+        disabled={down === null}
+        title={down?.label ?? ''}
+        aria-label={down?.label ?? 'Scroll down'}
+        tabIndex={visible && down ? 0 : -1}
+      >
+        <span className={styles.scrollJumpBtnArrow}>↓</span>
+        <span className={styles.scrollJumpBtnDots} aria-hidden="true">
+          {down ? Array.from({ length: down.depth }).map((_, i) => (
+            <span key={i} className={styles.scrollJumpBtnDot} />
+          )) : null}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 export function DetailPanel({
   selectedSession,
   selectedSessionId,
@@ -1254,7 +1313,7 @@ export function DetailPanel({
   onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession, onAcceptTask } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession, onAcceptTask } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -1268,6 +1327,12 @@ export function DetailPanel({
 
   const transcriptRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  // When the user initiates an up-jump, lock out auto-scroll-to-bottom for a short
+  // window. The smooth-scroll animation starts from scrollTop ≈ bottom, so the first
+  // few scroll frames would otherwise re-mark us as "at bottom" and let the feed
+  // autoscroll effect hijack the scroll back to MAX_SAFE_INTEGER.
+  const autoScrollLockUntilRef = useRef(0);
+  const [scrollJumpLabels, setScrollJumpLabels] = useState<{ up: { label: string; depth: number } | null; down: { label: string; depth: number } | null }>({ up: null, down: null });
   // Persist question stage across remounts (snapshot refreshes can unmount/remount QuestionPrompt)
   const questionStageRef = useRef<Map<string, number>>(new Map());
 
@@ -1309,13 +1374,166 @@ export function DetailPanel({
     if (!el) return;
     const threshold = 40; // px from bottom counts as "at bottom"
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-    isAtBottomRef.current = atBottom;
+    // During an active up-jump, don't let early animation frames flip us back to "at bottom".
+    if (!(atBottom && Date.now() < autoScrollLockUntilRef.current)) {
+      isAtBottomRef.current = atBottom;
+    }
     // Once the user scrolls back to the bottom, release the scroll target
     if (atBottom && effectiveScrollTarget) { setInternalScrollTarget(undefined); setInternalScrollQuery(undefined); onScrollTargetConsumed?.(); }
+    updateScrollJump();
+  }
+
+  type JumpAction = { label: string; depth: number; run: () => void };
+
+  function countScopeDepth(targetEl: HTMLElement | null, outer: HTMLElement): number {
+    if (!targetEl || targetEl === outer) return 0;
+    let depth = 0;
+    let cur: HTMLElement | null = targetEl;
+    while (cur && cur !== outer) {
+      const cls = cur.className;
+      if (typeof cls === 'string' && (cls.includes('inlineAgentFeed') || cls.includes('transcriptBubble'))) {
+        depth++;
+      }
+      cur = cur.parentElement;
+    }
+    return depth;
+  }
+
+  function findLongBubbleAtCenter(outer: HTMLElement): HTMLElement | null {
+    const outerRect = outer.getBoundingClientRect();
+    const targetY = outerRect.top + outerRect.height / 2;
+    const minHeight = outer.clientHeight * 2;
+    const bubbles = outer.querySelectorAll<HTMLElement>('[class*="transcriptBubble"]');
+    let best: HTMLElement | null = null;
+    for (const b of bubbles) {
+      const r = b.getBoundingClientRect();
+      if (r.height < minHeight) continue;
+      if (r.top <= targetY && r.bottom >= targetY) {
+        // Prefer the innermost matching bubble
+        if (!best || best.contains(b)) best = b;
+      }
+    }
+    return best;
+  }
+
+  function findAgentBlockAtCenter(outer: HTMLElement): HTMLElement | null {
+    const blocks = outer.querySelectorAll<HTMLElement>('[class*="inlineAgentFeed"]');
+    const outerRect = outer.getBoundingClientRect();
+    const targetY = outerRect.top + outerRect.height / 2;
+    for (const b of blocks) {
+      const r = b.getBoundingClientRect();
+      if (r.top <= targetY && r.bottom >= targetY) return b;
+    }
+    return null;
+  }
+
+  function scrollElement(el: HTMLElement, top: number) {
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion) el.scrollTop = top;
+    else el.scrollTo({ top, behavior: 'smooth' });
+  }
+
+  function computeJumps(): { up: JumpAction | null; down: JumpAction | null } {
+    const outer = transcriptRef.current;
+    if (!outer) return { up: null, down: null };
+    const outerScrollable = outer.scrollHeight - outer.clientHeight;
+    if (outerScrollable < 16) return { up: null, down: null };
+
+    const outerEl: HTMLElement = outer;
+    const bubble = findLongBubbleAtCenter(outerEl);
+    const agentBlock = findAgentBlockAtCenter(outerEl);
+    const room = 200; // conservative: need ≥ 200px of travel to show the arrow
+    const outerRect = outerEl.getBoundingClientRect();
+
+    function topInOuter(el: HTMLElement) {
+      return el.getBoundingClientRect().top - outerRect.top + outerEl.scrollTop;
+    }
+    function bottomInOuter(el: HTMLElement) {
+      return el.getBoundingClientRect().bottom - outerRect.top + outerEl.scrollTop;
+    }
+
+    let up: JumpAction | null = null;
+    let down: JumpAction | null = null;
+
+    // UP
+    if (bubble) {
+      const bTop = topInOuter(bubble);
+      if (outer.scrollTop - bTop >= room) {
+        up = { label: 'Bubble top', depth: countScopeDepth(bubble, outerEl), run: () => scrollElement(outer, Math.max(0, bTop - 8)) };
+      }
+    }
+    if (!up && agentBlock) {
+      const aTop = topInOuter(agentBlock);
+      if (outer.scrollTop - aTop >= room) {
+        up = { label: 'Agent start', depth: countScopeDepth(agentBlock, outerEl), run: () => scrollElement(outer, Math.max(0, aTop - 8)) };
+      }
+    }
+    if (!up && outerEl.scrollTop >= 64) {
+      up = { label: 'Session top', depth: 0, run: () => scrollElement(outerEl, 0) };
+    }
+
+    // DOWN
+    const viewBottom = outer.scrollTop + outer.clientHeight;
+    if (bubble) {
+      const bBot = bottomInOuter(bubble);
+      if (bBot - viewBottom >= room) {
+        down = { label: 'Bubble bottom', depth: countScopeDepth(bubble, outerEl), run: () => scrollElement(outer, bBot - outer.clientHeight + 8) };
+      }
+    }
+    if (!down && agentBlock) {
+      const aBot = bottomInOuter(agentBlock);
+      if (aBot - viewBottom >= room) {
+        down = { label: 'Agent end', depth: countScopeDepth(agentBlock, outerEl), run: () => scrollElement(outer, aBot - outer.clientHeight + 8) };
+      }
+    }
+    if (!down && outer.scrollHeight - viewBottom >= Math.min(room, 64)) {
+      down = { label: 'Session latest', depth: 0, run: () => scrollElement(outer, outer.scrollHeight) };
+    }
+
+    return { up, down };
+  }
+
+  function updateScrollJump() {
+    const { up, down } = computeJumps();
+    setScrollJumpLabels(prev => {
+      const upNext = up ? { label: up.label, depth: up.depth } : null;
+      const downNext = down ? { label: down.label, depth: down.depth } : null;
+      if (prev.up?.label === upNext?.label && prev.up?.depth === upNext?.depth &&
+          prev.down?.label === downNext?.label && prev.down?.depth === downNext?.depth) return prev;
+      return { up: upNext, down: downNext };
+    });
+  }
+
+  function handleScrollJumpUp() {
+    const { up } = computeJumps();
+    if (!up) return;
+    // Disengage auto-scroll-to-bottom and lock it out for the duration of the
+    // smooth-scroll animation. Without the lock, the first scroll frames still
+    // register as "at bottom" (< 40px moved) and feed updates mid-animation
+    // would snap scrollTop back to MAX_SAFE_INTEGER.
+    isAtBottomRef.current = false;
+    autoScrollLockUntilRef.current = Date.now() + 1000;
+    up.run();
+  }
+
+  function handleScrollJumpDown() {
+    const { down } = computeJumps();
+    if (!down) return;
+    if (down.label === 'Session latest') isAtBottomRef.current = true;
+    down.run();
   }
 
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
+
+  // Recompute jump pill state when transcript tab or target changes
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(updateScrollJump);
+    });
+    return () => cancelAnimationFrame(raf);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSubagentId, subagentActiveTab, activeTab, selectedSession?.sessionId]);
   const [notesContent, setNotesContent] = useState('');
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notesSessionIdRef = useRef<string | undefined>(undefined);
@@ -1377,6 +1595,7 @@ const currentDisplayName =
 
   // Auto-scroll when feed changes, only if already at bottom
   useEffect(() => {
+    if (Date.now() < autoScrollLockUntilRef.current) return;
     if (!isAtBottomRef.current) return;
     // Double rAF: wait for React render + browser layout/paint before scrolling
     const raf = requestAnimationFrame(() => {
@@ -1836,6 +2055,34 @@ const currentDisplayName =
               <>
                 <div className={styles.panelHeader}>
                   <div className={styles.headerWithAvatar}>
+                    <button
+                      className={styles.backToParentBtn}
+                      onClick={() => {
+                        if (!onSelectSession) return;
+                        const feed = selectedSession.activityFeed ?? [];
+                        const desc = selectedSubagent.description;
+                        let targetTs: string | undefined;
+                        for (let i = feed.length - 1; i >= 0; i--) {
+                          const item = feed[i];
+                          if (item.kind === 'tool' && item.toolName === 'Agent' && item.inputJson) {
+                            try {
+                              const input = JSON.parse(item.inputJson);
+                              if (input.description === desc) {
+                                targetTs = item.timestamp;
+                                break;
+                              }
+                            } catch {}
+                          }
+                        }
+                        onSelectSession(selectedSession, undefined, targetTs);
+                      }}
+                      title="Back to parent — jump to where this agent was called"
+                      aria-label="Back to parent agent"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
                     <WorkerAvatar
                       sessionId={selectedSubagent.agentId}
                       color={selectedSession.color}
@@ -1868,23 +2115,32 @@ const currentDisplayName =
                 </div>
 
                 {subagentActiveTab === 'conversation' ? (
-                  <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
-                    <section className={styles.section}>
-                      {selectedSubagent.activityFeed?.length ? (
-                        <div className={styles.transcript}>
-                          <FeedSegments
-                            feed={selectedSubagent.activityFeed}
-                            roleLabel={(role) => role === 'user' ? 'parent' : assistantLabel(selectedSession.provider)}
-                            styles={styles as Record<string, string>}
-                            ideName={selectedSession.ideName}
-                            sessionState={selectedSubagent.state}
-                            cwd={selectedSession.cwd}
-                          />
-                        </div>
-                      ) : (
-                        <div className={styles.messageBox}>No activity recorded yet.</div>
-                      )}
-                    </section>
+                  <div className={styles.scrollAreaWrap}>
+                    <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                      <section className={styles.section}>
+                        {selectedSubagent.activityFeed?.length ? (
+                          <div className={styles.transcript}>
+                            <FeedSegments
+                              feed={selectedSubagent.activityFeed}
+                              roleLabel={(role) => role === 'user' ? 'parent' : assistantLabel(selectedSession.provider)}
+                              styles={styles as Record<string, string>}
+                              ideName={selectedSession.ideName}
+                              sessionState={selectedSubagent.state}
+                              cwd={selectedSession.cwd}
+                            />
+                          </div>
+                        ) : (
+                          <div className={styles.messageBox}>No activity recorded yet.</div>
+                        )}
+                      </section>
+                    </div>
+                    <ScrollJumpNav
+                      up={scrollJumpLabels.up}
+                      down={scrollJumpLabels.down}
+                      onUp={handleScrollJumpUp}
+                      onDown={handleScrollJumpDown}
+                      styles={styles}
+                    />
                   </div>
                 ) : (
                   /* Subagent details tab */
@@ -1983,6 +2239,54 @@ const currentDisplayName =
                   </div>
 
                   <div className={styles.summaryRow}>
+                    {selectedSession.isArchived ? (
+                      <>
+                        <span
+                          className={styles.stateBadge}
+                          style={{ background: '#6b7280', color: '#0b0b14', letterSpacing: '0.08em' }}
+                          title={selectedSession.archivedAt ? `Archived ${new Date(selectedSession.archivedAt).toLocaleString()}` : 'Archived'}
+                        >
+                          ARCHIVED
+                        </span>
+                        {selectedSession.archivedGitBranch && (
+                          <span className={styles.launchBadge} data-category="terminal" title={`Branch at archive time: ${selectedSession.archivedGitBranch}`}>
+                            {selectedSession.archivedGitBranch}
+                          </span>
+                        )}
+                        {selectedSession.archivedPullRequest && (
+                          <a
+                            href={selectedSession.archivedPullRequest.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={styles.launchBadge}
+                            data-category="terminal"
+                            title={selectedSession.archivedPullRequest.title}
+                            style={{ textDecoration: 'none' }}
+                          >
+                            #{selectedSession.archivedPullRequest.number}
+                          </a>
+                        )}
+                        {onResumeArchived && (
+                          <button
+                            className={styles.resumeBtn}
+                            onClick={() => onResumeArchived(selectedSession.sessionId, selectedSession.cwd)}
+                            title="Unarchive and resume this session in place"
+                          >
+                            Resume this
+                          </button>
+                        )}
+                        {onCloneArchived && (
+                          <button
+                            className={styles.resumeBtn}
+                            style={{ marginLeft: 6, background: 'rgba(99, 102, 241, 0.1)', borderColor: 'rgba(99, 102, 241, 0.35)', color: '#818cf8' }}
+                            onClick={() => onCloneArchived(selectedSession.sessionId, selectedSession.cwd)}
+                            title="Spawn a new session branched from this archived transcript"
+                          >
+                            Resume as clone
+                          </button>
+                        )}
+                      </>
+                    ) : (<>
                     <StateBadge
                       state={selectedSession.state}
                       activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
@@ -2042,6 +2346,7 @@ const currentDisplayName =
                          'ask'}
                       </span>
                     )}
+                    </>)}
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
@@ -2129,13 +2434,15 @@ const currentDisplayName =
                   >
                     Details
                   </button>
+                  {!selectedSession.isArchived && (
                   <button
                     className={`${styles.tab} ${activeTab === 'notes' ? styles.tabActive : ''}`}
                     onClick={() => setActiveTab('notes')}
                   >
                     Notes{notesContent.trim() && <span className={styles.tabNotesDot}>✱</span>}
                   </button>
-                  {(selectedSession.currentTask || (selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0)) && (
+                  )}
+                  {!selectedSession.isArchived && (selectedSession.currentTask || (selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0)) && (
                     <button
                       className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('tasks')}
@@ -2143,7 +2450,7 @@ const currentDisplayName =
                       Tasks
                     </button>
                   )}
-                  {hasSubagents && (
+                  {!selectedSession.isArchived && hasSubagents && (
                     <button
                       className={`${styles.tab} ${activeTab === 'subagents' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('subagents')}
@@ -2151,7 +2458,7 @@ const currentDisplayName =
                       Subagents
                     </button>
                   )}
-                  {(isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(effectiveOvrId)) && (
+                  {!selectedSession.isArchived && (isPty || selectedSession.sessionType === 'embedded' || isBridgeSession?.(effectiveOvrId)) && (
                     <button
                       className={`${styles.tab} ${activeTab === 'terminal' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('terminal')}
@@ -2167,7 +2474,6 @@ const currentDisplayName =
                       )}
                     </button>
                   )}
-
                   {/* In-panel search */}
                   <div className={styles.panelSearchWrap} style={{ marginLeft: 'auto' }}>
                     <div className={styles.panelSearchInputWrap}>
@@ -2270,43 +2576,52 @@ const currentDisplayName =
                 {activeTab === 'conversation' && (
                   <>
                     {/* Non-PTY: transcript + state bar + send input */}
-                      <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
-                        {(mergedFeed.length > 0 || selectedSession.lastMessage) ? (
-                          <section className={styles.section}>
-                            {mergedFeed.length > 0 ? (
-                              <div className={styles.transcript}>
-                                <FeedSegments
-                                  feed={mergedFeed}
-                                  roleLabel={(role) => role === 'user' ? 'you' : assistantLabel(selectedSession.provider)}
-                                  styles={styles as Record<string, string>}
-                                  ideName={selectedSession.ideName}
-                                  sessionState={selectedSession.state}
-                                  isPty={isPty}
-                                  cwd={selectedSession.cwd}
-                                  subagents={selectedSession.subagents}
-                                  onSelectSubagent={(agentId) => onSelectSession?.(selectedSession, agentId)}
-                                  scrollTargetTs={effectiveScrollTarget ?? undefined}
-                                />
-                              </div>
-                            ) : (
-                              <div className={styles.messageBox}>{selectedSession.lastMessage}</div>
-                            )}
-                          </section>
-                        ) : selectedSession.needsPermission ? (
-                          <div className={styles.emptyFeedPrompt}>
-                            <PermissionPrompt
-                              sessionId={selectedSession.sessionId}
-                              promptText={selectedSession.permissionPromptText}
-                              isLimitPrompt={selectedSession.isLimitPrompt}
-                              styles={styles}
-                            />
-                          </div>
-                        ) : selectedSession.sessionType === 'bridge' ? (
-                          <div className={styles.emptyFeedBridge}>
-                            <span>Session started. Interact via the bridge terminal.</span>
-                            <button className={styles.emptyFeedBridgeBtn} onClick={() => setActiveTab('terminal')}>Open Terminal</button>
-                          </div>
-                        ) : null}
+                      <div className={styles.scrollAreaWrap}>
+                        <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                          {(mergedFeed.length > 0 || selectedSession.lastMessage) ? (
+                            <section className={styles.section}>
+                              {mergedFeed.length > 0 ? (
+                                <div className={styles.transcript}>
+                                  <FeedSegments
+                                    feed={mergedFeed}
+                                    roleLabel={(role) => role === 'user' ? 'you' : assistantLabel(selectedSession.provider)}
+                                    styles={styles as Record<string, string>}
+                                    ideName={selectedSession.ideName}
+                                    sessionState={selectedSession.state}
+                                    isPty={isPty}
+                                    cwd={selectedSession.cwd}
+                                    subagents={selectedSession.subagents}
+                                    onSelectSubagent={(agentId) => onSelectSession?.(selectedSession, agentId)}
+                                    scrollTargetTs={effectiveScrollTarget ?? undefined}
+                                  />
+                                </div>
+                              ) : (
+                                <div className={styles.messageBox}>{selectedSession.lastMessage}</div>
+                              )}
+                            </section>
+                          ) : selectedSession.needsPermission ? (
+                            <div className={styles.emptyFeedPrompt}>
+                              <PermissionPrompt
+                                sessionId={selectedSession.sessionId}
+                                promptText={selectedSession.permissionPromptText}
+                                isLimitPrompt={selectedSession.isLimitPrompt}
+                                styles={styles}
+                              />
+                            </div>
+                          ) : selectedSession.sessionType === 'bridge' ? (
+                            <div className={styles.emptyFeedBridge}>
+                              <span>Session started. Interact via the bridge terminal.</span>
+                              <button className={styles.emptyFeedBridgeBtn} onClick={() => setActiveTab('terminal')}>Open Terminal</button>
+                            </div>
+                          ) : null}
+                        </div>
+                        <ScrollJumpNav
+                          up={scrollJumpLabels.up}
+                          down={scrollJumpLabels.down}
+                          onUp={handleScrollJumpUp}
+                          onDown={handleScrollJumpDown}
+                          styles={styles}
+                        />
                       </div>
                       {selectedSession.sessionType !== 'bridge' && (
                         <ConsolePreview
@@ -2506,7 +2821,7 @@ const currentDisplayName =
                               };
                               reader.readAsDataURL(blob);
                             }}
-                            placeholder={selectedSession.state === 'closed' ? 'Session exited — click to resume' : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected')}
+                            placeholder={selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (selectedSession.state === 'closed' ? 'Session exited — click to resume' : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected'))}
                             rows={2}
                           />
                           <button
@@ -2711,6 +3026,16 @@ const currentDisplayName =
                           </div>
                         );
                       })()}
+                      {selectedSession.provider && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Assistant</span>
+                          <span
+                            className={`${styles.assistantPill} ${selectedSession.provider === 'codex' ? styles.assistantPillCodex : styles.assistantPillClaude}`}
+                          >
+                            {assistantDisplayName(selectedSession.provider)}
+                          </span>
+                        </div>
+                      )}
                       {selectedSession.resumedFrom && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Resumed from</span>
@@ -2969,13 +3294,45 @@ const currentDisplayName =
                     <section className={styles.section}>
                       {(() => {
                         const activeSubagents = selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking');
-                        const idleSubagents = selectedSession.subagents.filter(s => s.state === 'closed');
+                        const idleSubagents = selectedSession.subagents.filter(s => s.state === 'closed' || s.state === 'waiting');
+                        const RECENT_MS = 60 * 60 * 1000;
+                        const now = Date.now();
+                        const recentIdle = idleSubagents.filter(s => {
+                          const t = Date.parse(s.lastActivity);
+                          return Number.isFinite(t) && now - t <= RECENT_MS;
+                        });
+                        const olderIdle = idleSubagents.filter(s => !recentIdle.includes(s));
+                        const renderIdleItem = (sub: Subagent) => (
+                          <li
+                            key={sub.agentId}
+                            className={`${styles.subagentItem} ${sub.agentId === selectedSubagentId ? styles.subagentItemSelected : ''}`}
+                            style={{ cursor: 'pointer' }}
+                            onClick={() => onSelectSession?.(selectedSession, sub.agentId)}
+                          >
+                            <span className={styles.subagentTreeNub} />
+                            <WorkerAvatar sessionId={sub.agentId} color={selectedSession.color} size={28} />
+                            <span className={styles.subagentDot} style={{ background: STATE_COLORS[sub.state] }} />
+                            <div className={styles.subagentInfo}>
+                              <span className={styles.subagentType}>{sub.agentType}</span>
+                              <span className={styles.subagentDesc}>{sub.description}</span>
+                            </div>
+                            <span className={styles.summaryMeta}>{formatRelativeTime(sub.lastActivity)}</span>
+                            <StateBadge state={sub.state} />
+                            <span className={styles.subagentDoneLabel}>done</span>
+                          </li>
+                        );
                         return (
                           <>
                             <ul className={styles.subagentList}>
                               {activeSubagents.map((sub) => (
-                                <li key={sub.agentId} className={`${styles.subagentItem} ${sub.agentId === selectedSubagentId ? styles.subagentItemSelected : ''}`} style={{ cursor: 'pointer' }}>
+                                <li
+                                  key={sub.agentId}
+                                  className={`${styles.subagentItem} ${sub.agentId === selectedSubagentId ? styles.subagentItemSelected : ''}`}
+                                  style={{ cursor: 'pointer' }}
+                                  onClick={() => onSelectSession?.(selectedSession, sub.agentId)}
+                                >
                                   <span className={styles.subagentTreeNub} />
+                                  <WorkerAvatar sessionId={sub.agentId} color={selectedSession.color} size={28} />
                                   <span className={styles.subagentDot} style={{ background: STATE_COLORS[sub.state] }} />
                                   <div className={styles.subagentInfo}>
                                     <span className={styles.subagentType}>{sub.agentType}</span>
@@ -2984,26 +3341,16 @@ const currentDisplayName =
                                   <StateBadge state={sub.state} />
                                 </li>
                               ))}
+                              {recentIdle.map(renderIdleItem)}
                             </ul>
-                            {idleSubagents.length > 0 && (
+                            {olderIdle.length > 0 && (
                               <>
                                 <button className={styles.collapseBtn} onClick={() => setShowIdleSubagents(!showIdleSubagents)}>
-                                  {showIdleSubagents ? '▾' : '▸'} {idleSubagents.length} inactive
+                                  {showIdleSubagents ? '▾' : '▸'} {olderIdle.length} older
                                 </button>
                                 {showIdleSubagents && (
                                   <ul className={styles.subagentList}>
-                                    {idleSubagents.map((sub) => (
-                                      <li key={sub.agentId} className={styles.subagentItem} style={{ cursor: 'pointer' }}>
-                                        <span className={styles.subagentTreeNub} />
-                                        <span className={styles.subagentDot} style={{ background: STATE_COLORS[sub.state] }} />
-                                        <div className={styles.subagentInfo}>
-                                          <span className={styles.subagentType}>{sub.agentType}</span>
-                                          <span className={styles.subagentDesc}>{sub.description}</span>
-                                        </div>
-                                        <StateBadge state={sub.state} />
-                                        <span className={styles.subagentDoneLabel}>done</span>
-                                      </li>
-                                    ))}
+                                    {olderIdle.map(renderIdleItem)}
                                   </ul>
                                 )}
                               </>

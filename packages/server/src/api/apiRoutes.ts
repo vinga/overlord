@@ -29,9 +29,11 @@ import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { injectViaMac } from '../pty/macInjector.js';
-import { findTranscriptPathAnywhere, readActivityBefore } from '../session/transcriptReader.js';
+import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
+import { archiveManager } from '../archive/archiveManager.js';
+import { getBrainContext } from '../brain/brainContext.js';
 import { log } from '../logger.js';
 
 export interface PtyMaps {
@@ -51,6 +53,7 @@ export function registerApiRoutes(
   generateCompletionSummary: (sessionId: string, forMessage: string) => Promise<void>,
   ptyOutputBuffer: Map<string, Buffer[]>,
   generateTaskTitle?: (sessionId: string, taskId: string) => Promise<void>,
+  broadcastRaw?: (msg: object) => void,
 ): void {
   const { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
 
@@ -67,7 +70,7 @@ export function registerApiRoutes(
     const snap = stateManager.getSnapshot();
     const known = snap.rooms.some(r => r.cwd === cwd);
     if (!known) return res.status(404).json({ error: 'unknown cwd' });
-    const status = await readGitStatus(cwd);
+    const status = await readGitStatus(cwd, stateManager.getPrCache());
     if (!status) return res.status(404).json({ error: 'not a git repo' });
     res.json(status);
   });
@@ -381,6 +384,53 @@ export function registerApiRoutes(
     }
   });
 
+  // Brain context for a room (scoped by cwd). All brain fields are cwd-derived, so the
+  // endpoint lives at the room level. Only known-room cwds are allowed to prevent probing.
+  app.get('/api/brain', (req, res) => {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    try {
+      const context = getBrainContext(cwd);
+      res.json(context);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Brain: read a single file referenced by the context (CLAUDE.md, memory file, etc.).
+  // Only allows files inside ~/.claude/ or under a known room's cwd — no arbitrary reads.
+  app.get('/api/brain/file', (req, res) => {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
+    if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    const resolved = resolve(filePath);
+    const homeDir = resolve(os.homedir(), '.claude');
+    const cwdResolved = resolve(cwd);
+    const allowed = resolved.startsWith(homeDir + '/') || resolved === homeDir
+      || resolved.startsWith(cwdResolved + '/') || resolved === cwdResolved;
+    if (!allowed) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
+    try {
+      if (!fs.existsSync(resolved)) { res.status(404).json({ error: 'file not found' }); return; }
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) { res.status(400).json({ error: 'not a file' }); return; }
+      const raw = fs.readFileSync(resolved, 'utf-8');
+      const lines = raw.split('\n');
+      const LINE_CAP = 500;
+      const truncated = lines.length > LINE_CAP;
+      const content = truncated ? lines.slice(0, LINE_CAP).join('\n') : raw;
+      res.json({ path: resolved, content, totalLines: lines.length, truncated });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Open file endpoint: opens a file path in a JetBrains IDE (Windows) or default system editor
   app.post('/api/open-file', express.json(), (req, res) => {
     const { path: filePath, ideName } = req.body as { path: string; ideName?: string };
@@ -564,6 +614,148 @@ export function registerApiRoutes(
     }
     saveNotes(notes);
     res.json({ ok: true });
+  });
+
+  // Archive: list entries for a room
+  app.get('/api/archive/by-room/:roomId', (req, res) => {
+    const { roomId } = req.params;
+    res.json({ entries: archiveManager.listByRoom(roomId) });
+  });
+
+  // Archive: full list
+  app.get('/api/archive', (_req, res) => {
+    res.json({ entries: archiveManager.list() });
+  });
+
+  // Archive: read transcript activity feed for an archived session
+  app.get('/api/archive/:sessionId/transcript', (req, res) => {
+    const { sessionId } = req.params;
+    const entry = archiveManager.get(sessionId);
+    if (!entry) { res.status(404).json({ error: 'archive entry not found' }); return; }
+    try {
+      if (!fs.existsSync(entry.transcriptPath)) {
+        res.status(404).json({ error: 'archived transcript missing' });
+        return;
+      }
+      const state = readTranscriptState(entry.transcriptPath);
+      res.json({
+        sessionId,
+        name: entry.name,
+        archivedAt: entry.archivedAt,
+        cwd: entry.cwd,
+        activityFeed: state.activityFeed ?? [],
+        lastMessage: state.lastMessage,
+        lastActivity: state.lastActivity,
+        model: state.model,
+      });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Archive: archive a live session
+  app.post('/api/archive/:sessionId', (req, res) => {
+    void (async () => {
+      const { sessionId } = req.params;
+      const session = stateManager.getSession(sessionId);
+      if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+      if (archiveManager.isArchived(sessionId)) {
+        res.json({ ok: true, entry: archiveManager.get(sessionId), alreadyArchived: true });
+        return;
+      }
+      // Resolve transcript: own sessionId first, then walk --resume parent chain.
+      // Sessions spawned via `--resume` often share the parent's transcript and never
+      // write one under their own sessionId, so the direct lookup misses them.
+      let sourceTranscript: string | null = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+      if (!sourceTranscript) {
+        const visited = new Set<string>([sessionId]);
+        let cursor: string | undefined = session.resumedFrom;
+        while (cursor && !visited.has(cursor)) {
+          visited.add(cursor);
+          const candidate = findTranscriptPath(session.cwd, cursor) ?? findTranscriptPathAnywhere(cursor);
+          if (candidate) { sourceTranscript = candidate; break; }
+          cursor = stateManager.getSession(cursor)?.resumedFrom;
+        }
+      }
+
+      // Snapshot git status and transcript state at archive time
+      let gitBranch: string | undefined;
+      let pullRequest: { number: number; url: string; title: string; state: string; isDraft: boolean } | undefined;
+      try {
+        const git = await readGitStatus(session.cwd, stateManager.getPrCache());
+        if (git?.branch) gitBranch = git.branch;
+        if (git?.pullRequest) pullRequest = git.pullRequest;
+      } catch { /* ignore */ }
+
+      let lastMessage: string | undefined;
+      let lastActivity: string | undefined;
+      let model: string | undefined;
+      if (sourceTranscript && fs.existsSync(sourceTranscript)) {
+        try {
+          const state = readTranscriptState(sourceTranscript);
+          lastMessage = state.lastMessage;
+          lastActivity = state.lastActivity;
+          model = state.model;
+        } catch { /* ignore */ }
+      }
+
+      const entry = archiveManager.archive({
+        sessionId,
+        cwd: session.cwd,
+        name: session.proposedName ?? sessionId.slice(0, 8),
+        pid: session.pid,
+        sourceTranscriptPath: sourceTranscript,
+        provider: session.provider,
+        sessionType: session.sessionType,
+        startedAt: session.startedAt,
+        color: stateManager.sessionColor(sessionId),
+        gitBranch,
+        pullRequest,
+        lastMessage: lastMessage ?? session.lastMessage,
+        lastActivity: lastActivity ?? session.lastActivity,
+        model: model ?? session.model,
+      });
+      if (!entry) {
+        res.status(500).json({ error: 'failed to archive (transcript missing)' });
+        return;
+      }
+      const pidToKill = session.sessionType === 'bridge' ? session.pid : undefined;
+      deleteSession(sessionId, pidToKill, 'archive');
+      if (broadcastRaw) {
+        broadcastRaw({ type: 'archive:added', entry });
+      }
+      log('session:killed', 'Session archived', { sessionId, sessionName: entry.name });
+      res.json({ ok: true, entry });
+    })();
+  });
+
+  // Archive: unarchive — restore transcript into ~/.claude/projects and drop the entry
+  app.post('/api/archive/:sessionId/unarchive', (req, res) => {
+    const { sessionId } = req.params;
+    const entry = archiveManager.get(sessionId);
+    if (!entry) { res.status(404).json({ error: 'archive entry not found' }); return; }
+    const restored = archiveManager.restoreTranscript(sessionId);
+    if (!restored) {
+      res.status(500).json({ error: 'failed to restore transcript' });
+      return;
+    }
+    archiveManager.remove(sessionId);
+    if (broadcastRaw) broadcastRaw({ type: 'archive:removed', sessionId, roomId: entry.roomId });
+    log('info', 'Session unarchived', { sessionId, sessionName: entry.name });
+    res.json({ ok: true, sessionId, cwd: entry.cwd, name: entry.name });
+  });
+
+  // Archive: clone-prepare — restore transcript into ~/.claude/projects but keep archive entry
+  app.post('/api/archive/:sessionId/clone-prepare', (req, res) => {
+    const { sessionId } = req.params;
+    const entry = archiveManager.get(sessionId);
+    if (!entry) { res.status(404).json({ error: 'archive entry not found' }); return; }
+    const restored = archiveManager.restoreTranscript(sessionId);
+    if (!restored) {
+      res.status(500).json({ error: 'failed to restore transcript' });
+      return;
+    }
+    res.json({ ok: true, sessionId, cwd: entry.cwd, name: entry.name });
   });
 
   // Return activity feed items before a given timestamp (for search "load context" feature)

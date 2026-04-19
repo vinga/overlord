@@ -7,6 +7,9 @@ interface GitStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  base: string | null;
+  baseAhead: number;
+  baseBehind: number;
   staged: string[];
   modified: string[];
   untracked: string[];
@@ -20,14 +23,12 @@ interface GitStatus {
 interface Props {
   branch: string;
   cwd: string;
-  aheadBehind?: { ahead: number; behind: number; base: string | null };
   gitWarning?: string;
   pullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
 }
 
-export function GitBranchBadge({ branch, cwd, aheadBehind, gitWarning, pullRequest }: Props) {
+export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) {
   const prResolved = pullRequest?.state === 'MERGED' || pullRequest?.state === 'CLOSED';
-  const showAheadBehind = !prResolved && !!aheadBehind;
   const [hover, setHover] = useState(false);
   const [pinned, setPinned] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
@@ -130,12 +131,6 @@ export function GitBranchBadge({ branch, cwd, aheadBehind, gitWarning, pullReque
       >
         <BranchIcon className={styles.icon}/>
         <span className={styles.branchText}>{branch}</span>
-        {showAheadBehind && aheadBehind!.ahead > 0 && (
-          <span className={styles.pillAhead} title={`${aheadBehind!.ahead} commits ahead of ${aheadBehind!.base ?? 'base'}`}>↑{aheadBehind!.ahead}</span>
-        )}
-        {showAheadBehind && aheadBehind!.behind > 0 && (
-          <span className={styles.pillBehind} title={`${aheadBehind!.behind} commits behind ${aheadBehind!.base ?? 'base'}`}>↓{aheadBehind!.behind}</span>
-        )}
         {gitWarning && (
           <span className={styles.pillWarn} title={gitWarning} aria-label="Git warning">!</span>
         )}
@@ -166,7 +161,7 @@ export function GitBranchBadge({ branch, cwd, aheadBehind, gitWarning, pullReque
           onMouseEnter={() => setHover(true)}
           onMouseLeave={() => { if (!pinned) setHover(false); }}
         >
-          <TooltipBody branch={branch} status={status} loading={loading} error={error} gitWarning={gitWarning} aheadBehind={showAheadBehind ? aheadBehind : undefined} prResolved={prResolved} />
+          <TooltipBody branch={branch} status={status} loading={loading} error={error} gitWarning={gitWarning} prResolved={prResolved} />
         </div>,
         document.body
       )}
@@ -227,7 +222,7 @@ function prStateClass(pr: { state: string; isDraft: boolean }): string {
   return styles.pillPrOpen;
 }
 
-function TooltipBody({ branch, status, loading, error, gitWarning, aheadBehind, prResolved }: { branch: string; status: GitStatus | null; loading: boolean; error: string | null; gitWarning?: string; aheadBehind?: { ahead: number; behind: number; base: string | null }; prResolved?: boolean }) {
+function TooltipBody({ branch, status, loading, error, gitWarning, prResolved }: { branch: string; status: GitStatus | null; loading: boolean; error: string | null; gitWarning?: string; prResolved?: boolean }) {
   if (error) {
     return (
       <>
@@ -241,7 +236,7 @@ function TooltipBody({ branch, status, loading, error, gitWarning, aheadBehind, 
       <>
         {gitWarning && <WarningBanner text={gitWarning}/>}
         <div className={styles.header}>
-          <BranchHeading branch={branch} upstream={null} ahead={0} behind={0} aheadBehind={aheadBehind} />
+          <BranchHeading branch={branch} upstream={null} ahead={0} behind={0} base={null} baseAhead={0} baseBehind={0} prResolved={prResolved} />
         </div>
         <div className={styles.shimmerBlock}/>
         <div className={styles.shimmerBlock}/>
@@ -254,7 +249,7 @@ function TooltipBody({ branch, status, loading, error, gitWarning, aheadBehind, 
     <>
       {gitWarning && <WarningBanner text={gitWarning}/>}
       <div className={styles.header}>
-        <BranchHeading branch={status.branch ?? branch} upstream={status.upstream} ahead={status.ahead} behind={status.behind} aheadBehind={aheadBehind} />
+        <BranchHeading branch={status.branch ?? branch} upstream={status.upstream} ahead={status.ahead} behind={status.behind} base={status.base} baseAhead={status.baseAhead} baseBehind={status.baseBehind} prResolved={prResolved} />
       </div>
       {status.pullRequest && (
         <PrRow pr={status.pullRequest}/>
@@ -270,10 +265,11 @@ function TooltipBody({ branch, status, loading, error, gitWarning, aheadBehind, 
           <div className={styles.commitRow}>
             <div className={styles.commitMeta}>
               <CommitIcon className={styles.commitIcon}/>
+              <span className={styles.rowKind}>Last commit</span>
+              {lastLabel && <span className={`${styles.commitStatus} ${lastLabel.cls}`}>{lastLabel.text}</span>}
               <span className={styles.commitHash}>{status.lastCommit.hash}</span>
               <span className={styles.commitAuthor}>{status.lastCommit.author}</span>
               <span className={styles.commitTime}>· {status.lastCommit.relativeTime}</span>
-              {lastLabel && <span className={`${styles.commitStatus} ${lastLabel.cls}`}>{lastLabel.text}</span>}
             </div>
             <div className={styles.commitSubject}>{status.lastCommit.subject}</div>
           </div>
@@ -341,6 +337,7 @@ function PrRow({ pr }: { pr: NonNullable<GitStatus['pullRequest']> }) {
   return (
     <a className={styles.prRow} href={pr.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>
       <span className={styles.prIcon}><PullRequestIcon/></span>
+      <span className={styles.rowKind}>PR</span>
       <span className={`${styles.prState} ${stateClass}`}>{stateLabel}</span>
       <span className={styles.prNumber}>#{pr.number}</span>
       <span className={styles.prTitle}>{pr.title}</span>
@@ -361,16 +358,21 @@ function WarningBanner({ text }: { text: string }) {
   );
 }
 
-function BranchHeading({ branch, upstream, ahead, behind, aheadBehind }: { branch: string; upstream: string | null; ahead: number; behind: number; aheadBehind?: { ahead: number; behind: number; base: string | null } }) {
+function BranchHeading({ branch, upstream, ahead, behind, base, baseAhead, baseBehind, prResolved }: { branch: string; upstream: string | null; ahead: number; behind: number; base: string | null; baseAhead: number; baseBehind: number; prResolved?: boolean }) {
   const sameNameUpstream = upstream && /^[^/]+\/(.+)$/.exec(upstream)?.[1] === branch;
-  const baseLabel = aheadBehind?.base;
+  const showBase = !prResolved && !!base;
+  const sync = branchSync(upstream, ahead, behind);
   return (
     <div className={styles.branchHeading}>
       <BranchIcon className={styles.branchHeadingIcon}/>
+      <span className={styles.rowKind}>Branch</span>
+      <span
+        className={`${styles.branchSyncPill} ${sync.cls}`}
+        title={sync.title}
+      >
+        {sync.label}
+      </span>
       <span className={styles.branchNameBig}>{branch}</span>
-      {!upstream && (
-        <span className={styles.noRemote} title="No upstream branch — changes have never been pushed">No remote</span>
-      )}
       {upstream && !sameNameUpstream && (
         <span className={styles.upstream}>→ {upstream}</span>
       )}
@@ -382,16 +384,24 @@ function BranchHeading({ branch, upstream, ahead, behind, aheadBehind }: { branc
             {behind > 0 && <span className={styles.behindBadge}>↓{behind}</span>}
           </span>
         )}
-        {baseLabel && (aheadBehind!.ahead > 0 || aheadBehind!.behind > 0) && (
-          <span className={styles.abGroup} title={`Relative to ${baseLabel}`}>
-            <span className={styles.abLabel}>vs {baseLabel}</span>
-            {aheadBehind!.ahead > 0 && <span className={styles.aheadBadge}>↑{aheadBehind!.ahead}</span>}
-            {aheadBehind!.behind > 0 && <span className={styles.behindBadge}>↓{aheadBehind!.behind}</span>}
+        {showBase && (baseAhead > 0 || baseBehind > 0) && (
+          <span className={styles.abGroup} title={`Relative to ${base}`}>
+            <span className={styles.abLabel}>vs {base}</span>
+            {baseAhead > 0 && <span className={styles.aheadBadge}>↑{baseAhead}</span>}
+            {baseBehind > 0 && <span className={styles.behindBadge}>↓{baseBehind}</span>}
           </span>
         )}
       </span>
     </div>
   );
+}
+
+function branchSync(upstream: string | null, ahead: number, behind: number): { label: string; cls: string; title: string } {
+  if (!upstream) return { label: 'No remote', cls: styles.branchSyncNoRemote, title: 'No upstream branch — changes have never been pushed' };
+  if (ahead > 0 && behind > 0) return { label: 'Diverged', cls: styles.branchSyncDiverged, title: `${ahead} ahead / ${behind} behind upstream` };
+  if (ahead > 0) return { label: 'Ahead', cls: styles.branchSyncAhead, title: `${ahead} commit${ahead === 1 ? '' : 's'} ahead of upstream` };
+  if (behind > 0) return { label: 'Behind', cls: styles.branchSyncBehind, title: `${behind} commit${behind === 1 ? '' : 's'} behind upstream` };
+  return { label: 'Synced', cls: styles.branchSyncSynced, title: 'In sync with upstream' };
 }
 
 function FileSection({ label, dotClass, files }: { label: string; dotClass: string; files: string[] }) {
