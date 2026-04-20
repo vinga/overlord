@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import styles from './XtermTerminal.module.css';
 
@@ -80,8 +81,32 @@ export function XtermTerminal({
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
+
+    // WebGL renderer — dramatically faster than the default DOM renderer,
+    // especially with scrollback during streaming. Falls back silently if WebGL
+    // is unavailable (e.g. headless environments).
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch { /* WebGL unavailable — DOM renderer fallback is fine */ }
     // xterm.js grabs focus on open — prevent that from stealing OS focus
     term.blur();
+
+    // Mount the GPU renderer AFTER open() — WebglAddon needs a canvas which only
+    // exists once the terminal is attached. This is the big perf win: the default
+    // DOM renderer paints each cell as HTML and chokes on long Claude streams
+    // (scrollback 5000 × rapid writes). WebGL draws the whole grid per frame and
+    // removes the per-chunk render stall. Safe fallback on context loss below.
+    let webglAddon: WebglAddon | null = null;
+    try {
+      webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => { webglAddon?.dispose(); webglAddon = null; });
+      term.loadAddon(webglAddon);
+    } catch (e) {
+      console.warn('[xterm] WebGL renderer unavailable, falling back to DOM:', e);
+      webglAddon = null;
+    }
 
     termRef.current = term;
 

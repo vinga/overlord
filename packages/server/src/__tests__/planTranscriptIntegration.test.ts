@@ -62,28 +62,31 @@ describe('transcript → planStore integration', () => {
       {
         type: 'assistant',
         timestamp: '2026-04-20T10:00:00.000Z',
-        message: {},
         uuid: 'u1',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_plan_1',
-            name: 'ExitPlanMode',
-            input: { plan: '# My Plan\n\nbody text' },
-          },
-        ],
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_plan_1',
+              name: 'ExitPlanMode',
+              input: { plan: '# My Plan\n\nbody text' },
+            },
+          ],
+        },
       },
       {
         type: 'user',
         timestamp: '2026-04-20T10:00:01.000Z',
         uuid: 'u2',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_plan_1',
-            content: 'User approved the plan',
-          },
-        ],
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_plan_1',
+              content: 'User approved the plan',
+            },
+          ],
+        },
       },
     ]);
 
@@ -109,26 +112,30 @@ describe('transcript → planStore integration', () => {
         type: 'assistant',
         timestamp: '2026-04-20T11:00:00.000Z',
         uuid: 'u1',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_plan_dup',
-            name: 'ExitPlanMode',
-            input: { plan: '# Dup Plan\n\nonce' },
-          },
-        ],
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_plan_dup',
+              name: 'ExitPlanMode',
+              input: { plan: '# Dup Plan\n\nonce' },
+            },
+          ],
+        },
       },
       {
         type: 'user',
         timestamp: '2026-04-20T11:00:01.000Z',
         uuid: 'u2',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_plan_dup',
-            content: 'User approved the plan',
-          },
-        ],
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_plan_dup',
+              content: 'User approved the plan',
+            },
+          ],
+        },
       },
     ]);
 
@@ -150,26 +157,30 @@ describe('transcript → planStore integration', () => {
         type: 'assistant',
         timestamp: '2026-04-20T12:00:00.000Z',
         uuid: 'u1',
-        content: [
-          {
-            type: 'tool_use',
-            id: 'toolu_plan_rej',
-            name: 'ExitPlanMode',
-            input: { plan: '# Rejected\n\nbody' },
-          },
-        ],
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_plan_rej',
+              name: 'ExitPlanMode',
+              input: { plan: '# Rejected\n\nbody' },
+            },
+          ],
+        },
       },
       {
         type: 'user',
         timestamp: '2026-04-20T12:00:01.000Z',
         uuid: 'u2',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: 'toolu_plan_rej',
-            content: 'User denied the plan with feedback',
-          },
-        ],
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_plan_rej',
+              content: 'User denied the plan with feedback',
+            },
+          ],
+        },
       },
     ]);
 

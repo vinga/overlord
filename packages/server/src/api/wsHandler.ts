@@ -96,13 +96,10 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       wsSessions.add(ovrId);
       wsSessions.add(ptySessionId);
       sendToClient(ws, { type: 'terminal:linked', ovrId, ptySessionId, claudeSessionId, replay: true });
-      // Replay buffered PTY output so the terminal isn't blank on reconnect.
-      // Buffer is keyed by ptyId while alive (migrated to ovrId on exit).
-      const buf = ptyOutputBuffer.get(ptySessionId) ?? ptyOutputBuffer.get(ovrId);
-      if (buf && buf.length > 0) {
-        const encoded = Buffer.concat(buf).toString('base64');
-        sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
-      }
+      // Intentionally do NOT dump the full ptyOutputBuffer here. The client
+      // triggers `terminal:replay` when xterm mounts (useTerminal.registerOutputHandler),
+      // and that path already BSU-slices for TUIs and caps for raw shells. Sending
+      // the whole buffer here doubled the work and pushed 5–10 MB through base64.
     }
     // Replay active bridge session links (bridge sessions don't use ptyManager).
     // Bridge ovrId is stored on the session's overlordId field.

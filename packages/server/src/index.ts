@@ -66,7 +66,10 @@ const ptyToOvr = new Map<string, string>(); // pty-xxx → ovrId
 
 // Ring buffer for PTY output — replayed on new WS connections so the terminal isn't blank
 const ptyOutputBuffer = new Map<string, Buffer[]>();
-const PTY_BUFFER_MAX_CHUNKS = 500;
+// Ring-buffer cap for per-session PTY output. Only consumed by `terminal:replay`,
+// which BSU-slices for TUIs — 200 is plenty. 500 pushed multi-MB concat+base64
+// per reconnect and dominated the event loop on long sessions.
+const PTY_BUFFER_MAX_CHUNKS = 200;
 
 // When a bridge session is replaced (e.g. /clear), maps old sessionId → new sessionId.
 // The existing output socket is closed over the old ID, so we reroute its output here.

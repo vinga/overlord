@@ -26,6 +26,59 @@ const ACTIVE_DETECT_BUF_SIZE = 2048;
 // on transition so stale status-bar bytes in the tail cannot re-win.
 const lastDetectedMode = new Map<string, string>();
 
+// Single-pass ANSI/control strip. Replaces 5 sequential regex passes on every
+// PTY output chunk — those were dominating the event loop during streaming.
+// Emits printable ASCII + \n\t\r; collapses Unicode whitespace to space;
+// skips all ESC-introduced control sequences (CSI, OSC, and lone/intermediate).
+function stripForStatusScan(s: string): string {
+  let out = '';
+  const n = s.length;
+  for (let i = 0; i < n; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x1b) {
+      // ESC — consume the control sequence.
+      if (i + 1 >= n) break;
+      const next = s.charCodeAt(i + 1);
+      if (next === 0x5b) {
+        // CSI: ESC [ ... final (0x40-0x7e)
+        i += 2;
+        while (i < n) {
+          const cc = s.charCodeAt(i);
+          if (cc >= 0x40 && cc <= 0x7e) break;
+          i++;
+        }
+      } else if (next === 0x5d) {
+        // OSC: ESC ] ... ST (ESC \) or BEL
+        i += 2;
+        while (i < n) {
+          const cc = s.charCodeAt(i);
+          if (cc === 0x07) break;
+          if (cc === 0x1b && i + 1 < n && s.charCodeAt(i + 1) === 0x5c) { i++; break; }
+          i++;
+        }
+      } else {
+        // Other ESC-introduced single-char sequence: consume the next char.
+        i += 1;
+      }
+      continue;
+    }
+    // Printable ASCII + \n\t\r pass through unchanged.
+    if ((c >= 0x20 && c <= 0x7e) || c === 0x0a || c === 0x09 || c === 0x0d) {
+      out += s[i];
+      continue;
+    }
+    // Unicode whitespace (e.g. NBSP U+00A0) collapsed to space so the
+    // "(shift+tab to cycle)" sentinel survives.
+    if (c === 0xa0 || c === 0x2007 || c === 0x202f || c === 0x3000) { out += ' '; continue; }
+    // Everything else (other controls, non-ASCII) becomes space if it's
+    // whitespace-class, else dropped. Matches the prior behavior of the
+    // Unicode-aware replacer.
+    if (c >= 0x2000 && c <= 0x200b) { out += ' '; continue; }
+    // Drop silently.
+  }
+  return out;
+}
+
 /**
  * Flush the last detected permission mode for a PTY to a freshly linked ovrId.
  * Called by linkPtyToOvr after ptyToOvr is set so the startup race (PTY output
@@ -82,50 +135,54 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // Detect active state (status bar "esc to interrupt" / spinner line)
     // so the UI flips from 'waiting' → 'working' without waiting for the next
     // transcript write. Mirrors the bridge-side logic in index.ts.
+    //
+    // Hot path: gate on cheap substring hints before the expensive ANSI strip +
+    // regex scan. The status bar carries distinctive ASCII keywords; chunks
+    // without any of them (or a pending rolling buffer) cannot change detection.
     {
-      const stripped = data
-        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
-        .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
-        .replace(/\x1b[^[\]]/g, '')
-        .replace(/\x1b/g, '')
-        // Preserve Unicode whitespace (e.g. U+00A0 NBSP) as ASCII space — Claude CLI's
-        // status bar uses them between words, and plain stripping destroys the
-        // "(shift+tab to cycle)" sentinel so mode detection fails.
-        .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
       const prev = activeDetectBuf.get(ptySessionId) ?? '';
-      const combined = (prev + stripped).slice(-ACTIVE_DETECT_BUF_SIZE);
-      activeDetectBuf.set(ptySessionId, combined);
+      const needsScan =
+        prev.length > 0 ||
+        data.indexOf('shift') !== -1 ||
+        data.indexOf('interrupt') !== -1 ||
+        data.indexOf('mode on') !== -1;
 
-      const tailLines = combined.split('\n');
-      let activeSignal: boolean | null = null;
-      for (let i = tailLines.length - 1; i >= 0; i--) {
-        const line = tailLines[i];
-        if (/\(shift\+tab to cycle\)/i.test(line)) {
-          activeSignal = /esc to interrupt/i.test(line);
-          break;
-        }
-        if (/[·*·]\s+\w+[.\u2026]+\s*\(\d/.test(line)) {
-          activeSignal = true;
-          break;
-        }
-      }
-      if (activeSignal === true) ctx.stateManager.setBridgeActive(ovrId, true);
-      else if (activeSignal === false) ctx.stateManager.setBridgeActive(ovrId, false);
+      if (needsScan) {
+        const stripped = stripForStatusScan(data);
+        const combined = (prev + stripped).slice(-ACTIVE_DETECT_BUF_SIZE);
+        activeDetectBuf.set(ptySessionId, combined);
 
-      // Detect permission mode on every data event using the rolling buffer.
-      // Shift+Tab rewrites the status bar but may not emit a BSU repaint marker,
-      // so gating this on isRepaint alone delays the pill update by hundreds of ms.
-      const { sentinelFound, mode } = detectModeFromText(combined);
-      if (sentinelFound) {
-        const resolvedMode = mode ?? 'default';
-        const prevMode = lastDetectedMode.get(ptySessionId);
-        if (prevMode !== resolvedMode) {
-          lastDetectedMode.set(ptySessionId, resolvedMode);
-          // Drop the rolling buffer so the next chunk starts clean — prevents
-          // stale earlier status-bar text from winning over the new one.
-          activeDetectBuf.delete(ptySessionId);
+        const tailLines = combined.split('\n');
+        let activeSignal: boolean | null = null;
+        for (let i = tailLines.length - 1; i >= 0; i--) {
+          const line = tailLines[i];
+          if (/\(shift\+tab to cycle\)/i.test(line)) {
+            activeSignal = /esc to interrupt/i.test(line);
+            break;
+          }
+          if (/[·*·]\s+\w+[.\u2026]+\s*\(\d/.test(line)) {
+            activeSignal = true;
+            break;
+          }
         }
-        ctx.stateManager.setPermissionMode(ovrId, resolvedMode);
+        if (activeSignal === true) ctx.stateManager.setBridgeActive(ovrId, true);
+        else if (activeSignal === false) ctx.stateManager.setBridgeActive(ovrId, false);
+
+        // Detect permission mode on every data event using the rolling buffer.
+        // Shift+Tab rewrites the status bar but may not emit a BSU repaint marker,
+        // so gating this on isRepaint alone delays the pill update by hundreds of ms.
+        const { sentinelFound, mode } = detectModeFromText(combined);
+        if (sentinelFound) {
+          const resolvedMode = mode ?? 'default';
+          const prevMode = lastDetectedMode.get(ptySessionId);
+          if (prevMode !== resolvedMode) {
+            lastDetectedMode.set(ptySessionId, resolvedMode);
+            // Drop the rolling buffer so the next chunk starts clean — prevents
+            // stale earlier status-bar text from winning over the new one.
+            activeDetectBuf.delete(ptySessionId);
+          }
+          ctx.stateManager.setPermissionMode(ovrId, resolvedMode);
+        }
       }
     }
   });

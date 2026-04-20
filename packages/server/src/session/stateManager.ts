@@ -1670,13 +1670,17 @@ export class StateManager {
   /** Persistently mark a bridge session as active (spinner detected). Cleared when idle prompt seen. */
   setBridgeActive(sessionId: string, active: boolean): void {
     const claudeId = this.toClaudeId(sessionId);
+    const was = this.bridgeActiveOverride.has(claudeId);
     if (active) {
       this.bridgeActiveOverride.add(claudeId);
       this.promoteToWorkingIfWaiting(claudeId);
     } else {
       this.bridgeActiveOverride.delete(claudeId);
     }
-    this.onChange();
+    // Only broadcast when the active flag actually flipped. Spinner ticks hit
+    // this setter dozens of times per second with the same value and used to
+    // trigger a full snapshot rebuild + fan-out on every chunk.
+    if (was !== active) this.onChange();
   }
 
   /** Flip 'waiting' → 'working' immediately when terminal activity is detected,
