@@ -747,7 +747,13 @@ export class StateManager {
     }
 
     // Preserve overlordId across updates; generate once on first creation.
-    const overlordId = existingSession?.overlordId ?? this.generateOvrId();
+    // On resume, inherit the parent's ovrId so the new sessionId attaches to the
+    // existing lineage rather than minting a duplicate OverlordSession record.
+    const overlordId = existingSession?.overlordId
+      ?? (resumedFrom
+        ? (sessionStore.resolveOverlordId(resumedFrom) ?? this.sessions.get(resumedFrom)?.overlordId)
+        : undefined)
+      ?? this.generateOvrId();
     color = this.sessionColorByOvrId(overlordId);
     // Preserve sessionHistory; initialize with first entry on creation.
     const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
@@ -817,6 +823,15 @@ export class StateManager {
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(overlordId, sessionId);
     sessionStore.ensureFromLive(session);
+
+    // When a resume inherits the parent's ovrId, mark the parent session as replaced
+    // so it no longer appears as an active / stale entry in the UI (mirrors /clear behaviour).
+    if (isNew && resumedFrom && resumedFrom !== sessionId) {
+      const parentSession = this.sessions.get(resumedFrom);
+      if (parentSession && parentSession.overlordId === overlordId && !parentSession.replacedBy) {
+        parentSession.replacedBy = sessionId;
+      }
+    }
 
     // Persist plans via planStore — dedupes on claudePlanToolUseId so repeated
     // readTranscriptState calls are idempotent.

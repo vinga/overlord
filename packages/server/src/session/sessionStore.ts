@@ -240,7 +240,7 @@ export class SessionStore {
           sessionId: live.sessionId,
           attachedAt: Date.now(),
           transcriptPath: live.transcriptPath,
-          reason: 'clear',
+          reason: live.resumedFrom ? 'resume' : 'clear',
         }) ?? existing;
       }
       return existing;
