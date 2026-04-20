@@ -2,6 +2,7 @@ import React, { useState, memo } from 'react';
 import type { Session, WorkerState, Subagent } from '../types';
 import { Worker } from './Worker';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
+import { useRoomPrefix } from '../hooks/useRoomPrefix';
 import styles from './WorkerGroup.module.css';
 
 function lightenHsl(color: string, amount: number): string {
@@ -74,6 +75,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
   const [expanded] = useState(() => readExpanded(session.sessionId));
   const [overflowExpanded, setOverflowExpanded] = useState(false);
   const notesMap = useNotesSummaries();
+  const roomPrefix = useRoomPrefix(session.cwd);
 
   const allRecentSubagents = session.subagents.filter(s =>
     s.state === 'working' || s.state === 'thinking' ||
@@ -108,8 +110,10 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           ptyInputPendingSince={session.ptyInputPendingSince}
           notesSummary={notesMap.get(session.sessionId)}
           intent={session.intent}
+          activeMonitors={session.activeMonitors}
           onClick={() => onSelectSession(session)}
           onRename={onRename ? (name) => onRename(session.sessionId, name) : undefined}
+          roomPrefix={roomPrefix}
         />
       </div>
 

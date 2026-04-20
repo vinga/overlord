@@ -21,9 +21,12 @@ import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, rea
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { archiveManager } from '../archive/archiveManager.js';
+import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
 import { log } from '../logger.js';
+import { planStore } from '../plans/planStore.js';
+import type { Plan, PlanChangedEvent, PlanStatus } from '../plans/types.js';
 
 export interface PtyMaps {
   ovrToPty: Map<string, string>;     // ovrId → ptySessionId
@@ -39,9 +42,7 @@ export function registerApiRoutes(
   ptyManager: PtyManager,
   ptyMaps: PtyMaps,
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void,
-  generateCompletionSummary: (sessionId: string, forMessage: string) => Promise<void>,
   ptyOutputBuffer: Map<string, Buffer[]>,
-  generateTaskTitle?: (sessionId: string, taskId: string) => Promise<void>,
   broadcastRaw?: (msg: object) => void,
 ): void {
   const { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
@@ -62,6 +63,20 @@ export function registerApiRoutes(
     const status = await readGitStatus(cwd, stateManager.getPrCache());
     if (!status) return res.status(404).json({ error: 'not a git repo' });
     res.json(status);
+  });
+
+  // PR metadata + checks for a room cwd — lazy endpoint, awaits gh fetches.
+  // Separated from /api/git/status so the tooltip can render local git data
+  // immediately while PR/checks stream in independently.
+  app.get('/api/git/pr', async (req, res) => {
+    const cwd = String(req.query.cwd ?? '');
+    const branch = String(req.query.branch ?? '');
+    if (!cwd || !branch) return res.status(400).json({ error: 'cwd and branch required' });
+    const snap = stateManager.getSnapshot();
+    const known = snap.rooms.some(r => r.cwd === cwd);
+    if (!known) return res.status(404).json({ error: 'unknown cwd' });
+    const full = await stateManager.getPrCache().getOrFetchFull(cwd, branch);
+    res.json(full);
   });
 
   // Debug endpoint: spawn a test session
@@ -127,6 +142,85 @@ export function registerApiRoutes(
       pendingClearSessions: stateManager.getPendingClearSessions(),
       bridgeSessions: Object.keys(stateManager.deriveBridgeRegistry()),
       bridgeConnected: Object.keys(stateManager.deriveBridgeRegistry()).map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),
+    });
+  });
+
+  // Debug endpoint: dump raw PTY buffer tail for a session (hex + stripped),
+  // used to diagnose status-bar mode detection failures.
+  app.get('/api/debug/pty-buffer/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const session = stateManager.getSession(sessionId);
+    if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+    const ovrId = session.overlordId ?? sessionId;
+    const bufKey = stateManager.isBridge(sessionId) ? ovrId : (ovrToPty.get(ovrId) ?? null);
+    if (!bufKey) { res.status(404).json({ error: 'no pty buffer key' }); return; }
+    const chunks = ptyOutputBuffer.get(bufKey);
+    if (!chunks || chunks.length === 0) { res.json({ text: '', stripped: '', hex: '' }); return; }
+    const raw = Buffer.concat(chunks.slice(-20)).toString('utf8');
+    const stripped = raw
+      .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')
+      .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
+      .replace(/\x1b[^[\]]/g, '')
+      .replace(/\x1b/g, '')
+      .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
+    // Locate last shift+tab sentinel and show 200 chars before it (both utf8 and hex)
+    const re = /\(shift\+tab to cycle\)/gi;
+    let lastIdx = -1;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(stripped)) !== null) lastIdx = m.index;
+    const prefix = lastIdx >= 0 ? stripped.slice(Math.max(0, lastIdx - 200), lastIdx) : '';
+    const rawPrefix = lastIdx >= 0 ? raw.slice(Math.max(0, raw.lastIndexOf('(shift+tab to cycle)') - 200), raw.lastIndexOf('(shift+tab to cycle)')) : '';
+    const hex = Buffer.from(rawPrefix, 'utf8').toString('hex');
+    res.json({
+      strippedTail: stripped.slice(-400),
+      sentinelFound: lastIdx >= 0,
+      prefixBeforeSentinel: prefix,
+      rawPrefixHex: hex,
+      bufKey,
+      permissionMode: session.permissionMode,
+      locked: session.permissionModeLockedUntil,
+    });
+  });
+
+  // Debug endpoint: PTY buffer stats (chunk count, total bytes, BSU marker positions).
+  // Diagnoses replay bloat: if chunks accumulate far past the last BSU, replay
+  // sends a large blob and feels slow on reconnect.
+  app.get('/api/debug/pty-stats/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const session = stateManager.getSession(sessionId);
+    if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+    const ovrId = session.overlordId ?? sessionId;
+    const bufKey = stateManager.isBridge(sessionId) ? ovrId : (ovrToPty.get(ovrId) ?? ovrId);
+    const chunks = ptyOutputBuffer.get(bufKey);
+    if (!chunks) { res.json({ bufKey, chunkCount: 0, totalBytes: 0, bsuCount: 0 }); return; }
+    const bsuMarker = Buffer.from('\x1b[?2026h');
+    const besuMarker = Buffer.from('\x1b[?2026l');
+    let totalBytes = 0;
+    let bsuCount = 0;
+    let besuCount = 0;
+    const chunkSizes: number[] = [];
+    let lastBsuChunk = -1;
+    let lastBsuByteOffset = -1;
+    chunks.forEach((c, i) => {
+      totalBytes += c.length;
+      chunkSizes.push(c.length);
+      if (c.indexOf(bsuMarker) >= 0) { bsuCount++; lastBsuChunk = i; lastBsuByteOffset = totalBytes; }
+      if (c.indexOf(besuMarker) >= 0) besuCount++;
+    });
+    res.json({
+      bufKey,
+      sessionType: session.sessionType,
+      state: session.state,
+      chunkCount: chunks.length,
+      totalBytes,
+      bsuCount,
+      besuCount,
+      lastBsuChunkIndex: lastBsuChunk,
+      chunksSinceLastBsu: lastBsuChunk >= 0 ? chunks.length - 1 - lastBsuChunk : chunks.length,
+      bytesSinceLastBsu: lastBsuByteOffset >= 0 ? totalBytes - lastBsuByteOffset : totalBytes,
+      minChunkSize: Math.min(...chunkSizes),
+      maxChunkSize: Math.max(...chunkSizes),
+      avgChunkSize: Math.round(totalBytes / chunks.length),
     });
   });
 
@@ -196,6 +290,11 @@ export function registerApiRoutes(
       if (!session) { res.status(404).json({ error: 'session not found' }); return; }
 
       try {
+        // Suppress the WAITING→WORKING promotion for the brief window during which the TUI
+        // redraws its status bar in response to our injected shift+tab. Otherwise the chip
+        // visibly flickers to WORKING on every click.
+        stateManager.suppressPtyPromotion(sessionId, 1200);
+
         // Inject Shift+Tab to cycle the mode.
         // Prefer ptyManager.write for Overlord-spawned PTYs (CGEvent can't reach node-pty).
         const ovrIdForPty = session.overlordId ?? sessionId;
@@ -231,7 +330,7 @@ export function registerApiRoutes(
               .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
               .replace(/\x1b[^[\]]/g, '')
               .replace(/\x1b/g, '')
-              .replace(/[^\x20-\x7e\n\t\r]/g, '');
+              .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
             text = stripped.split('\n').map(line => {
               const parts = line.split('\r');
               for (let i = parts.length - 1; i >= 0; i--) {
@@ -249,15 +348,26 @@ export function registerApiRoutes(
         let newMode: string | undefined;
         if (text) {
           const { sentinelFound, mode } = detectModeFromText(text);
-          if (sentinelFound) newMode = mode;
-          else newMode = 'default';
+          if (sentinelFound && mode) newMode = mode;
         }
 
-        if (newMode !== undefined) {
-          stateManager.setPermissionMode(sessionId, newMode);
+        // Fallback: if the screen read missed the sentinel (Claude was mid-compute and
+        // the status bar isn't rendered), predict the next mode from the known Claude CLI
+        // cycle order so the chip reflects the click immediately. The next PTY-detected
+        // status bar will correct any drift.
+        if (newMode === undefined) {
+          const current = stateManager.getSession(sessionId)?.permissionMode;
+          newMode =
+            current === 'default' ? 'acceptEdits' :
+            current === 'acceptEdits' ? 'plan' :
+            current === 'plan' ? 'default' :
+            current === 'bypassPermissions' ? 'acceptEdits' :
+            'default';
         }
 
-        res.json({ ok: true, mode: newMode });
+        stateManager.setPermissionMode(sessionId, newMode);
+
+        res.json({ ok: true, mode: stateManager.getSession(sessionId)?.permissionMode });
       } catch (err) {
         res.status(500).json({ error: String(err) });
       }
@@ -295,10 +405,6 @@ export function registerApiRoutes(
     const { sessionId } = req.params;
     const ok = stateManager.markDoneByUser(sessionId);
     if (!ok) { res.status(404).json({ error: 'session not found or idle' }); return; }
-    const session = stateManager.getSession(sessionId);
-    if (session?.lastMessage) {
-      void generateCompletionSummary(sessionId, session.lastMessage);
-    }
     res.json({ ok: true });
   });
 
@@ -308,17 +414,6 @@ export function registerApiRoutes(
     const next = stateManager.toggleAckByUser(sessionId);
     if (next === null) { res.status(404).json({ error: 'session not found or closed' }); return; }
     res.json({ acknowledged: next });
-  });
-
-  // Regenerate request summary for a session
-  app.post('/api/sessions/:sessionId/regenerate-summary', (req, res) => {
-    const { sessionId } = req.params;
-    const session = stateManager.getSession(sessionId);
-    if (!session) { res.status(404).json({ error: 'session not found' }); return; }
-    if (generateTaskTitle && session.currentTask) {
-      void generateTaskTitle(sessionId, session.currentTask.taskId);
-    }
-    res.json({ ok: true });
   });
 
   // Accept a done session (user reviewed and confirmed result)
@@ -366,7 +461,7 @@ export function registerApiRoutes(
         .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
         .replace(/\x1b[^[\]]/g, '')
         .replace(/\x1b/g, '')
-        .replace(/[^\x20-\x7e\n\t\r]/g, '');
+        .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
       const text = stripped.split('\n').map(line => {
         const parts = line.split('\r');
         for (let i = parts.length - 1; i >= 0; i--) {
@@ -397,10 +492,15 @@ export function registerApiRoutes(
   });
 
   app.post('/api/room-config', express.json(), (req, res) => {
-    const { cwd, prefix, description } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string };
+    const { cwd, prefix, description, lastMode } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string; lastMode?: string };
     if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
     if (prefix !== undefined && typeof prefix !== 'string') { res.status(400).json({ error: 'prefix must be a string' }); return; }
     if (description !== undefined && typeof description !== 'string') { res.status(400).json({ error: 'description must be a string' }); return; }
+    const validModes = ['embedded', 'bridge', 'plain', 'raw'] as const;
+    if (lastMode !== undefined && !validModes.includes(lastMode as typeof validModes[number])) {
+      res.status(400).json({ error: 'lastMode must be embedded|bridge|plain|raw' });
+      return;
+    }
     const snap = stateManager.getSnapshot();
     const known = snap.rooms.some(r => r.cwd === cwd);
     if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
@@ -408,6 +508,7 @@ export function registerApiRoutes(
     writeRoomConfig(cwd, {
       prefix: prefix !== undefined ? prefix : current.prefix,
       description: description !== undefined ? description : current.description,
+      lastMode: lastMode !== undefined ? (lastMode as typeof validModes[number]) : current.lastMode,
     });
     res.json({ ok: true });
   });
@@ -493,6 +594,33 @@ export function registerApiRoutes(
       invalidateBrainCache(cwd);
       const totalLines = content.length === 0 ? 0 : content.split('\n').length;
       res.json({ ok: true, path: resolved, totalLines });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Inline file editor endpoints
+  app.get('/api/file', (req, res) => {
+    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
+    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      let writable = false;
+      try { fs.accessSync(filePath, fs.constants.W_OK); writable = true; } catch { /* read-only */ }
+      res.json({ content, writable });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.put('/api/file', express.json({ limit: '10mb' }), (req, res) => {
+    const { path: filePath, content } = req.body as { path: string; content: string };
+    if (!filePath || typeof content !== 'string') { res.status(400).json({ error: 'path and content required' }); return; }
+    try { fs.accessSync(filePath, fs.constants.W_OK); } catch { res.status(403).json({ error: 'not writable' }); return; }
+    try {
+      fs.writeFileSync(filePath, content, 'utf8');
+      res.status(204).send();
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
@@ -708,6 +836,19 @@ export function registerApiRoutes(
     res.json({ entries: archiveManager.list() });
   });
 
+  // Archive: on-demand stats for an archived session (start/finish/duration/counts)
+  app.get('/api/archive/:sessionId/stats', (req, res) => {
+    const { sessionId } = req.params;
+    const entry = archiveManager.get(sessionId);
+    if (!entry) { res.status(404).json({ error: 'archive entry not found' }); return; }
+    try {
+      const stats = computeArchiveStats(entry);
+      res.json(stats);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Archive: read transcript activity feed for an archived session
   app.get('/api/archive/:sessionId/transcript', (req, res) => {
     const { sessionId } = req.params;
@@ -830,13 +971,36 @@ export function registerApiRoutes(
         }
       }
 
-      // Snapshot git status and transcript state at archive time
+      // Capture fields that depend on live state BEFORE we remove the session.
+      // `session` is a live object; remove() only drops it from the Map, so its
+      // fields stay readable through the captured reference.
+      const capturedCwd = session.cwd;
+      const capturedName = session.proposedName ?? sessionId.slice(0, 8);
+      const capturedPid = session.pid;
+      const capturedProvider = session.provider;
+      const capturedSessionType = session.sessionType;
+      const capturedStartedAt = session.startedAt;
+      const capturedColor = stateManager.sessionColor(sessionId);
+      const capturedLastMessage = session.lastMessage;
+      const capturedLastActivity = session.lastActivity;
+      const capturedModel = session.model;
+      const pidToKill = capturedSessionType === 'bridge' ? capturedPid : undefined;
+
+      // FAST PATH: yank session from state IMMEDIATELY, before any git/transcript I/O.
+      // The setImmediate yield flushes the snapshot broadcast so the worker disappears
+      // from the room within a frame, instead of waiting on `git` + transcript reads.
+      stateManager.remove(sessionId);
+      await new Promise<void>(resolve => setImmediate(resolve));
+
+      // Slow reads: git status (subprocess) + transcript head for last-message metadata.
+      // These populate archive-entry fields but don't affect what the client renders now.
       let gitBranch: string | undefined;
       let pullRequest: { number: number; url: string; title: string; state: string; isDraft: boolean } | undefined;
       try {
-        const git = await readGitStatus(session.cwd, stateManager.getPrCache());
+        const git = await readGitStatus(capturedCwd, stateManager.getPrCache());
         if (git?.branch) gitBranch = git.branch;
-        if (git?.pullRequest) pullRequest = git.pullRequest;
+        const cachedPr = stateManager.getPrCache().get(capturedCwd, git?.branch ?? undefined);
+        if (cachedPr) pullRequest = cachedPr;
       } catch { /* ignore */ }
 
       let lastMessage: string | undefined;
@@ -851,27 +1015,31 @@ export function registerApiRoutes(
         } catch { /* ignore */ }
       }
 
-      const entry = archiveManager.archive({
+      const archiveParams = {
         sessionId,
-        cwd: session.cwd,
-        name: session.proposedName ?? sessionId.slice(0, 8),
-        pid: session.pid,
+        cwd: capturedCwd,
+        name: capturedName,
+        pid: capturedPid,
         sourceTranscriptPath: sourceTranscript,
-        provider: session.provider,
-        sessionType: session.sessionType,
-        startedAt: session.startedAt,
-        color: stateManager.sessionColor(sessionId),
+        provider: capturedProvider,
+        sessionType: capturedSessionType,
+        startedAt: capturedStartedAt,
+        color: capturedColor,
         gitBranch,
         pullRequest,
-        lastMessage: lastMessage ?? session.lastMessage,
-        lastActivity: lastActivity ?? session.lastActivity,
-        model: model ?? session.model,
-      });
+        lastMessage: lastMessage ?? capturedLastMessage,
+        lastActivity: lastActivity ?? capturedLastActivity,
+        model: model ?? capturedModel,
+      };
+
+      // Heavy work: transcript copy + process kill + file cleanup
+      const entry = archiveManager.archive(archiveParams);
       if (!entry) {
+        // Archive failed — still run deleteSession to clean up the now-removed session
+        deleteSession(sessionId, pidToKill, 'archive-failed');
         res.status(500).json({ error: 'failed to archive (transcript missing)' });
         return;
       }
-      const pidToKill = session.sessionType === 'bridge' ? session.pid : undefined;
       deleteSession(sessionId, pidToKill, 'archive');
       if (broadcastRaw) {
         broadcastRaw({ type: 'archive:added', entry });
@@ -892,6 +1060,7 @@ export function registerApiRoutes(
       return;
     }
     archiveManager.remove(sessionId);
+    stateManager.rehydrateFromSessionStore(sessionId);
     if (broadcastRaw) broadcastRaw({ type: 'archive:removed', sessionId, roomId: entry.roomId });
     log('info', 'Session unarchived', { sessionId, sessionName: entry.name });
     res.json({ ok: true, sessionId, cwd: entry.cwd, name: entry.name });
@@ -929,5 +1098,73 @@ export function registerApiRoutes(
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  // ── Plans ────────────────────────────────────────────────────────────────
+
+  const VALID_PLAN_STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
+
+  const emitPlanChanged = (event: PlanChangedEvent): void => {
+    if (broadcastRaw) broadcastRaw(event);
+  };
+
+  app.get('/api/plans', (req, res) => {
+    const overlordId = typeof req.query.overlordId === 'string' ? req.query.overlordId : undefined;
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : undefined;
+    let plans: Plan[];
+    if (overlordId) plans = planStore.listByOverlord(overlordId);
+    else if (cwd) plans = planStore.listByCwd(cwd);
+    else plans = planStore.list();
+    res.json({ plans });
+  });
+
+  app.get('/api/plans/:planId', (req, res) => {
+    const plan = planStore.get(req.params.planId);
+    if (!plan) { res.status(404).json({ error: 'plan not found' }); return; }
+    res.json({ plan });
+  });
+
+  app.post('/api/plans', express.json({ limit: '2mb' }), (req, res) => {
+    const body = req.body as { overlordId?: unknown; title?: unknown; body?: unknown };
+    const overlordId = typeof body.overlordId === 'string' ? body.overlordId : '';
+    if (!overlordId) { res.status(400).json({ error: 'overlordId required' }); return; }
+    const session = sessionStore.getByOverlordId(overlordId);
+    if (!session) { res.status(404).json({ error: 'overlord not found' }); return; }
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title : 'Plan';
+    const planBody = typeof body.body === 'string' ? body.body : '';
+    const plan = planStore.create({
+      overlordId,
+      cwd: session.cwd,
+      title,
+      body: planBody,
+      source: 'user',
+    });
+    emitPlanChanged({ type: 'plan:changed', planId: plan.planId, overlordId: plan.overlordId, cwd: plan.cwd, op: 'create' });
+    res.json({ plan });
+  });
+
+  app.put('/api/plans/:planId', express.json({ limit: '2mb' }), (req, res) => {
+    const body = req.body as { title?: unknown; body?: unknown; status?: unknown };
+    const patch: { title?: string; body?: string; status?: PlanStatus } = {};
+    if (typeof body.title === 'string') patch.title = body.title;
+    if (typeof body.body === 'string') patch.body = body.body;
+    if (typeof body.status === 'string') {
+      if (!VALID_PLAN_STATUSES.includes(body.status as PlanStatus)) {
+        res.status(400).json({ error: 'invalid status' }); return;
+      }
+      patch.status = body.status as PlanStatus;
+    }
+    const plan = planStore.patch(req.params.planId, patch);
+    if (!plan) { res.status(404).json({ error: 'plan not found' }); return; }
+    emitPlanChanged({ type: 'plan:changed', planId: plan.planId, overlordId: plan.overlordId, cwd: plan.cwd, op: 'update' });
+    res.json({ plan });
+  });
+
+  app.delete('/api/plans/:planId', (req, res) => {
+    const existing = planStore.get(req.params.planId);
+    if (!existing) { res.status(404).json({ error: 'plan not found' }); return; }
+    planStore.remove(req.params.planId);
+    emitPlanChanged({ type: 'plan:changed', planId: existing.planId, overlordId: existing.overlordId, cwd: existing.cwd, op: 'delete' });
+    res.json({ ok: true });
   });
 }

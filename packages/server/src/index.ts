@@ -16,11 +16,14 @@ import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, nudgeBridgePi
 import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { detectModeFromText } from './session/modeDetect.js';
-import { findTranscriptPathAnywhere } from './session/transcriptReader.js';
+import { findTranscriptPath, findTranscriptPathAnywhere } from './session/transcriptReader.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
 import { IntentSummarizer } from './ai/intentSummary.js';
 import { sessionStore } from './session/sessionStore.js';
+import { planStore } from './plans/planStore.js';
+import { PlanWatcher } from './plans/planWatcher.js';
+import { migrateLegacyPlanTasks } from './plans/migrateLegacyPlanTasks.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
@@ -94,8 +97,10 @@ function stripAnsi(raw: string): string {
     .replace(/\x1b[^[\]]/g, '')
     // Strip remaining bare ESC
     .replace(/\x1b/g, '')
-    // Strip non-printable chars except newline/tab/CR
-    .replace(/[^\x20-\x7e\n\t\r]/g, '');
+    // Strip non-printable chars except newline/tab/CR. Preserve Unicode whitespace
+    // (NBSP, thin space, etc.) as ASCII space — the Claude CLI status bar uses them
+    // between words, and plain stripping destroys the "(shift+tab to cycle)" sentinel.
+    .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
 
   // Process carriage returns: \r moves to start of line, later content wins.
   // Find the last non-empty segment per newline-delimited chunk.
@@ -477,7 +482,13 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
       const { sentinelFound, mode } = detectModeFromText(tail);
       if (sentinelFound) {
         const resolvedMode = mode ?? 'default';
+        const prevMode = bridgePermMode.get(eid);
         bridgePermMode.set(eid, resolvedMode);
+        // On transition, drop the rolling buffer so the next chunk starts clean —
+        // prevents stale earlier status-bar text from winning over the new one.
+        if (prevMode !== undefined && prevMode !== resolvedMode) {
+          bridgePermText.delete(eid);
+        }
         // Only reset to 'default' when session is at the interactive prompt (waiting).
         // During thinking/working, the full TUI may not be rendering the status bar.
         if (resolvedMode !== 'default' || stateManager.getSession(eid)?.state === 'waiting') {
@@ -610,8 +621,23 @@ function broadcastRaw(msg: object): void {
 // Wire up logger so it can broadcast log entries to all clients
 initLogger((entry) => broadcastRaw({ type: 'log:entry', entry }));
 
-// Hydrate in-memory mirror from disk.
+// Hydrate in-memory mirrors from disk.
 sessionStore.loadAll();
+planStore.loadAll();
+
+// One-time migration: drain legacy OverlordSession.planTasks[] into plan files.
+const planMigrationResult = migrateLegacyPlanTasks(planStore);
+if (planMigrationResult.attempted > 0) {
+  log('info', `[plans] migration: attempted=${planMigrationResult.attempted} migrated=${planMigrationResult.migrated} skipped=${planMigrationResult.skipped} errors=${planMigrationResult.errors.length}`);
+}
+if (planMigrationResult.markerWritten) {
+  // Reload sessionStore so in-memory copy reflects the stripped planTasks field.
+  sessionStore.loadAll();
+}
+
+// Watch plan files for external edits and rebroadcast as plan:changed.
+const planWatcher = new PlanWatcher(planStore, (event) => broadcastRaw(event));
+planWatcher.start();
 
 // Setup state manager
 const stateManager = new StateManager(() => {
@@ -730,6 +756,19 @@ async function autoResumePtySessions(): Promise<void> {
   }
   console.log(`[auto-resume] resuming ${sessions.length} embedded session(s)`);
   for (const { sessionId, cwd } of sessions) {
+    // Claude --resume requires the transcript file to exist at
+    // ~/.claude/projects/<slug>/<sessionId>.jsonl. If cleanupStaleTranscripts
+    // (or archive/delete) removed it, spawning blindly just prints
+    // "No conversation found" and exits. Skip and mark the session deleted so
+    // it stops reappearing in the UI and is not retried on the next restart.
+    const transcriptPath = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+    if (!transcriptPath) {
+      console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing`);
+      stateManager.markDeleted(sessionId);
+      stateManager.remove(sessionId);
+      sessionStore.removeBySessionId(sessionId);
+      continue;
+    }
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
       ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', sessionId, '--name', `___OVR:${ptySessionId}`]);
@@ -805,90 +844,25 @@ bridgeManager.on('disconnected', (sessionId: string) => {
   console.log(`[bridge] disconnected from ${sessionId.slice(0, 8)}, will reconnect`);
 });
 
-// Shared helper: kill a Claude session by PID and remove its session file + state
+// Shared helper: kill a Claude session by PID and remove its session file + state.
+// Fast path (in-memory state + snapshot broadcast) runs synchronously; slow path
+// (process kill + file I/O) is deferred via setImmediate so the UI updates first.
 function deleteSession(sessionId: string, pid?: number, reason?: string): void {
   const caller = reason ?? new Error().stack?.split('\n')[2]?.trim() ?? 'unknown';
   log('session:killed', `Session deleted (${caller})`, { sessionId, sessionName: sessionId.slice(0, 8), extra: pid ? `PID ${pid}` : 'no PID' });
   console.log(`[deleteSession] sessionId=${sessionId} pid=${pid} reason=${caller}`);
-  // 1. Kill the process tree so it can't recreate the session file
-  if (pid) {
-    try {
-      try { execSync(`pkill -P ${pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
-      execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
-      console.log(`[deleteSession] killed pid=${pid} via kill -9`);
-    } catch {
-      // Process already dead — fine
-    }
-  }
 
-  // 2. Delete the session file
-  const sessionFile = join(os.homedir(), '.claude', 'sessions', `${sessionId}.json`);
-  try {
-    if (fs.existsSync(sessionFile)) {
-      fs.unlinkSync(sessionFile);
-      console.log(`[deleteSession] deleted ${sessionFile}`);
-    }
-  } catch (err) {
-    console.warn(`[deleteSession] failed to delete file for ${sessionId}:`, (err as Error).message);
-  }
-
-  // 3. Delete the transcript .jsonl file so it won't be reloaded by loadClosedSessionsFromTranscripts on restart
-  const transcriptFile = findTranscriptPathAnywhere(sessionId);
-  if (transcriptFile) {
-    try {
-      fs.unlinkSync(transcriptFile);
-      console.log(`[deleteSession] deleted transcript ${transcriptFile}`);
-    } catch (err) {
-      console.warn(`[deleteSession] failed to delete transcript for ${sessionId}:`, (err as Error).message);
-    }
-  }
-
-  // 3b. Delete the {sessionId}/ subdirectory under every slug in ~/.claude/projects/
-  //     This holds subagent files (subagents/agent-*.jsonl) and any other per-session artifacts.
-  //     Without this, a server restart would reload the session from leftover subagent transcripts.
-  try {
-    const projectsBase = join(os.homedir(), '.claude', 'projects');
-    if (fs.existsSync(projectsBase)) {
-      for (const slug of fs.readdirSync(projectsBase)) {
-        const sessionSubdir = join(projectsBase, slug, sessionId);
-        if (fs.existsSync(sessionSubdir)) {
-          fs.rmSync(sessionSubdir, { recursive: true, force: true });
-          console.log(`[deleteSession] deleted subdir ${sessionSubdir}`);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn(`[deleteSession] failed to delete session subdir for ${sessionId}:`, (err as Error).message);
-  }
-
-  // 4. Delete task storage files so persisted hints/summaries don't survive
-  const tasksBase = join(os.homedir(), '.claude', 'overlord', 'tasks', sessionId);
-  for (const ext of ['.json', '.hint']) {
-    const p = `${tasksBase}${ext}`;
-    try {
-      if (fs.existsSync(p)) {
-        fs.unlinkSync(p);
-        console.log(`[deleteSession] deleted task file ${p}`);
-      }
-    } catch (err) {
-      console.warn(`[deleteSession] failed to delete task file ${p}:`, (err as Error).message);
-    }
-  }
-
-  // 4b. Delete raw-shell history log + meta so it isn't revived on next startup
-  try {
-    deleteShellHistoryLog(sessionId);
-  } catch (err) {
-    console.warn(`[deleteSession] failed to delete shell history for ${sessionId}:`, (err as Error).message);
-  }
-
-  // 5. Add to persistent deleted blocklist so this session is never resurrected on restart
-  stateManager.markDeleted(sessionId);
-  console.log(`[deleteSession] marked ${sessionId} as deleted in blocklist`);
-
-  // 6. Clean up PTY maps so stale entries don't replay on WS reconnect
-  const ovrId = stateManager.getSession(sessionId)?.overlordId;
+  // Capture refs that later cleanup needs — stateManager.remove wipes them.
+  const existing = stateManager.getSession(sessionId);
+  const ovrId = existing?.overlordId;
   const ptyId = ovrId ? ovrToPty.get(ovrId) : undefined;
+  const wasBridge = stateManager.isBridge(sessionId);
+
+  // FAST PATH — in-memory state updates that drive the snapshot broadcast.
+  stateManager.markDeleted(sessionId);
+  stateManager.remove(sessionId);
+  console.log(`[deleteSession] removed ${sessionId} from state`);
+
   if (ptyId && ovrId) {
     ovrToPty.delete(ovrId);
     ptyToOvr.delete(ptyId);
@@ -896,15 +870,11 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     console.log(`[deleteSession] cleaned up PTY maps ovrId=${ovrId} pty=${ptyId}`);
   }
 
-  // 6b. Clean up bridge state
-  if (stateManager.isBridge(sessionId)) {
+  if (wasBridge) {
     bridgeManager.disconnect(sessionId);
-    stateManager.setBridgePipe(sessionId, '');
     bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
     stateManager.setBridgeActive(sessionId, false);
     linkedBridgeSessions.delete(sessionId);
-    // Drop /clear-migration forwarding entries so old chains don't accumulate.
-    // Removes the deleted id as a key and any entry whose value points at it.
     bridgeIdOverrides.delete(sessionId);
     for (const [k, v] of bridgeIdOverrides) {
       if (v === sessionId) bridgeIdOverrides.delete(k);
@@ -912,13 +882,78 @@ function deleteSession(sessionId: string, pid?: number, reason?: string): void {
     console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
   }
 
-  // 7. Always explicitly remove from state (don't rely on chokidar firing)
-  stateManager.remove(sessionId);
-  console.log(`[deleteSession] removed ${sessionId} from state`);
+  // SLOW PATH — process kill + file I/O deferred so the snapshot broadcast
+  // (queued by stateManager.remove via setImmediate) fires first.
+  setImmediate(() => {
+    if (pid) {
+      try {
+        try { execSync(`pkill -P ${pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
+        execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
+        console.log(`[deleteSession] killed pid=${pid} via kill -9`);
+      } catch {
+        // Process already dead — fine
+      }
+    }
 
-  // 8. Drop the OverlordSession record (notes, intent, planTasks, archive fields).
-  //    Resolves sessionId → overlordId via the store's secondary index.
-  sessionStore.removeBySessionId(sessionId);
+    const sessionFile = join(os.homedir(), '.claude', 'sessions', `${sessionId}.json`);
+    try {
+      if (fs.existsSync(sessionFile)) {
+        fs.unlinkSync(sessionFile);
+        console.log(`[deleteSession] deleted ${sessionFile}`);
+      }
+    } catch (err) {
+      console.warn(`[deleteSession] failed to delete file for ${sessionId}:`, (err as Error).message);
+    }
+
+    const transcriptFile = findTranscriptPathAnywhere(sessionId);
+    if (transcriptFile) {
+      try {
+        fs.unlinkSync(transcriptFile);
+        console.log(`[deleteSession] deleted transcript ${transcriptFile}`);
+      } catch (err) {
+        console.warn(`[deleteSession] failed to delete transcript for ${sessionId}:`, (err as Error).message);
+      }
+    }
+
+    try {
+      const projectsBase = join(os.homedir(), '.claude', 'projects');
+      if (fs.existsSync(projectsBase)) {
+        for (const slug of fs.readdirSync(projectsBase)) {
+          const sessionSubdir = join(projectsBase, slug, sessionId);
+          if (fs.existsSync(sessionSubdir)) {
+            fs.rmSync(sessionSubdir, { recursive: true, force: true });
+            console.log(`[deleteSession] deleted subdir ${sessionSubdir}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[deleteSession] failed to delete session subdir for ${sessionId}:`, (err as Error).message);
+    }
+
+    const tasksBase = join(os.homedir(), '.claude', 'overlord', 'tasks', sessionId);
+    for (const ext of ['.json', '.hint']) {
+      const p = `${tasksBase}${ext}`;
+      try {
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p);
+          console.log(`[deleteSession] deleted task file ${p}`);
+        }
+      } catch (err) {
+        console.warn(`[deleteSession] failed to delete task file ${p}:`, (err as Error).message);
+      }
+    }
+
+    try {
+      deleteShellHistoryLog(sessionId);
+    } catch (err) {
+      console.warn(`[deleteSession] failed to delete shell history for ${sessionId}:`, (err as Error).message);
+    }
+
+    // Drop the OverlordSession record unless it was just archived
+    // (archive must survive deleteSession).
+    const storeRec = sessionStore.getBySessionId(sessionId);
+    if (!storeRec?.archive) sessionStore.removeBySessionId(sessionId);
+  });
 }
 
 // WebSocket handler (moved to wsHandler.ts)
@@ -947,9 +982,7 @@ registerApiRoutes(
   ptyManager,
   { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo },
   deleteSession,
-  aiClassifier.generateCompletionSummary.bind(aiClassifier),
   ptyOutputBuffer,
-  aiClassifier.generateTaskTitle.bind(aiClassifier),
   broadcastRaw,
 );
 
@@ -983,6 +1016,9 @@ async function shutdown(signal: string) {
   try { stateManager.saveKnownSessions(); } catch { /* ignore */ }
   // 2b. Flush any pending SessionStore writes so durable state lands on disk
   try { await sessionStore.flushAll(); } catch { /* ignore */ }
+  // 2c. Flush pending plan writes and stop watcher
+  try { await planStore.flushAll(); } catch { /* ignore */ }
+  try { await planWatcher.stop(); } catch { /* ignore */ }
   // 3. Kill embedded PTY sessions gracefully (SIGTERM, not SIGKILL)
   //    so Claude CLI can clean up. Bridge sessions survive — they're external.
   ptyManager.killAll();

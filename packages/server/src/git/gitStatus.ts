@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { PrCache, PrInfo } from './prCache.js';
+import type { PrCache } from './prCache.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -17,9 +17,10 @@ export interface GitStatus {
   untracked: string[];
   conflicted: string[];
   stashCount: number;
-  lastCommit: { hash: string; subject: string; author: string; relativeTime: string } | null;
-  unpushedCommits: Array<{ hash: string; subject: string; relativeTime: string }>;
-  pullRequest: PrInfo | null;
+  lastCommit: { hash: string; subject: string; author: string; relativeTime: string; filesChanged: number } | null;
+  branchCommits: Array<{ hash: string; subject: string; relativeTime: string; filesChanged: number; pushed: boolean }>;
+  modifiedCount: number;
+  addedCount: number;
 }
 
 async function run(cwd: string, args: string[], timeoutMs = 3000): Promise<string> {
@@ -30,7 +31,7 @@ async function run(cwd: string, args: string[], timeoutMs = 3000): Promise<strin
 export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitStatus | null> {
   try {
     // porcelain v2 includes branch info + all file status lines
-    const out = await run(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all']);
+    const out = await run(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], 5000);
 
     let branch: string | null = null;
     let upstream: string | null = null;
@@ -71,12 +72,14 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
       }
     }
 
-    // Last commit
+    // Last commit (filesChanged filled by branch-commits pass below)
     let lastCommit: GitStatus['lastCommit'] = null;
     try {
       const log = await run(cwd, ['log', '-1', '--pretty=format:%h%x1f%s%x1f%an%x1f%ar']);
       const [hash, subject, author, relativeTime] = log.split('\x1f');
-      if (hash) lastCommit = { hash, subject: subject ?? '', author: author ?? '', relativeTime: relativeTime ?? '' };
+      if (hash) {
+        lastCommit = { hash, subject: subject ?? '', author: author ?? '', relativeTime: relativeTime ?? '', filesChanged: 0 };
+      }
     } catch { /* no commits yet */ }
 
     // Stash count
@@ -86,20 +89,53 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
       stashCount = stash.split('\n').filter(l => l.trim()).length;
     } catch { /* ignore */ }
 
-    // Unpushed commits: upstream..HEAD if upstream is set, otherwise skip
-    const unpushedCommits: GitStatus['unpushedCommits'] = [];
-    if (upstream && ahead > 0) {
-      try {
-        const log = await run(cwd, ['log', `${upstream}..HEAD`, '-n', '15', '--pretty=format:%h%x1f%s%x1f%ar']);
-        for (const line of log.split('\n')) {
-          if (!line.trim()) continue;
-          const [hash, subject, relativeTime] = line.split('\x1f');
-          if (hash) unpushedCommits.push({ hash, subject: subject ?? '', relativeTime: relativeTime ?? '' });
+    // Branch commits — use base if known, else upstream, else last 20.
+    // Single `git log --shortstat` call: fetches hash/subject/time AND files-changed in one pass.
+    const branchCommits: GitStatus['branchCommits'] = [];
+    try {
+      const baseRef = await resolveBase(cwd);
+      const range = baseRef ? `${baseRef}..HEAD` : upstream ? `${upstream}..HEAD` : 'HEAD';
+      const limit = baseRef || upstream ? 50 : 20;
+      const args = baseRef || upstream
+        ? ['log', range, '-n', String(limit), '--pretty=format:__CMT__%x1f%h%x1f%s%x1f%ar', '--shortstat']
+        : ['log', '-n', String(limit), '--pretty=format:__CMT__%x1f%h%x1f%s%x1f%ar', '--shortstat'];
+      const log = await run(cwd, args, 4000);
+      const rawCommits: Array<{ hash: string; subject: string; relativeTime: string; filesChanged: number }> = [];
+      let cur: { hash: string; subject: string; relativeTime: string; filesChanged: number } | null = null;
+      for (const line of log.split('\n')) {
+        if (line.startsWith('__CMT__')) {
+          if (cur) rawCommits.push(cur);
+          const [, hash, subject, relativeTime] = line.split('\x1f');
+          cur = { hash: hash ?? '', subject: subject ?? '', relativeTime: relativeTime ?? '', filesChanged: 0 };
+        } else if (cur) {
+          // shortstat line: " N files changed, M insertions(+), K deletions(-)"
+          const m = line.match(/(\d+)\s+files?\s+changed/);
+          if (m) cur.filesChanged = parseInt(m[1], 10);
         }
-      } catch { /* ignore */ }
-    }
+      }
+      if (cur) rawCommits.push(cur);
+      // Unpushed hashes — commits not reachable from upstream
+      const unpushedSet = new Set<string>();
+      if (upstream) {
+        try {
+          const up = await run(cwd, ['rev-list', `${upstream}..HEAD`, '--abbrev-commit'], 2000);
+          up.split('\n').forEach(h => { const t = h.trim(); if (t) unpushedSet.add(t); });
+        } catch { /* ignore */ }
+      } else {
+        rawCommits.forEach(c => unpushedSet.add(c.hash));
+      }
+      rawCommits.forEach(c => branchCommits.push({
+        ...c,
+        pushed: !unpushedSet.has(c.hash),
+      }));
+      // Backfill lastCommit.filesChanged from first row (HEAD).
+      if (lastCommit && rawCommits.length > 0 && rawCommits[0].hash === lastCommit.hash) {
+        lastCommit.filesChanged = rawCommits[0].filesChanged;
+      }
+    } catch { /* ignore */ }
 
-    const pullRequest = await prCache.getOrFetch(cwd, branch ?? undefined);
+    // Warm the PR cache (non-blocking) so /api/git/pr has fresh data.
+    prCache.get(cwd, branch ?? undefined);
 
     // Ahead/behind vs the repo's base branch (origin/main, origin/master, or
     // whatever origin/HEAD points to). Computed here so the tooltip has the
@@ -130,10 +166,12 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
       conflicted,
       stashCount,
       lastCommit,
-      unpushedCommits,
-      pullRequest,
+      branchCommits,
+      modifiedCount: staged.length + modified.length,
+      addedCount: untracked.length,
     };
-  } catch {
+  } catch (err) {
+    console.error('[gitStatus] failed', cwd, (err as Error).message);
     return null;
   }
 }

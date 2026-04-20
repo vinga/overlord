@@ -54,6 +54,19 @@ export interface BrainPermissionRule {
   source: string;
 }
 
+export type EffortValue = 'low' | 'medium' | 'high' | 'xhigh' | string | null;
+
+export interface BrainEffortTier {
+  value: EffortValue;
+  source: string | null;
+}
+
+export interface BrainEffort {
+  global: BrainEffortTier;
+  project: BrainEffortTier;
+  effective: EffortValue;
+}
+
 export interface BrainContext {
   cwd: string;
   identity: BrainIdentityFile[];
@@ -66,6 +79,7 @@ export interface BrainContext {
     allow: BrainPermissionRule[];
     deny: BrainPermissionRule[];
   };
+  effort: BrainEffort;
 }
 
 const SECRET_KEY_RE = /token|key|secret|password/i;
@@ -274,6 +288,35 @@ function extractPermissions(settings: SettingsWithSource[]): BrainContext['permi
   return { allow, deny };
 }
 
+function extractEffort(settings: SettingsWithSource[], home: string, cwd: string): BrainEffort {
+  const globalPath = path.join(home, '.claude', 'settings.json');
+  const projectPath = path.join(cwd, '.claude', 'settings.json');
+  const projectLocalPath = path.join(cwd, '.claude', 'settings.local.json');
+
+  const global: BrainEffortTier = { value: null, source: null };
+  const project: BrainEffortTier = { value: null, source: null };
+  let projectFromLocal = false;
+
+  for (const { data, source } of settings) {
+    const v = typeof data.effortLevel === 'string' ? data.effortLevel : null;
+    if (!v) continue;
+    if (source === globalPath) {
+      global.value = v;
+      global.source = source;
+    } else if (source === projectLocalPath) {
+      project.value = v;
+      project.source = source;
+      projectFromLocal = true;
+    } else if (source === projectPath && !projectFromLocal) {
+      project.value = v;
+      project.source = source;
+    }
+  }
+
+  const effective: EffortValue = project.value ?? global.value ?? null;
+  return { global, project, effective };
+}
+
 function extractMcpServers(settings: SettingsWithSource[]): BrainMcpServer[] {
   const out: BrainMcpServer[] = [];
   const seen = new Set<string>();
@@ -387,15 +430,17 @@ function sourceFiles(cwd: string, ctx: BrainContext): string[] {
 }
 
 function buildContext(cwd: string): BrainContext {
+  const home = os.homedir();
   const identity = collectClaudeMdChain(cwd);
   const memory = readMemory(cwd);
   const settings = collectSettings(cwd);
   const hooks = extractHooks(settings);
   const permissions = extractPermissions(settings);
   const mcpServers = extractMcpServers(settings);
+  const effort = extractEffort(settings, home, cwd);
   const skills = collectSkills(cwd);
   const agents = collectAgents(cwd);
-  return { cwd, identity, memory, hooks, skills, agents, mcpServers, permissions };
+  return { cwd, identity, memory, hooks, skills, agents, mcpServers, permissions, effort };
 }
 
 export function getBrainContext(cwd: string): BrainContext {

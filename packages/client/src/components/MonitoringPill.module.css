@@ -1,0 +1,34 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: rgba(96, 165, 250, 0.95);
+  padding: 2px 8px;
+  margin-top: 4px;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.28);
+  background: rgba(96, 165, 250, 0.08);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #60a5fa;
+  box-shadow: 0 0 4px rgba(96, 165, 250, 0.6);
+  animation: monitorPulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.label {
+  letter-spacing: 0.2px;
+}
+
+@keyframes monitorPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.78); }
+}

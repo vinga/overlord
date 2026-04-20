@@ -226,25 +226,9 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
     .on('add', handleTranscriptAdded)
     .on('change', handleTranscriptFile);
 
-  // Track task IDs where title generation has already been attempted this run (avoid infinite retries)
-  const titleAttempted = new Set<string>();
-  let titlePruneTick = 0;
-
   // Periodic state refresh — re-evaluate all session states every 3s
   // (smallest state threshold is 3s, so polling must be at least that frequent)
   setInterval(() => {
-    // Prune titleAttempted every ~60s so completed/abandoned taskIds don't accumulate forever.
-    if (++titlePruneTick >= 20 && titleAttempted.size > 0) {
-      titlePruneTick = 0;
-      const liveTaskIds = new Set<string>();
-      for (const id of ctx.stateManager.getAllSessionIds()) {
-        const t = ctx.stateManager.getSession(id)?.currentTask?.taskId;
-        if (t) liveTaskIds.add(t);
-      }
-      for (const taskId of titleAttempted) {
-        if (!liveTaskIds.has(taskId)) titleAttempted.delete(taskId);
-      }
-    }
     for (const sessionId of ctx.stateManager.getAllSessionIds()) {
       const session = ctx.stateManager.getSession(sessionId);
       if (session?.state === 'closed') continue;
@@ -289,14 +273,6 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       if (becameWorking && !sess?.isWorker) {
         ctx.aiClassifier.cancelLabel(sessionId);
         ctx.aiClassifier.scheduleLabel(sessionId);
-        // Create a new task if no active task exists
-        const sessNow = ctx.stateManager.getSession(sessionId);
-        if (sessNow && !sessNow.currentTask) {
-          const newTask = ctx.stateManager.createTaskForSession(sessionId, new Date().toISOString());
-          if (newTask) {
-            void ctx.aiClassifier.generateTaskTitle(sessionId, newTask.taskId);
-          }
-        }
       }
       if (leftWorking && !sess?.isWorker) {
         ctx.aiClassifier.cancelLabel(sessionId);
@@ -305,21 +281,6 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       const currentSession = ctx.stateManager.getSession(sessionId);
       if (currentSession && !currentSession.isWorker && (currentSession.state === 'working' || currentSession.state === 'thinking') && !currentSession.currentTaskLabel && !ctx.aiClassifier.hasLabelScheduled(sessionId) && !ctx.aiClassifier.isGeneratingLabel(sessionId)) {
         ctx.aiClassifier.scheduleLabel(sessionId);
-      }
-      // Backfill: create task for active/waiting sessions that have none (e.g. active at startup)
-      if (currentSession && !currentSession.isWorker && !currentSession.currentTask &&
-          (currentSession.state === 'working' || currentSession.state === 'thinking' || currentSession.state === 'waiting')) {
-        const backfillTask = ctx.stateManager.createTaskForSession(sessionId, currentSession.lastActivity ?? new Date().toISOString());
-        if (backfillTask && !titleAttempted.has(backfillTask.taskId)) {
-          titleAttempted.add(backfillTask.taskId);
-          void ctx.aiClassifier.generateTaskTitle(sessionId, backfillTask.taskId);
-        }
-      }
-      // Backfill: generate title for existing tasks that have none (e.g. failed on previous run)
-      if (currentSession && !currentSession.isWorker && currentSession.currentTask &&
-          !currentSession.currentTask.title && !titleAttempted.has(currentSession.currentTask.taskId)) {
-        titleAttempted.add(currentSession.currentTask.taskId);
-        void ctx.aiClassifier.generateTaskTitle(sessionId, currentSession.currentTask.taskId);
       }
       // Rolling intent summary — generated for every non-closed, non-worker session.
       // Debounced 2s per session; refreshed every ≥5 new user turns. Frozen on close.

@@ -47,6 +47,14 @@ export interface PendingQuestionSet {
   questions: PendingQuestion[];
 }
 
+/** An in-flight Monitor tool_use — emitted while the tool has no tool_result yet. */
+export interface ActiveMonitor {
+  toolUseId: string;
+  target: string;        // best-effort: input.shellId ?? input.taskId ?? input.id ?? ''
+  startedAt?: string;    // ISO timestamp of the tool_use
+  until?: string;        // input.until regex, if any
+}
+
 export interface Task {
   taskId: string;         // e.g. "{sessionId}-1"
   sessionId: string;
@@ -98,6 +106,7 @@ export interface Session {
   permissionMode?: string;
   permissionModeLockedUntil?: number;  // timestamp ms — screen-detected mode, blocks transcript overwrite
   pendingQuestion?: PendingQuestionSet;
+  activeMonitors?: ActiveMonitor[];
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
@@ -204,7 +213,6 @@ export interface OverlordSession {
   intentUpdatedAt?: number;
   notes?: string;
   currentTask?: Task;
-  planTasks?: Task[];
   completionSummaries?: Task[];
   completionHint?: 'done';
   acknowledged?: boolean;
@@ -247,6 +255,7 @@ export interface LiveSession {
   permissionMode?: string;
   permissionModeLockedUntil?: number;
   pendingQuestion?: PendingQuestionSet;
+  activeMonitors?: ActiveMonitor[];
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
   currentTaskLabel?: string;
@@ -266,6 +275,7 @@ export interface Room {
   cwd: string;
   sessions: Session[];
   gitBranch?: string;
+  gitAhead?: number;
   pullRequest?: {
     number: number;
     url: string;

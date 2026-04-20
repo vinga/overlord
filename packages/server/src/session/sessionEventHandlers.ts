@@ -4,7 +4,9 @@ import type { PtyManager } from '../pty/ptyManager.js';
 import type { AiClassifier } from '../ai/aiClassifier.js';
 import type { SessionSource } from './sessionWatcher.js';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
+import { sessionStore } from './sessionStore.js';
 import { log } from '../logger.js';
+import { applyPendingPermMode } from '../pty/ptyEvents.js';
 
 export interface SessionEventContext {
   stateManager: StateManager;
@@ -52,6 +54,10 @@ function linkPtyToOvr(ctx: SessionEventContext, ovrId: string, ptySessionId: str
   }
   ctx.ovrToPty.set(ovrId, ptySessionId);
   ctx.ptyToOvr.set(ptySessionId, ovrId);
+  // Flush any mode detection that fired before linking (startup race: PTY output
+  // arrives before ptyToOvr is set, so earlier calls used the ptySessionId fallback
+  // and found no session). Now that ovrId is known, apply the buffered mode.
+  applyPendingPermMode(ptySessionId, ovrId, ctx.stateManager);
 }
 
 export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx: SessionEventContext): void {
@@ -64,6 +70,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
       if (session) {
         session.proposedName = info.name;
         session.resumedFrom = info.originalSessionId;
+        sessionStore.patchBySessionId(claudeSessionId, { proposedName: info.name, resumedFrom: info.originalSessionId });
         ctx.stateManager.refreshTranscript(claudeSessionId);
       }
       log('info', `Applied clone info: name="${info.name}", resumedFrom=${info.originalSessionId.slice(0, 8)} → ${claudeSessionId.slice(0, 8)}`);

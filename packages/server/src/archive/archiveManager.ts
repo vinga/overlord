@@ -175,7 +175,11 @@ export class ArchiveManager {
     const archived = rec?.archive?.transcripts.find(t => t.sessionId === sessionId);
     if (!rec || !archived) return null;
     if (!fs.existsSync(archived.path)) return null;
-    const projectSlug = rec.cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
+    // Match Claude CLI's project-dir slug exactly: convert `/`, `\`, `:`, `.` to `-`
+    // and keep any leading dash. Do NOT strip leading dashes — `claude --resume`
+    // looks in `~/.claude/projects/-Users-.../` and won't find files written to
+    // `~/.claude/projects/Users-.../`.
+    const projectSlug = rec.cwd.replace(/[\\:/.]/g, '-');
     const destDir = path.join(os.homedir(), '.claude', 'projects', projectSlug);
     ensureDir(destDir);
     const destPath = path.join(destDir, `${sessionId}.jsonl`);

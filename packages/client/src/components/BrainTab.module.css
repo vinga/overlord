@@ -438,6 +438,92 @@
 .permAllow { color: #88dd88; }
 .permDeny { color: #ff8888; }
 
+.effortEffective {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px 6px;
+}
+
+.effortEffectiveLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #666;
+}
+
+.effortChip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: rgba(212, 175, 55, 0.14);
+  color: #e8c97c;
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+
+.effortChipEmpty {
+  background: rgba(255, 255, 255, 0.04);
+  color: #888;
+  border-color: rgba(255, 255, 255, 0.08);
+  font-weight: 500;
+}
+
+.effortRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+
+.effortRowDim {
+  opacity: 0.45;
+}
+
+.effortRowLabel {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #888;
+  min-width: 60px;
+}
+
+.effortValue {
+  color: #e8e4d2;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+}
+
+.effortValueEmpty {
+  color: #666;
+}
+
+.effortSource {
+  color: #666;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  flex: 1;
+  min-width: 0;
+}
+
+.effortCaption {
+  color: #666;
+  font-size: 11.5px;
+  font-style: italic;
+  padding: 4px 14px 10px;
+}
+
 .editActions {
   display: flex;
   justify-content: flex-end;

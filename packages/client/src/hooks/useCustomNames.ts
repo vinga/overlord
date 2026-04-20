@@ -24,7 +24,9 @@ export function useCustomNames() {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
-    }).catch(err => console.error('rename failed', err));
+    })
+      .then(() => window.dispatchEvent(new CustomEvent('archive:changed', { detail: {} })))
+      .catch(err => console.error('rename failed', err));
   }, []);
 
   // One-shot migration: upload legacy localStorage renames to the server, then

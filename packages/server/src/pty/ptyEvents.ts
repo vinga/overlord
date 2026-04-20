@@ -22,6 +22,23 @@ export interface PtyEventsContext {
 // Rolling stripped-text buffer for active-state detection (status bar + spinner line).
 const activeDetectBuf = new Map<string, string>();
 const ACTIVE_DETECT_BUF_SIZE = 2048;
+// Last permission mode detected per ptySessionId. Used to clear the rolling buffer
+// on transition so stale status-bar bytes in the tail cannot re-win.
+const lastDetectedMode = new Map<string, string>();
+
+/**
+ * Flush the last detected permission mode for a PTY to a freshly linked ovrId.
+ * Called by linkPtyToOvr after ptyToOvr is set so the startup race (PTY output
+ * arrives before linking) doesn't silently discard mode detections.
+ */
+export function applyPendingPermMode(
+  ptySessionId: string,
+  ovrId: string,
+  stateManager: { setPermissionMode: (id: string, mode: string) => void },
+): void {
+  const mode = lastDetectedMode.get(ptySessionId);
+  if (mode) stateManager.setPermissionMode(ovrId, mode);
+}
 
 export function wirePtyEvents(ctx: PtyEventsContext): void {
   ctx.ptyManager.on('output', (ptySessionId: string, data: string) => {
@@ -71,7 +88,10 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
         .replace(/\x1b[^[\]]/g, '')
         .replace(/\x1b/g, '')
-        .replace(/[^\x20-\x7e\n\t\r]/g, '');
+        // Preserve Unicode whitespace (e.g. U+00A0 NBSP) as ASCII space — Claude CLI's
+        // status bar uses them between words, and plain stripping destroys the
+        // "(shift+tab to cycle)" sentinel so mode detection fails.
+        .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
       const prev = activeDetectBuf.get(ptySessionId) ?? '';
       const combined = (prev + stripped).slice(-ACTIVE_DETECT_BUF_SIZE);
       activeDetectBuf.set(ptySessionId, combined);
@@ -97,7 +117,15 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       // so gating this on isRepaint alone delays the pill update by hundreds of ms.
       const { sentinelFound, mode } = detectModeFromText(combined);
       if (sentinelFound) {
-        ctx.stateManager.setPermissionMode(ovrId, mode ?? 'default');
+        const resolvedMode = mode ?? 'default';
+        const prevMode = lastDetectedMode.get(ptySessionId);
+        if (prevMode !== resolvedMode) {
+          lastDetectedMode.set(ptySessionId, resolvedMode);
+          // Drop the rolling buffer so the next chunk starts clean — prevents
+          // stale earlier status-bar text from winning over the new one.
+          activeDetectBuf.delete(ptySessionId);
+        }
+        ctx.stateManager.setPermissionMode(ovrId, resolvedMode);
       }
     }
   });
@@ -119,6 +147,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     }
     clearCompactDetector(ptySessionId);
     activeDetectBuf.delete(ptySessionId);
+    lastDetectedMode.delete(ptySessionId);
 
     // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;

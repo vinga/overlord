@@ -47,7 +47,8 @@ export function App() {
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
     const saved = localStorage.getItem('overlord:panelWidth');
-    return saved ? Math.max(320, Math.min(900, parseInt(saved, 10))) : 680;
+    const maxWidth = Math.max(900, window.innerWidth - 80);
+    return saved ? Math.max(320, Math.min(maxWidth, parseInt(saved, 10))) : 680;
   });
 
   // Use a ref so the WS handler always sees the latest terminal message handler,
@@ -194,7 +195,18 @@ export function App() {
     }
     if (selectedSessionId.startsWith('pty-')) return;
     const all = snapshot.rooms.flatMap(r => r.sessions);
-    const sess = all.find(s => s.sessionId === selectedSessionId);
+    let sess = all.find(s => s.sessionId === selectedSessionId);
+    if (!sess) {
+      // The selected UUID is an ancestor in the /resume or /clear chain. Walk
+      // forward through resumedFrom pointers to find the current live session.
+      let cursor = selectedSessionId;
+      for (let i = 0; i < 5; i++) {
+        const next = all.find(s => s.resumedFrom === cursor);
+        if (!next) break;
+        sess = next;
+        cursor = next.sessionId;
+      }
+    }
     if (sess?.overlordId) setSelectedSessionId(sess.overlordId);
   }, [selectedSessionId, snapshot, terminal.exitedSessions]);
 

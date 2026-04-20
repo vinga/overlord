@@ -9,6 +9,7 @@ import dialogStyles from './DirectoryPickerDialog.module.css';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 import { GitBranchBadge } from './GitBranchBadge';
+import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 
 // 300 distinctive names for new sessions — pick a random unused one
 export const SESSION_NAMES = [
@@ -258,14 +259,16 @@ function CommandCopiedToast({ onDone }: { onDone: () => void }) {
   );
 }
 
-function RoomSpawnDialog({ cwd, initialName, onSpawn, onCancel, onCopyAndClose }: {
+function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, onCopyAndClose }: {
   cwd: string;
   initialName: string;
-  onSpawn: (name: string, mode: TerminalSpawnMode) => void;
+  initialPrefix: string;
+  onSpawn: (name: string, mode: TerminalSpawnMode, prefix: string) => void;
   onCancel: () => void;
   onCopyAndClose?: () => void;
 }) {
   const [name, setName] = useState(initialName);
+  const [prefix, setPrefix] = useState(initialPrefix);
   const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
   const [bridgePath, setBridgePath] = useState<string>('overlord-bridge');
   const nameRef = useRef<HTMLInputElement>(null);
@@ -318,19 +321,32 @@ function RoomSpawnDialog({ cwd, initialName, onSpawn, onCancel, onCopyAndClose }
           <div style={{ fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: 12, color: 'rgba(255,255,255,0.45)', background: '#0a0a14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, padding: '7px 12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cwd}</div>
         </div>
 
-        {/* Name row */}
+        {/* Name row with inline prefix */}
         <div className={dialogStyles.config} style={{ paddingBottom: 0 }}>
           <div className={dialogStyles.configRow}>
             <label className={dialogStyles.label}>Name</label>
-            <input
-              ref={nameRef}
-              className={dialogStyles.nameInput}
-              value={name}
-              onChange={e => setName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), mode); }}
-              placeholder="Session name…"
-              spellCheck={false}
-            />
+            <div style={{ display: 'flex', gap: 4, flex: 1 }}>
+              <input
+                className={dialogStyles.nameInput}
+                value={prefix}
+                onChange={e => setPrefix(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), mode, prefix); }}
+                placeholder="prefix…"
+                spellCheck={false}
+                title="Session prefix — saved for this room"
+                style={{ flex: 'none', width: 55, color: 'rgba(255,255,255,0.4)', fontStyle: prefix ? 'normal' : 'italic' }}
+              />
+              <input
+                ref={nameRef}
+                className={dialogStyles.nameInput}
+                value={name}
+                onChange={e => setName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), mode, prefix); }}
+                placeholder="Session name…"
+                spellCheck={false}
+                style={{ flex: 1 }}
+              />
+            </div>
           </div>
         </div>
 
@@ -378,7 +394,7 @@ function RoomSpawnDialog({ cwd, initialName, onSpawn, onCancel, onCopyAndClose }
           <button className={dialogStyles.cancelBtn} onClick={onCancel}>Cancel</button>
           <button
             className={dialogStyles.spawnBtn}
-            onClick={() => name.trim() && onSpawn(name.trim(), mode)}
+            onClick={() => name.trim() && onSpawn(name.trim(), mode, prefix)}
             disabled={!name.trim()}
           >Spawn</button>
         </div>
@@ -578,6 +594,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   const [showSpawnPanel, setShowSpawnPanel] = useState(false);
   const [spawnPanelName, setSpawnPanelName] = useState('');
   const [namePrefix, setNamePrefix] = useState('');
+  const [lastMode, setLastMode] = useState<TerminalSpawnMode>('embedded');
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
@@ -643,8 +660,13 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`)
-      .then(r => r.ok ? r.json() as Promise<{ prefix: string }> : null)
-      .then(cfg => { if (!cancelled && cfg) setNamePrefix(cfg.prefix ?? ''); })
+      .then(r => r.ok ? r.json() as Promise<{ prefix: string; lastMode?: TerminalSpawnMode }> : null)
+      .then(cfg => {
+        if (!cancelled && cfg) {
+          setNamePrefix(cfg.prefix ?? '');
+          if (cfg.lastMode) setLastMode(cfg.lastMode);
+        }
+      })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
   }, [room.cwd]);
@@ -796,6 +818,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             cwd={room.cwd}
             gitWarning={room.gitWarning}
             pullRequest={room.pullRequest}
+            gitAhead={room.gitAhead}
           />
         )}
         {onSpawnDirect && (
@@ -814,20 +837,66 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                   setNamePrefix(fresh);
                 }
               } catch { /* fall back to cached namePrefix */ }
-              setSpawnPanelName(fresh + baseName);
+              setSpawnPanelName(baseName);
               setShowSpawnPanel(true);
             }}
-            title={`New session in ${room.cwd}`}
+            data-tooltip="New session — choose name &amp; mode"
+            data-tooltip-dir="down"
+            data-tooltip-align="right"
             aria-label="New session"
           >+</button>
+        )}
+        {onSpawnDirect && room.sessions.length > 0 && (
+          <button
+            className={styles.quickSpawnButton}
+            onClick={async (e) => {
+              e.stopPropagation();
+              const baseName = getNextName('');
+              let fresh = namePrefix;
+              let mode: TerminalSpawnMode = lastMode;
+              try {
+                const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`);
+                if (r.ok) {
+                  const cfg = await r.json() as { prefix?: string; lastMode?: TerminalSpawnMode };
+                  fresh = cfg.prefix ?? '';
+                  setNamePrefix(fresh);
+                  if (cfg.lastMode) { mode = cfg.lastMode; setLastMode(cfg.lastMode); }
+                }
+              } catch { /* fall back to cached values */ }
+              fetch('/api/room-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cwd: room.cwd, lastMode: mode }),
+              }).catch(() => {});
+              setLastMode(mode);
+              onSpawnDirect(room.cwd, fresh + baseName, mode);
+            }}
+            data-tooltip={`Quick spawn — reuse last mode (${lastMode})`}
+            data-tooltip-dir="down"
+            data-tooltip-align="right"
+            aria-label="Quick spawn"
+          >
+            <span>+</span>
+            <svg width="7" height="9" viewBox="0 0 8 11" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ marginLeft: 1, flexShrink: 0, alignSelf: 'flex-end', marginBottom: 2 }}>
+              <path d="M6 1L3.5 5.5h3L2 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
         )}
       </div>
       {showSpawnPanel && onSpawnDirect && (
         <RoomSpawnDialog
           cwd={room.cwd}
           initialName={spawnPanelName}
-          onSpawn={(name, mode) => {
-            onSpawnDirect(room.cwd, name, mode);
+          initialPrefix={namePrefix}
+          onSpawn={(name, mode, prefix) => {
+            fetch('/api/room-config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cwd: room.cwd, prefix, lastMode: mode }),
+            }).catch(() => {});
+            setNamePrefix(prefix);
+            setLastMode(mode);
+            onSpawnDirect(room.cwd, prefix + name, mode);
             setShowSpawnPanel(false);
           }}
           onCancel={() => setShowSpawnPanel(false)}
@@ -964,6 +1033,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                           <span className={styles.archiveEntryTime}>
                             {formatArchiveEntryTime(entry.archivedAt)}
                           </span>
+                          <ArchiveStatsTooltip sessionId={entry.sessionId} />
                         </div>
                         {entry.intent && (
                           <div className={styles.archiveEntryIntent}>{entry.intent}</div>

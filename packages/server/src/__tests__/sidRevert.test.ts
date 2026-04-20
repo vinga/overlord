@@ -171,19 +171,9 @@ describe('sid revert detection', () => {
   });
 });
 
-describe('saveKnownSessions — backfills proposedName from transcript', () => {
-  it('recovers name from customTitle when proposedName is missing', async () => {
-    const { readProposedName, clearSessionCaches } = await import('../session/transcriptReader.js');
-    const sid = 'a1d78fb2-da27-4a81-8e1e-b3f8ee94324b';
-    const transcript = path.join(tmpHome, '.claude', 'projects', `${sid}.jsonl`);
-    fs.writeFileSync(
-      transcript,
-      JSON.stringify({ type: 'custom-title', customTitle: 'Fyren___OVR:pty-xyz', sessionId: sid }) + '\n',
-    );
-    clearSessionCaches(sid);
-
-    // Direct test of the resolver used by saveKnownSessions.
-    const name = readProposedName(sid, transcript);
-    expect(name).toBe('Fyren');
-  });
-});
+// The former "saveKnownSessions — backfills proposedName from transcript" test
+// was removed when proposedName was moved out of known-sessions.json and into
+// sessionStore (OverlordSession) as the single source of truth. The transcript
+// resolver (readProposedName) remains covered by the "customTitle Strategy 0"
+// describe block above; stateManager seeds sessionStore with the resolved name
+// via ensureFromLive at normal session creation.

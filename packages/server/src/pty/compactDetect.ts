@@ -12,7 +12,7 @@ function stripForMatch(raw: string): string {
     .replace(/\x1b\].*?(?:\x1b\\|\x07)/g, '')
     .replace(/\x1b[^[\]]/g, '')
     .replace(/\x1b/g, '')
-    .replace(/[^\x20-\x7e\n\t\r]/g, '');
+    .replace(/[^\x20-\x7e\n\t\r]/g, (ch) => /\s/.test(ch) ? ' ' : '');
 }
 
 export function feedCompactDetector(

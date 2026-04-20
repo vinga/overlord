@@ -36,6 +36,13 @@
   top: calc(100% + 7px);
 }
 
+/* Right-align tooltip so it doesn't overflow viewport right edge */
+[data-tooltip-align="right"]::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
 /* ── Global dark scrollbars ─────────────────────────────────────────────── */
 * {
   scrollbar-width: thin;
@@ -58,4 +65,17 @@
 
 *::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+.inlineFilePath {
+  color: #d4af37;
+  cursor: pointer;
+  border-bottom: 1px dotted rgba(212, 175, 55, 0.4);
+  transition: color 0.15s, border-color 0.15s;
+  word-break: break-all;
+}
+
+.inlineFilePath:hover {
+  color: #e8c97c;
+  border-bottom-color: rgba(232, 201, 124, 0.7);
 }

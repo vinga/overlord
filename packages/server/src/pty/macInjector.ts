@@ -190,7 +190,7 @@ end tell
   //   • Terminal.app sends CR (not LF) when the user presses Return — inlcr doesn't affect it.
   //   • inlcr is an INPUT flag — Claude's output is completely unaffected.
   //   • The flag is reset when the PTY is closed/deallocated.
-  try { execSync(`stty inlcr < "${ttyPath}"`, { encoding: 'utf8', timeout: 2000, shell: true }); } catch { /* ignore */ }
+  try { execSync(`stty inlcr < "${ttyPath}"`, { encoding: 'utf8', timeout: 2000, shell: '/bin/sh' }); } catch { /* ignore */ }
 
   try {
     const result = execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {

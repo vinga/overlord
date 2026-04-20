@@ -1,7 +1,9 @@
 import React, { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import type { WorkerState, Task, Session } from '../types';
+import type { WorkerState, Task, Session, ActiveMonitor } from '../types';
 import styles from './Worker.module.css';
 import { WorkerPlanPill } from './WorkerPlanPill';
+import { MonitoringPill } from './MonitoringPill';
+import { selectAfterPrefix } from '../hooks/useRoomPrefix';
 
 interface WorkerProps {
   sessionId: string;
@@ -26,8 +28,10 @@ interface WorkerProps {
   ptyInputPendingSince?: number;
   notesSummary?: string;
   intent?: string;
+  activeMonitors?: ActiveMonitor[];
   onClick: () => void;
   onRename?: (newName: string) => void;
+  roomPrefix?: string;
 }
 
 interface WaitingIndicatorProps {
@@ -62,7 +66,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, onClick, onRename }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -74,9 +78,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
   useEffect(() => {
     if (isEditing && inputRef.current) {
       inputRef.current.focus();
-      inputRef.current.select();
+      selectAfterPrefix(inputRef.current, roomPrefix ?? '');
     }
-  }, [isEditing]);
+  }, [isEditing, roomPrefix]);
 
   const commitRename = useCallback(() => {
     const trimmed = editValue.trim();
@@ -133,7 +137,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
-      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && completionHint !== 'done' && !needsPermission) && (
+      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission) && (
         <div
           className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
@@ -271,6 +275,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           planStatus={latestPlan.planStatus ?? 'approved'}
           timestamp={latestPlan.completedAt ?? latestPlan.createdAt}
         />
+      )}
+      {!minimal && !isSubagent && activeMonitors && activeMonitors.length > 0 && (
+        <MonitoringPill monitors={activeMonitors} />
       )}
     </div>
   );

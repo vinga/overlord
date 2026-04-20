@@ -6,6 +6,7 @@ import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
+import { readGitStatus } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig } from './roomConfig.js';
 import { sessionStore } from './sessionStore.js';
@@ -59,8 +60,22 @@ import {
   clearSessionCaches,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
-import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, createTask, updateTask, createPlanTask, saveAck, loadAck } from '../ai/taskStorage.js';
+import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck } from '../ai/taskStorage.js';
+import { planStore } from '../plans/planStore.js';
+import type { PlanStatus } from '../plans/types.js';
 import type { Task } from '../types.js';
+
+function planStatusFromClaude(status: 'approved' | 'rejected' | 'pending'): PlanStatus {
+  if (status === 'approved') return 'active';
+  if (status === 'rejected') return 'archived';
+  return 'draft';
+}
+
+function derivePlanTitle(plan: string): string {
+  const firstLine = plan.split('\n').map(l => l.trim()).find(l => l.length > 0) ?? 'Plan';
+  const stripped = firstLine.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '');
+  return stripped.length > 80 ? stripped.slice(0, 77) + '…' : stripped;
+}
 
 /** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
 function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
@@ -134,6 +149,9 @@ export class StateManager {
   private pendingClearReplacements = new Map<string, { sessionId: string; timestamp: number }>();
   /** Timestamp of last PTY output per session — used to override stale 'waiting' state. */
   private lastPtyActivityAt = new Map<string, number>();
+  /** Suppress 'waiting' → 'working' promotion until this timestamp. Used after cycle-permission-mode
+   *  injection so the TUI status-bar redraw doesn't briefly flip the chip to WORKING. */
+  private suppressPromoteUntil = new Map<string, number>();
   /** Bridge sessions forced to 'working' state — persists until explicitly cleared. */
   private bridgeActiveOverride = new Set<string>();
   /** Timestamp when pending PTY input started (user typing without Enter) — cleared on Enter. */
@@ -143,6 +161,8 @@ export class StateManager {
   readonly bridgePath: string;
   private gitWatcher: GitWatcher;
   private prCache: PrCache;
+  private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
+  private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
 
   private generateOvrId(): string {
     return 'ovr-' + Math.random().toString(36).slice(2, 10);
@@ -160,18 +180,37 @@ export class StateManager {
     this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.gitWatcher = new GitWatcher(() => this.onChange());
     this.prCache = new PrCache(() => this.onChange());
+    this.gitAheadTimer = setInterval(() => this.refreshGitAheadCache(), 15_000);
     this.loadAccepted();
     this.loadDeleted();
     this.loadColors();
     this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
     this.loadKnownSessions();
     this.loadPendingResumes();
+    void this.refreshGitAheadCache();
   }
 
   /** Refresh the full process snapshot (one OS call). */
   private refreshProcessSnapshot(): void {
     this.processSnapshot = getAllProcessInfo();
     this.processSnapshotAge = Date.now();
+  }
+
+  private async refreshGitAheadCache(): Promise<void> {
+    const cwds = new Set<string>();
+    for (const session of this.sessions.values()) {
+      if (session.cwd) cwds.add(session.cwd);
+    }
+    for (const cwd of cwds) {
+      try {
+        const status = await readGitStatus(cwd, this.prCache);
+        if (status) {
+          this.gitAheadCache.set(cwd, { ahead: status.ahead, cachedAt: Date.now() });
+        }
+      } catch {
+        // ignore — stale cache entry stays
+      }
+    }
   }
 
   private onChange(): void {
@@ -253,6 +292,7 @@ export class StateManager {
       if (!Array.isArray(data)) return;
 
       let dirty = false;
+      let migratedNames = 0;
       const cleaned: typeof data = [];
       for (const entry of data) {
         if (!entry.sessionId || !entry.cwd) continue;
@@ -271,6 +311,22 @@ export class StateManager {
         const storedOvrId = (entry.overlordId as string | undefined) ?? this.generateOvrId();
         this.sessionsByOvrId.set(storedOvrId, entry.sessionId);
         const color = this.sessionColorByOvrId(storedOvrId);
+        // sessionStore is the authoritative source for proposedName. However,
+        // legacy code paths (clone-info, /clear transfer, transcript updates)
+        // historically mutated session.proposedName in memory without patching
+        // sessionStore, so known-sessions.json may hold a fresher value. Boot-
+        // time reconciliation: if known-sessions has a non-empty proposedName
+        // that differs from sessionStore's value, known-sessions wins (it
+        // reflects last-saved in-memory state). After the drift sites are
+        // closed (see S6), subsequent boots find no drift.
+        const storedRec = sessionStore.getBySessionId(entry.sessionId);
+        const entryName = typeof entry.proposedName === 'string' ? entry.proposedName : undefined;
+        let resolvedProposedName = storedRec?.proposedName ?? entryName;
+        if (entryName && entryName !== storedRec?.proposedName) {
+          sessionStore.patch(storedOvrId, { proposedName: entryName });
+          resolvedProposedName = entryName;
+          migratedNames += 1;
+        }
         const storedHistory = (entry.sessionHistory as Array<{ sessionId: string; attachedAt: number }> | undefined)
           ?? [{ sessionId: entry.sessionId, attachedAt: entry.startedAt ?? Date.now() }];
         this.sessions.set(entry.sessionId, {
@@ -310,10 +366,10 @@ export class StateManager {
           replacedBy: entry.replacedBy,
           color,
           subagents: [],
-          proposedName: entry.proposedName,
+          proposedName: resolvedProposedName,
           resumedFrom: entry.resumedFrom,
-          completionSummaries: readTasks(entry.cwd, entry.sessionId).filter(t => t.state === 'done'),
-          currentTask: readTasks(entry.cwd, entry.sessionId).find(t => t.state === 'active'),
+          completionSummaries: readTasks(entry.cwd, entry.sessionId).filter(t => t.kind === 'plan'),
+          currentTask: undefined,
           userAccepted: entry.userAccepted,
           bridgePipeName: entry.bridgePipeName,
           bridgeMarker: entry.bridgeMarker,
@@ -345,6 +401,9 @@ export class StateManager {
       if (dirty) {
         fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
         fs.writeFileSync(this.knownSessionsFile, JSON.stringify(cleaned, null, 2));
+      }
+      if (migratedNames > 0) {
+        console.log(`[migration] reconciled ${migratedNames} proposedName entries into sessionStore`);
       }
     } catch { /* ignore */ }
 
@@ -406,35 +465,23 @@ export class StateManager {
       fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
       const entries = [...this.sessions.values()]
         .filter(s => !s.isWorker && !s.cwd.toLowerCase().replace(/\\/g, '/').includes('/.claude/'))
-        .map(s => {
-          // Backfill proposedName from transcript customTitle if missing —
-          // prevents closed sessions from falling back to sessionId.slice(0,8)
-          // in the UI after the PID file is gone.
-          if (!s.proposedName && s.transcriptPath) {
-            const recovered = readProposedName(s.sessionId, s.transcriptPath);
-            if (recovered) {
-              s.proposedName = recovered;
-              log('name:recovered', 'Recovered proposedName for known-session', { sessionId: s.sessionId, sessionName: recovered });
-            }
-          }
-          return {
-            sessionId: s.sessionId,
-            overlordId: s.overlordId,
-            sessionHistory: s.sessionHistory,
-            provider: s.provider,
-            cwd: s.cwd,
-            sessionType: s.sessionType,
-            replacedBy: s.replacedBy,
-            startedAt: s.startedAt,
-            pid: s.pid,
-            proposedName: s.proposedName,
-            resumedFrom: s.resumedFrom,
-            userAccepted: s.userAccepted,
-            bridgePipeName: s.bridgePipeName,
-            bridgeMarker: s.bridgeMarker,
-            transcriptPath: s.transcriptPath,
-          };
-        });
+        .map(s => ({
+          sessionId: s.sessionId,
+          overlordId: s.overlordId,
+          sessionHistory: s.sessionHistory,
+          provider: s.provider,
+          cwd: s.cwd,
+          sessionType: s.sessionType,
+          replacedBy: s.replacedBy,
+          startedAt: s.startedAt,
+          pid: s.pid,
+          // proposedName intentionally omitted — sessionStore (OverlordSession) is the durable source.
+          resumedFrom: s.resumedFrom,
+          userAccepted: s.userAccepted,
+          bridgePipeName: s.bridgePipeName,
+          bridgeMarker: s.bridgeMarker,
+          transcriptPath: s.transcriptPath,
+        }));
       fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
       this.saveBridgeRegistry();
     } catch { /* ignore */ }
@@ -620,8 +667,15 @@ export class StateManager {
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
     if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
-    const resolvedName = (rawName || undefined)
-      ?? existingSession?.proposedName
+    // Prefer the in-memory name on existing sessions — it reflects user renames
+    // (written to sessionStore and into live.proposedName). `rawName` from
+    // {pid}.json is set at spawn time and never updated, so using it as the
+    // primary source would overwrite renames on every sessionWatcher tick.
+    const existingName = existingSession?.proposedName?.startsWith('<local-command-caveat')
+      ? undefined
+      : existingSession?.proposedName;
+    const resolvedName = existingName
+      ?? (rawName || undefined)
       ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
       ?? (resumedFrom ? this.sessions.get(resumedFrom)?.proposedName : undefined);
     // Strip <local-command-caveat> prefix — treat it as no name so transferName can override
@@ -677,36 +731,19 @@ export class StateManager {
       }
     }
 
-    // Persist plans detected in the transcript as plan-kind Tasks.
-    // Dedupes on planToolUseId so repeated readTranscriptState calls are idempotent.
-    const newPlans: Task[] = [];
-    if (transcript?.detectedPlans && transcript.detectedPlans.length > 0) {
-      const displayName = proposedName ?? slug ?? sessionId.slice(0, 8);
-      for (const p of transcript.detectedPlans) {
-        const persisted = createPlanTask(cwd, sessionId, displayName, p.planToolUseId, p.plan, p.timestamp ?? new Date().toISOString(), p.planStatus);
-        if (persisted) newPlans.push(persisted);
-      }
-    }
-
     // Load persisted tasks on first encounter; preserve in-memory on updates.
-    // If this is a resumed session, merge parent tasks so history carries over.
+    // Plans detected in the transcript are persisted *after* sessionStore.ensureFromLive
+    // below, because createPlanTask requires the overlord record to exist.
     let completionSummaries: Task[] | undefined;
     let currentTask: Task | undefined;
     if (isNew) {
       const own = readTasks(cwd, sessionId);
-      // For resumed sessions, parent tasks are already in the same room file since rooms are cwd-based
-      const merged = own.filter(t => t.state === 'done');
+      const merged = own.filter(t => t.kind === 'plan');
       completionSummaries = merged.length > 0 ? merged : undefined;
-      currentTask = own.find(t => t.state === 'active');
+      currentTask = undefined;
     } else {
       completionSummaries = existingSession?.completionSummaries;
       currentTask = existingSession?.currentTask;
-      // Merge newly-persisted plan tasks into in-memory completionSummaries.
-      if (newPlans.length > 0) {
-        const existingIds = new Set((completionSummaries ?? []).map(t => t.taskId));
-        const toAdd = newPlans.filter(t => !existingIds.has(t.taskId));
-        if (toAdd.length > 0) completionSummaries = [...toAdd, ...(completionSummaries ?? [])];
-      }
     }
 
     // Preserve overlordId across updates; generate once on first creation.
@@ -740,15 +777,30 @@ export class StateManager {
       subagents,
       resumedFrom,
       needsPermission: (() => {
-        const effectivePermMode = transcript?.permissionMode || existingSession?.permissionMode;
+        // When the screen-detected mode is locked, it represents ground truth from the
+        // live TUI — prefer it over the transcript value (which lags by one user message).
+        const lockActive = existingSession?.permissionModeLockedUntil != null
+          && Date.now() < existingSession.permissionModeLockedUntil;
+        const effectivePermMode = lockActive
+          ? (existingSession?.permissionMode ?? transcript?.permissionMode)
+          : (transcript?.permissionMode || existingSession?.permissionMode);
         if (effectivePermMode === 'bypassPermissions') return undefined;
         return transcript?.needsPermission || existingSession?.needsPermission;
       })(),
       permissionPromptText: transcript?.permissionPromptText || existingSession?.permissionPromptText,
       isLimitPrompt: existingSession?.isLimitPrompt,
-      permissionMode: transcript?.permissionMode || existingSession?.permissionMode,
+      permissionMode: (() => {
+        // If a shift+tab / cycle-endpoint detection has locked the mode, honor the lock.
+        // Otherwise fall back to transcript (fresh session) or prior in-memory value.
+        const lockActive = existingSession?.permissionModeLockedUntil != null
+          && Date.now() < existingSession.permissionModeLockedUntil;
+        if (lockActive) return existingSession?.permissionMode ?? transcript?.permissionMode;
+        return transcript?.permissionMode || existingSession?.permissionMode;
+      })(),
+      permissionModeLockedUntil: existingSession?.permissionModeLockedUntil,
       permissionApprovedAt: existingSession?.permissionApprovedAt,
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
+      activeMonitors: transcript?.activeMonitors,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       acknowledged: state === 'waiting' ? (existingSession?.acknowledged ?? (isNew ? loadAck(sessionId) : false)) : false,
       completionSummaries,
@@ -765,6 +817,22 @@ export class StateManager {
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(overlordId, sessionId);
     sessionStore.ensureFromLive(session);
+
+    // Persist plans via planStore — dedupes on claudePlanToolUseId so repeated
+    // readTranscriptState calls are idempotent.
+    if (transcript?.detectedPlans && transcript.detectedPlans.length > 0) {
+      for (const p of transcript.detectedPlans) {
+        planStore.upsertFromClaude({
+          overlordId,
+          cwd,
+          claudePlanToolUseId: p.planToolUseId,
+          body: p.plan,
+          status: planStatusFromClaude(p.planStatus),
+          title: derivePlanTitle(p.plan),
+        });
+      }
+    }
+
     if (isNew) {
       this.saveKnownSessions();
     }
@@ -919,6 +987,9 @@ export class StateManager {
     const newHasRealName = newSession.proposedName && !newSession.proposedName.startsWith('<local-command-caveat');
     if (!newHasRealName && oldSession.proposedName) {
       newSession.proposedName = oldSession.proposedName;
+      if (newSession.overlordId) {
+        sessionStore.patch(newSession.overlordId, { proposedName: oldSession.proposedName });
+      }
     }
     // Color is keyed by ovrId and inherited via overlordId below — no transfer needed here.
     // Just refresh the baked color field on the session object in case an override exists.
@@ -1261,7 +1332,10 @@ export class StateManager {
       const stickyCompacting = baseline !== undefined && !boundaryLanded;
       session.isCompacting = result.isCompacting || stickyCompacting;
       // Only overwrite permissionMode from transcript if screen hasn't locked it recently
-      if (result.permissionMode && !(session.permissionModeLockedUntil && Date.now() < session.permissionModeLockedUntil)) {
+      // and the value actually differs (avoids gratuitous onChange churn).
+      if (result.permissionMode
+        && result.permissionMode !== session.permissionMode
+        && !(session.permissionModeLockedUntil && Date.now() < session.permissionModeLockedUntil)) {
         session.permissionMode = result.permissionMode;
       }
       // Detect rate-limit text in the activity feed (for plain/bridge sessions where
@@ -1306,7 +1380,12 @@ export class StateManager {
       // Update pendingQuestion: set when present, clear when gone
       session.pendingQuestion = result.pendingQuestion ?? undefined;
       session.slug = slug;
-      session.proposedName = proposedName;
+      if (session.proposedName !== proposedName) {
+        session.proposedName = proposedName;
+        if (session.overlordId) {
+          sessionStore.patch(session.overlordId, { proposedName });
+        }
+      }
       session.subagents = subagents;
       session.transcriptPath = transcriptPath;
     }
@@ -1506,57 +1585,6 @@ export class StateManager {
     }
   }
 
-  /** Creates a new active Task for the session. Returns the task, or undefined if session not found or already has an active task. */
-  createTaskForSession(sessionId: string, createdAt: string): Task | undefined {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.currentTask) return undefined;
-    const sessionName = session.proposedName ?? session.slug ?? sessionId.slice(0, 8);
-    const task = createTask(session.cwd, sessionId, sessionName, createdAt);
-    session.currentTask = task;
-    this.onChange();
-    return task;
-  }
-
-  /** Marks the active task as done, moves it to completionSummaries. */
-  completeActiveTask(sessionId: string, completedAt: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.currentTask || session.currentTask.state !== 'active') return;
-    const taskId = session.currentTask.taskId;
-    updateTask(session.cwd, taskId, { state: 'done', completedAt });
-    const doneTask: Task = { ...session.currentTask, state: 'done', completedAt };
-    session.completionSummaries = [doneTask, ...(session.completionSummaries ?? [])];
-    session.currentTask = undefined;
-    this.onChange();
-  }
-
-  /** Updates the title of a task (active or done). */
-  setTaskTitle(sessionId: string, taskId: string, title: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    updateTask(session.cwd, taskId, { title });
-    if (session.currentTask?.taskId === taskId) {
-      session.currentTask = { ...session.currentTask, title };
-    } else {
-      const idx = (session.completionSummaries ?? []).findIndex(t => t.taskId === taskId);
-      if (idx !== -1) {
-        session.completionSummaries![idx] = { ...session.completionSummaries![idx], title };
-      }
-    }
-    this.onChange();
-  }
-
-  /** Updates the summary of a done task. */
-  setTaskSummary(sessionId: string, taskId: string, summary: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    updateTask(session.cwd, taskId, { summary });
-    const idx = (session.completionSummaries ?? []).findIndex(t => t.taskId === taskId);
-    if (idx !== -1) {
-      session.completionSummaries![idx] = { ...session.completionSummaries![idx], summary };
-    }
-    this.onChange();
-  }
-
   /** @deprecated No-op. Request summaries superseded by Task.title. */
   setRequestSummary(_sessionId: string, _summary: string): void { /* no-op */ }
 
@@ -1622,8 +1650,21 @@ export class StateManager {
   /** Record PTY output activity for a session — overrides stale 'waiting' state in snapshot. */
   setPtyActive(sessionId: string): void {
     const claudeId = this.toClaudeId(sessionId);
+    const until = this.suppressPromoteUntil.get(claudeId);
+    if (until && Date.now() < until) {
+      // Suppressed: don't bump lastPtyActivityAt and don't promote. This is for self-induced
+      // PTY redraws (e.g. shift+tab status-bar refresh) that shouldn't flip WAITING→WORKING.
+      return;
+    }
     this.lastPtyActivityAt.set(claudeId, Date.now());
     this.promoteToWorkingIfWaiting(claudeId);
+  }
+
+  /** Suppress the next ~durationMs of PTY-activity-driven WAITING→WORKING promotion for this session.
+   *  Used when we inject input (shift+tab) that causes a brief redraw we shouldn't mistake for work. */
+  suppressPtyPromotion(sessionId: string, durationMs: number): void {
+    const claudeId = this.toClaudeId(sessionId);
+    this.suppressPromoteUntil.set(claudeId, Date.now() + durationMs);
   }
 
   /** Persistently mark a bridge session as active (spinner detected). Cleared when idle prompt seen. */
@@ -1675,14 +1716,17 @@ export class StateManager {
   }
 
   setPermissionMode(sessionId: string, mode: string | undefined): void {
-    const session = this.sessions.get(sessionId);
+    // Callers pass either a Claude sessionId or an ovrId. Normalize so the PTY-output
+    // path (which only knows ovrId) still hits the right session.
+    const claudeId = this.toClaudeId(sessionId);
+    const session = this.sessions.get(claudeId);
     if (!session) return;
-    // For non-default modes, always refresh the lock — even if mode is unchanged.
-    // This keeps the lock alive while repaints keep confirming the same mode,
-    // preventing permissionChecker from flipping to 'default' between repaints.
-    if (mode && mode !== 'default') {
-      session.permissionModeLockedUntil = Date.now() + 15_000;
-    }
+    // Any realtime source (PTY detection, cycle endpoint, bridge handler, screen reader)
+    // permanently wins over the transcript's permissionMode field. The transcript value
+    // lags by design — it reflects what Claude wrote with the last user message, not the
+    // current status bar — so once a realtime source has spoken we trust it indefinitely.
+    // The next realtime call overwrites this value directly.
+    session.permissionModeLockedUntil = Number.MAX_SAFE_INTEGER;
     if (session.permissionMode !== mode) {
       session.permissionMode = mode;
       this.onChange();
@@ -1805,7 +1849,7 @@ export class StateManager {
           sessions: [],
         });
       }
-      roomMap.get(cwd)!.sessions.push(session);
+      roomMap.get(cwd)!.sessions.push(this.projectPlansIntoSession(session));
     }
 
     const rooms = Array.from(roomMap.values());
@@ -1834,6 +1878,8 @@ export class StateManager {
         if (pr) room.pullRequest = pr;
         const prErr = this.prCache.getError(room.cwd, branch);
         if (prErr) room.gitWarning = `PR lookup: ${prErr}`;
+        const aheadEntry = this.gitAheadCache.get(room.cwd);
+        if (aheadEntry && aheadEntry.ahead > 0) room.gitAhead = aheadEntry.ahead;
       }
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;
@@ -1851,6 +1897,34 @@ export class StateManager {
 
   getSession(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /**
+   * Build a wire-compat view of the session with plans projected from planStore
+   * into `completionSummaries` as synthetic plan-kind Tasks. Keeps the existing
+   * WorkerPlanPill contract intact now that plans live outside OverlordSession.
+   */
+  private projectPlansIntoSession(session: Session): Session {
+    const plans = planStore.listByOverlord(session.overlordId);
+    if (plans.length === 0) return session;
+    const planTasks: Task[] = plans
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(p => ({
+        taskId: p.planId,
+        sessionId: session.sessionId,
+        sessionName: session.proposedName,
+        title: p.title,
+        state: 'done',
+        kind: 'plan',
+        createdAt: p.createdAt,
+        completedAt: p.updatedAt,
+        planContent: p.body,
+        planToolUseId: p.claudePlanToolUseId,
+        planStatus: p.status === 'active' ? 'approved' : p.status === 'archived' ? 'rejected' : 'pending',
+      }));
+    const nonPlan = (session.completionSummaries ?? []).filter(t => t.kind !== 'plan');
+    return { ...session, completionSummaries: [...planTasks, ...nonPlan] };
   }
 
   /** Exposed so on-demand git-status endpoint can share the single PR cache. */
@@ -1912,6 +1986,10 @@ export class StateManager {
    * live Session so the next snapshot carries the new name. Accepts both live
    * and archived sessions — archived records patch through sessionStore only.
    * Pass an empty string to clear the name.
+   *
+   * sessionStore (OverlordSession) is the durable write path for proposedName;
+   * known-sessions.json no longer carries the field and loadKnownSessions()
+   * reads it back from sessionStore on boot.
    */
   setSessionName(sessionId: string, name: string): boolean {
     const trimmed = name.trim();
@@ -1948,6 +2026,75 @@ export class StateManager {
       for (const [ovrId, color] of this.colorOverrides) obj[ovrId] = color;
       fs.writeFileSync(this.colorsFile, JSON.stringify(obj, null, 2), 'utf-8');
     } catch { /* ignore */ }
+  }
+
+  /**
+   * Re-hydrate a previously archived session back into stateManager.sessions
+   * after unarchive. Caller must have already restored the transcript into
+   * ~/.claude/projects and moved the sessionStore record back to active.
+   *
+   * Clears the deleted blocklist entry (archive's deleteSession path added it),
+   * loads transcript state, and inserts as 'closed' so it renders in the room.
+   */
+  rehydrateFromSessionStore(sessionId: string): Session | null {
+    const rec = sessionStore.getBySessionId(sessionId);
+    if (!rec) return null;
+
+    this.undelete(sessionId);
+
+    const transcriptPath = findTranscriptPath(rec.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+
+    let transcriptState: ReturnType<typeof readTranscriptState> | null = null;
+    if (transcriptPath) {
+      try { transcriptState = readTranscriptState(transcriptPath); } catch { /* ignore */ }
+    }
+
+    const existing = this.sessions.get(sessionId);
+    if (existing) {
+      existing.state = 'closed';
+      if (transcriptState?.lastActivity) existing.lastActivity = transcriptState.lastActivity;
+      this.onChange();
+      return existing;
+    }
+
+    const startedAt = rec.startedAt ?? Date.now();
+    const session: Session = {
+      sessionId,
+      overlordId: rec.overlordId,
+      sessionHistory: rec.lineage.history.map(h => ({ sessionId: h.sessionId, attachedAt: h.attachedAt })),
+      provider: rec.provider ?? 'claude',
+      pid: 0,
+      cwd: rec.cwd,
+      startedAt,
+      state: 'closed',
+      lastActivity: transcriptState?.lastActivity ?? new Date(startedAt).toISOString(),
+      lastMessage: transcriptState?.lastMessage ?? rec.lastMessage,
+      activityFeed: transcriptState?.activityFeed,
+      model: transcriptState?.model ?? rec.model,
+      inputTokens: transcriptState?.inputTokens,
+      compactCount: transcriptState?.compactCount,
+      isCompacting: false,
+      proposedName: rec.proposedName,
+      sessionType: rec.sessionType,
+      color: rec.color,
+      subagents: [],
+      resumedFrom: rec.resumedFrom,
+      replacedBy: rec.replacedBy,
+      bridgePipeName: rec.bridgePipeName,
+      bridgeMarker: rec.bridgeMarker,
+      transcriptPath: transcriptPath ?? undefined,
+      intent: rec.intent,
+      acknowledged: rec.acknowledged,
+      userAccepted: rec.userAccepted,
+      historyOnly: rec.historyOnly,
+      loadedAt: Date.now(),
+    };
+
+    this.sessions.set(sessionId, session);
+    this.sessionsByOvrId.set(rec.overlordId, sessionId);
+    this.saveKnownSessions();
+    this.onChange();
+    return session;
   }
 
   async loadClosedSessionsFromTranscripts(): Promise<void> {

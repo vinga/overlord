@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet } from '../types.js';
+import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor } from '../types.js';
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -96,7 +96,9 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
   }
   switch (cached.stateHint) {
     case 'tool_use': {
-      const state: WorkerState = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
+      // Collapse middle band: go directly working → waiting. 'thinking' is only
+      // emitted by evidence-based paths (codex_reasoning, recent thinking block).
+      const state: WorkerState = ageSec < 5 ? 'working' : 'waiting';
       // Tool pending >8s with no result → likely permission prompt (not in bypass mode)
       const needsPermission = ageSec > 8 && !isBypass ? true : undefined;
       return { state, needsPermission };
@@ -107,11 +109,11 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
       return { state };
     }
     case 'assistant_text': {
-      const state: WorkerState = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
+      const state: WorkerState = ageSec < 5 ? 'working' : 'waiting';
       return { state };
     }
-    case 'tool_result':  return { state: ageSec < 8 ? 'working' : 'thinking' };
-    case 'user_input':   return { state: ageSec < 8 ? 'working' : 'thinking' };
+    case 'tool_result':  return { state: ageSec < 8 ? 'working' : 'waiting' };
+    case 'user_input':   return { state: ageSec < 8 ? 'working' : 'waiting' };
     case 'codex_reasoning': return { state: ageSec < 6 ? 'thinking' : 'working' };
     case 'none':         return { state: 'waiting' };
   }
@@ -513,6 +515,8 @@ export function readTranscriptState(filePath: string): {
   // Approved plans detected via ExitPlanMode tool_use in this transcript.
   // stateManager dedupes on planToolUseId and persists as plan-kind Tasks.
   detectedPlans?: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }>;
+  // In-flight Monitor tool_use blocks — present while streaming (no tool_result yet).
+  activeMonitors?: ActiveMonitor[];
 } {
   if (isCodexTranscript(filePath)) {
     return readCodexTranscriptState(filePath);
@@ -588,6 +592,8 @@ export function readTranscriptState(filePath: string): {
     let lastMessage: string | undefined;
     const activityFeed: ActivityItem[] = [];
     const detectedPlans: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }> = [];
+    const activeMonitors: ActiveMonitor[] = [];
+    const seenMonitorIds = new Set<string>();
 
     // Extract model and inputTokens from the last assistant event
     let model: string | undefined;
@@ -686,6 +692,21 @@ export function readTranscriptState(filePath: string): {
                         planStatus = 'rejected';
                       }
                       detectedPlans.push({ planToolUseId: toolUseId, plan: planText, timestamp: parsed.timestamp, planStatus });
+                    }
+                  }
+                  // Capture in-flight Monitor tool_use (no matching tool_result yet).
+                  // Reverse-chronological loop: first occurrence per id wins, superseded blocks with results are skipped.
+                  if (block.name === 'Monitor') {
+                    const toolUseId = (block as Record<string, unknown>).id as string | undefined;
+                    if (toolUseId && !seenMonitorIds.has(toolUseId) && !toolResults.has(toolUseId)) {
+                      seenMonitorIds.add(toolUseId);
+                      const inp = (block.input && typeof block.input === 'object') ? block.input as Record<string, unknown> : {};
+                      const target = (typeof inp.shellId === 'string' && inp.shellId)
+                        || (typeof inp.taskId === 'string' && inp.taskId)
+                        || (typeof inp.id === 'string' && inp.id)
+                        || '';
+                      const until = typeof inp.until === 'string' ? inp.until : undefined;
+                      activeMonitors.push({ toolUseId, target: target as string, startedAt: parsed.timestamp, until });
                     }
                   }
                   if (block.input && typeof block.input === 'object') {
@@ -829,21 +850,23 @@ export function readTranscriptState(filePath: string): {
             permissionPromptText = desc ? `${toolName}: ${desc}` : toolName;
           }
           if (isMcpTool || isLongRunning) {
-            // MCP tools and known long-running tools — show working/thinking, never flag as permission.
+            // MCP tools and known long-running tools — show working until idle, never flag as permission.
             // Real permission prompts are detected by the screen-based permissionChecker.
-            state = ageSec < 8 ? 'working' : 'thinking';
+            state = ageSec < 8 ? 'working' : 'waiting';
           } else if (ageSec < 5) {
             state = 'working';
-          } else if (ageSec > 8) {
-            state = 'waiting';
-            needsPermission = permissionMode !== 'bypassPermissions' ? true : undefined;
           } else {
-            state = 'thinking';
+            // Collapse middle band: go directly to waiting past 5s. needsPermission still
+            // gates at the 8s threshold per existing heuristic.
+            state = 'waiting';
+            if (ageSec > 8) {
+              needsPermission = permissionMode !== 'bypassPermissions' ? true : undefined;
+            }
           }
         }
       } else {
         stateHint = 'assistant_text';
-        state = ageSec < 5 ? 'working' : ageSec > 8 ? 'waiting' : 'thinking';
+        state = ageSec < 5 ? 'working' : 'waiting';
       }
     } else if (lastTypedEvent?.type === 'user') {
       const userContent = lastTypedEvent.message as { content?: unknown } | undefined;
@@ -861,14 +884,21 @@ export function readTranscriptState(filePath: string): {
         state = 'waiting';
       } else if (isToolResult) {
         stateHint = 'tool_result';
-        state = ageSec < 8 ? 'working' : 'thinking';
+        state = ageSec < 8 ? 'working' : 'waiting';
       } else {
         stateHint = 'user_input';
-        state = ageSec < 8 ? 'working' : 'thinking';
+        state = ageSec < 8 ? 'working' : 'waiting';
       }
     } else {
       stateHint = 'none';
       state = 'waiting';
+    }
+
+    // Evidence-based 'thinking': Claude just emitted a thinking block (within 6s).
+    // Without this override, assistant messages containing thinking+text get assistant_text
+    // hint and would fall through to working/waiting. Only override when ageSec is fresh.
+    if ((state === 'working' || state === 'waiting') && ageSec < 6 && activityFeed[0]?.kind === 'thinking') {
+      state = 'thinking';
     }
 
     const result = {
@@ -887,6 +917,7 @@ export function readTranscriptState(filePath: string): {
       pendingQuestion,
       transcriptTruncated: transcriptTruncated || undefined,
       detectedPlans: detectedPlans.length > 0 ? detectedPlans : undefined,
+      activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;
@@ -1054,7 +1085,7 @@ function readCodexTranscriptState(filePath: string): {
         };
         if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call') {
           stateHint = 'tool_use';
-          state = ageSec < 8 ? 'working' : 'thinking';
+          state = ageSec < 8 ? 'working' : 'waiting';
           break;
         }
         if (parsed.type === 'response_item' && parsed.payload?.type === 'reasoning') {
@@ -1064,13 +1095,13 @@ function readCodexTranscriptState(filePath: string): {
         }
         if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call_output') {
           stateHint = 'tool_result';
-          state = ageSec < 8 ? 'working' : 'thinking';
+          state = ageSec < 8 ? 'working' : 'waiting';
           break;
         }
         if (parsed.type === 'response_item' && parsed.payload?.type === 'message') {
           if (parsed.payload.role === 'user') {
             stateHint = 'user_input';
-            state = ageSec < 8 ? 'working' : 'thinking';
+            state = ageSec < 8 ? 'working' : 'waiting';
           } else if (parsed.payload.role === 'assistant') {
             stateHint = 'assistant_text';
             state = 'waiting';

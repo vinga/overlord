@@ -15,19 +15,26 @@ interface GitStatus {
   untracked: string[];
   conflicted: string[];
   stashCount: number;
-  lastCommit: { hash: string; subject: string; author: string; relativeTime: string } | null;
-  unpushedCommits: Array<{ hash: string; subject: string; relativeTime: string }>;
-  pullRequest: { number: number; url: string; title: string; state: string; isDraft: boolean } | null;
+  lastCommit: { hash: string; subject: string; author: string; relativeTime: string; filesChanged: number } | null;
+  branchCommits: Array<{ hash: string; subject: string; relativeTime: string; filesChanged: number; pushed: boolean }>;
+  modifiedCount: number;
+  addedCount: number;
 }
+
+interface PrInfo { number: number; url: string; title: string; state: string; isDraft: boolean }
+type CheckState = 'SUCCESS' | 'FAILURE' | 'PENDING' | 'SKIPPED' | 'CANCELLED' | 'NEUTRAL';
+interface Check { name: string; state: CheckState; url?: string; elapsed?: string }
+interface PrData { pullRequest: PrInfo | null; checks: Check[]; mergeable: string | null; error: string | null }
 
 interface Props {
   branch: string;
   cwd: string;
   gitWarning?: string;
   pullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
+  gitAhead?: number;
 }
 
-export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) {
+export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest, gitAhead }: Props) {
   const prResolved = pullRequest?.state === 'MERGED' || pullRequest?.state === 'CLOSED';
   const [pinned, setPinned] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
@@ -35,6 +42,9 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [prData, setPrData] = useState<PrData | null>(null);
+  const [prLoading, setPrLoading] = useState(false);
+  const [prError, setPrError] = useState<string | null>(null);
   const spanRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const fetchIdRef = useRef(0);
@@ -65,6 +75,9 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
     const id = ++fetchIdRef.current;
     setLoading(true);
     setError(null);
+    setPrLoading(true);
+    setPrError(null);
+
     fetch(`/api/git/status?cwd=${encodeURIComponent(cwd)}`)
       .then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -79,6 +92,22 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
         if (id !== fetchIdRef.current) return;
         setError(err.message);
         setLoading(false);
+      });
+
+    fetch(`/api/git/pr?cwd=${encodeURIComponent(cwd)}&branch=${encodeURIComponent(branch)}`)
+      .then(async r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: PrData) => {
+        if (id !== fetchIdRef.current) return;
+        setPrData(data);
+        setPrLoading(false);
+      })
+      .catch(err => {
+        if (id !== fetchIdRef.current) return;
+        setPrError(err.message);
+        setPrLoading(false);
       });
   }, [open, cwd, branch]);
 
@@ -122,6 +151,9 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
       >
         <BranchIcon className={styles.icon}/>
         <span className={styles.branchText}>{branch}</span>
+        {(gitAhead ?? 0) > 0 && (
+          <span className={styles.aheadPill} title={`${gitAhead} unpushed commit${gitAhead === 1 ? '' : 's'}`}>+{gitAhead}</span>
+        )}
         {gitWarning && (
           <span className={styles.pillWarn} title={gitWarning} aria-label="Git warning">!</span>
         )}
@@ -150,7 +182,17 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest }: Props) 
             visibility: pos ? 'visible' : 'hidden',
           }}
         >
-          <TooltipBody branch={branch} status={status} loading={loading} error={error} gitWarning={gitWarning} prResolved={prResolved} />
+          <TooltipBody
+            branch={branch}
+            status={status}
+            loading={loading}
+            error={error}
+            gitWarning={gitWarning}
+            prResolved={prResolved}
+            prData={prData}
+            prLoading={prLoading}
+            prError={prError}
+          />
         </div>,
         document.body
       )}
@@ -194,16 +236,6 @@ function CommitIcon({ className }: { className?: string }) {
   );
 }
 
-function UnpushedIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="8" cy="11.5" r="2.5"/>
-      <path d="M8 8V2"/>
-      <path d="M5.5 4.5L8 2l2.5 2.5"/>
-    </svg>
-  );
-}
-
 function prStateClass(pr: { state: string; isDraft: boolean }): string {
   if (pr.isDraft) return styles.pillPrDraft;
   if (pr.state === 'MERGED') return styles.pillPrMerged;
@@ -211,7 +243,7 @@ function prStateClass(pr: { state: string; isDraft: boolean }): string {
   return styles.pillPrOpen;
 }
 
-function TooltipBody({ branch, status, loading, error, gitWarning, prResolved }: { branch: string; status: GitStatus | null; loading: boolean; error: string | null; gitWarning?: string; prResolved?: boolean }) {
+function TooltipBody({ branch, status, loading, error, gitWarning, prResolved, prData, prLoading, prError }: { branch: string; status: GitStatus | null; loading: boolean; error: string | null; gitWarning?: string; prResolved?: boolean; prData: PrData | null; prLoading: boolean; prError: string | null }) {
   if (error) {
     return (
       <>
@@ -239,52 +271,16 @@ function TooltipBody({ branch, status, loading, error, gitWarning, prResolved }:
       {gitWarning && <WarningBanner text={gitWarning}/>}
       <div className={styles.header}>
         <BranchHeading branch={status.branch ?? branch} upstream={status.upstream} ahead={status.ahead} behind={status.behind} base={status.base} baseAhead={status.baseAhead} baseBehind={status.baseBehind} prResolved={prResolved} />
+        {(status.modifiedCount > 0 || status.addedCount > 0) && (
+          <div className={styles.fileSummary}>
+            {status.modifiedCount > 0 && <span className={styles.fileSummaryModified}>{status.modifiedCount} modified</span>}
+            {status.addedCount > 0 && <span className={styles.fileSummaryAdded}>{status.addedCount} added</span>}
+          </div>
+        )}
       </div>
-      {status.pullRequest && (
-        <PrRow pr={status.pullRequest}/>
-      )}
-      {status.lastCommit && (() => {
-        const lastIsUnpushed = status.unpushedCommits.some(c => c.hash === status.lastCommit!.hash);
-        const lastLabel = lastIsUnpushed
-          ? { text: 'Unpushed', cls: styles.statusUnpushed }
-          : status.upstream
-            ? { text: 'Pushed', cls: styles.statusPushed }
-            : null;
-        return (
-          <div className={styles.commitRow}>
-            <div className={styles.commitMeta}>
-              <CommitIcon className={styles.commitIcon}/>
-              <span className={styles.rowKind}>Last commit</span>
-              {lastLabel && <span className={`${styles.commitStatus} ${lastLabel.cls}`}>{lastLabel.text}</span>}
-              <span className={styles.commitHash}>{status.lastCommit.hash}</span>
-              <span className={styles.commitAuthor}>{status.lastCommit.author}</span>
-              <span className={styles.commitTime}>· {status.lastCommit.relativeTime}</span>
-            </div>
-            <div className={styles.commitSubject}>{status.lastCommit.subject}</div>
-          </div>
-        );
-      })()}
-      {status.unpushedCommits.length > 0 && (
-        <div className={styles.section}>
-          <div className={styles.sectionHeader}>
-            <UnpushedIcon className={styles.sectionIcon}/>
-            <span className={styles.sectionLabel}>Unpushed</span>
-            <span className={styles.sectionCount}>{status.unpushedCommits.length}</span>
-          </div>
-          <ul className={styles.commitList}>
-            {status.unpushedCommits.slice(0, 8).map(c => (
-              <li key={c.hash} className={styles.commitItem}>
-                <CommitIcon className={styles.commitItemIcon}/>
-                <span className={styles.commitHash}>{c.hash}</span>
-                <span className={styles.commitItemSubject}>{c.subject}</span>
-                <span className={styles.commitTime}>{c.relativeTime}</span>
-              </li>
-            ))}
-            {status.unpushedCommits.length > 8 && (
-              <li className={styles.fileMore}>+{status.unpushedCommits.length - 8} more…</li>
-            )}
-          </ul>
-        </div>
+      <PrBlock prData={prData} prLoading={prLoading} prError={prError} />
+      {status.branchCommits.length > 0 && (
+        <CommitsSection commits={status.branchCommits} />
       )}
       {cleanWorking ? (
         <div className={styles.cleanRow}>
@@ -316,13 +312,30 @@ function TooltipBody({ branch, status, loading, error, gitWarning, prResolved }:
   );
 }
 
-function PrRow({ pr }: { pr: NonNullable<GitStatus['pullRequest']> }) {
+function PrBlock({ prData, prLoading, prError }: { prData: PrData | null; prLoading: boolean; prError: string | null }) {
+  if (prLoading && !prData) {
+    return <div className={styles.shimmerBlock}/>;
+  }
+  if (prError) {
+    return <div className={styles.emptyNote}>PR info unavailable</div>;
+  }
+  if (!prData?.pullRequest) return null;
+  return (
+    <>
+      <PrRow pr={prData.pullRequest} mergeable={prData.mergeable} />
+      {prData.checks.length > 0 && <ChecksSection checks={prData.checks} />}
+    </>
+  );
+}
+
+function PrRow({ pr, mergeable }: { pr: PrInfo; mergeable: string | null }) {
   const stateClass =
     pr.isDraft ? styles.prStateDraft :
     pr.state === 'MERGED' ? styles.prStateMerged :
     pr.state === 'CLOSED' ? styles.prStateClosed :
     styles.prStateOpen;
   const stateLabel = pr.isDraft ? 'Draft' : pr.state.charAt(0) + pr.state.slice(1).toLowerCase();
+  const mergeLabel = mergeableLabel(mergeable);
   return (
     <a className={styles.prRow} href={pr.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>
       <span className={styles.prIcon}><PullRequestIcon/></span>
@@ -330,7 +343,80 @@ function PrRow({ pr }: { pr: NonNullable<GitStatus['pullRequest']> }) {
       <span className={`${styles.prState} ${stateClass}`}>{stateLabel}</span>
       <span className={styles.prNumber}>#{pr.number}</span>
       <span className={styles.prTitle}>{pr.title}</span>
+      {mergeLabel && <span className={`${styles.prMergeable} ${mergeLabel.cls}`}>{mergeLabel.text}</span>}
     </a>
+  );
+}
+
+function mergeableLabel(mergeable: string | null): { text: string; cls: string } | null {
+  if (!mergeable) return null;
+  const s = mergeable.toUpperCase();
+  if (s === 'CLEAN' || s === 'MERGEABLE') return { text: 'Mergeable', cls: styles.prMergeableOk };
+  if (s === 'HAS_HOOKS' || s === 'UNSTABLE') return { text: 'Unstable', cls: styles.prMergeableWarn };
+  if (s === 'BLOCKED' || s === 'BEHIND') return { text: 'Blocked', cls: styles.prMergeableWarn };
+  if (s === 'DIRTY' || s === 'CONFLICTING') return { text: 'Conflicts', cls: styles.prMergeableBad };
+  if (s === 'DRAFT') return { text: 'Draft', cls: styles.prMergeableWarn };
+  return null;
+}
+
+function ChecksSection({ checks }: { checks: Check[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const COLLAPSED = 5;
+  const shown = expanded ? checks : checks.slice(0, COLLAPSED);
+  const hidden = checks.length - shown.length;
+  const pass = checks.filter(c => c.state === 'SUCCESS').length;
+  const fail = checks.filter(c => c.state === 'FAILURE' || c.state === 'CANCELLED').length;
+  const pending = checks.filter(c => c.state === 'PENDING').length;
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <CheckIcon className={styles.sectionIcon}/>
+        <span className={styles.sectionLabel}>Checks</span>
+        <span className={styles.sectionCount}>{checks.length}</span>
+        {fail > 0 && <span className={styles.checksFailBadge}>{fail} failing</span>}
+        {fail === 0 && pending > 0 && <span className={styles.checksPendingBadge}>{pending} pending</span>}
+        {fail === 0 && pending === 0 && pass > 0 && <span className={styles.checksPassBadge}>{pass}/{checks.length} passing</span>}
+      </div>
+      <ul className={styles.checkList}>
+        {shown.map((c, i) => (
+          <li key={`${c.name}-${i}`} className={styles.checkItem}>
+            <span className={`${styles.checkDot} ${checkDotClass(c.state)}`} title={c.state}/>
+            {c.url ? (
+              <a className={styles.checkName} href={c.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>{c.name}</a>
+            ) : (
+              <span className={styles.checkName}>{c.name}</span>
+            )}
+            {c.elapsed && <span className={styles.checkElapsed}>{c.elapsed}</span>}
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button className={styles.expandButton} onClick={() => setExpanded(true)}>Show {hidden} more</button>
+      )}
+      {expanded && checks.length > COLLAPSED && (
+        <button className={styles.expandButton} onClick={() => setExpanded(false)}>Collapse</button>
+      )}
+    </div>
+  );
+}
+
+function checkDotClass(state: CheckState): string {
+  switch (state) {
+    case 'SUCCESS': return styles.checkDotPass;
+    case 'FAILURE':
+    case 'CANCELLED': return styles.checkDotFail;
+    case 'PENDING': return styles.checkDotPending;
+    case 'SKIPPED':
+    case 'NEUTRAL': return styles.checkDotNeutral;
+    default: return styles.checkDotNeutral;
+  }
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 8.5l3.5 3.5L13.5 4.5"/>
+    </svg>
   );
 }
 
@@ -391,6 +477,47 @@ function branchSync(upstream: string | null, ahead: number, behind: number): { l
   if (ahead > 0) return { label: 'Ahead', cls: styles.branchSyncAhead, title: `${ahead} commit${ahead === 1 ? '' : 's'} ahead of upstream` };
   if (behind > 0) return { label: 'Behind', cls: styles.branchSyncBehind, title: `${behind} commit${behind === 1 ? '' : 's'} behind upstream` };
   return { label: 'Synced', cls: styles.branchSyncSynced, title: 'In sync with upstream' };
+}
+
+function CommitsSection({ commits }: { commits: GitStatus['branchCommits'] }) {
+  const [expanded, setExpanded] = useState(false);
+  const COLLAPSED = 4;
+  const shown = expanded ? commits : commits.slice(0, COLLAPSED);
+  const hidden = commits.length - shown.length;
+  const unpushedCount = commits.filter(c => !c.pushed).length;
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <CommitIcon className={styles.sectionIcon}/>
+        <span className={styles.sectionLabel}>Commits</span>
+        <span className={styles.sectionCount}>{commits.length}</span>
+        {unpushedCount > 0 && (
+          <span className={styles.sectionUnpushedBadge}>{unpushedCount} unpushed</span>
+        )}
+      </div>
+      <ul className={styles.commitList}>
+        {shown.map(c => (
+          <li key={c.hash} className={styles.commitItem}>
+            <span className={c.pushed ? styles.commitDotPushed : styles.commitDotUnpushed} title={c.pushed ? 'Pushed' : 'Unpushed'}/>
+            <span className={styles.commitHash}>{c.hash}</span>
+            <span className={styles.commitItemSubject}>{c.subject}</span>
+            {c.filesChanged > 0 && <span className={styles.commitFiles}>{c.filesChanged} files</span>}
+            <span className={styles.commitTime}>{c.relativeTime}</span>
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button className={styles.expandButton} onClick={() => setExpanded(true)}>
+          Show {hidden} more
+        </button>
+      )}
+      {expanded && commits.length > COLLAPSED && (
+        <button className={styles.expandButton} onClick={() => setExpanded(false)}>
+          Collapse
+        </button>
+      )}
+    </div>
+  );
 }
 
 function FileSection({ label, dotClass, files }: { label: string; dotClass: string; files: string[] }) {

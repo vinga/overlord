@@ -2,12 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw';
+
 export interface RoomConfig {
   prefix: string;
   description: string;
+  lastMode?: RoomLastMode;
 }
 
 const DEFAULT_CONFIG: RoomConfig = { prefix: '', description: '' };
+
+const VALID_MODES: ReadonlySet<RoomLastMode> = new Set(['embedded', 'bridge', 'plain', 'raw']);
 
 function cwdToRoomSlug(cwd: string): string {
   return cwd
@@ -33,6 +38,9 @@ export function readRoomConfig(cwd: string): RoomConfig {
       ...parsed,
       prefix: typeof parsed.prefix === 'string' ? parsed.prefix : '',
       description: typeof parsed.description === 'string' ? parsed.description : '',
+      lastMode: typeof parsed.lastMode === 'string' && VALID_MODES.has(parsed.lastMode as RoomLastMode)
+        ? (parsed.lastMode as RoomLastMode)
+        : undefined,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

@@ -1,20 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { marked } from 'marked';
+import { renderMarkdown, stripFrontmatter } from '../lib/markdown';
 import styles from './BrainTab.module.css';
-
-const markdownCache = new Map<string, string>();
-function renderMarkdown(text: string): string {
-  const cached = markdownCache.get(text);
-  if (cached !== undefined) return cached;
-  const html = marked.parse(text, { breaks: true, async: false }) as string;
-  if (markdownCache.size > 200) markdownCache.clear();
-  markdownCache.set(text, html);
-  return html;
-}
-
-function stripFrontmatter(raw: string): string {
-  return raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
-}
 
 type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'unknown';
 
@@ -65,6 +51,17 @@ interface BrainPermissionRule {
   source: string;
 }
 
+interface BrainEffortTier {
+  value: string | null;
+  source: string | null;
+}
+
+interface BrainEffort {
+  global: BrainEffortTier;
+  project: BrainEffortTier;
+  effective: string | null;
+}
+
 export interface BrainContext {
   cwd: string;
   identity: BrainIdentityFile[];
@@ -80,13 +77,15 @@ export interface BrainContext {
     allow: BrainPermissionRule[];
     deny: BrainPermissionRule[];
   };
+  effort: BrainEffort;
 }
 
-type CardKey = 'identity' | 'memory' | 'hooks' | 'skills' | 'agents' | 'mcp' | 'permissions';
+type CardKey = 'identity' | 'memory' | 'effort' | 'hooks' | 'skills' | 'agents' | 'mcp' | 'permissions';
 
 const DEFAULT_OPEN: Record<CardKey, boolean> = {
   identity: true,
   memory: true,
+  effort: true,
   hooks: true,
   skills: false,
   agents: false,
@@ -351,6 +350,12 @@ export function BrainTab({ cwd }: { cwd: string }) {
           ))}
         </Card>
 
+        <EffortCard
+          effort={data.effort}
+          open={cardOpen.effort}
+          onToggle={() => toggle('effort')}
+        />
+
         <Card
           title="Hooks"
           count={Object.values(hooksByEvent).reduce((n, arr) => n + arr.length, 0)}
@@ -493,6 +498,55 @@ function Card({ title, count, open, onToggle, children }: {
         <span className={styles.chevron}>▶</span>
       </div>
       {open && <div className={styles.cardBody}>{children}</div>}
+    </div>
+  );
+}
+
+function EffortCard({ effort, open, onToggle }: {
+  effort: BrainEffort;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const hasProjectOverride = effort.project.value !== null;
+  const effective = effort.effective;
+  return (
+    <div className={`${styles.card} ${open ? styles.cardOpen : ''}`}>
+      <div className={styles.cardHeader} onClick={onToggle}>
+        <span className={styles.cardTitle}>Effort</span>
+        <span className={styles.cardCount}>{effective ?? '—'}</span>
+        <span className={styles.chevron}>▶</span>
+      </div>
+      {open && (
+        <div className={styles.cardBody}>
+          <div className={styles.effortEffective}>
+            <span className={styles.effortEffectiveLabel}>Effective</span>
+            <span className={`${styles.effortChip} ${effective ? '' : styles.effortChipEmpty}`}>
+              {effective ?? '—'}
+            </span>
+          </div>
+          <div className={`${styles.effortRow} ${hasProjectOverride ? styles.effortRowDim : ''}`}>
+            <span className={styles.effortRowLabel}>Global</span>
+            <span className={`${styles.effortValue} ${effort.global.value ? '' : styles.effortValueEmpty}`}>
+              {effort.global.value ?? '—'}
+            </span>
+            <span className={styles.effortSource} title={effort.global.source ?? ''}>
+              {effort.global.source ?? ''}
+            </span>
+          </div>
+          <div className={styles.effortRow}>
+            <span className={styles.effortRowLabel}>Project</span>
+            <span className={`${styles.effortValue} ${effort.project.value ? '' : styles.effortValueEmpty}`}>
+              {effort.project.value ?? '—'}
+            </span>
+            <span className={styles.effortSource} title={effort.project.source ?? ''}>
+              {effort.project.source ?? ''}
+            </span>
+          </div>
+          {effective === null && (
+            <div className={styles.effortCaption}>No effort level configured.</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
+import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
@@ -11,6 +12,10 @@ import { ConsolePreview } from './ConsolePreview';
 import styles from './DetailPanel.module.css';
 import { SessionCommands } from './SessionCommands';
 import { searchFeed, BoldExcerpt } from '../lib/search';
+import { FileEditorOverlay } from './FileEditorOverlay';
+import { SelectionMenu } from './SelectionMenu';
+import { QUICK_PROMPTS } from './quickPrompts';
+import { PlansTab } from './PlansTab';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
@@ -26,10 +31,53 @@ marked.use({
 
 const MARKDOWN_CACHE_MAX = 500;
 const markdownCache = new Map<string, string>();
+// Matches absolute Unix paths (/a/b/c) and Windows paths (C:\a\b or C:/a/b) with optional :line or :line:col suffix.
+const PATH_REGEX = /(?:\/[\w.\-+@]+){2,}(?::\d+(?::\d+)?)?|[A-Za-z]:[\\/](?:[\w.\-+@]+[\\/]?)+(?::\d+(?::\d+)?)?/g;
+function linkifyPaths(html: string): string {
+  if (typeof DOMParser === 'undefined') return html;
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+  const root = doc.body.firstChild as HTMLElement | null;
+  if (!root) return html;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      let p = node.parentElement;
+      while (p && p !== root) {
+        const tag = p.tagName;
+        if (tag === 'CODE' || tag === 'PRE' || tag === 'A') return NodeFilter.FILTER_REJECT;
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const textNodes: Text[] = [];
+  let n: Node | null;
+  while ((n = walker.nextNode())) textNodes.push(n as Text);
+  for (const tn of textNodes) {
+    const text = tn.nodeValue ?? '';
+    PATH_REGEX.lastIndex = 0;
+    if (!PATH_REGEX.test(text)) continue;
+    PATH_REGEX.lastIndex = 0;
+    const frag = doc.createDocumentFragment();
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = PATH_REGEX.exec(text))) {
+      if (m.index > last) frag.appendChild(doc.createTextNode(text.slice(last, m.index)));
+      const span = doc.createElement('span');
+      span.setAttribute('data-file-path', m[0].replace(/:\d+(?::\d+)?$/, ''));
+      span.className = 'inlineFilePath';
+      span.textContent = m[0];
+      frag.appendChild(span);
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
+    tn.parentNode?.replaceChild(frag, tn);
+  }
+  return root.innerHTML;
+}
 function renderMarkdown(text: string): string {
   const cached = markdownCache.get(text);
   if (cached !== undefined) return cached;
-  const result = marked.parse(text) as string;
+  const result = linkifyPaths(marked.parse(text) as string);
   if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
     markdownCache.delete(markdownCache.keys().next().value!);
   }
@@ -636,7 +684,7 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
                 className={styles.badgeDoneBtn}
                 onClick={() => { onMarkDone(); setMenuOpen(false); }}
               >
-                ✓ Mark as done
+                ✓ DONE
               </button>
             )}
             {canAck && (
@@ -819,7 +867,7 @@ function ToolEntry({
         )}
         {tool.content && (
           isFilePath(tool.content)
-            ? <button className={styles.toolDescLink} title={tool.content} onClick={(e) => { e.stopPropagation(); void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: tool.content, ideName }) }); }}>{trimPath(tool.content, cwd)}</button>
+            ? <button className={styles.toolDescLink} title={tool.content} onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent('overlord:openFile', { detail: { path: tool.content } })); }}>{trimPath(tool.content, cwd)}</button>
             : <span className={styles.toolDesc}>{tool.content}</span>
         )}
         {skillName && <span className={styles.toolDesc}>{skillName}</span>}
@@ -1349,6 +1397,39 @@ export function DetailPanel({
   // Re-render every second to update duration / relative times — only when panel is open
   useTick(selectedSession ? 1000 : null);
 
+  const [fileEditorPath, setFileEditorPath] = useState<string | null>(null);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ path: string }>).detail;
+      if (detail?.path) setFileEditorPath(detail.path);
+    };
+    const clickHandler = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement | null)?.closest('[data-file-path]');
+      if (target) {
+        const path = target.getAttribute('data-file-path');
+        if (path) {
+          e.preventDefault();
+          setFileEditorPath(path);
+        }
+      }
+    };
+    const keyHandler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault();
+        const path = window.prompt('Open file (absolute path):', selectedSession?.cwd ? `${selectedSession.cwd}/CLAUDE.md` : '');
+        if (path) setFileEditorPath(path);
+      }
+    };
+    window.addEventListener('overlord:openFile', handler);
+    window.addEventListener('keydown', keyHandler);
+    document.addEventListener('click', clickHandler);
+    return () => {
+      window.removeEventListener('overlord:openFile', handler);
+      window.removeEventListener('keydown', keyHandler);
+      document.removeEventListener('click', clickHandler);
+    };
+  }, [selectedSession?.cwd]);
+
   const transcriptRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   // When the user initiates an up-jump, lock out auto-scroll-to-bottom for a short
@@ -1376,7 +1457,8 @@ export function DetailPanel({
     function onMouseMove(ev: MouseEvent) {
       if (dragStartX.current === null) return;
       const delta = dragStartX.current - ev.clientX;
-      const next = Math.max(320, Math.min(900, dragStartWidth.current + delta));
+      const maxWidth = Math.max(900, window.innerWidth - 80);
+      const next = Math.max(320, Math.min(maxWidth, dragStartWidth.current + delta));
       currentDragWidth.current = next;
       setPanelWidth(next);
     }
@@ -1426,7 +1508,7 @@ export function DetailPanel({
   function findLongBubbleAtCenter(outer: HTMLElement): HTMLElement | null {
     const outerRect = outer.getBoundingClientRect();
     const targetY = outerRect.top + outerRect.height / 2;
-    const minHeight = outer.clientHeight * 2;
+    const minHeight = outer.clientHeight * 1.5;
     const bubbles = outer.querySelectorAll<HTMLElement>('[class*="transcriptBubble"]');
     let best: HTMLElement | null = null;
     for (const b of bubbles) {
@@ -1480,16 +1562,17 @@ export function DetailPanel({
     let down: JumpAction | null = null;
 
     // UP
+    const upExtra = 100;
     if (bubble) {
       const bTop = topInOuter(bubble);
       if (outer.scrollTop - bTop >= room) {
-        up = { label: 'Bubble top', depth: countScopeDepth(bubble, outerEl), run: () => scrollElement(outer, Math.max(0, bTop - 8)) };
+        up = { label: 'Bubble top', depth: countScopeDepth(bubble, outerEl), run: () => scrollElement(outer, Math.max(0, bTop - 8 - upExtra)) };
       }
     }
     if (!up && agentBlock) {
       const aTop = topInOuter(agentBlock);
       if (outer.scrollTop - aTop >= room) {
-        up = { label: 'Agent start', depth: countScopeDepth(agentBlock, outerEl), run: () => scrollElement(outer, Math.max(0, aTop - 8)) };
+        up = { label: 'Agent start', depth: countScopeDepth(agentBlock, outerEl), run: () => scrollElement(outer, Math.max(0, aTop - 8 - upExtra)) };
       }
     }
     if (!up && outerEl.scrollTop >= 64) {
@@ -1547,7 +1630,7 @@ export function DetailPanel({
     down.run();
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes' | 'plans'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   // Recompute jump pill state when transcript tab or target changes
@@ -1852,11 +1935,13 @@ const currentDisplayName =
     setIsEditing(true);
   }
 
+  const roomPrefix = useRoomPrefix(selectedSession?.cwd);
+
   useEffect(() => {
-    if (isEditing) {
-      editInputRef.current?.select();
+    if (isEditing && editInputRef.current) {
+      selectAfterPrefix(editInputRef.current, roomPrefix);
     }
-  }, [isEditing]);
+  }, [isEditing, roomPrefix]);
 
   function commitEdit() {
     if (selectedSession) {
@@ -1897,6 +1982,11 @@ const currentDisplayName =
     setSendInput2('');
     if (selectedSession) draftPerSession.current.delete(selectedSession.sessionId);
     setPastedImage(null);
+  }
+
+  function handleExplain(quoted: string) {
+    if (!selectedSession || !quoted) return;
+    sendText(`Explain:\n\n${quoted}`);
   }
 
   useEffect(() => {
@@ -2262,6 +2352,86 @@ const currentDisplayName =
                     )}
                   </div>
 
+                  {!selectedSession.isWorker && (notesContent.trim() || selectedSession.intent || selectedSession.currentTask) && ((() => {
+                    const task = selectedSession.currentTask;
+                    const ageMs = task ? Date.now() - new Date(task.createdAt).getTime() : 0;
+                    const isGenerating = task && !task.title && ageMs < 20_000;
+                    const taskBody = task && (task.title
+                      ? task.title
+                      : isGenerating
+                      ? <em style={{ opacity: 0.4 }}>Generating title…</em>
+                      : null);
+                    const noteFirst = getFirstLineInfo(notesContent).text;
+                    return (
+                    <div className={styles.currentTaskCard}>
+                      {notesContent.trim() && (
+                        <div className={styles.currentTaskLine}>
+                          <span className={styles.currentTaskLabel}>Notes:</span>
+                          {notesFirstEditing ? (
+                            <input
+                              className={styles.notesFirstLineInput}
+                              value={notesFirstDraft}
+                              autoFocus
+                              onChange={(e) => setNotesFirstDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  (e.currentTarget as HTMLInputElement).blur();
+                                } else if (e.key === 'Escape') {
+                                  e.preventDefault();
+                                  setNotesFirstEditing(false);
+                                }
+                              }}
+                              onBlur={() => {
+                                const sessionId = selectedSession.sessionId;
+                                const { index } = getFirstLineInfo(notesContent);
+                                const lines = notesContent.split('\n');
+                                while (lines.length <= index) lines.push('');
+                                lines[index] = notesFirstDraft;
+                                const next = lines.join('\n');
+                                setNotesContent(next);
+                                setNotesFirstEditing(false);
+                                if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+                                fetch(`/api/sessions/${sessionId}/notes`, {
+                                  method: 'PUT',
+                                  headers: { 'Content-Type': 'application/json' },
+                                  body: JSON.stringify({ notes: next }),
+                                }).then(() => updateNoteFirstLine(sessionId, next)).catch(() => {});
+                              }}
+                            />
+                          ) : (
+                            <span
+                              className={`${styles.currentTaskTitle} ${styles.headerSummaryText} ${styles.notesEditable}`}
+                              onClick={(e) => {
+                                const t = e.target as HTMLElement;
+                                if (t.closest('a')) return;
+                                setNotesFirstDraft(noteFirst);
+                                setNotesFirstEditing(true);
+                              }}
+                              title="Click to edit"
+                            >
+                              {renderWithLinks(noteFirst, styles.notesFirstLineLink)}
+                              <span className={styles.notesEditIndicator} aria-hidden="true">✎</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {selectedSession.intent && (
+                        <span className={styles.currentTaskLine}>
+                          <span className={styles.currentTaskLabel}>Intent:</span>
+                          <span className={`${styles.currentTaskTitle} ${styles.headerSummaryText}`}>{selectedSession.intent}</span>
+                        </span>
+                      )}
+                      {taskBody && (
+                        <span className={styles.currentTaskLine}>
+                          <span className={styles.currentTaskLabel}>Task:</span>
+                          <span className={styles.currentTaskTitle}>{taskBody}</span>
+                        </span>
+                      )}
+                    </div>
+                    );
+                  })())}
+
                   <div className={styles.summaryRow}>
                     {selectedSession.isArchived ? (
                       <>
@@ -2353,7 +2523,7 @@ const currentDisplayName =
                       const known = mode === 'bypassPermissions' || mode === 'acceptEdits' || mode === 'plan' || mode === 'default';
                       const label =
                         mode === 'bypassPermissions' ? 'bypass' :
-                        mode === 'acceptEdits' ? 'auto-edit' :
+                        mode === 'acceptEdits' ? 'accept-edits' :
                         mode === 'plan' ? 'plan' :
                         mode === 'default' ? 'ask' :
                         mode;
@@ -2364,13 +2534,16 @@ const currentDisplayName =
                         mode === 'default' ? 'Ask for permissions (default) — click to change' :
                         `Mode: ${mode} — click to change`;
                       return (
-                        <span
+                        <button
+                          type="button"
                           className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
                           data-mode={known ? mode : 'custom'}
                           data-tooltip={tooltip}
-                          role="button"
-                          tabIndex={0}
-                          onClick={async () => {
+                          onMouseDown={(e) => { e.preventDefault(); }}
+                          onClick={async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.currentTarget.blur();
                             try {
                               await fetch(`/api/sessions/${selectedSession.sessionId}/cycle-permission-mode`, {
                                 method: 'POST',
@@ -2379,7 +2552,7 @@ const currentDisplayName =
                           }}
                         >
                           {label}
-                        </span>
+                        </button>
                       );
                     })()}
                     </>)}
@@ -2387,83 +2560,7 @@ const currentDisplayName =
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   </div>{/* headerMain */}
-                  {!selectedSession.isWorker && (selectedSession.intent || selectedSession.currentTask) && ((() => {
-                    const task = selectedSession.currentTask;
-                    const ageMs = task ? Date.now() - new Date(task.createdAt).getTime() : 0;
-                    const isGenerating = task && !task.title && ageMs < 20_000;
-                    const taskBody = task && (task.title
-                      ? task.title
-                      : isGenerating
-                      ? <em style={{ opacity: 0.4 }}>Generating title…</em>
-                      : null);
-                    return (
-                    <div className={styles.currentTaskCard}>
-                      {selectedSession.intent && (
-                        <span className={styles.currentTaskLine}>
-                          <span className={styles.currentTaskLabel}>Intent:</span>
-                          <span className={styles.currentTaskTitle}>{selectedSession.intent}</span>
-                        </span>
-                      )}
-                      {taskBody && (
-                        <span className={styles.currentTaskLine}>
-                          <span className={styles.currentTaskLabel}>Task:</span>
-                          <span className={styles.currentTaskTitle}>{taskBody}</span>
-                        </span>
-                      )}
-                    </div>
-                    );
-                  })())}
                   </div>{/* headerWithAvatar */}
-                  {notesContent.trim() && (
-                    <div className={styles.notesFirstLineRow}>
-                      {notesFirstEditing ? (
-                        <input
-                          className={styles.notesFirstLineInput}
-                          value={notesFirstDraft}
-                          autoFocus
-                          onChange={(e) => setNotesFirstDraft(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              (e.currentTarget as HTMLInputElement).blur();
-                            } else if (e.key === 'Escape') {
-                              e.preventDefault();
-                              setNotesFirstEditing(false);
-                            }
-                          }}
-                          onBlur={() => {
-                            const sessionId = selectedSession.sessionId;
-                            const { index } = getFirstLineInfo(notesContent);
-                            const lines = notesContent.split('\n');
-                            while (lines.length <= index) lines.push('');
-                            lines[index] = notesFirstDraft;
-                            const next = lines.join('\n');
-                            setNotesContent(next);
-                            setNotesFirstEditing(false);
-                            if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
-                            fetch(`/api/sessions/${sessionId}/notes`, {
-                              method: 'PUT',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ notes: next }),
-                            }).then(() => updateNoteFirstLine(sessionId, next)).catch(() => {});
-                          }}
-                        />
-                      ) : (
-                        <div
-                          className={styles.notesFirstLine}
-                          onClick={(e) => {
-                            const t = e.target as HTMLElement;
-                            if (t.closest('a')) return;
-                            setNotesFirstDraft(getFirstLineInfo(notesContent).text);
-                            setNotesFirstEditing(true);
-                          }}
-                          title="Click to edit"
-                        >
-                          {renderWithLinks(getFirstLineInfo(notesContent).text, styles.notesFirstLineLink)}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
 
                 {/* Tab bar */}
@@ -2494,6 +2591,14 @@ const currentDisplayName =
                       onClick={() => setActiveTab('tasks')}
                     >
                       Tasks
+                    </button>
+                  )}
+                  {!selectedSession.isArchived && (
+                    <button
+                      className={`${styles.tab} ${activeTab === 'plans' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('plans')}
+                    >
+                      Plans
                     </button>
                   )}
                   {!selectedSession.isArchived && hasSubagents && (
@@ -2624,6 +2729,23 @@ const currentDisplayName =
                     {/* Non-PTY: transcript + state bar + send input */}
                       <div className={styles.scrollAreaWrap}>
                         <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                          {selectedSession.activeMonitors && selectedSession.activeMonitors.length > 0 && (
+                            <div className={styles.watchingSection}>
+                              <span className={styles.watchingHeader}>
+                                <span className={styles.watchingDot} />
+                                Watching
+                                {selectedSession.activeMonitors.length > 1 ? ` (${selectedSession.activeMonitors.length})` : ''}
+                              </span>
+                              <ul className={styles.watchingList}>
+                                {selectedSession.activeMonitors.map(m => (
+                                  <li key={m.toolUseId} className={styles.watchingItem}>
+                                    <span className={styles.watchingTarget}>{m.target || m.toolUseId.slice(0, 8)}</span>
+                                    {m.until && <span className={styles.watchingUntil}>until {m.until}</span>}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                           {(mergedFeed.length > 0 || selectedSession.lastMessage) ? (
                             <section className={styles.section}>
                               {mergedFeed.length > 0 ? (
@@ -2792,38 +2914,19 @@ const currentDisplayName =
                             </button>
                             {showQuickMenu && (
                               <div className={styles.quickMenu}>
-                                <button
-                                  className={styles.quickMenuItem}
-                                  onMouseDown={e => {
-                                    e.preventDefault();
-                                    setShowQuickMenu(false);
-                                    sendText([
-                                      "Summarize this conversation in a compact status card.",
-                                      "",
-                                      "**Format (markdown):**",
-                                      "",
-                                      "### 🎯 Goal",
-                                      "One sentence — what the user set out to do.",
-                                      "",
-                                      "### 🔍 Root cause / key finding",
-                                      "1–2 sentences on the actual issue (not symptoms). Include the critical number/path.",
-                                      "",
-                                      "### ✏️ Changes",
-                                      "- `path/to/file.ts` — one-line description",
-                                      "- `path/to/other.ts` — one-line description",
-                                      "",
-                                      "### ⏭️ Next step",
-                                      "One sentence: what the user needs to do now (restart, review, test, nothing).",
-                                      "",
-                                      "**Rules:**",
-                                      "- Skip sections that don't apply (write nothing, not \"N/A\").",
-                                      "- Each line ≤ 100 chars. Total ≤ 150 words.",
-                                      "- File paths use backticks. No prose preamble, no closing summary.",
-                                    ].join("\n"));
-                                  }}
-                                >
-                                  Remind me where we left off
-                                </button>
+                                {QUICK_PROMPTS.map(p => (
+                                  <button
+                                    key={p.id}
+                                    className={styles.quickMenuItem}
+                                    onMouseDown={e => {
+                                      e.preventDefault();
+                                      setShowQuickMenu(false);
+                                      sendText(p.body);
+                                    }}
+                                  >
+                                    {p.label}
+                                  </button>
+                                ))}
                               </div>
                             )}
                           </div>
@@ -3356,6 +3459,11 @@ const currentDisplayName =
                   </div>
                 )}
 
+                {/* Tab: Plans */}
+                {activeTab === 'plans' && (
+                  <PlansTab overlordId={selectedSession.overlordId ?? effectiveOvrId ?? undefined} />
+                )}
+
                 {/* Tab: Subagents */}
                 {activeTab === 'subagents' && hasSubagents && (
                   <div className={styles.scrollArea}>
@@ -3436,6 +3544,14 @@ const currentDisplayName =
           </>
         )}
       </div>
+      {fileEditorPath && (
+        <FileEditorOverlay
+          path={fileEditorPath}
+          cwd={selectedSession?.cwd}
+          onClose={() => setFileEditorPath(null)}
+        />
+      )}
+      <SelectionMenu containerRef={transcriptRef} onExplain={handleExplain} />
     </>
   );
 }

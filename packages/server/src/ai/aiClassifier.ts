@@ -1,13 +1,10 @@
-import * as fs from 'fs';
 import { StateManager } from '../session/stateManager.js';
 import { runClaudeQuery } from './claudeQuery.js';
-import { findTranscriptPathAnywhere, readFirstUserMessage } from '../session/transcriptReader.js';
 
 export class AiClassifier {
   // Per-session debounce timers for active task label generation
   private activeTaskTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private activeLabelGenerations = new Set<string>();
-  private activeTaskTitleGenerations = new Set<string>();
 
   constructor(private stateManager: StateManager) {}
 
@@ -63,47 +60,6 @@ export class AiClassifier {
     }
   }
 
-  async generateTaskTitle(sessionId: string, taskId: string): Promise<void> {
-    if (this.activeTaskTitleGenerations.has(taskId)) return;
-
-    // Skip if title already generated (persisted across restarts)
-    const existing = this.stateManager.getSession(sessionId);
-    const existingTask = existing?.currentTask?.taskId === taskId
-      ? existing.currentTask
-      : existing?.completionSummaries?.find(t => t.taskId === taskId);
-    if (existingTask?.title) return;
-
-    this.activeTaskTitleGenerations.add(taskId);
-    try {
-      const session = this.stateManager.getSession(sessionId);
-      if (!session || session.isWorker) return;
-
-      const transcriptPath = session.transcriptPath ?? findTranscriptPathAnywhere(sessionId);
-      const firstUserMsg = transcriptPath ? readFirstUserMessage(transcriptPath) : '';
-      if (!firstUserMsg) {
-        console.warn(`[task-title] ${sessionId.slice(0, 8)} no transcript content found (path=${transcriptPath ?? 'none'})`);
-        return;
-      }
-
-      const prompt = `Summarize what the user wants from this conversation in 5-8 words. Be specific and concrete about the actual task. Ignore filler words like "continue" or "ok". No punctuation at end. No preamble.\n\nConversation opening:\n${firstUserMsg}\n\n5-8 word summary:`;
-      console.log(`[task-title] ${sessionId.slice(0, 8)} generating...`);
-      try {
-        const raw = await runClaudeQuery(prompt, 30_000);
-        const title = raw.trim().replace(/^["']|["']$/g, '').replace(/\.$/, '').slice(0, 60);
-        const current = this.stateManager.getSession(sessionId);
-        if (current) {
-          console.log(`[task-title] ${sessionId.slice(0, 8)} → "${title}"`);
-          this.stateManager.setTaskTitle(sessionId, taskId, title);
-        }
-      } catch (err) {
-        const msg = (err as Error).message;
-        if (msg !== 'invalidated') console.warn(`[task-title] ${sessionId.slice(0, 8)} failed:`, msg);
-      }
-    } finally {
-      this.activeTaskTitleGenerations.delete(taskId);
-    }
-  }
-
   classifyByHeuristic(message: string): 'done' | 'awaiting' | null {
     const text = message.trim();
     const lower = text.toLowerCase();
@@ -143,75 +99,6 @@ export class AiClassifier {
     if (heuristic !== null) {
       console.log(`[classify] ${sessionId.slice(0, 8)} → ${heuristic} (heuristic)`);
       this.stateManager.setCompletionHint(sessionId, heuristic, lastMessage);
-      if (heuristic === 'done') {
-        this.stateManager.completeActiveTask(sessionId, new Date().toISOString());
-        setTimeout(() => { void this.generateCompletionSummary(sessionId, lastMessage); }, 2_000);
-      }
-    }
-  }
-
-  async generateCompletionSummary(sessionId: string, forMessage: string): Promise<void> {
-    try {
-      const transcriptPath = findTranscriptPathAnywhere(sessionId);
-      if (!transcriptPath) return;
-      // Read only the tail of the transcript (max 512KB) to avoid OOM on large files.
-      // Previous code read the entire file — a 50MB transcript would allocate ~150MB
-      // (file string + split array + parse), and multiple sessions doing this simultaneously
-      // caused the server to hit the V8 heap limit.
-      const MAX_READ = 512 * 1024;
-      const stat = fs.statSync(transcriptPath);
-      const readSize = Math.min(stat.size, MAX_READ);
-      const buf = Buffer.alloc(readSize);
-      const fd = fs.openSync(transcriptPath, 'r');
-      fs.readSync(fd, buf, 0, readSize, Math.max(0, stat.size - readSize));
-      fs.closeSync(fd);
-      const tail = buf.toString('utf-8');
-      const lines = tail.split('\n').filter(l => l.trim());
-      // Drop first line if we started mid-file (may be partial)
-      if (stat.size > MAX_READ && lines.length > 1) lines.shift();
-      // Collect last 10 assistant messages for context
-      const msgs: string[] = [];
-      for (let i = lines.length - 1; i >= 0 && msgs.length < 10; i--) {
-        try {
-          const parsed = JSON.parse(lines[i]) as { type?: string; message?: { content?: unknown } };
-          if (parsed.type === 'assistant') {
-            const c = parsed.message?.content;
-            const arr = Array.isArray(c) ? c : [];
-            const tb = arr.find((b: { type?: string; text?: string }) => b.type === 'text');
-            if (tb?.text?.trim()) msgs.unshift(tb.text.slice(0, 300));
-          }
-        } catch { /* skip */ }
-      }
-      if (msgs.length === 0) return;
-      const context = msgs.join('\n\n---\n\n');
-      const prompt = `Based on these recent messages from a Claude Code agent session, write a single short sentence (max 10 words) summarizing what was accomplished. Be specific and concrete. No preamble.\n\nMessages:\n${context}\n\nOne-line summary:`;
-      console.log(`[summary] ${sessionId.slice(0, 8)} generating...`);
-      const summary = await runClaudeQuery(prompt, 45_000, () => {
-        const s = this.stateManager.getSession(sessionId);
-        return s?.state === 'waiting' && s?.lastMessage === forMessage.slice(0, 300);
-      });
-      // Only apply if session is still waiting on the same message
-      const session = this.stateManager.getSession(sessionId);
-      if (!session || session.state !== 'waiting' || session.lastMessage !== forMessage.slice(0, 300)) {
-        console.log(`[summary] ${sessionId.slice(0, 8)} skipped — session moved on`);
-        return;
-      }
-      const clean = summary.trim().replace(/^["']|["']$/g, '');
-      console.log(`[summary] ${sessionId.slice(0, 8)} → "${clean}"`);
-      // Find the most recently completed task
-      const sessForUpdate = this.stateManager.getSession(sessionId);
-      const latestDoneTask = sessForUpdate?.completionSummaries?.[0];
-      if (latestDoneTask) {
-        this.stateManager.setTaskSummary(sessionId, latestDoneTask.taskId, clean);
-      }
-      // Auto-accept if manually marked done
-      const sessionAfter = this.stateManager.getSession(sessionId);
-      if (sessionAfter?.completionHintByUser && latestDoneTask) {
-        this.stateManager.acceptTask(sessionId, latestDoneTask.completedAt ?? '');
-      }
-    } catch (err) {
-      const msg = (err as Error).message;
-      if (msg !== 'invalidated') console.warn(`[summary] ${sessionId.slice(0, 8)} failed:`, msg);
     }
   }
 

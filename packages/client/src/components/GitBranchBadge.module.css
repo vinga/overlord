@@ -46,9 +46,9 @@
 }
 
 .pillAhead {
-  color: #22c55e;
-  background: rgba(34, 197, 94, 0.12);
-  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
 .pillBehind {
@@ -83,7 +83,22 @@
 .pillPrOpen   { color: #22c55e; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.25); }
 .pillPrDraft  { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); }
 .pillPrMerged { color: #a855f7; background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.25); }
-.pillPrClosed { color: #ef4444; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.25); }
+.pillPrClosed { color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); }
+
+.aheadPill {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 1px 4px;
+  display: inline-flex;
+  align-items: center;
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
 
 .pillWarn {
   font-family: 'Inter', system-ui, sans-serif;
@@ -143,6 +158,21 @@
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.fileSummary {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.fileSummaryModified {
+  color: rgba(251, 191, 36, 0.8);
+}
+
+.fileSummaryAdded {
+  color: rgba(74, 222, 128, 0.8);
+}
+
 .branchHeading {
   display: flex;
   align-items: center;
@@ -177,9 +207,9 @@
   text-transform: uppercase;
   padding: 2px 6px;
   border-radius: 4px;
-  color: #f59e0b;
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .abBadges {
@@ -212,9 +242,9 @@
 }
 
 .aheadBadge {
-  color: #22c55e;
-  background: rgba(34, 197, 94, 0.1);
-  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
 }
 
 .behindBadge {
@@ -261,9 +291,9 @@
 }
 
 .statusPushed {
-  color: rgba(34, 197, 94, 0.85);
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px solid rgba(34, 197, 94, 0.22);
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .branchSyncPill {
@@ -278,9 +308,9 @@
 }
 
 .branchSyncSynced {
-  color: rgba(34, 197, 94, 0.85);
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px solid rgba(34, 197, 94, 0.22);
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .branchSyncAhead {
@@ -410,9 +440,9 @@
 }
 
 .prStateOpen   { color: #22c55e; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3); }
-.prStateDraft  { color: rgba(255,255,255,0.65); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); }
+.prStateDraft  { color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); }
 .prStateMerged { color: #a855f7; background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.3); }
-.prStateClosed { color: #ef4444; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3); }
+.prStateClosed { color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.18); }
 
 .prNumber {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -447,7 +477,7 @@
 
 .commitItem {
   display: grid;
-  grid-template-columns: auto auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto auto;
   gap: 8px;
   align-items: center;
   font-size: 11px;
@@ -462,11 +492,176 @@
   min-width: 0;
 }
 
+.commitFiles {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.38);
+  white-space: nowrap;
+}
+
+.commitDotPushed,
+.commitDotUnpushed {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.commitDotPushed {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.commitDotUnpushed {
+  background: #3b82f6;
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.45);
+}
+
+.expandButton {
+  margin-top: 6px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.expandButton:hover {
+  color: rgba(255, 255, 255, 0.85);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.sectionUnpushedBadge {
+  margin-left: auto;
+  font-size: 10px;
+  color: #3b82f6;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.checkList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.checkItem {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.checkDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.checkDotPass { background: #22c55e; box-shadow: 0 0 6px rgba(34, 197, 94, 0.35); }
+.checkDotFail { background: #ef4444; box-shadow: 0 0 6px rgba(239, 68, 68, 0.4); }
+.checkDotPending {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.35);
+  animation: checkPulse 1.4s ease-in-out infinite;
+}
+.checkDotNeutral { background: rgba(255, 255, 255, 0.3); }
+
+@keyframes checkPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.checkName {
+  color: rgba(255, 255, 255, 0.82);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.checkName:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+
+.checkElapsed {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.38);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.checksFailBadge {
+  margin-left: auto;
+  font-size: 10px;
+  color: #ef4444;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.checksPendingBadge {
+  margin-left: auto;
+  font-size: 10px;
+  color: #f59e0b;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+
+.checksPassBadge {
+  margin-left: auto;
+  font-size: 10px;
+  color: #22c55e;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.28);
+}
+
+.prMergeable {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.prMergeableOk {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.28);
+}
+
+.prMergeableWarn {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+
+.prMergeableBad {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
 .cleanRow {
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #22c55e;
+  color: rgba(255, 255, 255, 0.55);
   font-size: 12px;
 }
 
@@ -474,8 +669,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 6px rgba(34, 197, 94, 0.45);
+  background: rgba(255, 255, 255, 0.45);
 }
 
 .sections {

@@ -50,6 +50,13 @@ interface PendingQuestionSet {
   questions: PendingQuestion[];
 }
 
+interface ActiveMonitor {
+  toolUseId: string;
+  target: string;
+  startedAt?: string;
+  until?: string;
+}
+
 interface Task {
   taskId: string;
   sessionId: string;
@@ -97,6 +104,7 @@ interface Session {
   isLimitPrompt?: boolean;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
+  activeMonitors?: ActiveMonitor[];
   completionHint?: 'done' | 'awaiting';
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   completionSummaries?: Task[];
@@ -118,6 +126,7 @@ interface Room {
   cwd: string;
   sessions: Session[];
   gitBranch?: string;
+  gitAhead?: number;
   pullRequest?: {
     number: number;
     url: string;
@@ -283,6 +292,30 @@ interface LogEntryMessage {
   entry: LogEntry;
 }
 
+type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
+type PlanSource = 'claude' | 'user';
+
+interface Plan {
+  planId: string;
+  overlordId: string;
+  cwd: string;
+  createdAt: string;
+  updatedAt: string;
+  title: string;
+  status: PlanStatus;
+  source: PlanSource;
+  claudePlanToolUseId?: string;
+  body: string;
+}
+
+interface PlanChangedEvent {
+  type: 'plan:changed';
+  planId: string;
+  overlordId: string;
+  cwd: string;
+  op: 'create' | 'update' | 'delete';
+}
+
 export type {
   WorkerState,
   SessionProvider,
@@ -294,6 +327,7 @@ export type {
   PendingQuestion,
   PendingQuestionSet,
   PendingQuestionOption,
+  ActiveMonitor,
   Room,
   ArchiveEntry,
   OfficeSnapshot,
@@ -310,6 +344,10 @@ export type {
   LogEntry,
   LogHistoryMessage,
   LogEntryMessage,
+  Plan,
+  PlanStatus,
+  PlanSource,
+  PlanChangedEvent,
 };
 
 // ── Session type helpers ──────────────────────────────────

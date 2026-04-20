@@ -10,6 +10,7 @@ import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
+import { findTranscriptPath, findTranscriptPathAnywhere } from '../session/transcriptReader.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -29,6 +30,22 @@ export interface WsHandlerContext {
   getLogBuffer: () => unknown[];
 }
 
+
+// BSU (\x1b[?2026h) marks the start of a synchronized full-screen TUI repaint.
+// For `terminal:replay`, we only want to send chunks from the last BSU onward —
+// that is a coherent frame boundary. When the TUI is mid-work and hasn't emitted
+// a BSU in a while, the buffer may contain hundreds of chunks of streamed tool
+// output. Concat'ing all of them makes xterm scroll-write incremental draws and
+// feels slow. If no BSU is present we return [] and rely on the SIGWINCH nudge
+// to produce the next full frame.
+const BSU_MARKER = Buffer.from('\x1b[?2026h');
+export function sliceBufferFromLastBsu(buf: Buffer[] | undefined): Buffer[] {
+  if (!buf || buf.length === 0) return [];
+  for (let i = buf.length - 1; i >= 0; i--) {
+    if (buf[i].indexOf(BSU_MARKER) >= 0) return buf.slice(i);
+  }
+  return [];
+}
 
 function stripInternalMarkers(name: string): string {
   return name.replace(/___(?:BRG|OVR):[A-Za-z0-9_-]*/g, '').replace(/[-_\s]+$/, '').trim();
@@ -156,6 +173,16 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
         const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const transcriptPath = findTranscriptPath(cwd, resumeSessionId) ?? findTranscriptPathAnywhere(resumeSessionId);
+        if (!transcriptPath) {
+          sendToClient(ws, {
+            type: 'terminal:error',
+            sessionId: ptySessionId,
+            message: `Cannot resume ${resumeSessionId.slice(0, 8)}: transcript no longer exists.`,
+          });
+          return;
+        }
 
         stateManager.trackPendingResume(cwd, resumeSessionId);
         // Use the session's own ID for --resume, NOT getRootSessionId().
@@ -477,19 +504,22 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
         const claudeSessionId = claudeSession?.sessionId ?? ovrId;
 
-        // Bridge sessions: send buffered output first for immediate display (buffer is
-        // trimmed to start at the last full repaint frame via \x1b[?2026h detection, so
-        // replaying it is safe). Then nudge the bridge for a fresh repaint.
+        // Bridge sessions: send buffered output first for immediate display. Only replay
+        // from the last BSU (\x1b[?2026h) chunk onward — that's a coherent frame boundary.
+        // When the TUI is mid-work without BSUs, the buffer may hold hundreds of chunks of
+        // streamed tool output; concat'ing them all makes xterm write every partial frame
+        // and feels like scrolling. SIGWINCH below produces the next full frame.
         if (stateManager.isBridge(claudeSessionId)) {
           const cols = Number(msg.cols || 0);
           const rows = Number(msg.rows || 0);
           // Bridge buffer may be keyed by ovrId or claudeSessionId
           const buf = ptyOutputBuffer.get(ovrId) ?? ptyOutputBuffer.get(claudeSessionId);
-          if (buf && buf.length > 0) {
-            const encoded = Buffer.concat(buf).toString('base64');
+          const slice = sliceBufferFromLastBsu(buf);
+          if (slice.length > 0) {
+            const encoded = Buffer.concat(slice).toString('base64');
             sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
           }
-          console.log(`[terminal:replay] bridge nudge for ovrId=${ovrId.slice(0, 8)} cols=${cols} rows=${rows} bufChunks=${buf?.length ?? 0}`);
+          console.log(`[terminal:replay] bridge nudge for ovrId=${ovrId.slice(0, 8)} cols=${cols} rows=${rows} bufChunks=${buf?.length ?? 0} sliceChunks=${slice.length}`);
           if (cols > 0 && rows > 0) {
             void resizeAndNudgeBridgePipe(claudeSessionId, cols, rows).then(ok => {
               console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ovrId=${ovrId.slice(0, 8)}`);
@@ -511,19 +541,22 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols || 0);
         const rows = Number(msg.rows || 0);
         const isRaw = claudeSession?.sessionType === 'raw';
-        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} cols=${cols} rows=${rows} raw=${isRaw}`);
+        // For non-raw TUIs, only replay from the last BSU chunk (coherent frame start).
+        // Raw shells have no BSU, so keep the full-buffer replay (line output is idempotent).
+        const replaySlice = isRaw ? (buf ?? []) : sliceBufferFromLastBsu(buf);
+        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} sliceChunks=${replaySlice.length} cols=${cols} rows=${rows} raw=${isRaw}`);
         // Raw sessions with a disk log: replay from disk when no live buffer is available.
         // This covers both historyOnly revived sessions and fresh reconnects where the
         // in-memory ring buffer was lost across a server restart.
-        if (isRaw && (!buf || buf.length === 0) && hasShellHistory(ovrId)) {
+        if (isRaw && replaySlice.length === 0 && hasShellHistory(ovrId)) {
           const diskLog = readShellHistory(ovrId);
           const banner = claudeSession?.historyOnly
             ? `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} · click "Restart shell" to start a live session ──\x1b[0m\r\n`
             : `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} ──\x1b[0m\r\n`;
           const payload = Buffer.concat([diskLog, Buffer.from(banner)]).toString('base64');
           sendToClient(ws, { type: 'terminal:history-dump', sessionId: ovrId, data: payload });
-        } else if (buf && buf.length > 0) {
-          const encoded = Buffer.concat(buf).toString('base64');
+        } else if (replaySlice.length > 0) {
+          const encoded = Buffer.concat(replaySlice).toString('base64');
           sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
         }
         // SIGWINCH nudge: causes the TUI to emit a fresh full-screen repaint.
