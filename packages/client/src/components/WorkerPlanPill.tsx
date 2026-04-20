@@ -20,7 +20,7 @@ interface Props {
   timestamp: string;
 }
 
-const TITLE_MAX = 28;
+const TITLE_MAX = 48;
 
 function truncate(s: string, n: number): string {
   if (s.length <= n) return s;
@@ -113,7 +113,7 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
         title={title}
       >
         <PlanIcon className={styles.icon} />
-        <span className={styles.title}>{truncate(title, TITLE_MAX)}</span>
+        <span className={styles.title}>{title}</span>
       </span>
       {open && ReactDOM.createPortal(
         <div

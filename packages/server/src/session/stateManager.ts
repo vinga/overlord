@@ -60,10 +60,9 @@ import {
   clearSessionCaches,
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
-import { readTasks, acceptTaskByCompletedAt, saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck } from '../ai/taskStorage.js';
+import { saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck } from '../ai/taskStorage.js';
 import { planStore } from '../plans/planStore.js';
 import type { PlanStatus } from '../plans/types.js';
-import type { Task } from '../types.js';
 
 function planStatusFromClaude(status: 'approved' | 'rejected' | 'pending'): PlanStatus {
   if (status === 'approved') return 'active';
@@ -368,8 +367,6 @@ export class StateManager {
           subagents: [],
           proposedName: resolvedProposedName,
           resumedFrom: entry.resumedFrom,
-          completionSummaries: readTasks(entry.cwd, entry.sessionId).filter(t => t.kind === 'plan'),
-          currentTask: undefined,
           userAccepted: entry.userAccepted,
           bridgePipeName: entry.bridgePipeName,
           bridgeMarker: entry.bridgeMarker,
@@ -516,17 +513,6 @@ export class StateManager {
     this.sessions.delete(sessionId);
     this.saveKnownSessions();
     this.onChange();
-  }
-
-  acceptTask(sessionId: string, completedAt: string | undefined): boolean {
-    if (!completedAt) return false;
-    const session = this.sessions.get(sessionId);
-    if (!session) return false;
-    const updated = acceptTaskByCompletedAt(session.cwd, sessionId, completedAt);
-    if (!updated) return false;
-    session.completionSummaries = updated.filter(t => t.state === 'done');
-    this.onChange();
-    return true;
   }
 
   acceptSession(sessionId: string): boolean {
@@ -731,21 +717,6 @@ export class StateManager {
       }
     }
 
-    // Load persisted tasks on first encounter; preserve in-memory on updates.
-    // Plans detected in the transcript are persisted *after* sessionStore.ensureFromLive
-    // below, because createPlanTask requires the overlord record to exist.
-    let completionSummaries: Task[] | undefined;
-    let currentTask: Task | undefined;
-    if (isNew) {
-      const own = readTasks(cwd, sessionId);
-      const merged = own.filter(t => t.kind === 'plan');
-      completionSummaries = merged.length > 0 ? merged : undefined;
-      currentTask = undefined;
-    } else {
-      completionSummaries = existingSession?.completionSummaries;
-      currentTask = existingSession?.currentTask;
-    }
-
     // Preserve overlordId across updates; generate once on first creation.
     // On resume, inherit the parent's ovrId so the new sessionId attaches to the
     // existing lineage rather than minting a duplicate OverlordSession record.
@@ -809,8 +780,6 @@ export class StateManager {
       activeMonitors: transcript?.activeMonitors,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       acknowledged: state === 'waiting' ? (existingSession?.acknowledged ?? (isNew ? loadAck(sessionId) : false)) : false,
-      completionSummaries,
-      currentTask,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
       isWorker: raw.kind === 'haiku-worker',
       bridgePipeName: existingSession?.bridgePipeName,
@@ -1228,8 +1197,6 @@ export class StateManager {
     if (result.transcriptTruncated) {
       session.activityFeed = undefined;
       session.lastMessage = undefined;
-      session.currentTask = undefined;
-      session.currentTaskLabel = undefined;
       session.ptyCompactItems = undefined;
       session.ptyCompactBaseline = undefined;
       session.ptyCompactBaselineAt = undefined;
@@ -1276,13 +1243,6 @@ export class StateManager {
           session.acknowledged = false;
           saveAck(sessionId, false);
         }
-      }
-      // Clear active task label when leaving working/thinking.
-      // Exception: keep the last label when the session closes — worker cards
-      // preserve it alongside notes/intent/plan so you can still tell what a
-      // closed agent was last doing.
-      if ((prevState === 'working' || prevState === 'thinking') && result.state !== 'working' && result.state !== 'thinking' && result.state !== 'closed') {
-        session.currentTaskLabel = undefined;
       }
       // Log state transition
       if (prevState !== result.state) {
@@ -1584,22 +1544,6 @@ export class StateManager {
     return { sessionId: entry.sessionId };
   }
 
-  setCompletionSummaries(sessionId: string, summaries: Task[]): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.completionSummaries = summaries;
-      this.onChange();
-    }
-  }
-
-  setCurrentTaskLabel(sessionId: string, label: string | undefined): void {
-    const session = this.sessions.get(sessionId);
-    if (session && session.currentTaskLabel !== label) {
-      session.currentTaskLabel = label;
-      this.onChange();
-    }
-  }
-
   /** @deprecated No-op. Request summaries superseded by Task.title. */
   setRequestSummary(_sessionId: string, _summary: string): void { /* no-op */ }
 
@@ -1868,7 +1812,7 @@ export class StateManager {
           sessions: [],
         });
       }
-      roomMap.get(cwd)!.sessions.push(this.projectPlansIntoSession(session));
+      roomMap.get(cwd)!.sessions.push(this.projectLatestPlan(session));
     }
 
     const rooms = Array.from(roomMap.values());
@@ -1918,32 +1862,24 @@ export class StateManager {
     return this.sessions.get(sessionId);
   }
 
-  /**
-   * Build a wire-compat view of the session with plans projected from planStore
-   * into `completionSummaries` as synthetic plan-kind Tasks. Keeps the existing
-   * WorkerPlanPill contract intact now that plans live outside OverlordSession.
-   */
-  private projectPlansIntoSession(session: Session): Session {
+  private projectLatestPlan(session: Session): Session {
     const plans = planStore.listByOverlord(session.overlordId);
     if (plans.length === 0) return session;
-    const planTasks: Task[] = plans
-      .slice()
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map(p => ({
-        taskId: p.planId,
-        sessionId: session.sessionId,
-        sessionName: session.proposedName,
-        title: p.title,
-        state: 'done',
-        kind: 'plan',
-        createdAt: p.createdAt,
-        completedAt: p.updatedAt,
-        planContent: p.body,
-        planToolUseId: p.claudePlanToolUseId,
-        planStatus: p.status === 'active' ? 'approved' : p.status === 'archived' ? 'rejected' : 'pending',
-      }));
-    const nonPlan = (session.completionSummaries ?? []).filter(t => t.kind !== 'plan');
-    return { ...session, completionSummaries: [...planTasks, ...nonPlan] };
+    const latest = plans
+      .filter(p => p.status !== 'archived')
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    if (!latest) return session;
+    return {
+      ...session,
+      latestPlan: {
+        planId: latest.planId,
+        title: latest.title,
+        body: latest.body,
+        status: latest.status,
+        claudePlanToolUseId: latest.claudePlanToolUseId,
+        updatedAt: latest.updatedAt,
+      },
+    };
   }
 
   /** Exposed so on-demand git-status endpoint can share the single PR cache. */

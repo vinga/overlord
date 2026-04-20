@@ -642,6 +642,28 @@ if (planMigrationResult.markerWritten) {
 const planWatcher = new PlanWatcher(planStore, (event) => broadcastRaw(event));
 planWatcher.start();
 
+// Ensure skill-templates are linked into ~/.claude/skills/ so Claude Code sessions
+// in any room can invoke them as slash commands. Uses absolute targets since the
+// symlinks live outside the repo. No-op if already linked and pointing correctly.
+(function linkSkillTemplates() {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const templatesDir = join(repoRoot, 'skill-templates');
+  const skillsDir = join(os.homedir(), '.claude', 'skills');
+  if (!fs.existsSync(templatesDir)) return;
+  fs.mkdirSync(skillsDir, { recursive: true });
+  for (const name of fs.readdirSync(templatesDir)) {
+    const absoluteTarget = join(templatesDir, name);
+    const link = join(skillsDir, name);
+    try {
+      const existing = fs.lstatSync(link);
+      if (existing.isSymbolicLink() && fs.readlinkSync(link) === absoluteTarget) continue;
+      fs.unlinkSync(link);
+    } catch { /* doesn't exist yet */ }
+    fs.symlinkSync(absoluteTarget, link);
+    log('info', `[skills] linked ~/.claude/skills/${name} → ${absoluteTarget}`);
+  }
+})();
+
 // Setup state manager
 const stateManager = new StateManager(() => {
   broadcast(stateManager.getSnapshot());

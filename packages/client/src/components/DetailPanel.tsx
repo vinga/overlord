@@ -250,7 +250,6 @@ interface SessionActions {
   onFocusBridge?: (sessionId: string) => void;
   onMarkDone?: (sessionId: string) => void;
   onAcceptSession?: (sessionId: string) => void;
-  onAcceptTask?: (sessionId: string, completedAt: string) => void;
 }
 
 interface DetailPanelProps {
@@ -1291,14 +1290,6 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   );
 }
 
-const STATE_ICONS: Record<string, string> = {
-  working: '⚙',
-  thinking: '💭',
-  waiting: '⏳',
-  closed: '✓',
-  abandoned: '⚠',
-};
-
 type JumpBtnInfo = { label: string; depth: number } | null;
 
 interface ScrollJumpNavProps {
@@ -1385,7 +1376,7 @@ export function DetailPanel({
   onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession, onAcceptTask } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -1630,7 +1621,7 @@ export function DetailPanel({
     down.run();
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'tasks' | 'subagents' | 'terminal' | 'notes' | 'plans'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'plans'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   // Recompute jump pill state when transcript tab or target changes
@@ -1680,7 +1671,6 @@ export function DetailPanel({
   const prevSessionIdRef = useRef<string | undefined>(undefined);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [expandedPlanTasks, setExpandedPlanTasks] = useState<Set<string>>(new Set());
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
@@ -2072,7 +2062,6 @@ const currentDisplayName =
 
   const lastUserMessage = [...mergedFeed].reverse().find(m => m.kind === 'message' && m.role === 'user')?.content ?? '';
   const isAbandoned = selectedSession != null && selectedSession.state === 'closed' && (Date.now() - new Date(selectedSession.lastActivity).getTime()) > 30 * 60 * 1000;
-  const summaryState = isAbandoned ? 'abandoned' : (selectedSession?.state ?? 'closed');
   const hasSubagents = (selectedSession?.subagents.length ?? 0) > 0;
 
   const stateBarActiveSubagents = selectedSession
@@ -2352,15 +2341,7 @@ const currentDisplayName =
                     )}
                   </div>
 
-                  {!selectedSession.isWorker && (notesContent.trim() || selectedSession.intent || selectedSession.currentTask) && ((() => {
-                    const task = selectedSession.currentTask;
-                    const ageMs = task ? Date.now() - new Date(task.createdAt).getTime() : 0;
-                    const isGenerating = task && !task.title && ageMs < 20_000;
-                    const taskBody = task && (task.title
-                      ? task.title
-                      : isGenerating
-                      ? <em style={{ opacity: 0.4 }}>Generating title…</em>
-                      : null);
+                  {!selectedSession.isWorker && (notesContent.trim() || selectedSession.intent) && ((() => {
                     const noteFirst = getFirstLineInfo(notesContent).text;
                     return (
                     <div className={styles.currentTaskCard}>
@@ -2420,12 +2401,6 @@ const currentDisplayName =
                         <span className={styles.currentTaskLine}>
                           <span className={styles.currentTaskLabel}>Intent:</span>
                           <span className={`${styles.currentTaskTitle} ${styles.headerSummaryText}`}>{selectedSession.intent}</span>
-                        </span>
-                      )}
-                      {taskBody && (
-                        <span className={styles.currentTaskLine}>
-                          <span className={styles.currentTaskLabel}>Task:</span>
-                          <span className={styles.currentTaskTitle}>{taskBody}</span>
                         </span>
                       )}
                     </div>
@@ -2584,14 +2559,6 @@ const currentDisplayName =
                   >
                     Notes{notesContent.trim() && <span className={styles.tabNotesDot}>✱</span>}
                   </button>
-                  )}
-                  {!selectedSession.isArchived && (selectedSession.currentTask || (selectedSession.completionSummaries && selectedSession.completionSummaries.length > 0)) && (
-                    <button
-                      className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
-                      onClick={() => setActiveTab('tasks')}
-                    >
-                      Tasks
-                    </button>
                   )}
                   {!selectedSession.isArchived && (
                     <button
@@ -3366,95 +3333,6 @@ const currentDisplayName =
                           </div>
                         );
                       })()}
-                    </section>
-                  </div>
-                )}
-
-                {/* Tab: Tasks */}
-                {activeTab === 'tasks' && (
-                  <div className={styles.scrollArea}>
-                    <section className={styles.section}>
-                      {!selectedSession.currentTask && (!selectedSession.completionSummaries || selectedSession.completionSummaries.length === 0) ? (
-                        <div className={styles.messageBox}>No tasks yet.</div>
-                      ) : (
-                        <div className={styles.summaryList}>
-                          {selectedSession.currentTask && (() => {
-                            const task = selectedSession.currentTask;
-                            const ageMs = Date.now() - new Date(task.createdAt).getTime();
-                            const isGenerating = !task.title && ageMs < 20_000;
-                            return (
-                            <div className={`${styles.summaryRow_} ${styles.summaryRowActive}`}>
-                              <span className={styles.summaryRowIcon}>{STATE_ICONS[summaryState]}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                {task.title ? (
-                                  <span className={styles.summaryRowText}>{task.title}</span>
-                                ) : isGenerating ? (
-                                  <span className={styles.summaryRowText} style={{ opacity: 0.45, fontStyle: 'italic' }}>Generating title…</span>
-                                ) : null}
-                              </div>
-                              <span className={styles.summaryRowTime}>{formatRelativeTime(task.createdAt)}</span>
-                            </div>
-                            );
-                          })()}
-                          {(selectedSession.completionSummaries ?? []).map((task, i) => {
-                            const isPlan = task.kind === 'plan';
-                            const planKey = task.taskId;
-                            const isExpanded = expandedPlanTasks.has(planKey);
-                            const togglePlan = () => setExpandedPlanTasks(prev => {
-                              const next = new Set(prev);
-                              if (next.has(planKey)) next.delete(planKey); else next.add(planKey);
-                              return next;
-                            });
-                            return (
-                            <React.Fragment key={i}>
-                            <div
-                              className={styles.summaryRow_}
-                              onClick={isPlan ? togglePlan : undefined}
-                              style={isPlan ? { cursor: 'pointer' } : undefined}
-                            >
-                              <span className={styles.summaryRowIcon} style={{ color: isPlan ? '#a78bfa' : (task.accepted ? '#22c55e' : '#f59e0b') }}>{isPlan ? '◆' : '✓'}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                {task.title && <div className={styles.summaryRowText} style={{ fontWeight: 500 }}>
-                                  {task.title}
-                                  {isPlan && <span style={{ marginLeft: 6, fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#c4b5fd', background: 'rgba(167,139,250,0.14)', border: '1px solid rgba(167,139,250,0.35)', borderRadius: 3, padding: '1px 5px' }}>plan</span>}
-                                  {isPlan && task.planStatus && (
-                                    <span style={{ marginLeft: 5, fontSize: '11px', fontWeight: 600, color: task.planStatus === 'approved' ? '#22c55e' : task.planStatus === 'rejected' ? '#ef4444' : '#6b7280' }}>
-                                      {task.planStatus === 'approved' ? '✓' : task.planStatus === 'rejected' ? '✗' : '◌'}
-                                    </span>
-                                  )}
-                                  {isPlan && <span style={{ marginLeft: 4, fontSize: '10px', color: 'rgba(255,255,255,0.35)' }}>{isExpanded ? '▾' : '▸'}</span>}
-                                </div>}
-                                {!isPlan && task.summary && <div className={styles.summaryRowText} style={{ opacity: 0.7, fontSize: '11px' }}>{task.summary}</div>}
-                                {!task.title && !task.summary && <span className={styles.summaryRowText}>—</span>}
-                                {task.sessionName && <div style={{ fontSize: '10px', color: 'rgba(180,180,200,0.4)', marginTop: 1 }}>{task.sessionName}</div>}
-                              </div>
-                              {!isPlan && !task.accepted && (
-                                <span style={{ fontSize: '11px', color: '#f59e0b', opacity: 0.8, marginRight: 4 }}>· review</span>
-                              )}
-                              <span className={styles.summaryRowTime} title={new Date(task.completedAt ?? task.createdAt).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}>{formatRelativeTime(task.completedAt ?? task.createdAt)}</span>
-                              {!isPlan && !task.accepted && (
-                                <button
-                                  className={styles.summaryRowAcceptBtn}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onAcceptTask?.(selectedSession.sessionId, task.completedAt ?? '');
-                                  }}
-                                >
-                                  Accept
-                                </button>
-                              )}
-                            </div>
-                            {isPlan && isExpanded && task.planContent && (
-                              <div
-                                className={styles.planContent}
-                                dangerouslySetInnerHTML={{ __html: renderMarkdown(task.planContent) }}
-                              />
-                            )}
-                            </React.Fragment>
-                            );
-                          })}
-                        </div>
-                      )}
                     </section>
                   </div>
                 )}

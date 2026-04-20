@@ -424,16 +424,6 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
-  // Accept a specific task summary (per-task review)
-  app.post('/api/sessions/:sessionId/accept-task', express.json(), (req, res) => {
-    const { sessionId } = req.params;
-    const { completedAt } = req.body as { completedAt?: string };
-    if (!completedAt) { res.status(400).json({ error: 'completedAt required' }); return; }
-    const ok = stateManager.acceptTask(sessionId, completedAt);
-    if (!ok) { res.status(404).json({ error: 'session or task not found' }); return; }
-    res.json({ ok: true });
-  });
-
   // Screen buffer endpoint: reads the console screen buffer of a session's process.
   // For bridge sessions, returns the last portion of the pipe output buffer (ANSI-stripped).
   app.get('/api/sessions/:sessionId/screen', async (req, res) => {
@@ -1100,12 +1090,47 @@ export function registerApiRoutes(
     }
   });
 
+  // ── Resolve session by PID ───────────────────────────────────────────────
+
+  app.get('/api/resolve', (req, res) => {
+    const pidRaw = req.query.pid;
+    if (typeof pidRaw !== 'string' || !/^\d+$/.test(pidRaw)) {
+      res.status(400).json({ error: 'pid query param required (numeric)' });
+      return;
+    }
+    const pid = parseInt(pidRaw, 10);
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
+    const sessionFilePath = join(home, '.claude', 'sessions', `${pid}.json`);
+    let sessionId: string | undefined;
+    try {
+      const raw = fs.readFileSync(sessionFilePath, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+    } catch {
+      res.status(404).json({ error: `no session file for pid ${pid}` });
+      return;
+    }
+    if (!sessionId) {
+      res.status(404).json({ error: `session file for pid ${pid} has no sessionId` });
+      return;
+    }
+    const session = stateManager.getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: `sessionId ${sessionId} not tracked by overlord` });
+      return;
+    }
+    res.json({ overlordId: session.overlordId, sessionId, cwd: session.cwd });
+  });
+
   // ── Plans ────────────────────────────────────────────────────────────────
 
   const VALID_PLAN_STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
 
   const emitPlanChanged = (event: PlanChangedEvent): void => {
-    if (broadcastRaw) broadcastRaw(event);
+    if (broadcastRaw) {
+      broadcastRaw(event);
+      broadcastRaw({ type: 'snapshot', ...stateManager.getSnapshot() });
+    }
   };
 
   app.get('/api/plans', (req, res) => {

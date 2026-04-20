@@ -107,10 +107,8 @@ interface Session {
   activeMonitors?: ActiveMonitor[];
   completionHint?: 'done' | 'awaiting';
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
-  completionSummaries?: Task[];
   userAccepted?: boolean;
-  currentTaskLabel?: string;
-  currentTask?: Task;
+  latestPlan?: { planId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   intent?: string;                // rolling Haiku-generated summary of what the session is doing
   isWorker?: boolean;
   ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter

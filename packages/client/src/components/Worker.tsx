@@ -1,5 +1,5 @@
-import React, { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import type { WorkerState, Task, Session, ActiveMonitor } from '../types';
+import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
+import type { WorkerState, Session, ActiveMonitor } from '../types';
 import styles from './Worker.module.css';
 import { WorkerPlanPill } from './WorkerPlanPill';
 import { MonitoringPill } from './MonitoringPill';
@@ -15,14 +15,12 @@ interface WorkerProps {
   minimal?: boolean;
   agentType?: string;
   completionHint?: 'done' | 'awaiting';
-  completionSummaries?: Task[];
   userAccepted?: boolean;
   acknowledged?: boolean;
   needsPermission?: boolean;
   isCompacting?: boolean;
   bridgeDead?: boolean;
-  currentTaskLabel?: string;
-  currentTask?: Task;
+  latestPlan?: { planId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   isWorker?: boolean;
   isRaw?: boolean;
   ptyInputPendingSince?: number;
@@ -66,7 +64,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, completionSummaries, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, currentTaskLabel, currentTask, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -109,17 +107,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
   const isDone = state === 'waiting' && completionHint === 'done';
   const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}`;
 
-  const latestPlan = useMemo(() => {
-    if (isSubagent || !completionSummaries) return null;
-    const plans = completionSummaries.filter(t => t.kind === 'plan' && t.planContent);
-    if (plans.length === 0) return null;
-    const sorted = [...plans].sort((a, b) => {
-      const at = new Date(a.completedAt ?? a.createdAt).getTime();
-      const bt = new Date(b.completedAt ?? b.createdAt).getTime();
-      return bt - at;
-    });
-    return sorted[0];
-  }, [completionSummaries, isSubagent]);
+  const latestPlan = isSubagent ? null : (latestPlanProp ?? null);
 
   return (
     <div
@@ -265,15 +253,12 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           <span className={styles.notesSummaryPrefix}>Intent:</span> {intent}
         </span>
       )}
-      {!minimal && !isSubagent && currentTaskLabel && (
-        <span className={styles.activeTaskLabel}>{currentTaskLabel}</span>
-      )}
       {!minimal && latestPlan && (
         <WorkerPlanPill
           title={latestPlan.title ?? 'Plan'}
-          planContent={latestPlan.planContent ?? ''}
-          planStatus={latestPlan.planStatus ?? 'approved'}
-          timestamp={latestPlan.completedAt ?? latestPlan.createdAt}
+          planContent={latestPlan.body}
+          planStatus={latestPlan.status === 'active' ? 'approved' : latestPlan.status === 'archived' ? 'rejected' : 'pending'}
+          timestamp={latestPlan.updatedAt}
         />
       )}
       {!minimal && !isSubagent && activeMonitors && activeMonitors.length > 0 && (

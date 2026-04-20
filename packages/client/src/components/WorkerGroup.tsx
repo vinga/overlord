@@ -97,14 +97,12 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           color={session.color}
           provider={session.provider}
           completionHint={session.completionHint}
-          completionSummaries={session.completionSummaries}
           userAccepted={session.userAccepted}
           acknowledged={session.acknowledged}
           needsPermission={session.needsPermission}
           isCompacting={session.isCompacting}
           bridgeDead={session.bridgeDead}
-          currentTaskLabel={session.currentTaskLabel}
-          currentTask={session.currentTask}
+          latestPlan={session.latestPlan}
           isWorker={session.isWorker}
           isRaw={session.sessionType === 'raw'}
           ptyInputPendingSince={session.ptyInputPendingSince}

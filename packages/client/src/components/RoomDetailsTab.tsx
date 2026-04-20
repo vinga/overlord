@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Plan, PlanStatus } from '../types';
+import type { Plan, PlanStatus, Session } from '../types';
 import { usePlansByCwd } from '../hooks/usePlansByCwd';
 import styles from './RoomDetailsTab.module.css';
 
@@ -144,7 +144,6 @@ export function RoomDetailsTab({ cwd }: Props) {
           ? <span className={styles.error}>{error}</span>
           : <span className={dirty || saving ? styles.statusMuted : styles.saved}>{status}</span>}
       </div>
-      <RoomPlansSection cwd={cwd} />
     </div>
   );
 }
@@ -172,32 +171,64 @@ function formatRel(iso: string): string {
   return d.toLocaleDateString();
 }
 
-function RoomPlansSection({ cwd }: { cwd: string }) {
-  const { plans, isLoading } = usePlansByCwd(cwd);
-  const [open, setOpen] = useState(true);
+interface RoomPlansTabProps {
+  cwd: string;
+  sessions: Session[];
+  customNames: Record<string, string>;
+}
 
-  const visible: Plan[] = plans.filter(p => p.status !== 'archived');
+export function RoomPlansTab({ cwd, sessions, customNames }: RoomPlansTabProps) {
+  const { plans, isLoading } = usePlansByCwd(cwd);
+
+  const agentName = (overlordId: string): string | undefined => {
+    const s = sessions.find(s => s.overlordId === overlordId);
+    if (!s) return undefined;
+    return customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? s.sessionId.slice(0, 8);
+  };
+
+  const sorted: Plan[] = [...plans].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const active = sorted.filter(p => p.status === 'active');
+  const rest = sorted.filter(p => p.status !== 'active' && p.status !== 'archived');
+  const archived = sorted.filter(p => p.status === 'archived');
+  const visible = [...active, ...rest];
+
+  const renderCard = (p: Plan, faded = false) => {
+    const agent = agentName(p.overlordId);
+    return (
+      <div key={p.planId} className={`${styles.planCard} ${faded ? styles.planCardArchived : ''}`}>
+        <div className={styles.planCardTop}>
+          <span className={`${styles.planDot} ${styles['planDot_' + p.status]}`} />
+          <span className={styles.planCardTitle} title={p.title}>{p.title || 'Untitled'}</span>
+          <span className={styles.planCardTime}>{formatRel(p.updatedAt)}</span>
+        </div>
+        <div className={styles.planCardMeta}>
+          <span className={`${styles.planStatusChip} ${styles['planStatusChip_' + p.status]}`}>{p.status}</span>
+          {agent && <span className={styles.planCardAgent}>{agent}</span>}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div className={styles.plansSection}>
-      <div className={styles.plansHeader} onClick={() => setOpen(v => !v)}>
-        <span className={styles.plansHeaderLabel}>Plans in this room</span>
-        <span className={styles.plansHeaderCount}>{isLoading ? '…' : visible.length}</span>
-        <span className={`${styles.plansChevron} ${open ? styles.plansChevronOpen : ''}`}>▶</span>
+    <div className={styles.plansTab}>
+      <div className={styles.plansTabHeader}>
+        <span className={styles.plansTabTitle}>Plans</span>
+        {!isLoading && <span className={styles.plansTabCount}>{visible.length + archived.length}</span>}
       </div>
-      {open && (
-        <div className={styles.plansList}>
-          {visible.length === 0 ? (
-            <div className={styles.plansEmpty}>
-              {isLoading ? 'Loading…' : 'No plans for this room yet.'}
+
+      {isLoading ? (
+        <div className={styles.plansTabEmpty}>Loading…</div>
+      ) : visible.length === 0 && archived.length === 0 ? (
+        <div className={styles.plansTabEmpty}>No plans for this room yet.</div>
+      ) : (
+        <div className={styles.plansTabList}>
+          {visible.map(p => renderCard(p))}
+          {archived.length > 0 && (
+            <div className={styles.plansArchivedGroup}>
+              <span className={styles.plansArchivedLabel}>Archived · {archived.length}</span>
+              {archived.map(p => renderCard(p, true))}
             </div>
-          ) : visible.map(p => (
-            <div key={p.planId} className={styles.planRow}>
-              <span className={`${styles.planStatusBadge} ${statusClass(p.status)}`}>{p.status}</span>
-              <span className={styles.planRowTitle} title={p.title}>{p.title || 'Untitled'}</span>
-              <span className={styles.planRowTime}>{formatRel(p.updatedAt)}</span>
-            </div>
-          ))}
+          )}
         </div>
       )}
     </div>

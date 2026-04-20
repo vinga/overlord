@@ -279,7 +279,7 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       }
       // Fallback: sessions already working/thinking with no label and no pending timer
       const currentSession = ctx.stateManager.getSession(sessionId);
-      if (currentSession && !currentSession.isWorker && (currentSession.state === 'working' || currentSession.state === 'thinking') && !currentSession.currentTaskLabel && !ctx.aiClassifier.hasLabelScheduled(sessionId) && !ctx.aiClassifier.isGeneratingLabel(sessionId)) {
+      if (currentSession && !currentSession.isWorker && (currentSession.state === 'working' || currentSession.state === 'thinking') && !ctx.aiClassifier.hasLabelScheduled(sessionId) && !ctx.aiClassifier.isGeneratingLabel(sessionId)) {
         ctx.aiClassifier.scheduleLabel(sessionId);
       }
       // Rolling intent summary — generated for every non-closed, non-worker session.

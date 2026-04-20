@@ -1,22 +1,11 @@
 import React, { useState } from 'react';
-import { marked } from 'marked';
-import type { Room, Session, Task } from '../types';
+import type { Room, Session } from '../types';
 import styles from './TaskListPanel.module.css';
 import { BrainTab } from './BrainTab';
 import { RoomDetailsTab } from './RoomDetailsTab';
+import { RoomPlansTab } from './RoomDetailsTab';
 
-const planMarkdownCache = new Map<string, string>();
-function renderPlanMarkdown(text: string): string {
-  const cached = planMarkdownCache.get(text);
-  if (cached !== undefined) return cached;
-  const html = marked.parse(text, { breaks: true, async: false }) as string;
-  if (planMarkdownCache.size > 200) planMarkdownCache.clear();
-  planMarkdownCache.set(text, html);
-  return html;
-}
-
-type Tab = 'agents' | 'tasks' | 'brain' | 'details';
-type Filter = 'done' | 'awaiting';
+type Tab = 'agents' | 'brain' | 'details' | 'plans';
 
 interface TaskListPanelProps {
   room: Room;
@@ -55,19 +44,8 @@ const STATE_ICON: Record<string, string> = {
 
 export function TaskListPanel({ room, customNames, onSelectSession, onClose, panelWidth, onPanelWidthChange }: TaskListPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>('details');
-  const [filters, setFilters] = useState<Set<Filter>>(new Set(['done', 'awaiting']));
-  const [expandedPlans, setExpandedPlans] = useState<Set<string>>(new Set());
   const isResizingRef = React.useRef(false);
   const [isResizing, setIsResizing] = useState(false);
-
-  function toggleFilter(f: Filter) {
-    setFilters(prev => {
-      const next = new Set(prev);
-      if (next.has(f)) next.delete(f);
-      else next.add(f);
-      return next;
-    });
-  }
 
   function handleResizeStart(e: React.MouseEvent) {
     e.preventDefault();
@@ -96,34 +74,6 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
   const agentRows = allSessions
     .filter(({ session }) => session.state !== 'closed')
     .sort((a, b) => new Date(b.session.lastActivity).getTime() - new Date(a.session.lastActivity).getTime());
-
-  // ── Tasks tab data ───────────────────────────────────────────────────────
-  // "Done" = completionSummaries entries
-  const doneTasks = filters.has('done')
-    ? allSessions.flatMap(({ session }) =>
-        (session.completionSummaries ?? []).map((task: Task) => ({
-          session,
-          task,
-          text: task.title ?? task.summary ?? '',
-          completedAt: task.completedAt ?? task.createdAt,
-          kind: 'done' as const,
-        }))
-      ).sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime()).slice(0, 50)
-    : [];
-
-  // "Awaiting" = sessions in waiting state that are NOT done
-  const awaitingRows = filters.has('awaiting')
-    ? allSessions
-        .filter(({ session }) =>
-          session.state === 'waiting' && session.completionHint !== 'done' && !session.needsPermission
-        )
-        .sort((a, b) => new Date(b.session.lastActivity).getTime() - new Date(a.session.lastActivity).getTime())
-    : [];
-
-  // "Needs approval" always shown in tasks tab
-  const approvalRows = allSessions.filter(({ session }) => session.needsPermission === true);
-
-  const noTasksVisible = doneTasks.length === 0 && awaitingRows.length === 0 && approvalRows.length === 0;
 
   function handleSelect(session: Session) {
     onSelectSession(session);
@@ -163,16 +113,10 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
           Details
         </button>
         <button
-          className={`${styles.tab} ${activeTab === 'agents' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('agents')}
+          className={`${styles.tab} ${activeTab === 'plans' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('plans')}
         >
-          Agents
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'tasks' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('tasks')}
-        >
-          Tasks
+          Plans
         </button>
         <button
           className={`${styles.tab} ${activeTab === 'brain' ? styles.tabActive : ''}`}
@@ -180,25 +124,13 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
         >
           Brain
         </button>
+        <button
+          className={`${styles.tab} ${activeTab === 'agents' ? styles.tabActive : ''}`}
+          onClick={() => setActiveTab('agents')}
+        >
+          Agents
+        </button>
       </div>
-
-      {/* Tasks tab: filter chips */}
-      {activeTab === 'tasks' && (
-        <div className={styles.filterBar}>
-          <button
-            className={`${styles.filterChip} ${filters.has('done') ? styles.filterChipDone : ''}`}
-            onClick={() => toggleFilter('done')}
-          >
-            ✓ Done
-          </button>
-          <button
-            className={`${styles.filterChip} ${filters.has('awaiting') ? styles.filterChipAwaiting : ''}`}
-            onClick={() => toggleFilter('awaiting')}
-          >
-            … Awaiting
-          </button>
-        </div>
-      )}
 
       {/* Content */}
       <div className={styles.content}>
@@ -243,126 +175,6 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
               })
         )}
 
-        {/* ── TASKS TAB ── */}
-        {activeTab === 'tasks' && (
-          <>
-            {approvalRows.length > 0 && (
-              <section className={styles.section}>
-                <div className={styles.sectionLabel}>Needs approval</div>
-                {approvalRows.map(({ session }) => (
-                  <div key={session.sessionId} className={styles.row} onClick={() => handleSelect(session)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') handleSelect(session); }}>
-                    <span className={styles.rowIcon} style={{ color: '#f59e0b' }}>⚠</span>
-                    <div className={styles.rowBody}>
-                      <div className={styles.rowTitle}>{getSessionDisplayName(session, customNames)}</div>
-                      <div className={styles.rowMeta}>
-                        <span className={styles.metaTime}>{relativeTime(session.lastActivity)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </section>
-            )}
-
-            {awaitingRows.length > 0 && (
-              <section className={styles.section}>
-                <div className={styles.sectionLabel}>Awaiting your response</div>
-                {awaitingRows.map(({ session }) => (
-                  <div key={session.sessionId} className={styles.row} onClick={() => handleSelect(session)} role="button" tabIndex={0} onKeyDown={e => { if (e.key === 'Enter') handleSelect(session); }}>
-                    <span className={styles.rowIcon} style={{ color: '#f59e0b' }}>…</span>
-                    <div className={styles.rowBody}>
-                      <div className={styles.rowTitle}>{getSessionDisplayName(session, customNames)}</div>
-                      {session.lastMessage && <div className={styles.rowText}>{session.lastMessage.slice(0, 120)}</div>}
-                      <div className={styles.rowMeta}>
-                        <span className={styles.metaTime}>{relativeTime(session.lastActivity)}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </section>
-            )}
-
-            {doneTasks.length > 0 && (
-              <section className={styles.section}>
-                <div className={styles.sectionLabel}>Done</div>
-                {doneTasks.map(({ session, task, text, completedAt }, i) => {
-                  const isAccepted = task.accepted ?? false;
-                  const isPlan = task.kind === 'plan';
-                  const planKey = `${session.sessionId}-${task.taskId}`;
-                  const isPlanExpanded = expandedPlans.has(planKey);
-                  const togglePlan = () => setExpandedPlans(prev => {
-                    const next = new Set(prev);
-                    if (next.has(planKey)) next.delete(planKey); else next.add(planKey);
-                    return next;
-                  });
-                  return (
-                  <React.Fragment key={`${session.sessionId}-${i}`}>
-                  <div
-                    className={`${styles.row} ${styles.rowDone}`}
-                    onClick={() => isPlan ? togglePlan() : handleSelect(session)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={e => { if (e.key === 'Enter') { isPlan ? togglePlan() : handleSelect(session); } }}
-                  >
-                    <span className={styles.rowIcon} style={{ color: isPlan ? '#a78bfa' : (isAccepted ? '#22c55e' : '#f59e0b') }}>{isPlan ? '◆' : '✓'}</span>
-                    <div className={styles.rowBody}>
-                      <div className={styles.rowTitle}>
-                        {text || getSessionDisplayName(session, customNames)}
-                        {isPlan && <span className={styles.planBadge}>plan</span>}
-                        {isPlan && task.planStatus && (
-                          <span className={styles.planStatusIcon} style={{
-                            color: task.planStatus === 'approved' ? '#22c55e' : task.planStatus === 'rejected' ? '#ef4444' : '#6b7280',
-                          }}>
-                            {task.planStatus === 'approved' ? '✓' : task.planStatus === 'rejected' ? '✗' : '◌'}
-                          </span>
-                        )}
-                        {isPlan && <span className={styles.planChevron}>{isPlanExpanded ? '▾' : '▸'}</span>}
-                      </div>
-                      {!isPlan && task.summary && task.title && <div className={styles.rowText}>{task.summary}</div>}
-                      <div className={styles.rowMeta}>
-                        <span className={styles.metaSession}>{task.sessionName ?? getSessionDisplayName(session, customNames)}</span>
-                        <span className={styles.metaDot}>·</span>
-                        <span className={styles.metaTime} title={new Date(completedAt).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}>{relativeTime(completedAt)}</span>
-                        {!isPlan && !isAccepted && (
-                          <><span className={styles.metaDot}>·</span><span className={styles.metaReview}>review</span></>
-                        )}
-                      </div>
-                    </div>
-                    {!isPlan && !isAccepted && (
-                      <button
-                        className={styles.rowAcceptBtn}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          fetch(`/api/sessions/${session.sessionId}/accept-task`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ completedAt: task.completedAt }),
-                          }).catch(console.error);
-                        }}
-                      >
-                        Accept
-                      </button>
-                    )}
-                  </div>
-                  {isPlan && isPlanExpanded && task.planContent && (
-                    <div
-                      className={styles.planContent}
-                      dangerouslySetInnerHTML={{ __html: renderPlanMarkdown(task.planContent) }}
-                    />
-                  )}
-                  </React.Fragment>
-                  );
-                })}
-              </section>
-            )}
-
-            {noTasksVisible && (
-              <div className={styles.empty}>
-                {filters.size === 0 ? 'Select a filter above' : 'No tasks to show'}
-              </div>
-            )}
-          </>
-        )}
-
         {/* ── BRAIN TAB ── */}
         {activeTab === 'brain' && (
           <BrainTab cwd={room.cwd} />
@@ -371,6 +183,11 @@ export function TaskListPanel({ room, customNames, onSelectSession, onClose, pan
         {/* ── DETAILS TAB ── */}
         {activeTab === 'details' && (
           <RoomDetailsTab cwd={room.cwd} />
+        )}
+
+        {/* ── PLANS TAB ── */}
+        {activeTab === 'plans' && (
+          <RoomPlansTab cwd={room.cwd} sessions={room.sessions} customNames={customNames} />
         )}
       </div>
     </div>

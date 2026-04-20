@@ -6,7 +6,7 @@
 
 .pill {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10.5px;
@@ -19,8 +19,6 @@
   cursor: pointer;
   max-width: 163px;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 
@@ -48,11 +46,11 @@
 .statusPending  { background: #6b7280; }
 
 .title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   min-width: 0;
   flex-shrink: 1;
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.4;
 }
 
 /* Popover */

@@ -123,10 +123,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     const fields: (string | undefined)[] = [
       displayName,
       s.lastMessage,
-      s.currentTask?.title,
-      s.currentTaskLabel,
       notesSummaries.get(s.sessionId),
-      ...(s.completionSummaries ?? []).map(t => t.title),
       ...(s.subagents ?? []).flatMap(a => [a.agentType, a.description, a.lastActivity]),
     ];
     return fields.some(f => typeof f === 'string' && f.toLowerCase().includes(q));

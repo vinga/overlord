@@ -98,9 +98,11 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
     case 'tool_use': {
       // Collapse middle band: go directly working → waiting. 'thinking' is only
       // emitted by evidence-based paths (codex_reasoning, recent thinking block).
-      const state: WorkerState = ageSec < 5 ? 'working' : 'waiting';
-      // Tool pending >8s with no result → likely permission prompt (not in bypass mode)
-      const needsPermission = ageSec > 8 && !isBypass ? true : undefined;
+      // 20s threshold: Explore/fast agents routinely take 10-15s per tool call,
+      // causing false waiting blinks at the old 5s threshold.
+      const state: WorkerState = ageSec < 20 ? 'working' : 'waiting';
+      // Tool pending >25s with no result → likely permission prompt (not in bypass mode)
+      const needsPermission = ageSec > 25 && !isBypass ? true : undefined;
       return { state, needsPermission };
     }
     case 'ask_user_question': {

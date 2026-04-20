@@ -111,10 +111,8 @@ export interface Session {
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
-  completionSummaries?: Task[];
   userAccepted?: boolean;
-  currentTaskLabel?: string;
-  currentTask?: Task;
+  latestPlan?: { planId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   /** Rolling Haiku-generated summary of what the session is working on. Replaces requestSummary and completionSummary on the worker card. */
   intent?: string;
   /** @deprecated Use Task.title instead. Kept for backwards-compat with aiClassifier. */
@@ -258,7 +256,6 @@ export interface LiveSession {
   activeMonitors?: ActiveMonitor[];
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
-  currentTaskLabel?: string;
   requestSummary?: string;
   isWorker?: boolean;
   staleCount?: number;

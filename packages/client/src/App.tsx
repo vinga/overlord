@@ -374,14 +374,6 @@ export function App() {
     } catch { /* ignore */ }
   }
 
-  function handleAcceptTask(sessionId: string, completedAt: string) {
-    fetch(`/api/sessions/${sessionId}/accept-task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ completedAt }),
-    }).catch(console.error);
-  }
-
   if (view === 'logs') {
     return <LogsPage onBack={() => setView('office')} />;
   }
@@ -497,7 +489,6 @@ export function App() {
           onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),
           onMarkDone: (sessionId) => { fetch(`/api/sessions/${sessionId}/mark-done`, { method: 'POST' }).catch(console.error); },
           onAcceptSession: handleAcceptSession,
-          onAcceptTask: handleAcceptTask,
         }}
 
         panelWidth={panelWidth}
