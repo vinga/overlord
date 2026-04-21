@@ -314,6 +314,8 @@ interface PlanChangedEvent {
   op: 'create' | 'update' | 'delete';
 }
 
+const SESSION_PROVIDERS: SessionProvider[] = ['claude', 'codex', 'aider'];
+
 export type {
   WorkerState,
   SessionProvider,
@@ -346,6 +348,7 @@ export type {
   PlanStatus,
   PlanSource,
   PlanChangedEvent,
+  SESSION_PROVIDERS,
 };
 
 // ── Session type helpers ──────────────────────────────────
