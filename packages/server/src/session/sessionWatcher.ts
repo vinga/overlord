@@ -9,7 +9,7 @@ const QUERY_WORKER_CWD = path.join(os.homedir(), '.claude', 'overlord', 'query-w
 export interface RawSession {
   pid: number;
   sessionId: string;
-  provider?: SessionProvider;
+  provider?: SessionProvider; // 'claude' | 'codex' | 'aider'
   cwd: string;
   startedAt: number;
   kind?: string;
@@ -97,9 +97,12 @@ export class SessionWatcher extends EventEmitter {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content) as RawSession;
-      // Preserve provider if present; default to 'claude' otherwise.
+
+      // Preserve provider when present (supports 'aider' sessions).
+      // Default to 'claude' to maintain back-compat with older emitters that omit provider.
       const provider: SessionProvider = (data.provider ?? 'claude') as SessionProvider;
 
+      // Tag query-worker sessions by CWD. This doesn't alter provider.
       if (data.cwd && path.normalize(data.cwd) === path.normalize(QUERY_WORKER_CWD)) {
         return { ...data, provider, kind: 'query-worker' };
       }
