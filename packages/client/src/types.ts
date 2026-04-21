@@ -1,5 +1,5 @@
 type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
-type SessionProvider = 'claude' | 'codex';
+type SessionProvider = 'claude' | 'codex' | 'aider';
 
 /** How a new terminal session should be spawned */
 type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw';

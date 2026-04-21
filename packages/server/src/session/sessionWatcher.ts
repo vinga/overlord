@@ -97,10 +97,13 @@ export class SessionWatcher extends EventEmitter {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content) as RawSession;
+      // Preserve provider if present; default to 'claude' otherwise.
+      const provider: SessionProvider = (data.provider ?? 'claude') as SessionProvider;
+
       if (data.cwd && path.normalize(data.cwd) === path.normalize(QUERY_WORKER_CWD)) {
-        return { ...data, provider: 'claude', kind: 'query-worker' };
+        return { ...data, provider, kind: 'query-worker' };
       }
-      return { ...data, provider: 'claude' };
+      return { ...data, provider };
     } catch {
       return null;
     }

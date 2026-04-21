@@ -1,5 +1,5 @@
 export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
-export type SessionProvider = 'claude' | 'codex';
+export type SessionProvider = 'claude' | 'codex' | 'aider';
 
 export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
 
