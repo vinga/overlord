@@ -1,5 +1,5 @@
 import { useRef, useCallback, useState } from 'react';
-import type { TerminalMessage, TerminalSpawnMode } from '../types';
+import type { SessionProvider, TerminalMessage, TerminalSpawnMode } from '../types';
 
 function decodeBase64(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -10,7 +10,7 @@ function decodeBase64(b64: string): Uint8Array {
 
 export interface UseTerminalResult {
   handleTerminalMessage: (msg: TerminalMessage) => void;
-  spawnSession: (cwd: string, cols?: number, rows?: number, name?: string) => void;
+  spawnSession: (cwd: string, cols?: number, rows?: number, name?: string, provider?: SessionProvider) => void;
   spawnRawShell: (cwd: string, cols?: number, rows?: number, name?: string) => void;
   restartShell: (sessionId: string, cols?: number, rows?: number) => void;
   resumeSession: (resumeSessionId: string, cwd: string, cols?: number, rows?: number) => void;
@@ -23,7 +23,7 @@ export interface UseTerminalResult {
   killSession: (ovrId: string) => void;
   openInTerminal: (sessionId: string, cwd: string) => void;
   openBridgedTerminal: (sessionId: string, cwd: string) => void;
-  openNewTerminal: (cwd: string, name?: string, mode?: TerminalSpawnMode) => void;
+  openNewTerminal: (cwd: string, name?: string, mode?: TerminalSpawnMode, provider?: SessionProvider) => void;
   ptySessionIds: Set<string>;
   exitedSessions: Set<string>;
   isBridgeSession: (ovrId: string) => boolean;
@@ -165,8 +165,8 @@ export function useTerminal(
   }, []);
 
   const spawnSession = useCallback(
-    (cwd: string, cols = 80, rows = 24, name?: string) => {
-      sendMessage({ type: 'terminal:spawn', cwd, cols, rows, name });
+    (cwd: string, cols = 80, rows = 24, name?: string, provider: SessionProvider = 'claude') => {
+      sendMessage({ type: 'terminal:spawn', cwd, cols, rows, name, provider });
     },
     [sendMessage]
   );
@@ -294,8 +294,8 @@ export function useTerminal(
   );
 
   const openNewTerminal = useCallback(
-    (cwd: string, name?: string, mode: TerminalSpawnMode = 'bridge') => {
-      sendMessage({ type: 'terminal:open-new', cwd, name, mode });
+    (cwd: string, name?: string, mode: TerminalSpawnMode = 'bridge', provider: SessionProvider = 'claude') => {
+      sendMessage({ type: 'terminal:open-new', cwd, name, mode, provider });
     },
     [sendMessage]
   );

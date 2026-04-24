@@ -1,5 +1,5 @@
 type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
-type SessionProvider = 'claude' | 'codex' | 'aider';
+type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 
 /** How a new terminal session should be spawned */
 type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw';
@@ -78,6 +78,7 @@ interface Session {
   overlordId?: string;       // stable identity across /clear and compaction
   sessionHistory?: Array<{ sessionId: string; attachedAt: number }>;  // all Claude UUIDs ever attached
   provider?: SessionProvider;
+  providerSessionId?: string;
   slug?: string;
   proposedName?: string;
   pid: number;
@@ -87,6 +88,7 @@ interface Session {
   lastActivity: string;   // ISO timestamp
   lastMessage?: string;   // last assistant message, max 300 chars
   activityFeed?: ActivityItem[];
+  feedTruncated?: boolean;
   ideName?: string;
   color: string;          // e.g. "hsl(120, 65%, 55%)"
   subagents: Subagent[];
@@ -116,6 +118,8 @@ interface Session {
   archivedAt?: string;            // ISO timestamp of archival (only when isArchived)
   archivedGitBranch?: string;     // snapshot of branch at archive time
   archivedPullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
+  gitBranch?: string;             // current branch attributed to this session (live)
+  pullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
 }
 
 interface Room {
@@ -144,6 +148,7 @@ interface ArchiveEntry {
   archivedAt: string;       // ISO
   pid: number;
   provider?: SessionProvider;
+  providerSessionId?: string;
   sessionType?: Session['sessionType'];
   startedAt?: number;
   color?: string;
@@ -162,11 +167,16 @@ interface ArchiveEntry {
   notes?: string;
 }
 
+interface GlobalSettings {
+  disableBackgroundLLM: boolean;
+}
+
 interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
   bridgePath?: string;
   platform: string;  // 'darwin' | 'win32' | 'linux'
+  settings: GlobalSettings;
 }
 
 // Terminal message types (server → client)
@@ -236,6 +246,7 @@ interface TerminalSpawnRequest {
   cols: number;
   rows: number;
   name?: string;
+  provider?: SessionProvider;
 }
 
 interface TerminalInputRequest {
@@ -314,7 +325,8 @@ interface PlanChangedEvent {
   op: 'create' | 'update' | 'delete';
 }
 
-const SESSION_PROVIDERS: SessionProvider[] = ['claude', 'codex', 'aider'];
+const SESSION_PROVIDERS: SessionProvider[] = ['claude', 'codex', 'aider', 'opencode'];
+const SPAWNABLE_SESSION_PROVIDERS: SessionProvider[] = ['claude', 'opencode'];
 
 export type {
   WorkerState,
@@ -330,6 +342,7 @@ export type {
   ActiveMonitor,
   Room,
   ArchiveEntry,
+  GlobalSettings,
   OfficeSnapshot,
   TerminalMessage,
   TerminalLinkedMessage,
@@ -349,6 +362,7 @@ export type {
   PlanSource,
   PlanChangedEvent,
   SESSION_PROVIDERS,
+  SPAWNABLE_SESSION_PROVIDERS,
 };
 
 // ── Session type helpers ──────────────────────────────────

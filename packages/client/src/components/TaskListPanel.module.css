@@ -1,30 +1,39 @@
-.panel {
+.backdrop {
   position: fixed;
-  top: 0;
-  right: 0;
-  height: 100vh;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(1px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 140ms ease-out;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.panel {
+  width: min(1200px, 94vw);
+  height: min(92vh, 1100px);
   background: #0a0a14;
-  border-left: 1px solid rgba(212, 175, 55, 0.18);
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
-  z-index: 100;
-  font-family: 'Inter', system-ui, sans-serif;
-  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
+  z-index: 201;
+  color: #e8e8e8;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  animation: popIn 160ms ease-out;
 }
 
-/* ── Resize handle ─────────────────────────────────────────────────── */
-
-.resizeHandle {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 4px;
-  height: 100%;
-  cursor: ew-resize;
-  z-index: 10;
+@keyframes popIn {
+  from { transform: translateY(8px) scale(0.985); opacity: 0; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
 }
-.resizeHandle:hover { background: rgba(212, 175, 55, 0.15); }
-.resizing .resizeHandle { background: rgba(212, 175, 55, 0.25); }
 
 /* ── Header ─────────────────────────────────────────────────────────── */
 

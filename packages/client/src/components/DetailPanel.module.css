@@ -657,6 +657,12 @@
   color: #c4b5fd;
 }
 
+.assistantPillOpencode {
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+  color: #86efac;
+}
+
 .statusDot {
   display: inline-block;
   width: 6px;
@@ -989,6 +995,34 @@
   flex-direction: column;
   gap: 6px;
   overflow-y: visible;
+}
+
+.loadOlderWrap {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 8px;
+}
+
+.loadOlderBtn {
+  background: none;
+  border: none;
+  color: #555;
+  font-size: 13px;
+  letter-spacing: 4px;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.loadOlderBtn:hover:not(:disabled) {
+  color: #ccc;
+  background: rgba(255,255,255,0.05);
+}
+
+.loadOlderBtn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .transcriptEntry {

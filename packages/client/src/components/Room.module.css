@@ -341,6 +341,12 @@
   color: rgba(148, 163, 184, 0.85);
 }
 
+.deskLaunchBadge[data-category="opencode"] {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(52, 211, 153, 0.28);
+  color: rgba(110, 231, 183, 0.92);
+}
+
 
 .continuationBadge {
   position: absolute;

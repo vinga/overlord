@@ -269,6 +269,7 @@ export class SessionStore {
             }],
       },
       provider: live.provider,
+      providerSessionId: live.providerSessionId,
       sessionType: live.sessionType ?? 'plain',
       model: live.model,
       slug: live.slug,

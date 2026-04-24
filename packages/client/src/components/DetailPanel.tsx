@@ -124,11 +124,21 @@ function renderWithLinks(text: string, linkClass: string): React.ReactNode[] {
 }
 
 function assistantLabel(provider?: Session['provider']): string {
-  return provider === 'codex' ? 'codex' : 'claude';
+  if (provider === 'codex') return 'codex';
+  if (provider === 'opencode') return 'opencode';
+  return 'claude';
 }
 
 function assistantDisplayName(provider?: Session['provider']): string {
-  return provider === 'codex' ? 'Codex' : 'Claude';
+  if (provider === 'codex') return 'Codex';
+  if (provider === 'opencode') return 'OpenCode';
+  return 'Claude';
+}
+
+function assistantPillClass(provider: Session['provider'] | undefined, styles: Record<string, string>): string {
+  if (provider === 'codex') return styles.assistantPillCodex;
+  if (provider === 'opencode') return styles.assistantPillOpencode;
+  return styles.assistantPillClaude;
 }
 
 /** Renders user message content, replacing @<path> image references with clickable thumbnails */
@@ -1642,6 +1652,8 @@ export function DetailPanel({
   const editInputRef = useRef<HTMLInputElement>(null);
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
   const [panelSearchQuery, setPanelSearchQuery] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [internalScrollTarget, setInternalScrollTarget] = useState<string | undefined>();
   const [internalScrollQuery, setInternalScrollQuery] = useState<string | undefined>();
   const panelSearchRef = useRef<HTMLInputElement>(null);
@@ -1718,10 +1730,11 @@ const currentDisplayName =
     });
   }, [localSent.length]);
 
-  // Clear extraFeed when session changes
+  // Clear extraFeed and reset hasMore when session changes
   useEffect(() => {
     setExtraFeed([]);
-  }, [selectedSession?.sessionId]);
+    setHasMore(selectedSession?.feedTruncated ?? false);
+  }, [selectedSession?.sessionId, selectedSession?.feedTruncated]);
 
   // When scrollTarget is set: switch to conversation tab, fetch older messages if needed, then scroll
   useEffect(() => {
@@ -1746,10 +1759,11 @@ const currentDisplayName =
     // Load earlier messages if target is near the top of the trimmed feed
     if ((isNearTop || notInFeed) && feed.length > 0 && feed[0].timestamp) {
       const firstTs = feed[0].timestamp;
-      fetch(`/api/sessions/${selectedSession.sessionId}/activity-before?timestamp=${encodeURIComponent(firstTs)}&limit=50`)
+      fetch(`/api/sessions/${selectedSession.sessionId}/activity-before?timestamp=${encodeURIComponent(firstTs)}&limit=100`)
         .then(r => r.json())
-        .then((data: { items?: ActivityItem[] }) => {
+        .then((data: { items?: ActivityItem[]; hasMore?: boolean }) => {
           if (data.items && data.items.length > 0) setExtraFeed(data.items);
+          setHasMore(data.hasMore ?? false);
         })
         .catch(() => { /* ignore */ });
     }
@@ -2717,6 +2731,31 @@ const currentDisplayName =
                             <section className={styles.section}>
                               {mergedFeed.length > 0 ? (
                                 <div className={styles.transcript}>
+                                  {hasMore && (
+                                    <div className={styles.loadOlderWrap}>
+                                      <button
+                                        className={styles.loadOlderBtn}
+                                        disabled={loadingOlder}
+                                        onClick={() => {
+                                          const oldest = mergedFeed[0]?.timestamp;
+                                          if (!oldest || loadingOlder) return;
+                                          setLoadingOlder(true);
+                                          fetch(`/api/sessions/${selectedSession.sessionId}/activity-before?timestamp=${encodeURIComponent(oldest)}&limit=100`)
+                                            .then(r => r.json())
+                                            .then((data: { items?: ActivityItem[]; hasMore?: boolean }) => {
+                                              if (data.items && data.items.length > 0) {
+                                                setExtraFeed(prev => [...data.items!, ...prev]);
+                                              }
+                                              setHasMore(data.hasMore ?? false);
+                                            })
+                                            .catch(() => { /* ignore */ })
+                                            .finally(() => setLoadingOlder(false));
+                                        }}
+                                      >
+                                        {loadingOlder ? '…' : '· · ·'}
+                                      </button>
+                                    </div>
+                                  )}
                                   <FeedSegments
                                     feed={mergedFeed}
                                     roleLabel={(role) => role === 'user' ? 'you' : assistantLabel(selectedSession.provider)}
@@ -3168,7 +3207,7 @@ const currentDisplayName =
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Assistant</span>
                           <span
-                            className={`${styles.assistantPill} ${selectedSession.provider === 'codex' ? styles.assistantPillCodex : styles.assistantPillClaude}`}
+                            className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
                           >
                             {assistantDisplayName(selectedSession.provider)}
                           </span>
@@ -3222,10 +3261,11 @@ const currentDisplayName =
 
                       {/* Resume / Connect section */}
                       {(() => {
+                        const supportsExternalConnect = selectedSession.provider !== 'opencode';
                         const availableModes = [
                           onResumeSession ? 'overlord' : null,
-                          onOpenInTerminal ? 'terminal' : null,
-                          onOpenBridged ? 'bridged' : null,
+                          supportsExternalConnect && onOpenInTerminal ? 'terminal' : null,
+                          supportsExternalConnect && onOpenBridged ? 'bridged' : null,
                         ].filter(Boolean) as ('overlord' | 'terminal' | 'bridged')[];
                         const effectiveMode = availableModes.includes(connectMode) ? connectMode : (availableModes[0] ?? 'overlord');
                         const isClosed = selectedSession.state === 'closed';

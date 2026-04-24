@@ -35,13 +35,20 @@ export class SessionWatcher extends EventEmitter {
   }
 
   start(): void {
-    // Read all existing session files and emit 'added' for each
+    // Read all existing session files and emit 'added' for each.
+    // Also purge orphan query-worker session files left by crashed/killed queries
+    // from previous runs — they would otherwise linger forever since the process
+    // that created them is gone.
     try {
       if (fs.existsSync(this.sessionsDir)) {
         const files = fs.readdirSync(this.sessionsDir);
         for (const file of files) {
           if (!file.endsWith('.json')) continue;
           const filePath = path.join(this.sessionsDir, file);
+          if (this.isQueryWorkerFile(filePath)) {
+            try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+            continue;
+          }
           const data = this.readSession(filePath);
           if (data) {
             this.sessionIdByPath.set(filePath, data.sessionId);
@@ -93,6 +100,17 @@ export class SessionWatcher extends EventEmitter {
     }
   }
 
+  private isQueryWorkerFile(filePath: string): boolean {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const data = JSON.parse(content) as { cwd?: string };
+      if (!data.cwd) return false;
+      return path.normalize(data.cwd) === path.normalize(QUERY_WORKER_CWD);
+    } catch {
+      return false;
+    }
+  }
+
   private readSession(filePath: string): RawSession | null {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
@@ -102,9 +120,10 @@ export class SessionWatcher extends EventEmitter {
       // Default to 'claude' to maintain back-compat with older emitters that omit provider.
       const provider: SessionProvider = (data.provider ?? 'claude') as SessionProvider;
 
-      // Tag query-worker sessions by CWD. This doesn't alter provider.
+      // Query-worker sessions are internal overlord infrastructure — never expose
+      // them to state/UI. claudeQuery.ts unlinks the file on process exit.
       if (data.cwd && path.normalize(data.cwd) === path.normalize(QUERY_WORKER_CWD)) {
-        return { ...data, provider, kind: 'query-worker' };
+        return null;
       }
       return { ...data, provider };
     } catch {

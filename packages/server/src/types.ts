@@ -1,6 +1,6 @@
 export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 // Include 'aider' to support Aider provider sessions (MVP: detection/tracking only, no Overlord spawn).
-export type SessionProvider = 'claude' | 'codex' | 'aider';
+export type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 
 export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
 
@@ -76,7 +76,8 @@ export interface Session {
   sessionId: string;
   overlordId: string;   // stable identifier across /clear and compaction; assigned once per lineage
   sessionHistory?: Array<{ sessionId: string; attachedAt: number }>;  // all Claude UUIDs ever attached to this ovrId
-  provider?: SessionProvider;   // 'claude' | 'codex' | 'aider'
+  provider?: SessionProvider;   // 'claude' | 'codex' | 'aider' | 'opencode'
+  providerSessionId?: string;   // provider-native session ID (eg. OpenCode ses_...)
   slug?: string;
   proposedName?: string;
   pid: number;
@@ -86,6 +87,7 @@ export interface Session {
   lastActivity: string;
   lastMessage?: string;
   activityFeed?: ActivityItem[];
+  feedTruncated?: boolean;
   ptyCompactItems?: ActivityItem[];  // compact items sourced from PTY output, merged into activityFeed
   ptyCompactBaseline?: number;  // compactCount at the moment PTY detected "Compacting conversation"; keeps isCompacting sticky until a new boundary lands
   ptyCompactBaselineAt?: number;  // Date.now() of baseline snapshot; used for TTL safety release
@@ -140,6 +142,10 @@ export interface Session {
 
   // Timestamp when session was added to state (used by GC to avoid premature removal)
   loadedAt?: number;
+
+  // Current git branch attributed to this session (may differ from room.gitBranch).
+  gitBranch?: string;
+  pullRequest?: PullRequestSnapshot;
 }
 
 /** One attached Claude session UUID in the overlord's lineage. */
@@ -193,8 +199,9 @@ export interface OverlordSession {
     history: LineageEntry[];
   };
 
-  provider?: SessionProvider; // 'claude' | 'codex' | 'aider'
+  provider?: SessionProvider; // 'claude' | 'codex' | 'aider' | 'opencode'
   sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  providerSessionId?: string;
   model?: string;
   slug?: string;
   resumedFrom?: string;
@@ -211,6 +218,9 @@ export interface OverlordSession {
   intentTurnCount?: number;
   intentUpdatedAt?: number;
   notes?: string;
+
+  /** Last observed git branch for this session (persisted to survive restart). */
+  gitBranch?: string;
   currentTask?: Task;
   completionSummaries?: Task[];
   completionHint?: 'done';
@@ -257,6 +267,7 @@ export interface LiveSession {
   activeMonitors?: ActiveMonitor[];
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
+  providerSessionId?: string;
   requestSummary?: string;
   isWorker?: boolean;
   staleCount?: number;
@@ -285,9 +296,14 @@ export interface Room {
   description?: string;  // free-form per-room notes; first line renders in header
 }
 
+export interface GlobalSettings {
+  disableBackgroundLLM: boolean;
+}
+
 export interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
   bridgePath?: string;
   platform: string;  // process.platform: 'darwin' | 'win32' | 'linux'
+  settings: GlobalSettings;
 }

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor } from '../types.js';
+import { sessionStore } from './sessionStore.js';
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -245,6 +246,39 @@ export function readFirstUserMessage(transcriptPath: string): string {
     return collected.join('\n\n---\n\n');
   } catch { /* ignore */ }
   return '';
+}
+
+/**
+ * Resolve a resumable sessionId + transcript path.
+ *
+ * When `claude --resume <id>` is invoked, Claude needs `{id}.jsonl` to exist on disk.
+ * After a resume, Claude may keep appending to the parent's jsonl and never create
+ * `{currentSessionId}.jsonl` — leaving the session unresumable by currentSessionId.
+ *
+ * Fallback: walk `lineage.history` newest→oldest (then `resumedFrom`) for a sessionId
+ * whose jsonl does exist, and resume that one instead.
+ */
+export function resolveResumableSessionId(
+  sessionId: string,
+  cwd: string,
+): { sessionId: string; transcriptPath: string } | null {
+  const primary = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+  if (primary) return { sessionId, transcriptPath: primary };
+
+  const ovr = sessionStore.getBySessionId(sessionId);
+  if (!ovr) return null;
+
+  const history = [...ovr.lineage.history].reverse();
+  for (const entry of history) {
+    if (entry.sessionId === sessionId) continue;
+    const p = findTranscriptPath(cwd, entry.sessionId) ?? findTranscriptPathAnywhere(entry.sessionId);
+    if (p) return { sessionId: entry.sessionId, transcriptPath: p };
+  }
+  if (ovr.resumedFrom && ovr.resumedFrom !== sessionId) {
+    const p = findTranscriptPath(cwd, ovr.resumedFrom) ?? findTranscriptPathAnywhere(ovr.resumedFrom);
+    if (p) return { sessionId: ovr.resumedFrom, transcriptPath: p };
+  }
+  return null;
 }
 
 export function findTranscriptPathAnywhere(sessionId: string): string | null {
@@ -592,6 +626,7 @@ export function readTranscriptState(filePath: string): {
 
     // Build unified activityFeed (messages + tools in chronological order) and extract lastMessage
     let lastMessage: string | undefined;
+    let feedTruncated = false;
     const activityFeed: ActivityItem[] = [];
     const detectedPlans: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }> = [];
     const activeMonitors: ActiveMonitor[] = [];
@@ -767,7 +802,7 @@ export function readTranscriptState(filePath: string): {
           }
 
           const messageCount = activityFeed.filter(x => x.kind === 'message').length;
-          if (messageCount >= MAX_FEED_MESSAGES) break;
+          if (messageCount >= MAX_FEED_MESSAGES) { feedTruncated = true; break; }
         }
       } catch {
         // skip
@@ -908,6 +943,7 @@ export function readTranscriptState(filePath: string): {
       lastActivity,
       lastMessage,
       activityFeed: activityFeed.length > 0 ? activityFeed : undefined,
+      feedTruncated: feedTruncated || undefined,
       model,
       inputTokens,
       compactCount: compactCount > 0 ? compactCount : undefined,
@@ -925,7 +961,7 @@ export function readTranscriptState(filePath: string): {
     return result;
   } catch {
     return {
-      state: 'closed',
+      state: 'closed' as WorkerState,
       lastActivity: new Date().toISOString(),
     };
   }
@@ -1410,7 +1446,7 @@ export function readSubagents(cwd: string, sessionId: string, transcriptPath?: s
  * Read activity items from a transcript JSONL that occurred BEFORE a given timestamp.
  * Used by the search tab to load earlier conversation context when the feed is trimmed.
  */
-export function readActivityBefore(filePath: string, beforeTimestamp: string, limit = 50): ActivityItem[] {
+export function readActivityBefore(filePath: string, beforeTimestamp: string, limit = 50): { items: ActivityItem[]; hasMore: boolean } {
   let content: string;
   try {
     // Cap read at 32MB to avoid stalling on huge transcripts
@@ -1425,7 +1461,7 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
     } else {
       content = fs.readFileSync(filePath, 'utf8');
     }
-  } catch { return []; }
+  } catch { return { items: [], hasMore: false }; }
 
   const allLines = content.split('\n').filter(l => l.trim());
 
@@ -1439,13 +1475,16 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
     beforeLines.push(line);
   }
 
-  if (beforeLines.length === 0) return [];
+  if (beforeLines.length === 0) return { items: [], hasMore: false };
 
   // Parse the tail of beforeLines (reverse scan, same logic as readTranscriptState)
-  const window = beforeLines.slice(-(limit * 20));
+  const windowSize = limit * 20;
+  const window = beforeLines.slice(-windowSize);
+  const hasMoreBefore = beforeLines.length > windowSize;
   const MAX_CONTENT = 10000;
   const activityFeed: ActivityItem[] = [];
   let messageCount = 0;
+  let hitLimit = false;
 
   for (let i = window.length - 1; i >= 0; i--) {
     try {
@@ -1492,9 +1531,9 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
         }
       }
 
-      if (messageCount >= limit) break;
+      if (messageCount >= limit) { hitLimit = true; break; }
     } catch { /* skip malformed */ }
   }
 
-  return activityFeed;
+  return { items: activityFeed, hasMore: hasMoreBefore || hitLimit };
 }

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
-import type { Room as RoomType, Session, TerminalSpawnMode, ArchiveEntry } from '../types';
+import type { Room as RoomType, Session, SessionProvider, TerminalSpawnMode, ArchiveEntry } from '../types';
 import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
 import { SessionCommands } from './SessionCommands';
@@ -259,17 +259,46 @@ function CommandCopiedToast({ onDone }: { onDone: () => void }) {
   );
 }
 
-function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, onCopyAndClose }: {
+function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, onCopyAndClose, onPrefixSaved }: {
   cwd: string;
   initialName: string;
   initialPrefix: string;
-  onSpawn: (name: string, mode: TerminalSpawnMode, prefix: string) => void;
+  onSpawn: (name: string, mode: TerminalSpawnMode, prefix: string, provider: SessionProvider) => void;
   onCancel: () => void;
   onCopyAndClose?: () => void;
+  onPrefixSaved?: (prefix: string) => void;
 }) {
   const [name, setName] = useState(initialName);
   const [prefix, setPrefix] = useState(initialPrefix);
+  const prefixSavedRef = useRef(initialPrefix);
+  const prefixDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (prefix === prefixSavedRef.current) return;
+    if (prefixDebounceRef.current) clearTimeout(prefixDebounceRef.current);
+    prefixDebounceRef.current = setTimeout(() => {
+      prefixDebounceRef.current = null;
+      const value = prefix;
+      fetch('/api/room-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd, prefix: value }),
+      }).then(r => {
+        if (r.ok) {
+          prefixSavedRef.current = value;
+          onPrefixSaved?.(value);
+        }
+      }).catch(() => {});
+    }, 500);
+    return () => {
+      if (prefixDebounceRef.current) {
+        clearTimeout(prefixDebounceRef.current);
+        prefixDebounceRef.current = null;
+      }
+    };
+  }, [prefix, cwd, onPrefixSaved]);
   const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
+  const [provider, setProvider] = useState<SessionProvider>('claude');
   const [bridgePath, setBridgePath] = useState<string>('overlord-bridge');
   const nameRef = useRef<HTMLInputElement>(null);
   const markerRef = useRef(Math.random().toString(36).slice(2, 10));
@@ -293,19 +322,26 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
 
   const safeName = name.trim().replace(/["\s]/g, '-');
   const marker = markerRef.current;
+  const availableModes: TerminalSpawnMode[] = provider === 'opencode' ? ['embedded'] : ['embedded', 'bridge', 'plain', 'raw'];
+  const effectiveMode = availableModes.includes(mode) ? mode : 'embedded';
   const commands: Record<TerminalSpawnMode, string | null> = {
     embedded: null,
-    bridge: `cd "${cwd}" && "${bridgePath}" --pipe overlord-${marker} -- claude --name ${safeName}___BRG:${marker}`,
-    plain: `cd "${cwd}" && claude --name "${name.trim()}"`,
-    raw: null,
+    bridge: provider === 'claude' ? `cd "${cwd}" && "${bridgePath}" --pipe overlord-${marker} -- claude --name ${safeName}___BRG:${marker}` : null,
+    plain: provider === 'claude' ? `cd "${cwd}" && claude --name "${name.trim()}"` : null,
+    raw: provider === 'claude' ? null : null,
   };
 
-  const modeRows: { key: TerminalSpawnMode; label: string; tooltip: string }[] = [
+  const modeRows = [
     { key: 'embedded', label: 'Overlord', tooltip: 'Spawns a PTY session managed entirely inside Overlord. No terminal window needed — inject messages, view output, and monitor state directly from the UI.' },
     { key: 'bridge',   label: 'Bridge',   tooltip: 'Opens Terminal.app with a named-pipe relay. Overlord can inject messages and track the session while you keep full terminal control.' },
     { key: 'plain',    label: 'Direct',   tooltip: 'Opens Terminal.app running claude directly. No relay — Overlord monitors via session files only. Use when bridge is not needed.' },
     { key: 'raw',      label: 'Shell',    tooltip: 'Embedded terminal running a plain shell — no Claude, no LLM. Useful for manual tasks: git, file ops, running scripts.' },
-  ];
+  ] as { key: TerminalSpawnMode; label: string; tooltip: string }[];
+  const visibleModeRows = modeRows.filter(row => availableModes.includes(row.key));
+
+  useEffect(() => {
+    if (!availableModes.includes(mode)) setMode('embedded');
+  }, [availableModes, mode]);
 
   return ReactDOM.createPortal(
     <div className={dialogStyles.backdrop} onClick={onCancel}>
@@ -330,7 +366,7 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
                 className={dialogStyles.nameInput}
                 value={prefix}
                 onChange={e => setPrefix(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), mode, prefix); }}
+                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), effectiveMode, prefix, provider); }}
                 placeholder="prefix…"
                 spellCheck={false}
                 title="Session prefix — saved for this room"
@@ -341,7 +377,7 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
                 className={dialogStyles.nameInput}
                 value={name}
                 onChange={e => setName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), mode, prefix); }}
+                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), effectiveMode, prefix, provider); }}
                 placeholder="Session name…"
                 spellCheck={false}
                 style={{ flex: 1 }}
@@ -350,11 +386,39 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
           </div>
         </div>
 
+        <div className={dialogStyles.config} style={{ paddingBottom: 0, paddingTop: 10 }}>
+          <div className={dialogStyles.configRow}>
+            <label className={dialogStyles.label}>Provider</label>
+            <div style={{ display: 'flex', gap: 8, flex: 1 }}>
+              {([
+                { key: 'claude', label: 'Claude' },
+                { key: 'opencode', label: 'OpenCode' },
+              ] as const).map(option => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setProvider(option.key)}
+                  style={{
+                    border: provider === option.key ? '1px solid rgba(212,175,55,0.45)' : '1px solid rgba(255,255,255,0.1)',
+                    background: provider === option.key ? 'rgba(212,175,55,0.08)' : 'rgba(255,255,255,0.03)',
+                    color: provider === option.key ? '#d4af37' : 'rgba(255,255,255,0.65)',
+                    borderRadius: 6,
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >{option.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Mode rows — each with optional command inline */}
         <div style={{ padding: '10px 20px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {modeRows.map(({ key, label, tooltip }) => {
+          {visibleModeRows.map(({ key, label, tooltip }) => {
             const cmd = commands[key];
-            const active = mode === key;
+            const active = effectiveMode === key;
             return (
               <div
                 key={key}
@@ -394,7 +458,7 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
           <button className={dialogStyles.cancelBtn} onClick={onCancel}>Cancel</button>
           <button
             className={dialogStyles.spawnBtn}
-            onClick={() => name.trim() && onSpawn(name.trim(), mode, prefix)}
+            onClick={() => name.trim() && onSpawn(name.trim(), effectiveMode, prefix, provider)}
             disabled={!name.trim()}
           >Spawn</button>
         </div>
@@ -410,7 +474,7 @@ interface RoomProps {
   onSelectSession: (session: Session, subagentId?: string) => void;
   customNames: Record<string, string>;
   onSpawnSession?: (cwd: string) => void;
-  onSpawnDirect?: (cwd: string, name: string, mode: TerminalSpawnMode) => void;
+  onSpawnDirect?: (cwd: string, name: string, mode: TerminalSpawnMode, provider: SessionProvider) => void;
   selectedSessionId?: string | null;
   onRoomClick?: (roomId: string) => void;
   isSpawning?: boolean;
@@ -595,6 +659,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   const [spawnPanelName, setSpawnPanelName] = useState('');
   const [namePrefix, setNamePrefix] = useState('');
   const [lastMode, setLastMode] = useState<TerminalSpawnMode>('embedded');
+  const [lastProvider, setLastProvider] = useState<SessionProvider>('claude');
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
@@ -660,11 +725,12 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`)
-      .then(r => r.ok ? r.json() as Promise<{ prefix: string; lastMode?: TerminalSpawnMode }> : null)
+      .then(r => r.ok ? r.json() as Promise<{ prefix: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider }> : null)
       .then(cfg => {
         if (!cancelled && cfg) {
           setNamePrefix(cfg.prefix ?? '');
           if (cfg.lastMode) setLastMode(cfg.lastMode);
+          setLastProvider(cfg.lastProvider === 'opencode' ? 'opencode' : 'claude');
         }
       })
       .catch(() => { /* ignore */ });
@@ -854,24 +920,29 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
               const baseName = getNextName('');
               let fresh = namePrefix;
               let mode: TerminalSpawnMode = lastMode;
+              let provider: SessionProvider = lastProvider;
               try {
                 const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`);
                 if (r.ok) {
-                  const cfg = await r.json() as { prefix?: string; lastMode?: TerminalSpawnMode };
+                  const cfg = await r.json() as { prefix?: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider };
                   fresh = cfg.prefix ?? '';
                   setNamePrefix(fresh);
                   if (cfg.lastMode) { mode = cfg.lastMode; setLastMode(cfg.lastMode); }
+                  provider = cfg.lastProvider === 'opencode' ? 'opencode' : 'claude';
+                  setLastProvider(provider);
                 }
               } catch { /* fall back to cached values */ }
+              if (provider === 'opencode') mode = 'embedded';
               fetch('/api/room-config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ cwd: room.cwd, lastMode: mode }),
+                body: JSON.stringify({ cwd: room.cwd, lastMode: mode, lastProvider: provider }),
               }).catch(() => {});
               setLastMode(mode);
-              onSpawnDirect(room.cwd, fresh + baseName, mode);
+              setLastProvider(provider);
+              onSpawnDirect(room.cwd, fresh + baseName, mode, provider);
             }}
-            data-tooltip={`Quick spawn — reuse last mode (${lastMode})`}
+            data-tooltip={`Quick spawn — reuse last selection (${lastProvider}, ${lastMode})`}
             data-tooltip-dir="down"
             data-tooltip-align="right"
             aria-label="Quick spawn"
@@ -888,19 +959,21 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
           cwd={room.cwd}
           initialName={spawnPanelName}
           initialPrefix={namePrefix}
-          onSpawn={(name, mode, prefix) => {
+          onSpawn={(name, mode, prefix, provider) => {
             fetch('/api/room-config', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ cwd: room.cwd, prefix, lastMode: mode }),
+              body: JSON.stringify({ cwd: room.cwd, prefix, lastMode: mode, lastProvider: provider }),
             }).catch(() => {});
             setNamePrefix(prefix);
             setLastMode(mode);
-            onSpawnDirect(room.cwd, prefix + name, mode);
+            setLastProvider(provider);
+            onSpawnDirect(room.cwd, prefix + name, mode, provider);
             setShowSpawnPanel(false);
           }}
           onCancel={() => setShowSpawnPanel(false)}
           onCopyAndClose={() => setShowCopyToast(true)}
+          onPrefixSaved={(p) => setNamePrefix(p)}
         />
       )}
       {showCopyToast && <CommandCopiedToast onDone={() => setShowCopyToast(false)} />}
@@ -951,6 +1024,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                       <span className={styles.deskLaunchBadge} data-category={launch.category}>{launch.name}</span>
                       {session.provider === 'codex' && (
                         <span className={styles.deskLaunchBadge} data-category="codex">Codex</span>
+                      )}
+                      {session.provider === 'opencode' && (
+                        <span className={styles.deskLaunchBadge} data-category="opencode">OpenCode</span>
                       )}
                     </div>
                   );

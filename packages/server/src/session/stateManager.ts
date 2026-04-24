@@ -10,7 +10,27 @@ import { readGitStatus } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig } from './roomConfig.js';
 import { sessionStore } from './sessionStore.js';
+import { globalSettingsStore } from './globalSettingsStore.js';
 import { log } from '../logger.js';
+
+const QUERY_WORKER_CWD = path.join(os.homedir(), '.claude', 'overlord', 'query-worker');
+const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
+
+function sweepOrphanQueryWorkerFiles(): void {
+  try {
+    if (!fs.existsSync(CLAUDE_SESSIONS_DIR)) return;
+    for (const file of fs.readdirSync(CLAUDE_SESSIONS_DIR)) {
+      if (!file.endsWith('.json')) continue;
+      const filePath = path.join(CLAUDE_SESSIONS_DIR, file);
+      try {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { cwd?: string };
+        if (data.cwd && path.normalize(data.cwd) === path.normalize(QUERY_WORKER_CWD)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch { /* skip unreadable */ }
+    }
+  } catch { /* ignore */ }
+}
 
 /**
  * Batch-query all process parent/name info in one OS call, then walk chains in JS.
@@ -333,6 +353,7 @@ export class StateManager {
           overlordId: storedOvrId,
           sessionHistory: storedHistory,
           provider: entry.provider ?? 'claude',
+          providerSessionId: (entry.providerSessionId as string | undefined) ?? storedRec?.providerSessionId,
           cwd: entry.cwd,
           pid: entry.pid ?? 0,
           startedAt: entry.startedAt ?? Date.now(),
@@ -372,6 +393,7 @@ export class StateManager {
           bridgeMarker: entry.bridgeMarker,
           transcriptPath: entry.transcriptPath,
           acknowledged: loadAck(entry.sessionId),
+          gitBranch: storedRec?.gitBranch,
         });
 
         // Load transcript for closed sessions so conversation history is visible after restart
@@ -467,6 +489,7 @@ export class StateManager {
           overlordId: s.overlordId,
           sessionHistory: s.sessionHistory,
           provider: s.provider,
+          providerSessionId: s.providerSessionId,
           cwd: s.cwd,
           sessionType: s.sessionType,
           replacedBy: s.replacedBy,
@@ -735,6 +758,7 @@ export class StateManager {
       overlordId,
       sessionHistory,
       provider: raw.provider ?? existingSession?.provider ?? 'claude',
+      providerSessionId: existingSession?.providerSessionId,
       slug,
       proposedName,
       pid,
@@ -851,6 +875,7 @@ export class StateManager {
       overlordId: sessionId,
       sessionHistory: [{ sessionId, attachedAt: Date.now() }],
       provider: undefined,
+      providerSessionId: undefined,
       proposedName,
       pid,
       startedAt: Date.now(),
@@ -879,6 +904,7 @@ export class StateManager {
       overlordId: sessionId,
       sessionHistory: [{ sessionId, attachedAt: lastActivity }],
       provider: undefined,
+      providerSessionId: undefined,
       proposedName,
       pid: 0,
       startedAt: lastActivity,
@@ -896,6 +922,50 @@ export class StateManager {
     sessionStore.ensureFromLive(session);
     this.onChange();
     return session;
+  }
+
+  addManagedProviderSession(
+    sessionId: string,
+    cwd: string,
+    pid: number,
+    provider: 'opencode',
+    proposedName?: string,
+    providerSessionId?: string,
+  ): Session {
+    const session: Session = {
+      sessionId,
+      overlordId: sessionId,
+      sessionHistory: [{ sessionId, attachedAt: Date.now() }],
+      provider,
+      providerSessionId,
+      proposedName,
+      pid,
+      startedAt: Date.now(),
+      cwd,
+      state: 'working',
+      lastActivity: new Date().toISOString(),
+      sessionType: 'embedded',
+      color: this.sessionColorByOvrId(sessionId),
+      subagents: [],
+      ptySessionId: sessionId,
+    };
+    this.sessions.set(sessionId, session);
+    this.sessionsByOvrId.set(sessionId, sessionId);
+    sessionStore.ensureFromLive(session);
+    this.saveKnownSessions();
+    this.onChange();
+    return session;
+  }
+
+  reviveManagedProviderSession(sessionId: string, pid: number): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.pid = pid;
+    session.state = 'working';
+    session.lastActivity = new Date().toISOString();
+    session.loadedAt = Date.now();
+    this.saveKnownSessions();
+    this.onChange();
   }
 
   clearHistoryOnly(sessionId: string): void {
@@ -1156,8 +1226,20 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (session && session.pid !== pid) {
       session.pid = pid;
+      this.saveKnownSessions();
       this.onChange();
     }
+  }
+
+  setProviderSessionId(sessionId: string, providerSessionId: string | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.providerSessionId === providerSessionId) return;
+    session.providerSessionId = providerSessionId;
+    if (session.overlordId) {
+      sessionStore.patch(session.overlordId, { providerSessionId });
+    }
+    this.saveKnownSessions();
+    this.onChange();
   }
 
   refreshTranscript(sessionId: string): { becameWaiting: boolean; lastMessage?: string; becameWorking: boolean; leftWorking: boolean; transcriptStale: boolean } {
@@ -1281,6 +1363,7 @@ export class StateManager {
         }
       }
       session.activityFeed = mergedFeed.length > 0 ? mergedFeed : undefined;
+      session.feedTruncated = (result as { feedTruncated?: boolean }).feedTruncated;
       session.model = result.model;
       session.inputTokens = result.inputTokens;
       session.compactCount = result.compactCount;
@@ -1701,6 +1784,15 @@ export class StateManager {
     for (const session of this.sessions.values()) {
       if (session.provider === 'codex' || session.pid <= 0) continue;
       if (session.sessionType === 'raw') continue;
+      if (session.provider === 'opencode' && !session.transcriptPath && session.state !== 'closed') {
+        const lastPtyAt = this.lastPtyActivityAt.get(session.sessionId);
+        const shouldBeWorking = lastPtyAt != null && Date.now() - lastPtyAt < 5000;
+        const nextState: WorkerState = shouldBeWorking ? 'working' : 'waiting';
+        if (session.state !== nextState) {
+          session.state = nextState;
+          anyChanged = true;
+        }
+      }
       if (!pids.has(session.pid) && session.state !== 'closed') {
         // Don't override transcript-based state if the session was recently active.
         // This prevents process-checker from fighting refreshTranscript when the PID
@@ -1765,6 +1857,9 @@ export class StateManager {
     if (this.processSnapshot.size > 2000) {
       this.refreshProcessSnapshot();
     }
+    // Sweep orphan query-worker session files (left behind if claudeQuery's
+    // cleanup hook didn't fire — e.g. forced kill). Cheap: only a few files.
+    sweepOrphanQueryWorkerFiles();
     if (anyChanged) this.onChange();
   }
 
@@ -1792,16 +1887,17 @@ export class StateManager {
     return current;
   }
 
-  getPtySessionsToResume(): Array<{ sessionId: string; cwd: string }> {
+  getPtySessionsToResume(): Array<{ sessionId: string; cwd: string; provider?: Session['provider']; providerSessionId?: string }> {
     return [...this.sessions.values()]
       .filter(s => s.sessionType === 'embedded' && s.state === 'closed')
-      .map(s => ({ sessionId: s.sessionId, cwd: s.cwd }));
+      .map(s => ({ sessionId: s.sessionId, cwd: s.cwd, provider: s.provider, providerSessionId: s.providerSessionId }));
   }
 
   getSnapshot(): OfficeSnapshot {
     const roomMap = new Map<string, Room>();
 
     for (const session of this.sessions.values()) {
+      if (session.replacedBy) continue;
       const { cwd } = session;
       if (!roomMap.has(cwd)) {
         const slug = cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
@@ -1817,13 +1913,7 @@ export class StateManager {
 
     const rooms = Array.from(roomMap.values());
 
-    // Sort rooms by name; query-worker always last
-    rooms.sort((a, b) => {
-      const aIsQW = a.name === 'query-worker';
-      const bIsQW = b.name === 'query-worker';
-      if (aIsQW !== bIsQW) return aIsQW ? 1 : -1;
-      return a.name.localeCompare(b.name);
-    });
+    rooms.sort((a, b) => a.name.localeCompare(b.name));
 
     // Sort sessions within each room by startedAt
     for (const room of rooms) {
@@ -1855,6 +1945,7 @@ export class StateManager {
       updatedAt: new Date().toISOString(),
       bridgePath: this.bridgePath,
       platform: process.platform,
+      settings: globalSettingsStore.get(),
     };
   }
 
@@ -2018,6 +2109,7 @@ export class StateManager {
       overlordId: rec.overlordId,
       sessionHistory: rec.lineage.history.map(h => ({ sessionId: h.sessionId, attachedAt: h.attachedAt })),
       provider: rec.provider ?? 'claude',
+      providerSessionId: rec.providerSessionId,
       pid: 0,
       cwd: rec.cwd,
       startedAt,
@@ -2142,6 +2234,7 @@ export class StateManager {
             sessionId,
             overlordId: recoveredOvrId,
             provider: 'claude',
+            providerSessionId: undefined,
             pid: 0,
             cwd,
             startedAt,

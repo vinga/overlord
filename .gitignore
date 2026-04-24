@@ -41,3 +41,4 @@ packages/server/data/
 
 # V8 heap snapshots
 *.heapsnapshot
+.aider*

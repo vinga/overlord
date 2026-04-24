@@ -10,7 +10,9 @@ import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
-import { findTranscriptPath, findTranscriptPathAnywhere } from '../session/transcriptReader.js';
+import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
+import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
+import { sessionStore } from '../session/sessionStore.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -49,6 +51,31 @@ export function sliceBufferFromLastBsu(buf: Buffer[] | undefined): Buffer[] {
 
 function stripInternalMarkers(name: string): string {
   return name.replace(/___(?:BRG|OVR):[A-Za-z0-9_-]*/g, '').replace(/[-_\s]+$/, '').trim();
+}
+
+function resolveCliProvider(provider?: string): 'claude' | 'opencode' {
+  return provider === 'opencode' ? 'opencode' : 'claude';
+}
+
+function scheduleOpencodeSessionIdCapture(
+  stateManager: StateManager,
+  sessionId: string,
+  cwd: string,
+  startedAfterMs: number,
+): void {
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts += 1;
+    const found = findLatestOpencodeSessionId(cwd, startedAfterMs);
+    if (found) {
+      clearInterval(timer);
+      stateManager.setProviderSessionId(sessionId, found);
+      return;
+    }
+    if (attempts >= 15) {
+      clearInterval(timer);
+    }
+  }, 1000);
 }
 
 export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContext): void {
@@ -125,11 +152,44 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
         const name = msg.name ? String(msg.name) : undefined;
+        const provider = resolveCliProvider(typeof msg.provider === 'string' ? msg.provider : undefined);
 
         // Auto-create directory if it doesn't exist
         if (!fs.existsSync(cwd)) {
           fs.mkdirSync(cwd, { recursive: true });
           console.log(`[spawn] created directory: ${cwd}`);
+        }
+
+        if (provider === 'opencode') {
+          const sessionId = `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const startedAfterMs = Date.now() - 2_000;
+          stateManager.addManagedProviderSession(sessionId, cwd, 0, 'opencode', name);
+          ovrToPty.set(sessionId, sessionId);
+          ptyToOvr.set(sessionId, sessionId);
+
+          const sessions = wsSessionMap.get(ws);
+          if (sessions) sessions.add(sessionId);
+
+          broadcastRaw({ type: 'terminal:spawned', sessionId, pid: 0 });
+          try {
+            ptyManager.spawn(sessionId, cwd, cols, rows, [], 'opencode');
+            const pid = ptyManager.getPid(sessionId) ?? 0;
+            if (pid) stateManager.setPid(sessionId, pid);
+            log('pty:started', 'OpenCode PTY session started', { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
+            broadcastRaw({ type: 'terminal:linked', ovrId: sessionId, ptySessionId: sessionId, claudeSessionId: sessionId });
+            scheduleOpencodeSessionIdCapture(stateManager, sessionId, cwd, startedAfterMs);
+          } catch (err) {
+            stateManager.remove(sessionId);
+            sessionStore.removeBySessionId(sessionId);
+            ovrToPty.delete(sessionId);
+            ptyToOvr.delete(sessionId);
+            sendToClient(ws, {
+              type: 'terminal:error',
+              sessionId,
+              message: `Spawn failed: ${(err as Error).message}`,
+            });
+          }
+          return;
         }
 
         // Generate a unique sessionId for this PTY session
@@ -169,10 +229,54 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cwd = String(msg.cwd ?? process.cwd());
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
+        const targetSession = stateManager.getSession(resumeSessionId);
+        const provider = resolveCliProvider(targetSession?.provider);
+
+        if (provider === 'opencode' && targetSession) {
+          const startedAfterMs = Date.now() - 2_000;
+          const ptySessionId = resumeSessionId;
+          const sessions = wsSessionMap.get(ws);
+          if (sessions) sessions.add(ptySessionId);
+          ovrToPty.set(ptySessionId, ptySessionId);
+          ptyToOvr.set(ptySessionId, ptySessionId);
+
+          sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
+          try {
+            ptyManager.spawn(ptySessionId, cwd, cols, rows, buildOpencodeResumeArgs(targetSession.providerSessionId), 'opencode');
+            const pid = ptyManager.getPid(ptySessionId) ?? 0;
+            stateManager.reviveManagedProviderSession(resumeSessionId, pid);
+            log('pty:started', 'OpenCode PTY session resumed', {
+              sessionId: ptySessionId,
+              sessionName: targetSession.proposedName ?? resumeSessionId.slice(0, 8),
+            });
+            broadcastRaw({
+              type: 'terminal:linked',
+              ovrId: targetSession.overlordId ?? resumeSessionId,
+              ptySessionId,
+              claudeSessionId: resumeSessionId,
+            });
+            if (!targetSession.providerSessionId) {
+              scheduleOpencodeSessionIdCapture(stateManager, resumeSessionId, cwd, startedAfterMs);
+            }
+          } catch (err) {
+            ovrToPty.delete(ptySessionId);
+            ptyToOvr.delete(ptySessionId);
+            sendToClient(ws, {
+              type: 'terminal:error',
+              sessionId: ptySessionId,
+              message: `Resume failed: ${(err as Error).message}`,
+            });
+          }
+          return;
+        }
+
         const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-        const transcriptPath = findTranscriptPath(cwd, resumeSessionId) ?? findTranscriptPathAnywhere(resumeSessionId);
-        if (!transcriptPath) {
+        // Resolve to a sessionId whose jsonl actually exists. When a resumed session
+        // keeps writing to the parent's jsonl (no new {sessionId}.jsonl is created),
+        // the current sessionId is unresumable — fall back to a lineage ancestor.
+        const resolved = resolveResumableSessionId(resumeSessionId, cwd);
+        if (!resolved) {
           sendToClient(ws, {
             type: 'terminal:error',
             sessionId: ptySessionId,
@@ -180,27 +284,25 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           });
           return;
         }
+        const effectiveResumeId = resolved.sessionId;
+        if (effectiveResumeId !== resumeSessionId) {
+          console.log(`[terminal:resume] ${resumeSessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${effectiveResumeId.slice(0, 8)}`);
+        }
 
-        stateManager.trackPendingResume(cwd, resumeSessionId);
-        // Use the session's own ID for --resume, NOT getRootSessionId().
-        // getRootSessionId traces resumedFrom chain back to the original, which may
-        // still be running — resuming an already-running session crashes the CLI.
+        stateManager.trackPendingResume(cwd, effectiveResumeId);
         const resumedName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
-        log('session:resumed', 'Session resumed', { sessionId: resumeSessionId, sessionName: resumedName });
+        log('session:resumed', 'Session resumed', { sessionId: effectiveResumeId, sessionName: resumedName });
 
         const sessions = wsSessionMap.get(ws);
         if (sessions) sessions.add(ptySessionId);
 
         sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
         try {
-          // Resume the session via --resume flag.
-          // Embed ptySessionId as hidden marker for reliable PTY linking on ConPTY.
-          ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', resumeSessionId, '--name', `___OVR:${ptySessionId}`]);
+          ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
           const resumePtyName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
           log('pty:started', 'PTY session started', { sessionId: ptySessionId, sessionName: resumePtyName });
 
-          // Track by resume session ID for ConPTY PID mismatch linking
-          pendingPtyByResumeId.set(resumeSessionId, { ptySessionId, ws, timestamp: Date.now() });
+          pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, ws, timestamp: Date.now() });
         } catch (err) {
           sendToClient(ws, {
             type: 'terminal:error',
@@ -216,10 +318,18 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cwd = String(msg.cwd ?? process.cwd());
         const session = stateManager.getSession(sessionId);
         const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
+        const provider = resolveCliProvider(session?.provider);
+        const resolvedExternal = provider === 'claude' ? resolveResumableSessionId(sessionId, cwd) : null;
+        const externalResumeId = resolvedExternal?.sessionId ?? sessionId;
+        if (resolvedExternal && externalResumeId !== sessionId) {
+          console.log(`[open-external] ${sessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${externalResumeId.slice(0, 8)}`);
+        }
+        const command = provider === 'opencode'
+          ? `opencode ${session?.providerSessionId ? `--session ${session.providerSessionId}` : '--continue'}`
+          : `claude --resume ${externalResumeId} --name "${sessionName.replace(/"/g, '')}"`;
         console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
         stateManager.setSessionType(sessionId, 'plain');
-        const safeName = sessionName.replace(/"/g, '');
-        openTerminalWindow(cwd, `claude --resume ${sessionId} --name "${safeName}"`, `Claude: ${sessionName}`, sessionId)
+        openTerminalWindow(cwd, command, `${provider === 'opencode' ? 'OpenCode' : 'Claude'}: ${sessionName}`, sessionId)
           .then(() => sendToClient(ws, { type: 'terminal:external-opened', sessionId }))
           .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open terminal: ${(err as Error).message}` }));
         return;
@@ -234,10 +344,19 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         const session = stateManager.getSession(sessionId);
         const sessionName = stripInternalMarkers(session?.proposedName ?? sessionId.slice(0, 8));
+        const provider = resolveCliProvider(session?.provider);
         const marker = sessionId.slice(0, 8);
         const safeName = sessionName.replace(/"/g, '-');
         const bridgePath = getBridgePath();
-        const command = `"${bridgePath}" --pipe overlord-${marker} -- claude --resume ${sessionId} --name "${safeName}___BRG:${marker}"`;
+        const resolvedBridge = provider === 'claude' ? resolveResumableSessionId(sessionId, cwd) : null;
+        const bridgeResumeId = resolvedBridge?.sessionId ?? sessionId;
+        if (resolvedBridge && bridgeResumeId !== sessionId) {
+          console.log(`[open-bridged] ${sessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${bridgeResumeId.slice(0, 8)}`);
+        }
+        const resumeCmd = provider === 'opencode'
+          ? `opencode ${session?.providerSessionId ? `--session ${session.providerSessionId}` : '--continue'}`
+          : `claude --resume ${bridgeResumeId} --name "${safeName}___BRG:${marker}"`;
+        const command = `"${bridgePath}" --pipe overlord-${marker} -- ${resumeCmd}`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
           .then(() => sendToClient(ws, { type: 'terminal:bridge-opened', sessionId }))
@@ -249,6 +368,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cwd = String(msg.cwd ?? process.cwd());
         const name = msg.name ? String(msg.name) : undefined;
         const mode = msg.mode ? String(msg.mode) : undefined;
+        const provider = resolveCliProvider(typeof msg.provider === 'string' ? msg.provider : undefined);
 
         // Auto-create directory if it doesn't exist
         if (!fs.existsSync(cwd)) {
@@ -259,7 +379,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cwdName = name || cwd.split(/[\\/]/).pop() || 'New';
         const safeCwdName = cwdName.replace(/"/g, '');
         console.log(`[open-new] cwd=${cwd} name=${cwdName} mode=${mode ?? 'default'}`);
-        openTerminalWindow(cwd, `claude --name "${safeCwdName}"`, `Claude: ${cwdName}`, undefined, mode !== 'plain')
+        const command = provider === 'opencode' ? 'opencode' : `claude --name "${safeCwdName}"`;
+        openTerminalWindow(cwd, command, `${provider === 'opencode' ? 'OpenCode' : 'Claude'}: ${cwdName}`, undefined, mode !== 'plain')
           .then(() => sendToClient(ws, { type: 'terminal:new-opened' }))
           .catch((err) => sendToClient(ws, { type: 'terminal:error', message: `Failed to open terminal: ${(err as Error).message}` }));
         return;
@@ -624,6 +745,15 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const sessionId = String(msg.sessionId ?? '');
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
+        const targetSession = stateManager.getSession(sessionId);
+        if (targetSession?.provider === 'opencode') {
+          sendToClient(ws, {
+            type: 'terminal:error',
+            sessionId,
+            message: 'OpenCode clone is not supported yet.',
+          });
+          return;
+        }
 
         // Determine clone name
         const snap = stateManager.getSnapshot();

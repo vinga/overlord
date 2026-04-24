@@ -3,11 +3,13 @@ import * as path from 'path';
 import * as os from 'os';
 
 export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw';
+export type RoomLastProvider = 'claude' | 'opencode';
 
 export interface RoomConfig {
   prefix: string;
   description: string;
   lastMode?: RoomLastMode;
+  lastProvider?: RoomLastProvider;
 }
 
 const DEFAULT_CONFIG: RoomConfig = { prefix: '', description: '' };
@@ -41,6 +43,7 @@ export function readRoomConfig(cwd: string): RoomConfig {
       lastMode: typeof parsed.lastMode === 'string' && VALID_MODES.has(parsed.lastMode as RoomLastMode)
         ? (parsed.lastMode as RoomLastMode)
         : undefined,
+      lastProvider: parsed.lastProvider === 'opencode' ? 'opencode' : parsed.lastProvider === 'claude' ? 'claude' : undefined,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

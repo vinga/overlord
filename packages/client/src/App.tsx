@@ -4,7 +4,7 @@ import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
 import { useRoomOrder } from './hooks/useRoomOrder';
 
-import type { ArchiveEntry, Session, TerminalMessage, TerminalSpawnMode } from './types';
+import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
 import { DetailPanel } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
@@ -12,6 +12,8 @@ import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
 import { DirectoryPickerDialog } from './components/DirectoryPickerDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
+import { SettingsModal } from './components/SettingsModal';
+import type { GlobalSettings } from './types';
 import { SESSION_NAMES } from './components/Room';
 import type { Room } from './types';
 
@@ -30,16 +32,14 @@ export function App() {
   });
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string; query?: string } | null>(null);
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => {
-    const m = window.location.hash.match(/^#room\/(.+)/);
-    return m ? m[1] : null;
-  });
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnCwd, setTerminalSpawnCwd] = useState<string | null>(null);
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [archivedSession, setArchivedSession] = useState<Session | null>(null);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
   const { rename, migrateSession: migrateNames } = useCustomNames();
@@ -106,8 +106,6 @@ export function App() {
     } else if (selectedSessionId) {
       hash = `#session/${selectedSessionId}`;
       if (selectedSubagentId) hash += `/${selectedSubagentId}`;
-    } else if (selectedRoomId) {
-      hash = `#room/${selectedRoomId}`;
     }
     const currentHash = window.location.hash;
     if (currentHash === hash) return;
@@ -116,7 +114,7 @@ export function App() {
     window.history.pushState(null, '', url);
     // Reset flag after microtask so it doesn't block real navigation
     queueMicrotask(() => { suppressHashChange.current = false; });
-  }, [view, selectedSessionId, selectedSubagentId, selectedRoomId]);
+  }, [view, selectedSessionId, selectedSubagentId]);
 
   // Sync URL hash → state (for link navigation / back button)
   useEffect(() => {
@@ -131,21 +129,11 @@ export function App() {
           setView('office');
           setSelectedSessionId(m[1]);
           setSelectedSubagentId(m[2] || undefined);
-          setSelectedRoomId(null);
-        }
-      } else if (h.startsWith('#room/')) {
-        const m = h.match(/^#room\/(.+)/);
-        if (m) {
-          setView('office');
-          setSelectedRoomId(m[1]);
-          setSelectedSessionId(null);
-          setSelectedSubagentId(undefined);
         }
       } else {
         setView('office');
         setSelectedSessionId(null);
         setSelectedSubagentId(undefined);
-        setSelectedRoomId(null);
       }
     }
     window.addEventListener('hashchange', onHashChange);
@@ -166,7 +154,6 @@ export function App() {
       // Immediately show the PTY terminal (before session file is created / linked)
       setSelectedSessionId(activePtySessionId);
       setSelectedSubagentId(undefined);
-      setSelectedRoomId(null);
       setActivePtySessionId(null);
       return;
     }
@@ -177,7 +164,6 @@ export function App() {
     const linked = all.find(s => s.sessionId === claudeId);
     setSelectedSessionId(linked?.overlordId ?? claudeId);
     setSelectedSubagentId(undefined);
-    setSelectedRoomId(null);
   }, [activePtySessionId, snapshot]);
 
   // Upgrade legacy Claude UUID hash → ovrId once snapshot arrives.
@@ -236,14 +222,11 @@ export function App() {
     const id = session.overlordId ?? session.sessionId;
     setSelectedSessionId(id);
     setSelectedSubagentId(subagentId);
-    setSelectedRoomId(null);
     setScrollTarget(timestamp ? { sessionId: id, timestamp, query } : null);
   }
 
   function handleRoomClick(roomId: string) {
     setSelectedRoomId(prev => prev === roomId ? null : roomId);
-    setSelectedSessionId(null);
-    setSelectedSubagentId(undefined);
   }
 
   function handleRoomDetailClose() {
@@ -282,14 +265,14 @@ export function App() {
     setTerminalSpawnCwd(null);
   }
 
-  function handleNewFolderSpawn(cwd: string, name: string, mode: TerminalSpawnMode) {
+  function handleNewFolderSpawn(cwd: string, name: string, mode: TerminalSpawnMode, provider: SessionProvider = 'claude') {
     setShowDirectoryPicker(false);
     if (mode === 'embedded') {
-      terminal.spawnSession(cwd, 80, 24, name || undefined);
+      terminal.spawnSession(cwd, 80, 24, name || undefined, provider);
     } else if (mode === 'raw') {
       terminal.spawnRawShell(cwd, 80, 24, name || undefined);
     } else {
-      terminal.openNewTerminal(cwd, name || undefined, mode);
+      terminal.openNewTerminal(cwd, name || undefined, mode, provider);
     }
   }
 
@@ -362,7 +345,6 @@ export function App() {
   async function handleOpenArchive(entry: ArchiveEntry) {
     setSelectedSessionId(entry.sessionId);
     setSelectedSubagentId(undefined);
-    setSelectedRoomId(null);
     // Show placeholder immediately so DetailPanel renders
     setArchivedSession(buildArchivedSession(entry, []));
     try {
@@ -390,6 +372,7 @@ export function App() {
         onSpawnDirect={handleNewFolderSpawn}
         onNewTerminalSession={handleNewTerminalSession}
         onLogsClick={() => setView('logs')}
+        onSettingsClick={() => setShowSettings(true)}
         onOpenAdvancedSearch={() => setShowAdvancedSearch(true)}
 
         selectedSessionId={selectedSessionId}
@@ -419,6 +402,19 @@ export function App() {
           setShowDirectoryPicker(true);
         }}
       />
+      {showSettings && snapshot?.settings && (
+        <SettingsModal
+          settings={snapshot.settings}
+          onUpdate={(partial: Partial<GlobalSettings>) => {
+            void fetch('/api/settings', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(partial),
+            });
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
       {showAdvancedSearch && (
         <AdvancedSearchPopup
           snapshot={snapshot}
@@ -436,7 +432,7 @@ export function App() {
         suggestedName={dirPickerSuggestedName}
         bridgePath={snapshot?.bridgePath}
       />
-      {!selectedRoom && (selectedSession?.sessionType === 'raw' || (selectedSessionId?.startsWith('raw-') && !selectedSession)) ? (
+      {(selectedSession?.sessionType === 'raw' || (selectedSessionId?.startsWith('raw-') && !selectedSession)) ? (
         <PtyTerminalPanel
           sessionId={selectedSessionId ?? selectedSession?.sessionId ?? ''}
           session={selectedSession ?? undefined}
@@ -455,7 +451,7 @@ export function App() {
           panelWidth={panelWidth}
           onPanelWidthChange={setPanelWidth}
         />
-      ) : !selectedRoom && <DetailPanel
+      ) : <DetailPanel
         selectedSession={selectedSession}
         selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}
@@ -515,11 +511,6 @@ export function App() {
           customNames={displayNames}
           onSelectSession={(s, timestamp, query) => handleSelectSession(s, undefined, timestamp, query)}
           onClose={handleRoomDetailClose}
-          panelWidth={panelWidth}
-          onPanelWidthChange={(w) => {
-            setPanelWidth(w);
-            localStorage.setItem('overlord:panelWidth', String(w));
-          }}
         />
       )}
     </>

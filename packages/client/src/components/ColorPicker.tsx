@@ -2,20 +2,29 @@ import React, { useEffect, useRef, useState } from 'react';
 import { WorkerAvatar } from './WorkerAvatar';
 import styles from './ColorPicker.module.css';
 
-const DEFAULT_COLOR = 'hsl(30, 75%, 55%)';
-
-const PRESETS: string[] = [
-  'hsl(0, 75%, 58%)',    // red
-  'hsl(30, 75%, 55%)',   // orange (default)
-  'hsl(175, 60%, 48%)',  // teal
-  'hsl(195, 75%, 60%)',  // cyan-blue
-  'hsl(280, 60%, 62%)',  // purple
-  'hsl(340, 72%, 60%)',  // pink
+const HUE_PRESETS: { label: string; h: number }[] = [
+  { label: 'Red', h: 0 },
+  { label: 'Orange', h: 30 },
+  { label: 'Teal', h: 175 },
+  { label: 'Blue', h: 210 },
+  { label: 'Purple', h: 280 },
+  { label: 'Pink', h: 340 },
 ];
 
-function parseHue(color: string): number {
-  const m = color.match(/hsl\(\s*([\d.]+)/);
-  return m ? parseFloat(m[1]) : 30;
+const LIGHT_PRESETS: { label: string; l: number }[] = [
+  { label: 'Darkest', l: 30 },
+  { label: 'Dark', l: 45 },
+  { label: 'Medium', l: 58 },
+  { label: 'Light', l: 70 },
+  { label: 'Lightest', l: 82 },
+];
+
+const DEFAULT_COLOR = `hsl(30, 75%, ${LIGHT_PRESETS[2].l}%)`;
+
+function parseHsl(color: string): { h: number; s: number; l: number } {
+  const m = color.match(/hsl\(\s*([\d.]+)[,\s]+([\d.]+)%[,\s]+([\d.]+)%/);
+  if (!m) return { h: 30, s: 75, l: 55 };
+  return { h: parseFloat(m[1]), s: parseFloat(m[2]), l: parseFloat(m[3]) };
 }
 
 interface Props {
@@ -29,6 +38,8 @@ interface Props {
 export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const [draftHue, setDraftHue] = useState<number | null>(null);
+  const latestHueRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -41,11 +52,34 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
     return () => document.removeEventListener('mousedown', onClick);
   }, [open]);
 
-  const hue = parseHue(color);
+  useEffect(() => {
+    latestHueRef.current = null;
+    setDraftHue(null);
+  }, [color]);
+
+  const parsed = parseHsl(color);
+  const hue = draftHue ?? parsed.h;
+  const saturation = parsed.s;
+  const lightness = parsed.l;
+
+  const emit = (h: number, s: number, l: number) => {
+    onChange(`hsl(${h}, ${s}%, ${l}%)`);
+  };
 
   const handleHueChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const h = parseFloat(e.target.value);
-    onChange(`hsl(${h}, 75%, 55%)`);
+    latestHueRef.current = h;
+    setDraftHue(h);
+  };
+
+  const commitHue = () => {
+    const h = latestHueRef.current;
+    if (h != null && h !== parsed.h) {
+      emit(h, saturation, lightness);
+    } else {
+      latestHueRef.current = null;
+      setDraftHue(null);
+    }
   };
 
   return (
@@ -60,20 +94,22 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
       </button>
       {open && (
         <div className={styles.popover} role="dialog" aria-label="Choose color">
-          <div className={styles.label}>Presets</div>
+          <div className={styles.label}>Hue</div>
           <div className={styles.presets}>
-            {PRESETS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                className={`${styles.preset} ${preset === color ? styles.selected : ''}`}
-                style={{ background: preset }}
-                onClick={() => onChange(preset)}
-                title={preset}
-              />
-            ))}
+            {HUE_PRESETS.map((p) => {
+              const swatch = `hsl(${p.h}, 75%, ${lightness}%)`;
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  className={`${styles.preset} ${p.h === hue ? styles.selected : ''}`}
+                  style={{ background: swatch }}
+                  onClick={() => emit(p.h, saturation, lightness)}
+                  title={p.label}
+                />
+              );
+            })}
           </div>
-          <div className={styles.label}>Custom hue</div>
           <div className={styles.sliderRow}>
             <input
               type="range"
@@ -81,19 +117,35 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
               max={360}
               value={hue}
               onChange={handleHueChange}
+              onPointerUp={commitHue}
+              onKeyUp={commitHue}
+              onBlur={commitHue}
               className={styles.hueSlider}
             />
           </div>
-          <div className={styles.resetRow}>
-            <div className={styles.currentSwatch} style={{ background: color }} />
-            <button
-              type="button"
-              className={styles.resetBtn}
-              onClick={() => onChange(DEFAULT_COLOR)}
-            >
-              Reset to default
-            </button>
+          <div className={styles.label}>Lightness</div>
+          <div className={styles.presetsFive}>
+            {LIGHT_PRESETS.map((p) => {
+              const swatch = `hsl(${hue}, ${saturation}%, ${p.l}%)`;
+              return (
+                <button
+                  key={p.label}
+                  type="button"
+                  className={`${styles.preset} ${p.l === lightness ? styles.selected : ''}`}
+                  style={{ background: swatch }}
+                  onClick={() => emit(hue, saturation, p.l)}
+                  title={p.label}
+                />
+              );
+            })}
           </div>
+          <button
+            type="button"
+            className={styles.resetBtn}
+            onClick={() => onChange(DEFAULT_COLOR)}
+          >
+            Reset to default
+          </button>
         </div>
       )}
     </div>

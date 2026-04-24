@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react';
-import type { OfficeSnapshot, Session } from '../types';
+import type { OfficeSnapshot, Session, SessionProvider } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
@@ -13,7 +13,7 @@ interface OfficeProps {
   onSelectSession: (session: Session, subagentId?: string) => void;
   customNames: Record<string, string>;
   onSpawnSession?: (cwd: string) => void;
-  onSpawnDirect?: (cwd: string, name: string, mode: import('../types').TerminalSpawnMode) => void;
+  onSpawnDirect?: (cwd: string, name: string, mode: import('../types').TerminalSpawnMode, provider: SessionProvider) => void;
   onNewTerminalSession?: (cwd: string) => void;
 
   selectedSessionId?: string | null;
@@ -32,11 +32,12 @@ interface OfficeProps {
   isPtySession?: (sessionId: string) => boolean;
   onOpenDirectoryPicker?: () => void;
   onLogsClick?: () => void;
+  onSettingsClick?: () => void;
   onOpenAdvancedSearch?: () => void;
   platform?: string;
 }
 
-function HeaderMenu({ onNewSession, onLogs }: { onNewSession?: () => void; onLogs?: () => void }) {
+function HeaderMenu({ onNewSession, onLogs, onSettings }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -49,7 +50,7 @@ function HeaderMenu({ onNewSession, onLogs }: { onNewSession?: () => void; onLog
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  if (!onNewSession && !onLogs) return null;
+  if (!onNewSession && !onLogs && !onSettings) return null;
 
   return (
     <div ref={ref} className={styles.headerMenu}>
@@ -97,6 +98,22 @@ function HeaderMenu({ onNewSession, onLogs }: { onNewSession?: () => void; onLog
               <span className={styles.headerMenuItemHint}>Server events</span>
             </button>
           )}
+          {onSettings && (
+            <button
+              className={styles.headerMenuItem}
+              onClick={() => { setOpen(false); onSettings(); }}
+              role="menuitem"
+            >
+              <span className={styles.headerMenuItemIcon}>
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="8" cy="8" r="2" />
+                  <path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4" />
+                </svg>
+              </span>
+              <span className={styles.headerMenuItemLabel}>Settings</span>
+              <span className={styles.headerMenuItemHint}>Global options</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -112,7 +129,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -221,6 +238,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         <HeaderMenu
           onNewSession={onOpenDirectoryPicker}
           onLogs={onLogsClick}
+          onSettings={onSettingsClick}
         />
       </header>
       <div className={styles.content}>

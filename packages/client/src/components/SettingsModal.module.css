@@ -1,0 +1,117 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 3, 8, 0.66);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.modal {
+  width: min(480px, calc(100vw - 48px));
+  background: #0f0f16;
+  border: 1px solid rgba(212, 175, 55, 0.18);
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  color: #e8e8e8;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.close {
+  background: transparent;
+  border: none;
+  color: #8a8a92;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8e8e8;
+}
+
+.body {
+  padding: 14px 22px 22px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 0;
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+}
+
+.rowLabel {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e8e8e8;
+}
+
+.rowHint {
+  font-size: 12px;
+  color: #8a8a92;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease;
+  padding: 0;
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #e8e8e8;
+  border-radius: 50%;
+  transition: transform 160ms ease;
+}
+
+.toggleOn {
+  background: rgba(212, 175, 55, 0.5);
+  border-color: rgba(212, 175, 55, 0.7);
+}
+
+.toggleOn::after {
+  transform: translateX(16px);
+  background: #f5e5a8;
+}

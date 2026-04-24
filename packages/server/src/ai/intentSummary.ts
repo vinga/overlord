@@ -3,6 +3,7 @@ import { StateManager } from '../session/stateManager.js';
 import { sessionStore } from '../session/sessionStore.js';
 import { runClaudeQuery } from './claudeQuery.js';
 import { findTranscriptPathAnywhere } from '../session/transcriptReader.js';
+import { globalSettingsStore } from '../session/globalSettingsStore.js';
 
 export interface IntentRecord {
   sessionId: string;
@@ -66,6 +67,7 @@ export class IntentSummarizer {
   }
 
   maybeRefreshIntent(sessionId: string, cwd: string): void {
+    if (globalSettingsStore.get().disableBackgroundLLM) return;
     const session = this.stateManager.getSession(sessionId);
     if (!session) return;
 
@@ -89,6 +91,7 @@ export class IntentSummarizer {
 
   private async tryGenerate(sessionId: string, cwd: string): Promise<void> {
     if (this.inFlight.has(sessionId)) return;
+    if (globalSettingsStore.get().disableBackgroundLLM) return;
 
     const session = this.stateManager.getSession(sessionId);
     if (!session || session.state === 'closed') return;

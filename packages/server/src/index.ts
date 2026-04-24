@@ -16,11 +16,14 @@ import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, nudgeBridgePi
 import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { detectModeFromText } from './session/modeDetect.js';
-import { findTranscriptPath, findTranscriptPathAnywhere } from './session/transcriptReader.js';
+import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from './session/transcriptReader.js';
+import { buildOpencodeResumeArgs } from './session/opencodeSession.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
 import { IntentSummarizer } from './ai/intentSummary.js';
+import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
+import { globalSettingsStore } from './session/globalSettingsStore.js';
 import { planStore } from './plans/planStore.js';
 import { PlanWatcher } from './plans/planWatcher.js';
 import { migrateLegacyPlanTasks } from './plans/migrateLegacyPlanTasks.js';
@@ -625,6 +628,7 @@ function broadcastRaw(msg: object): void {
 initLogger((entry) => broadcastRaw({ type: 'log:entry', entry }));
 
 // Hydrate in-memory mirrors from disk.
+globalSettingsStore.load();
 sessionStore.loadAll();
 planStore.loadAll();
 
@@ -671,6 +675,15 @@ const stateManager = new StateManager(() => {
 
 const aiClassifier = new AiClassifier(stateManager);
 const intentSummarizer = new IntentSummarizer(stateManager);
+
+// Rebroadcast snapshot (carries settings) + drain in-flight LLM queries
+// when the kill switch flips on.
+globalSettingsStore.onChange((next, prev) => {
+  if (next.disableBackgroundLLM && !prev.disableBackgroundLLM) {
+    killClaudeWorker();
+  }
+  broadcast(stateManager.getSnapshot());
+});
 
 // Extract readable text from a raw terminal output buffer (last N chunks)
 function bufferToText(chunks: Buffer[]): string | null {
@@ -780,24 +793,41 @@ async function autoResumePtySessions(): Promise<void> {
     return;
   }
   console.log(`[auto-resume] resuming ${sessions.length} embedded session(s)`);
-  for (const { sessionId, cwd } of sessions) {
+  for (const { sessionId, cwd, provider, providerSessionId } of sessions) {
+    if (provider === 'opencode') {
+      try {
+        ptyManager.spawn(sessionId, cwd, 220, 50, buildOpencodeResumeArgs(providerSessionId), 'opencode');
+        const pid = ptyManager.getPid(sessionId) ?? 0;
+        stateManager.reviveManagedProviderSession(sessionId, pid);
+        ovrToPty.set(sessionId, sessionId);
+        ptyToOvr.set(sessionId, sessionId);
+        console.log(`[auto-resume] resumed OpenCode PTY ${sessionId.slice(0, 8)}`);
+      } catch (err) {
+        console.warn(`[auto-resume] failed to resume OpenCode PTY for ${sessionId.slice(0, 8)}:`, err);
+      }
+      continue;
+    }
     // Claude --resume requires the transcript file to exist at
     // ~/.claude/projects/<slug>/<sessionId>.jsonl. If cleanupStaleTranscripts
     // (or archive/delete) removed it, spawning blindly just prints
     // "No conversation found" and exits. Skip and mark the session deleted so
     // it stops reappearing in the UI and is not retried on the next restart.
-    const transcriptPath = findTranscriptPath(cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
-    if (!transcriptPath) {
+    const resolved = resolveResumableSessionId(sessionId, cwd);
+    if (!resolved) {
       console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing`);
       stateManager.markDeleted(sessionId);
       stateManager.remove(sessionId);
       sessionStore.removeBySessionId(sessionId);
       continue;
     }
+    const effectiveResumeId = resolved.sessionId;
+    if (effectiveResumeId !== sessionId) {
+      console.log(`[auto-resume] ${sessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${effectiveResumeId.slice(0, 8)}`);
+    }
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', sessionId, '--name', `___OVR:${ptySessionId}`]);
-      pendingPtyByResumeId.set(sessionId, { ptySessionId, timestamp: Date.now() });
+      ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
+      pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
       console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
     } catch (err) {
       console.warn(`[auto-resume] failed to spawn PTY for ${sessionId.slice(0, 8)}:`, err);

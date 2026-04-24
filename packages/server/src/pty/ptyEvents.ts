@@ -240,6 +240,8 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     if (exitedSession?.sessionType === 'raw') {
       ctx.stateManager.markClosed(ovrId);
       ctx.stateManager.setHistoryOnly?.(ovrId, true);
+    } else if (exitedSession?.provider === 'opencode') {
+      ctx.stateManager.markClosed(ovrId);
     }
   });
 

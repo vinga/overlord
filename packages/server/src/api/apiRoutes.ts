@@ -20,6 +20,7 @@ import { injectViaMac } from '../pty/macInjector.js';
 import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
+import { globalSettingsStore } from '../session/globalSettingsStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache } from '../brain/brainContext.js';
@@ -50,6 +51,19 @@ export function registerApiRoutes(
   // Server info endpoint — returns bridge binary path and platform
   app.get('/api/info', (_req, res) => {
     res.json({ bridgePath: getBridgePath(), platform: process.platform });
+  });
+
+  app.get('/api/settings', (_req, res) => {
+    res.json(globalSettingsStore.get());
+  });
+
+  app.patch('/api/settings', express.json(), (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const partial: Record<string, unknown> = {};
+    if (typeof body.disableBackgroundLLM === 'boolean') {
+      partial.disableBackgroundLLM = body.disableBackgroundLLM;
+    }
+    res.json(globalSettingsStore.patch(partial));
   });
 
   // Git status for a room cwd. Only allowed for cwds matching a known room
@@ -482,13 +496,18 @@ export function registerApiRoutes(
   });
 
   app.post('/api/room-config', express.json(), (req, res) => {
-    const { cwd, prefix, description, lastMode } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string; lastMode?: string };
+    const { cwd, prefix, description, lastMode, lastProvider } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string; lastMode?: string; lastProvider?: string };
     if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
     if (prefix !== undefined && typeof prefix !== 'string') { res.status(400).json({ error: 'prefix must be a string' }); return; }
     if (description !== undefined && typeof description !== 'string') { res.status(400).json({ error: 'description must be a string' }); return; }
     const validModes = ['embedded', 'bridge', 'plain', 'raw'] as const;
+    const validProviders = ['claude', 'opencode'] as const;
     if (lastMode !== undefined && !validModes.includes(lastMode as typeof validModes[number])) {
       res.status(400).json({ error: 'lastMode must be embedded|bridge|plain|raw' });
+      return;
+    }
+    if (lastProvider !== undefined && !validProviders.includes(lastProvider as typeof validProviders[number])) {
+      res.status(400).json({ error: 'lastProvider must be claude|opencode' });
       return;
     }
     const snap = stateManager.getSnapshot();
@@ -499,6 +518,7 @@ export function registerApiRoutes(
       prefix: prefix !== undefined ? prefix : current.prefix,
       description: description !== undefined ? description : current.description,
       lastMode: lastMode !== undefined ? (lastMode as typeof validModes[number]) : current.lastMode,
+      lastProvider: lastProvider !== undefined ? (lastProvider as typeof validProviders[number]) : current.lastProvider,
     });
     res.json({ ok: true });
   });
@@ -1083,8 +1103,8 @@ export function registerApiRoutes(
       return;
     }
     try {
-      const items = readActivityBefore(transcriptPath, timestamp, Number(limit) || 50);
-      res.json({ items });
+      const result = readActivityBefore(transcriptPath, timestamp, Number(limit) || 100);
+      res.json(result);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

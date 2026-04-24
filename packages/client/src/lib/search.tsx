@@ -11,6 +11,7 @@ export function buildCorpus(item: ActivityItem): string {
   if (item.kind === 'thinking' && item.isRedacted) return '';
   const parts: string[] = [item.content];
   if (item.inputJson) parts.push(item.inputJson);
+  if (item.resultJson) parts.push(item.resultJson);
   return parts.join(' ');
 }
 

@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { TerminalSpawnMode } from '../types';
+import type { SessionProvider, TerminalSpawnMode } from '../types';
 import styles from './DirectoryPickerDialog.module.css';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onSpawn: (cwd: string, name: string, mode: TerminalSpawnMode) => void;
+  onSpawn: (cwd: string, name: string, mode: TerminalSpawnMode, provider: SessionProvider) => void;
   defaultPath?: string;
   suggestedName?: string;
   bridgePath?: string;
@@ -41,6 +41,7 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
   const [error, setError] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState(suggestedName || '');
   const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
+  const [provider, setProvider] = useState<SessionProvider>('claude');
   const nameInputRef = useRef<HTMLInputElement>(null);
   const pathInputRef = useRef<HTMLInputElement>(null);
   const markerRef = useRef(Math.random().toString(36).slice(2, 10));
@@ -93,7 +94,7 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
   };
 
   const handleSpawn = () => {
-    if (currentPath && sessionName) onSpawn(currentPath, sessionName, mode);
+    if (currentPath && sessionName) onSpawn(currentPath, sessionName, effectiveMode, provider);
   };
 
   useEffect(() => {
@@ -122,12 +123,19 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
   const safeName = sessionName.trim().replace(/"/g, '-');
   const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
   const marker = markerRef.current;
+  const availableModes: TerminalSpawnMode[] = provider === 'opencode' ? ['embedded'] : ['embedded', 'bridge', 'plain'];
+  const effectiveMode = availableModes.includes(mode) ? mode : 'embedded';
 
-  const modeRows: { key: TerminalSpawnMode; label: string; cmd: string | null }[] = [
+  const modeRows = [
     { key: 'embedded', label: 'Overlord', cmd: null },
-    { key: 'bridge',   label: 'Bridge',   cmd: currentPath && sessionName ? `cd "${currentPath}" && ${bridgeBin} --pipe overlord-${marker} -- claude --name "${safeName}___BRG:${marker}"` : null },
-    { key: 'plain',    label: 'Direct',   cmd: currentPath && sessionName ? `cd "${currentPath}" && claude --name "${sessionName.trim()}"` : null },
-  ];
+    { key: 'bridge',   label: 'Bridge',   cmd: currentPath && sessionName && provider === 'claude' ? `cd "${currentPath}" && ${bridgeBin} --pipe overlord-${marker} -- claude --name "${safeName}___BRG:${marker}"` : null },
+    { key: 'plain',    label: 'Direct',   cmd: currentPath && sessionName && provider === 'claude' ? `cd "${currentPath}" && claude --name "${sessionName.trim()}"` : null },
+  ] as { key: TerminalSpawnMode; label: string; cmd: string | null }[];
+  const visibleModeRows = modeRows.filter(row => availableModes.includes(row.key));
+
+  useEffect(() => {
+    if (!availableModes.includes(mode)) setMode('embedded');
+  }, [availableModes, mode]);
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
@@ -198,10 +206,38 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
           </div>
         </div>
 
+        <div className={styles.config} style={{ paddingBottom: 0, paddingTop: 10 }}>
+          <div className={styles.configRow}>
+            <label className={styles.label}>Provider</label>
+            <div style={{ display: 'flex', gap: 8, flex: 1 }}>
+              {([
+                { key: 'claude', label: 'Claude' },
+                { key: 'opencode', label: 'OpenCode' },
+              ] as const).map(option => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setProvider(option.key)}
+                  style={{
+                    border: provider === option.key ? '1px solid rgba(212,175,55,0.45)' : '1px solid rgba(255,255,255,0.1)',
+                    background: provider === option.key ? 'rgba(212,175,55,0.08)' : 'rgba(255,255,255,0.03)',
+                    color: provider === option.key ? '#d4af37' : 'rgba(255,255,255,0.65)',
+                    borderRadius: 6,
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >{option.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Mode rows — type label left, command right */}
         <div className={styles.modeRows}>
-          {modeRows.map(({ key, label, cmd }) => {
-            const active = mode === key;
+          {visibleModeRows.map(({ key, label, cmd }) => {
+            const active = effectiveMode === key;
             return (
               <div
                 key={key}
