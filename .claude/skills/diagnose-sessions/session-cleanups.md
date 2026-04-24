@@ -106,3 +106,38 @@ On restart, `linkPendingBridge()` checks if the session already has a `bridgePip
 - `claudeToPtyId` / `ptyToClaudeId` in `/api/debug/state` show PTY→Claude session linkage
 - If session disappears instead of being replaced: check if `transferSessionState` was called and `saveKnownSessions` persisted
 - If bridge session lost after restart: check `known-sessions.json` for correct `bridgePipeName`
+
+---
+
+## Resume Duplication (2026-04-24)
+
+**Symptom:** multiple live `claude --resume <sid>` processes for the same lineage, UI showing a growing fleet of "closed" workers with identical name.
+
+**Root cause:** cwd-keyed `pendingResumes` was consumed by the first resume; subsequent concurrent resumes fell through without linking `resumedFrom`. DetailPanel's `onFocus` auto-resume then turned one "is this closed" redraw into a spawn loop.
+
+**Fix:** `stateManager.trackPendingResumeByMarker(ptyId, resumeSessionId)` — marker-keyed pending map, each PTY spawn finds its own parent. cwd-keyed map remains as a fallback.
+
+**Rules:**
+- Do not key pending spawn/resume tracking by cwd alone.
+- Do not auto-resume from `onFocus` or passive selection. Require explicit click/keydown.
+
+See `specs/lineage-single-source.md` for the full write-up.
+
+---
+
+## File Purge (2026-04-24)
+
+`purgeStaleOverlordSessionFiles()` runs 30s after boot and every 24h. Deletes overlord-session records whose:
+1. `overlordId` is NOT in `stateManager.sessions` (hydrated view), AND
+2. Every transcript referenced by `lineage.history[].transcriptPath` is missing, OR the newest existing transcript mtime is older than 2 days.
+
+**Freshness signal = transcript mtime.** Do NOT use `OverlordSession.lastActivity` (seed-only, never updated).
+
+**Protection:** `hydrateAllActiveSessions()` runs on boot, loading every non-archived record as closed. That puts the ovrId into `this.sessions`, and the purge's liveOvrIds check protects it.
+
+If the user says "old sessions are gone after restart", check:
+- What did `[purge] removed N …` log on the last boot?
+- Are the affected ovrIds present in `sessionStore.listActive()` (via `/api/debug/state`)?
+- If a record is missing, it was purged because nothing hydrated it AND no transcript survived.
+
+An earlier `lastActivity`-based purge was wrong and deleted 262 files irreversibly. Do not revive it.

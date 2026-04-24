@@ -68,6 +68,8 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 - **PID matching** when spawner knows child PID
 - **sessionId matching** (e.g. `pendingPtyByResumeId`) when target sessionId is known
 
+**Pending resume is marker-keyed**, not cwd-keyed (`stateManager.trackPendingResumeByMarker(ptyId, resumeSessionId)`). A cwd-keyed single-shot map loses the target on the second concurrent resume and breaks lineage linking. Both keys still exist — marker first, cwd fallback.
+
 ## /clear Detection
 
 `/clear` creates new transcript + sessionId; PID stays the same; `{pid}.json` updates in-place. Detection uses **only PID-based mechanisms** (spec: `specs/clear-detection-simplification.md`):
@@ -78,6 +80,22 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 4. **UI-injected** (`transcriptWatcher.ts`): explicit pending clear via `consumePendingClearReplacement()`
 
 **Do NOT add** new /clear detection paths. CWD matching, transcript scanning, orphan scans, bridge marker suffix — all removed (raced and caused cascading bugs). Fix existing 3 paths instead.
+
+## Lineage & Persistence
+
+**Single source of truth for lineage-scoped fields = `OverlordSession` (one `{ovrId}.json`).**
+
+- `color` lives on `OverlordSession.color`. No separate `colors.json`, no `colorOverrides` map. Read via `stateManager.sessionColorByOvrId(ovrId)`; write via `setSessionColor()` which calls `sessionStore.patch`.
+- `proposedName`, `intent`, `gitBranch`, `sessionType` similarly canonical on OverlordSession; `Session.*` copies are derived at snapshot time.
+- Don't add a second cache. `getSnapshot()` previously re-derived color every build — that band-aid was removed after the refactor.
+
+**`OverlordSession.lastActivity` is NOT a freshness signal.** It's only seeded once on create and never updated. For "is this session alive", use the transcript file's mtime (`findTranscriptPath` + `fs.statSync`).
+
+## Boot Hydration & Purge
+
+- `hydrateAllActiveSessions()` loads every non-archived OverlordSession into `this.sessions` as closed on boot, so the user sees every room/session from disk without interacting first.
+- `getSnapshot()` also surfaces configured rooms (`~/.claude/overlord/rooms/*.config.json`) even if zero sessions are hydrated for that cwd — via `listConfiguredRoomSlugs()` + reverse slug lookup through sessionStore.
+- `purgeStaleOverlordSessionFiles()` runs 30s after boot, then daily. Deletes records whose transcripts are missing or older than 2 days — **but only when the ovrId is not hydrated into `this.sessions`**. Since boot hydrates every active record, nothing user-visible ever gets purged. Only truly orphaned records (hydration failed) drop. Do not revive cwd-keyed or `lastActivity`-based purges.
 
 ## Development: Plan Driven Development
 
