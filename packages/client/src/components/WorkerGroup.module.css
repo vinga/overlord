@@ -41,11 +41,12 @@
 }
 
 .branchBadgeText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 500;
   letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  min-width: 0;
+  line-height: 1.2;
 }
 
 .prPill {
