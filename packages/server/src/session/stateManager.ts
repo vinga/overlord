@@ -16,6 +16,31 @@ import { log } from '../logger.js';
 const QUERY_WORKER_CWD = path.join(os.homedir(), '.claude', 'overlord', 'query-worker');
 const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
 
+const CHECKOUT_RE = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:checkout|switch|worktree)\b/;
+
+/** Scan the tail of an activityFeed for the most recent git checkout/switch/worktree Bash call. Returns 0 if none. */
+function findLatestCheckoutTs(feed: import('../types.js').ActivityItem[] | undefined): number {
+  if (!feed || feed.length === 0) return 0;
+  const start = Math.max(0, feed.length - 30);
+  let latest = 0;
+  for (let i = feed.length - 1; i >= start; i--) {
+    const item = feed[i];
+    if (item.kind !== 'tool' || item.toolName !== 'Bash') continue;
+    let cmd = '';
+    if (item.inputJson) {
+      try {
+        const parsed = JSON.parse(item.inputJson) as { command?: unknown };
+        if (typeof parsed.command === 'string') cmd = parsed.command;
+      } catch { /* fall through */ }
+    }
+    if (!cmd) cmd = item.content ?? '';
+    if (!CHECKOUT_RE.test(cmd)) continue;
+    const ts = item.timestamp ? new Date(item.timestamp).getTime() : 0;
+    if (ts > latest) latest = ts;
+  }
+  return latest;
+}
+
 function sweepOrphanQueryWorkerFiles(): void {
   try {
     if (!fs.existsSync(CLAUDE_SESSIONS_DIR)) return;
@@ -182,6 +207,8 @@ export class StateManager {
   private prCache: PrCache;
   private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
+  /** Per-overlord timestamp (ms) of most recent git checkout/switch/worktree Bash call we've bound to a branch. */
+  private lastCheckoutSeenAt = new Map<string, number>();
 
   private generateOvrId(): string {
     return 'ovr-' + Math.random().toString(36).slice(2, 10);
@@ -1936,6 +1963,50 @@ export class StateManager {
       }
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;
+
+      // Per-session branch attribution:
+      //   Rule A (initial capture) — if a session has no branch recorded yet
+      //     and it is currently active, adopt the room's branch.
+      //   Rule B (update on checkout) — scan the session's recent Bash tool
+      //     calls for git checkout/switch/worktree; if a newer one is found
+      //     since we last bound, re-read branch and bind to this session.
+      //   Otherwise: keep previously recorded branch (sticky).
+      const ACTIVE_WINDOW_MS = 60_000;
+      const now = Date.now();
+      for (const session of room.sessions) {
+        const live = this.sessions.get(session.sessionId);
+        let nextBranch: string | undefined = session.gitBranch;
+
+        // Rule B — detect a recent git checkout in this session's feed.
+        const latestCheckoutAt = findLatestCheckoutTs(session.activityFeed);
+        if (latestCheckoutAt > 0) {
+          const lastSeen = this.lastCheckoutSeenAt.get(session.overlordId) ?? 0;
+          if (latestCheckoutAt > lastSeen) {
+            this.lastCheckoutSeenAt.set(session.overlordId, latestCheckoutAt);
+            if (branch) nextBranch = branch;
+          }
+        }
+
+        // Rule A — first-time capture for an active session without a branch.
+        if (!nextBranch && branch) {
+          const isActive = session.state !== 'closed'
+            && now - new Date(session.lastActivity).getTime() < ACTIVE_WINDOW_MS;
+          if (isActive) nextBranch = branch;
+        }
+
+        if (nextBranch && nextBranch !== session.gitBranch) {
+          session.gitBranch = nextBranch;
+          if (live) live.gitBranch = nextBranch;
+          sessionStore.patch(session.overlordId, { gitBranch: nextBranch });
+        } else if (nextBranch) {
+          session.gitBranch = nextBranch;
+        }
+
+        if (session.gitBranch) {
+          const sessionPr = this.prCache.get(room.cwd, session.gitBranch);
+          if (sessionPr) session.pullRequest = sessionPr;
+        }
+      }
     }
     this.gitWatcher.retain(activeCwds);
     this.prCache.retain(activeCwds);

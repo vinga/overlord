@@ -57,6 +57,47 @@ interface WorkerGroupProps {
   customName?: string;
   onDeleteSession?: (sessionId: string) => void;
   onRename?: (sessionId: string, newName: string) => void;
+  roomGitBranch?: string;
+}
+
+function SessionBranchBadge({ branch, pullRequest }: { branch: string; pullRequest?: Session['pullRequest'] }) {
+  const prOpen = pullRequest && pullRequest.state !== 'MERGED' && pullRequest.state !== 'CLOSED';
+  return (
+    <div className={styles.branchBadge} onClick={e => e.stopPropagation()}>
+      <span className={styles.branchBadgePill} title={`Branch: ${branch}`}>
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="4" cy="3" r="1.5" />
+          <circle cx="4" cy="13" r="1.5" />
+          <circle cx="12" cy="6" r="1.5" />
+          <path d="M4 4.5v7" />
+          <path d="M12 7.5c0 3-4 2.5-4 5" />
+        </svg>
+        <span className={styles.branchBadgeText}>{branch}</span>
+      </span>
+      {pullRequest && (
+        <a
+          className={`${styles.prPill} ${prOpen ? styles.prPillOpen : styles.prPillClosed} ${pullRequest.isDraft ? styles.prPillDraft : ''}`}
+          href={pullRequest.url}
+          target="_blank"
+          rel="noreferrer"
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+          title={`#${pullRequest.number} · ${pullRequest.isDraft ? 'Draft' : pullRequest.state}\n${pullRequest.title}`}
+        >
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="4" cy="3" r="1.5" />
+            <circle cx="4" cy="13" r="1.5" />
+            <circle cx="12" cy="13" r="1.5" />
+            <path d="M4 4.5v7" />
+            <path d="M12 3v8.5" />
+            <path d="M12 3h-2" />
+            <path d="M10 1.5L8.5 3 10 4.5" />
+          </svg>
+          <span>#{pullRequest.number}</span>
+        </a>
+      )}
+    </div>
+  );
 }
 
 const MAX_VISIBLE_SUBAGENTS = 4;
@@ -71,7 +112,7 @@ function readExpanded(sessionId: string): boolean {
   } catch { return true; }
 }
 
-export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename }: WorkerGroupProps) {
+export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename, roomGitBranch }: WorkerGroupProps) {
   const [expanded] = useState(() => readExpanded(session.sessionId));
   const [overflowExpanded, setOverflowExpanded] = useState(false);
   const notesMap = useNotesSummaries();
@@ -113,6 +154,9 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           onRename={onRename ? (name) => onRename(session.sessionId, name) : undefined}
           roomPrefix={roomPrefix}
         />
+        {session.gitBranch && session.gitBranch !== roomGitBranch && (
+          <SessionBranchBadge branch={session.gitBranch} pullRequest={session.pullRequest} />
+        )}
       </div>
 
       {/* Subagents: compact horizontal rows, stacked */}

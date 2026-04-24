@@ -1048,7 +1048,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                   onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
                 />
               )}
-              <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} />
+              <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} roomGitBranch={room.gitBranch} />
             </div>
           );
         })}

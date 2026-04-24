@@ -9,6 +9,77 @@
 
 .mainWorker {
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.branchBadge {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  width: 175px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.branchBadgePill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  color: #e8c565;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.branchBadgeText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.prPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.prPillOpen {
+  background: rgba(63, 185, 80, 0.12);
+  border: 1px solid rgba(63, 185, 80, 0.32);
+  color: #7ee787;
+}
+
+.prPillOpen:hover {
+  background: rgba(63, 185, 80, 0.2);
+  border-color: rgba(63, 185, 80, 0.5);
+}
+
+.prPillClosed {
+  background: rgba(139, 148, 158, 0.12);
+  border: 1px solid rgba(139, 148, 158, 0.3);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.prPillDraft {
+  background: rgba(139, 148, 158, 0.1);
+  border: 1px solid rgba(139, 148, 158, 0.28);
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .subagents {
