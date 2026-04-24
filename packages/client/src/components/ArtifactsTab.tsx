@@ -1,12 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Plan, PlanStatus } from '../types';
-import { usePlans } from '../hooks/usePlans';
+import type { Artifact, ArtifactKind, ArtifactStatus } from '../types';
+import { useArtifacts } from '../hooks/useArtifacts';
 import { renderMarkdown } from '../lib/markdown';
-import styles from './PlansTab.module.css';
+import styles from './ArtifactsTab.module.css';
 
-const STATUS_OPTIONS: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
+const STATUS_OPTIONS: ArtifactStatus[] = ['draft', 'active', 'done', 'archived'];
 
-function statusClass(s: PlanStatus): string {
+const KIND_TABS: Array<{ kind: ArtifactKind; label: string; empty: string }> = [
+  { kind: 'plan', label: 'Plans', empty: 'No plans yet. Create one to get started.' },
+  { kind: 'summary', label: 'Summaries', empty: 'No summaries yet.' },
+  { kind: 'compact', label: 'Compacts', empty: 'No compacts yet.' },
+];
+
+function statusClass(s: ArtifactStatus): string {
   switch (s) {
     case 'draft': return styles.statusDraft;
     case 'active': return styles.statusActive;
@@ -30,30 +36,38 @@ function formatUpdatedAt(iso: string): string {
   return d.toLocaleDateString();
 }
 
-export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
-  const { plans, isLoading, error, createPlan, updatePlan, deletePlan } = usePlans(overlordId);
+export function ArtifactsTab({ overlordId }: { overlordId: string | undefined }) {
+  const [activeKind, setActiveKind] = useState<ArtifactKind>('plan');
+  const { artifacts, isLoading, error, createArtifact, updateArtifact, deleteArtifact } = useArtifacts(overlordId, activeKind);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<'edit' | 'preview'>('edit');
   const [titleDraft, setTitleDraft] = useState('');
   const [bodyDraft, setBodyDraft] = useState('');
-  const [statusDraft, setStatusDraft] = useState<PlanStatus>('draft');
+  const [statusDraft, setStatusDraft] = useState<ArtifactStatus>('draft');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selected = useMemo(
-    () => plans.find(p => p.planId === selectedId) ?? null,
-    [plans, selectedId],
+    () => artifacts.find(p => p.artifactId === selectedId) ?? null,
+    [artifacts, selectedId],
   );
 
   useEffect(() => {
-    if (!selectedId && plans.length > 0) {
-      setSelectedId(plans[0].planId);
-    } else if (selectedId && !plans.find(p => p.planId === selectedId)) {
-      setSelectedId(plans[0]?.planId ?? null);
+    if (!selectedId && artifacts.length > 0) {
+      setSelectedId(artifacts[0].artifactId);
+    } else if (selectedId && !artifacts.find(p => p.artifactId === selectedId)) {
+      setSelectedId(artifacts[0]?.artifactId ?? null);
     }
-  }, [plans, selectedId]);
+  }, [artifacts, selectedId]);
+
+  // Reset selection when switching kind tabs — the list is different.
+  useEffect(() => {
+    setSelectedId(null);
+    setDirty(false);
+    setSaveError(null);
+  }, [activeKind]);
 
   useEffect(() => {
     if (!selected) {
@@ -81,10 +95,10 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
   }, [selectedId]);
 
   const commitSave = useCallback(
-    async (planId: string, patch: { title?: string; body?: string; status?: PlanStatus }) => {
+    async (artifactId: string, patch: { title?: string; body?: string; status?: ArtifactStatus }) => {
       setSaving(true);
       setSaveError(null);
-      const result = await updatePlan(planId, patch);
+      const result = await updateArtifact(artifactId, patch);
       setSaving(false);
       if (result) {
         setDirty(false);
@@ -92,14 +106,14 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
         setSaveError('Failed to save');
       }
     },
-    [updatePlan],
+    [updateArtifact],
   );
 
   const scheduleSave = useCallback(
-    (planId: string, patch: { title?: string; body?: string; status?: PlanStatus }) => {
+    (artifactId: string, patch: { title?: string; body?: string; status?: ArtifactStatus }) => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        void commitSave(planId, patch);
+        void commitSave(artifactId, patch);
       }, 600);
     },
     [commitSave],
@@ -108,25 +122,28 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
   const handleTitleChange = (value: string) => {
     setTitleDraft(value);
     setDirty(true);
-    if (selected) scheduleSave(selected.planId, { title: value, body: bodyDraft, status: statusDraft });
+    if (selected) scheduleSave(selected.artifactId, { title: value, body: bodyDraft, status: statusDraft });
   };
 
   const handleBodyChange = (value: string) => {
     setBodyDraft(value);
     setDirty(true);
-    if (selected) scheduleSave(selected.planId, { title: titleDraft, body: value, status: statusDraft });
+    if (selected) scheduleSave(selected.artifactId, { title: titleDraft, body: value, status: statusDraft });
   };
 
-  const handleStatusChange = (value: PlanStatus) => {
+  const handleStatusChange = (value: ArtifactStatus) => {
     setStatusDraft(value);
     setDirty(true);
-    if (selected) void commitSave(selected.planId, { title: titleDraft, body: bodyDraft, status: value });
+    if (selected) void commitSave(selected.artifactId, { title: titleDraft, body: bodyDraft, status: value });
   };
 
   const handleCreate = async () => {
-    const plan = await createPlan({ title: 'Untitled plan', body: '', status: 'draft' });
-    if (plan) {
-      setSelectedId(plan.planId);
+    const defaultTitle = activeKind === 'plan' ? 'Untitled plan'
+      : activeKind === 'summary' ? 'Untitled summary'
+      : 'Untitled compact';
+    const artifact = await createArtifact({ title: defaultTitle, body: '', status: 'draft', kind: activeKind });
+    if (artifact) {
+      setSelectedId(artifact.artifactId);
       setMode('edit');
     }
   };
@@ -134,7 +151,7 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
   const handleDelete = async () => {
     if (!selected) return;
     if (!confirm(`Delete "${selected.title}"? This cannot be undone.`)) return;
-    const ok = await deletePlan(selected.planId);
+    const ok = await deleteArtifact(selected.artifactId);
     if (ok) setSelectedId(null);
   };
 
@@ -147,31 +164,50 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
   if (!overlordId) {
     return (
       <div className={styles.root}>
-        <div className={styles.emptyState}>Plans are not available for this session.</div>
+        <div className={styles.emptyState}>Artifacts are not available for this session.</div>
       </div>
     );
   }
+
+  const activeTab = KIND_TABS.find(t => t.kind === activeKind)!;
+  const canCreate = activeKind === 'plan';
 
   return (
     <div className={styles.root}>
       <aside className={styles.sidebar}>
         <div className={styles.sidebarHeader}>
-          <span className={styles.sidebarTitle}>Plans</span>
-          <span className={styles.sidebarCount}>{plans.length}</span>
-          <button className={styles.newBtn} onClick={() => void handleCreate()} disabled={isLoading}>
-            + New
-          </button>
+          <div className={styles.kindTabs} role="tablist">
+            {KIND_TABS.map(t => (
+              <button
+                key={t.kind}
+                role="tab"
+                aria-selected={t.kind === activeKind}
+                className={`${styles.kindTab} ${t.kind === activeKind ? styles.kindTabActive : ''}`}
+                onClick={() => setActiveKind(t.kind)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className={styles.sidebarHeaderRow}>
+            <span className={styles.sidebarCount}>{artifacts.length} {activeKind}s</span>
+            {canCreate && (
+              <button className={styles.newBtn} onClick={() => void handleCreate()} disabled={isLoading}>
+                + New
+              </button>
+            )}
+          </div>
         </div>
         <div className={styles.sidebarList}>
           {error && <div className={styles.errorBanner}>Error: {error}</div>}
-          {plans.length === 0 && !isLoading && (
-            <div className={styles.empty}>No plans yet. Create one to get started.</div>
+          {artifacts.length === 0 && !isLoading && (
+            <div className={styles.empty}>{activeTab.empty}</div>
           )}
-          {plans.map(p => (
+          {artifacts.map(p => (
             <div
-              key={p.planId}
-              className={`${styles.planRow} ${p.planId === selectedId ? styles.planRowActive : ''}`}
-              onClick={() => setSelectedId(p.planId)}
+              key={p.artifactId}
+              className={`${styles.planRow} ${p.artifactId === selectedId ? styles.planRowActive : ''}`}
+              onClick={() => setSelectedId(p.artifactId)}
             >
               <div className={styles.planRowTitle}>{p.title || 'Untitled'}</div>
               <div className={styles.planRowMeta}>
@@ -188,9 +224,11 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
       <main className={styles.editor}>
         {!selected ? (
           <div className={styles.emptyState}>
-            {plans.length === 0
-              ? 'No plan selected. Click "+ New" to create one.'
-              : 'Select a plan from the sidebar.'}
+            {artifacts.length === 0
+              ? canCreate
+                ? 'No artifact selected. Click "+ New" to create one.'
+                : activeTab.empty
+              : 'Select an item from the sidebar.'}
           </div>
         ) : (
           <>
@@ -199,12 +237,12 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
                 className={styles.titleInput}
                 value={titleDraft}
                 onChange={e => handleTitleChange(e.target.value)}
-                placeholder="Plan title"
+                placeholder={`${activeTab.label.replace(/s$/, '')} title`}
               />
               <select
                 className={styles.statusSelect}
                 value={statusDraft}
-                onChange={e => handleStatusChange(e.target.value as PlanStatus)}
+                onChange={e => handleStatusChange(e.target.value as ArtifactStatus)}
               >
                 {STATUS_OPTIONS.map(s => (
                   <option key={s} value={s}>{s}</option>
@@ -246,7 +284,7 @@ export function PlansTab({ overlordId }: { overlordId: string | undefined }) {
                   className={styles.bodyTextarea}
                   value={bodyDraft}
                   onChange={e => handleBodyChange(e.target.value)}
-                  placeholder="Write your plan in markdown…"
+                  placeholder="Write in markdown…"
                   spellCheck={false}
                 />
               ) : (

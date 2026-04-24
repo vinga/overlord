@@ -24,9 +24,8 @@ import { IntentSummarizer } from './ai/intentSummary.js';
 import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
 import { globalSettingsStore } from './session/globalSettingsStore.js';
-import { planStore } from './plans/planStore.js';
-import { PlanWatcher } from './plans/planWatcher.js';
-import { migrateLegacyPlanTasks } from './plans/migrateLegacyPlanTasks.js';
+import { artifactStore } from './artifacts/artifactStore.js';
+import { ArtifactWatcher } from './artifacts/artifactWatcher.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
@@ -630,21 +629,11 @@ initLogger((entry) => broadcastRaw({ type: 'log:entry', entry }));
 // Hydrate in-memory mirrors from disk.
 globalSettingsStore.load();
 sessionStore.loadAll();
-planStore.loadAll();
+artifactStore.loadAll();
 
-// One-time migration: drain legacy OverlordSession.planTasks[] into plan files.
-const planMigrationResult = migrateLegacyPlanTasks(planStore);
-if (planMigrationResult.attempted > 0) {
-  log('info', `[plans] migration: attempted=${planMigrationResult.attempted} migrated=${planMigrationResult.migrated} skipped=${planMigrationResult.skipped} errors=${planMigrationResult.errors.length}`);
-}
-if (planMigrationResult.markerWritten) {
-  // Reload sessionStore so in-memory copy reflects the stripped planTasks field.
-  sessionStore.loadAll();
-}
-
-// Watch plan files for external edits and rebroadcast as plan:changed.
-const planWatcher = new PlanWatcher(planStore, (event) => broadcastRaw(event));
-planWatcher.start();
+// Watch artifact files for external edits and rebroadcast as artifact:changed.
+const artifactWatcher = new ArtifactWatcher(artifactStore, (event) => broadcastRaw(event));
+artifactWatcher.start();
 
 // Ensure skill-templates are linked into ~/.claude/skills/ so Claude Code sessions
 // in any room can invoke them as slash commands. Uses absolute targets since the
@@ -845,6 +834,20 @@ processChecker.start((pids) => {
 setInterval(() => {
   stateManager.cleanupStaleSessions();
 }, 60_000).unref();
+
+// Delete overlord-session files whose transcripts are missing or untouched
+// for >2 days. Safe: skips live-in-memory records and archived records.
+const purgeStaleFiles = () => {
+  try {
+    const n = stateManager.purgeStaleOverlordSessionFiles();
+    if (n > 0) console.log(`[purge] removed ${n} overlord-session files with missing/old transcripts (>2d)`);
+  } catch (err) {
+    console.warn('[purge] failed:', (err as Error).message);
+  }
+};
+setTimeout(purgeStaleFiles, 30_000).unref();
+setInterval(purgeStaleFiles, 24 * 60 * 60 * 1000).unref();
+
 
 // Transcript watcher + state refresh (moved to transcriptWatcher.ts)
 startTranscriptWatcher({
@@ -1071,9 +1074,9 @@ async function shutdown(signal: string) {
   try { stateManager.saveKnownSessions(); } catch { /* ignore */ }
   // 2b. Flush any pending SessionStore writes so durable state lands on disk
   try { await sessionStore.flushAll(); } catch { /* ignore */ }
-  // 2c. Flush pending plan writes and stop watcher
-  try { await planStore.flushAll(); } catch { /* ignore */ }
-  try { await planWatcher.stop(); } catch { /* ignore */ }
+  // 2c. Flush pending artifact writes and stop watcher
+  try { await artifactStore.flushAll(); } catch { /* ignore */ }
+  try { await artifactWatcher.stop(); } catch { /* ignore */ }
   // 3. Kill embedded PTY sessions gracefully (SIGTERM, not SIGKILL)
   //    so Claude CLI can clean up. Bridge sessions survive — they're external.
   ptyManager.killAll();

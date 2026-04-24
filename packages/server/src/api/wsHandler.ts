@@ -290,6 +290,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         stateManager.trackPendingResume(cwd, effectiveResumeId);
+        stateManager.trackPendingResumeByMarker(ptySessionId, effectiveResumeId);
         const resumedName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
         log('session:resumed', 'Session resumed', { sessionId: effectiveResumeId, sessionName: resumedName });
 

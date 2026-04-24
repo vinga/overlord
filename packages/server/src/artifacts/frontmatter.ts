@@ -1,7 +1,8 @@
-import type { Plan, PlanMeta, PlanStatus, PlanSource } from './types.js';
+import type { Artifact, ArtifactMeta, ArtifactStatus, ArtifactSource, ArtifactKind } from './types.js';
 
 const REQUIRED_FIELDS = [
-  'planId',
+  'artifactId',
+  'kind',
   'overlordId',
   'cwd',
   'createdAt',
@@ -11,12 +12,13 @@ const REQUIRED_FIELDS = [
   'source',
 ] as const;
 
-const VALID_STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
-const VALID_SOURCES: PlanSource[] = ['claude', 'user'];
+const VALID_STATUSES: ArtifactStatus[] = ['draft', 'active', 'done', 'archived'];
+const VALID_SOURCES: ArtifactSource[] = ['claude', 'user'];
+const VALID_KINDS: ArtifactKind[] = ['plan', 'summary', 'compact'];
 
 export interface ParseResult {
   ok: true;
-  plan: Plan;
+  artifact: Artifact;
 }
 
 export interface ParseError {
@@ -24,7 +26,7 @@ export interface ParseError {
   reason: string;
 }
 
-export function parsePlanFile(text: string): ParseResult | ParseError {
+export function parseArtifactFile(text: string): ParseResult | ParseError {
   if (!text.startsWith('---')) {
     return { ok: false, reason: 'missing opening --- delimiter' };
   }
@@ -55,18 +57,24 @@ export function parsePlanFile(text: string): ParseResult | ParseError {
     if (!raw[field]) return { ok: false, reason: `missing required field: ${field}` };
   }
 
-  const status = raw.status as PlanStatus;
+  const status = raw.status as ArtifactStatus;
   if (!VALID_STATUSES.includes(status)) {
     return { ok: false, reason: `invalid status: ${raw.status}` };
   }
 
-  const source = raw.source as PlanSource;
+  const source = raw.source as ArtifactSource;
   if (!VALID_SOURCES.includes(source)) {
     return { ok: false, reason: `invalid source: ${raw.source}` };
   }
 
-  const meta: PlanMeta = {
-    planId: raw.planId,
+  const kind = raw.kind as ArtifactKind;
+  if (!VALID_KINDS.includes(kind)) {
+    return { ok: false, reason: `invalid kind: ${raw.kind}` };
+  }
+
+  const meta: ArtifactMeta = {
+    artifactId: raw.artifactId,
+    kind,
     overlordId: raw.overlordId,
     cwd: raw.cwd,
     createdAt: raw.createdAt,
@@ -77,20 +85,21 @@ export function parsePlanFile(text: string): ParseResult | ParseError {
     claudePlanToolUseId: raw.claudePlanToolUseId || undefined,
   };
 
-  return { ok: true, plan: { ...meta, body } };
+  return { ok: true, artifact: { ...meta, body } };
 }
 
-export function serializePlanFile(plan: Plan): string {
+export function serializeArtifactFile(artifact: Artifact): string {
   const fields: Array<[string, string | undefined]> = [
-    ['planId', plan.planId],
-    ['overlordId', plan.overlordId],
-    ['cwd', plan.cwd],
-    ['createdAt', plan.createdAt],
-    ['updatedAt', plan.updatedAt],
-    ['title', plan.title],
-    ['status', plan.status],
-    ['source', plan.source],
-    ['claudePlanToolUseId', plan.claudePlanToolUseId],
+    ['artifactId', artifact.artifactId],
+    ['kind', artifact.kind],
+    ['overlordId', artifact.overlordId],
+    ['cwd', artifact.cwd],
+    ['createdAt', artifact.createdAt],
+    ['updatedAt', artifact.updatedAt],
+    ['title', artifact.title],
+    ['status', artifact.status],
+    ['source', artifact.source],
+    ['claudePlanToolUseId', artifact.claudePlanToolUseId],
   ];
 
   const lines = ['---'];
@@ -99,7 +108,7 @@ export function serializePlanFile(plan: Plan): string {
     lines.push(`${key}: ${encodeValue(value)}`);
   }
   lines.push('---', '');
-  return `${lines.join('\n')}\n${plan.body}`;
+  return `${lines.join('\n')}\n${artifact.body}`;
 }
 
 function decodeValue(raw: string): string {

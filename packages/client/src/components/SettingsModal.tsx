@@ -27,17 +27,17 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
         <div className={styles.body}>
           <div className={styles.row}>
             <div className={styles.rowText}>
-              <div className={styles.rowLabel}>Disable background AI intent queries</div>
+              <div className={styles.rowLabel}>Enable background AI intent queries</div>
               <div className={styles.rowHint}>
-                Stops Overlord from running Haiku queries to label sessions with a rolling intent summary. Cheaper, quieter, but worker cards won't show what each session is working on.
+                Lets Overlord run Haiku queries to label sessions with a rolling intent summary. Worker cards will show what each session is working on. Turn off to be cheaper and quieter.
               </div>
             </div>
             <button
-              className={`${styles.toggle} ${settings.disableBackgroundLLM ? styles.toggleOn : ''}`}
+              className={`${styles.toggle} ${!settings.disableBackgroundLLM ? styles.toggleOn : ''}`}
               onClick={() => onUpdate({ disableBackgroundLLM: !settings.disableBackgroundLLM })}
               role="switch"
-              aria-checked={settings.disableBackgroundLLM}
-              aria-label="Disable background AI intent queries"
+              aria-checked={!settings.disableBackgroundLLM}
+              aria-label="Enable background AI intent queries"
             />
           </div>
         </div>

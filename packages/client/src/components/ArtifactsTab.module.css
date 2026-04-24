@@ -18,10 +18,16 @@
 
 .sidebarHeader {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebarHeaderRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .sidebarTitle {
@@ -31,6 +37,43 @@
   letter-spacing: 0.08em;
   color: #888;
 }
+
+.kindTabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 7px;
+}
+
+.kindTab {
+  flex: 1;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  color: rgba(255, 255, 255, 0.55);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  outline: none;
+  transition: color 0.12s, background 0.12s;
+}
+
+.kindTab:hover {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.kindTab:focus-visible {
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.5);
+}
+
+.kindTabActive {
+  background: rgba(212, 175, 55, 0.14);
+  color: #d4af37;
+}
+
 
 .sidebarCount {
   color: #d4af37;
@@ -48,6 +91,8 @@
   font-size: 11px;
   cursor: pointer;
   font-family: inherit;
+  white-space: nowrap;
+  margin-left: auto;
 }
 
 .newBtn:hover {

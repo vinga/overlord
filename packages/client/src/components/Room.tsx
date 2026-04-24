@@ -782,7 +782,26 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   // resuming a session doesn't reshuffle its slot. Falls back to sessionId
   // for any session without an overlordId.
   const orderKey = (s: Session): string => s.overlordId ?? s.sessionId;
-  const allSessions = room.sessions;
+  // Dedup by overlordId: a single lineage (same overlordId across resumes)
+  // should render as one worker. Prefer an active session over closed, then
+  // most recent by startedAt.
+  const dedupByOverlord = (sessions: Session[]): Session[] => {
+    const bestByOvr = new Map<string, Session>();
+    for (const s of sessions) {
+      const key = s.overlordId ?? s.sessionId;
+      const cur = bestByOvr.get(key);
+      if (!cur) { bestByOvr.set(key, s); continue; }
+      const sActive = s.state !== 'closed';
+      const curActive = cur.state !== 'closed';
+      if (sActive !== curActive) {
+        if (sActive) bestByOvr.set(key, s);
+        continue;
+      }
+      if (s.startedAt > cur.startedAt) bestByOvr.set(key, s);
+    }
+    return [...bestByOvr.values()];
+  };
+  const allSessions = dedupByOverlord(room.sessions);
 
   const storedOrder = getOrder(roomKey);
 

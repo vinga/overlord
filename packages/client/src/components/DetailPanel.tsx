@@ -15,7 +15,7 @@ import { searchFeed, BoldExcerpt } from '../lib/search';
 import { FileEditorOverlay } from './FileEditorOverlay';
 import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
-import { PlansTab } from './PlansTab';
+import { ArtifactsTab } from './ArtifactsTab';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
@@ -1631,7 +1631,7 @@ export function DetailPanel({
     down.run();
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'plans'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   // Recompute jump pill state when transcript tab or target changes
@@ -2576,10 +2576,10 @@ const currentDisplayName =
                   )}
                   {!selectedSession.isArchived && (
                     <button
-                      className={`${styles.tab} ${activeTab === 'plans' ? styles.tabActive : ''}`}
-                      onClick={() => setActiveTab('plans')}
+                      className={`${styles.tab} ${activeTab === 'artifacts' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('artifacts')}
                     >
-                      Plans
+                      Artifacts
                     </button>
                   )}
                   {!selectedSession.isArchived && hasSubagents && (
@@ -2941,6 +2941,12 @@ const currentDisplayName =
                             value={sendInput2}
                             disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
                             onChange={e => setSendInput2(e.target.value)}
+                            onClick={() => {
+                              if (selectedSession.state === 'closed' && onResumeSession && !resuming) {
+                                setResuming(true);
+                                onResumeSession(selectedSession.sessionId, selectedSession.cwd);
+                              }
+                            }}
                             onKeyDown={e => {
                               if (selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded') { e.preventDefault(); return; }
                               if (selectedSession.state === 'closed') {
@@ -2961,12 +2967,6 @@ const currentDisplayName =
                                   return;
                                 }
                                 handleSend();
-                              }
-                            }}
-                            onFocus={() => {
-                              if (selectedSession.state === 'closed' && onResumeSession && !resuming) {
-                                setResuming(true);
-                                onResumeSession(selectedSession.sessionId, selectedSession.cwd);
                               }
                             }}
                             onPaste={async e => {
@@ -3377,9 +3377,9 @@ const currentDisplayName =
                   </div>
                 )}
 
-                {/* Tab: Plans */}
-                {activeTab === 'plans' && (
-                  <PlansTab overlordId={selectedSession.overlordId ?? effectiveOvrId ?? undefined} />
+                {/* Tab: Artifacts */}
+                {activeTab === 'artifacts' && (
+                  <ArtifactsTab overlordId={selectedSession.overlordId ?? effectiveOvrId ?? undefined} />
                 )}
 
                 {/* Tab: Subagents */}

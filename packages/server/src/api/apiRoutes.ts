@@ -26,8 +26,8 @@ import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
 import { log } from '../logger.js';
-import { planStore } from '../plans/planStore.js';
-import type { Plan, PlanChangedEvent, PlanStatus } from '../plans/types.js';
+import { artifactStore } from '../artifacts/artifactStore.js';
+import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
 
 export interface PtyMaps {
   ovrToPty: Map<string, string>;     // ovrId → ptySessionId
@@ -148,6 +148,8 @@ export function registerApiRoutes(
         needsPermission: s.needsPermission,
         resumedFrom: s.resumedFrom,
         lastActivity: s.lastActivity,
+        overlordId: s.overlordId,
+        color: s.color,
       })),
       ovrToPty: Object.fromEntries(ovrToPty),
       ptyToOvr: Object.fromEntries(ptyToOvr),
@@ -1142,74 +1144,89 @@ export function registerApiRoutes(
     res.json({ overlordId: session.overlordId, sessionId, cwd: session.cwd });
   });
 
-  // ── Plans ────────────────────────────────────────────────────────────────
+  // ── Artifacts ────────────────────────────────────────────────────────────
 
-  const VALID_PLAN_STATUSES: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
+  const VALID_ARTIFACT_STATUSES: ArtifactStatus[] = ['draft', 'active', 'done', 'archived'];
+  const VALID_ARTIFACT_KINDS: ArtifactKind[] = ['plan', 'summary', 'compact'];
 
-  const emitPlanChanged = (event: PlanChangedEvent): void => {
+  const emitArtifactChanged = (event: ArtifactChangedEvent): void => {
     if (broadcastRaw) {
       broadcastRaw(event);
       broadcastRaw({ type: 'snapshot', ...stateManager.getSnapshot() });
     }
   };
 
-  app.get('/api/plans', (req, res) => {
+  const parseKind = (raw: unknown): ArtifactKind | undefined => {
+    if (typeof raw !== 'string') return undefined;
+    return VALID_ARTIFACT_KINDS.includes(raw as ArtifactKind) ? (raw as ArtifactKind) : undefined;
+  };
+
+  app.get('/api/artifacts', (req, res) => {
     const overlordId = typeof req.query.overlordId === 'string' ? req.query.overlordId : undefined;
     const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : undefined;
-    let plans: Plan[];
-    if (overlordId) plans = planStore.listByOverlord(overlordId);
-    else if (cwd) plans = planStore.listByCwd(cwd);
-    else plans = planStore.list();
-    res.json({ plans });
+    const kindRaw = typeof req.query.kind === 'string' ? req.query.kind : undefined;
+    if (kindRaw && !VALID_ARTIFACT_KINDS.includes(kindRaw as ArtifactKind)) {
+      res.status(400).json({ error: 'invalid kind' });
+      return;
+    }
+    const kind = kindRaw as ArtifactKind | undefined;
+    let artifacts: Artifact[];
+    if (overlordId) artifacts = artifactStore.listByOverlord(overlordId, kind);
+    else if (cwd) artifacts = artifactStore.listByCwd(cwd, kind);
+    else artifacts = artifactStore.list(kind);
+    res.json({ artifacts });
   });
 
-  app.get('/api/plans/:planId', (req, res) => {
-    const plan = planStore.get(req.params.planId);
-    if (!plan) { res.status(404).json({ error: 'plan not found' }); return; }
-    res.json({ plan });
+  app.get('/api/artifacts/:artifactId', (req, res) => {
+    const artifact = artifactStore.get(req.params.artifactId);
+    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    res.json({ artifact });
   });
 
-  app.post('/api/plans', express.json({ limit: '2mb' }), (req, res) => {
-    const body = req.body as { overlordId?: unknown; title?: unknown; body?: unknown };
+  app.post('/api/artifacts', express.json({ limit: '2mb' }), (req, res) => {
+    const body = req.body as { overlordId?: unknown; title?: unknown; body?: unknown; kind?: unknown };
     const overlordId = typeof body.overlordId === 'string' ? body.overlordId : '';
     if (!overlordId) { res.status(400).json({ error: 'overlordId required' }); return; }
     const session = sessionStore.getByOverlordId(overlordId);
     if (!session) { res.status(404).json({ error: 'overlord not found' }); return; }
-    const title = typeof body.title === 'string' && body.title.trim() ? body.title : 'Plan';
-    const planBody = typeof body.body === 'string' ? body.body : '';
-    const plan = planStore.create({
+    const kind = parseKind(body.kind) ?? 'plan';
+    const defaultTitle = kind === 'plan' ? 'Plan' : kind === 'summary' ? 'Summary' : 'Compact';
+    const title = typeof body.title === 'string' && body.title.trim() ? body.title : defaultTitle;
+    const artifactBody = typeof body.body === 'string' ? body.body : '';
+    const artifact = artifactStore.create({
+      kind,
       overlordId,
       cwd: session.cwd,
       title,
-      body: planBody,
+      body: artifactBody,
       source: 'user',
     });
-    emitPlanChanged({ type: 'plan:changed', planId: plan.planId, overlordId: plan.overlordId, cwd: plan.cwd, op: 'create' });
-    res.json({ plan });
+    emitArtifactChanged({ type: 'artifact:changed', artifactId: artifact.artifactId, kind: artifact.kind, overlordId: artifact.overlordId, cwd: artifact.cwd, op: 'create' });
+    res.json({ artifact });
   });
 
-  app.put('/api/plans/:planId', express.json({ limit: '2mb' }), (req, res) => {
+  app.put('/api/artifacts/:artifactId', express.json({ limit: '2mb' }), (req, res) => {
     const body = req.body as { title?: unknown; body?: unknown; status?: unknown };
-    const patch: { title?: string; body?: string; status?: PlanStatus } = {};
+    const patch: { title?: string; body?: string; status?: ArtifactStatus } = {};
     if (typeof body.title === 'string') patch.title = body.title;
     if (typeof body.body === 'string') patch.body = body.body;
     if (typeof body.status === 'string') {
-      if (!VALID_PLAN_STATUSES.includes(body.status as PlanStatus)) {
+      if (!VALID_ARTIFACT_STATUSES.includes(body.status as ArtifactStatus)) {
         res.status(400).json({ error: 'invalid status' }); return;
       }
-      patch.status = body.status as PlanStatus;
+      patch.status = body.status as ArtifactStatus;
     }
-    const plan = planStore.patch(req.params.planId, patch);
-    if (!plan) { res.status(404).json({ error: 'plan not found' }); return; }
-    emitPlanChanged({ type: 'plan:changed', planId: plan.planId, overlordId: plan.overlordId, cwd: plan.cwd, op: 'update' });
-    res.json({ plan });
+    const artifact = artifactStore.patch(req.params.artifactId, patch);
+    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    emitArtifactChanged({ type: 'artifact:changed', artifactId: artifact.artifactId, kind: artifact.kind, overlordId: artifact.overlordId, cwd: artifact.cwd, op: 'update' });
+    res.json({ artifact });
   });
 
-  app.delete('/api/plans/:planId', (req, res) => {
-    const existing = planStore.get(req.params.planId);
-    if (!existing) { res.status(404).json({ error: 'plan not found' }); return; }
-    planStore.remove(req.params.planId);
-    emitPlanChanged({ type: 'plan:changed', planId: existing.planId, overlordId: existing.overlordId, cwd: existing.cwd, op: 'delete' });
+  app.delete('/api/artifacts/:artifactId', (req, res) => {
+    const existing = artifactStore.get(req.params.artifactId);
+    if (!existing) { res.status(404).json({ error: 'artifact not found' }); return; }
+    artifactStore.remove(req.params.artifactId);
+    emitArtifactChanged({ type: 'artifact:changed', artifactId: existing.artifactId, kind: existing.kind, overlordId: existing.overlordId, cwd: existing.cwd, op: 'delete' });
     res.json({ ok: true });
   });
 }

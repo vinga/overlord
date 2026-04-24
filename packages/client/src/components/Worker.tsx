@@ -1,7 +1,7 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import type { WorkerState, Session, ActiveMonitor } from '../types';
 import styles from './Worker.module.css';
-import { WorkerPlanPill } from './WorkerPlanPill';
+import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { MonitoringPill } from './MonitoringPill';
 import { selectAfterPrefix } from '../hooks/useRoomPrefix';
 
@@ -20,7 +20,7 @@ interface WorkerProps {
   needsPermission?: boolean;
   isCompacting?: boolean;
   bridgeDead?: boolean;
-  latestPlan?: { planId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   isWorker?: boolean;
   isRaw?: boolean;
   ptyInputPendingSince?: number;
@@ -254,10 +254,11 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
         </span>
       )}
       {!minimal && latestPlan && (
-        <WorkerPlanPill
+        <WorkerArtifactPill
+          artifactId={latestPlan.artifactId}
           title={latestPlan.title ?? 'Plan'}
           planContent={latestPlan.body}
-          planStatus={latestPlan.status === 'active' ? 'approved' : latestPlan.status === 'archived' ? 'rejected' : 'pending'}
+          planStatus={latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
           timestamp={latestPlan.updatedAt}
         />
       )}

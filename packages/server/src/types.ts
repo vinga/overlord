@@ -115,7 +115,7 @@ export interface Session {
   manuallyDone?: boolean;
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
-  latestPlan?: { planId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   /** Rolling Haiku-generated summary of what the session is working on. Replaces requestSummary and completionSummary on the worker card. */
   intent?: string;
   /** @deprecated Use Task.title instead. Kept for backwards-compat with aiClassifier. */

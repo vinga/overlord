@@ -57,3 +57,21 @@ export function writeRoomConfig(cwd: string, cfg: RoomConfig): void {
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf-8');
   } catch { /* swallow — config is best-effort */ }
 }
+
+/**
+ * List slugs for every room that has a config file on disk. Used to surface
+ * rooms that have no currently-hydrated sessions so the user can still spawn
+ * new sessions in them.
+ */
+export function listConfiguredRoomSlugs(): string[] {
+  const dir = path.join(os.homedir(), '.claude', 'overlord', 'rooms');
+  try {
+    return fs.readdirSync(dir)
+      .filter(f => f.endsWith('.config.json'))
+      .map(f => f.replace(/\.config\.json$/, ''));
+  } catch {
+    return [];
+  }
+}
+
+export function slugForCwd(cwd: string): string { return cwdToRoomSlug(cwd); }

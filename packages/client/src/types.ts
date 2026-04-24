@@ -110,7 +110,7 @@ interface Session {
   completionHint?: 'done' | 'awaiting';
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
-  latestPlan?: { planId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   intent?: string;                // rolling Haiku-generated summary of what the session is doing
   isWorker?: boolean;
   ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter
@@ -301,25 +301,28 @@ interface LogEntryMessage {
   entry: LogEntry;
 }
 
-type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
-type PlanSource = 'claude' | 'user';
+type ArtifactStatus = 'draft' | 'active' | 'done' | 'archived';
+type ArtifactSource = 'claude' | 'user';
+type ArtifactKind = 'plan' | 'summary' | 'compact';
 
-interface Plan {
-  planId: string;
+interface Artifact {
+  artifactId: string;
+  kind: ArtifactKind;
   overlordId: string;
   cwd: string;
   createdAt: string;
   updatedAt: string;
   title: string;
-  status: PlanStatus;
-  source: PlanSource;
+  status: ArtifactStatus;
+  source: ArtifactSource;
   claudePlanToolUseId?: string;
   body: string;
 }
 
-interface PlanChangedEvent {
-  type: 'plan:changed';
-  planId: string;
+interface ArtifactChangedEvent {
+  type: 'artifact:changed';
+  artifactId: string;
+  kind: ArtifactKind;
   overlordId: string;
   cwd: string;
   op: 'create' | 'update' | 'delete';
@@ -357,10 +360,11 @@ export type {
   LogEntry,
   LogHistoryMessage,
   LogEntryMessage,
-  Plan,
-  PlanStatus,
-  PlanSource,
-  PlanChangedEvent,
+  Artifact,
+  ArtifactKind,
+  ArtifactStatus,
+  ArtifactSource,
+  ArtifactChangedEvent,
   SESSION_PROVIDERS,
   SPAWNABLE_SESSION_PROVIDERS,
 };

@@ -8,7 +8,7 @@ import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
-import { readRoomConfig } from './roomConfig.js';
+import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
 import { sessionStore } from './sessionStore.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
 import { log } from '../logger.js';
@@ -106,10 +106,10 @@ import {
 } from './transcriptReader.js';
 import type { RawSession } from './sessionWatcher.js';
 import { saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck } from '../ai/taskStorage.js';
-import { planStore } from '../plans/planStore.js';
-import type { PlanStatus } from '../plans/types.js';
+import { artifactStore } from '../artifacts/artifactStore.js';
+import type { ArtifactStatus } from '../artifacts/types.js';
 
-function planStatusFromClaude(status: 'approved' | 'rejected' | 'pending'): PlanStatus {
+function planStatusFromClaude(status: 'approved' | 'rejected' | 'pending'): ArtifactStatus {
   if (status === 'approved') return 'active';
   if (status === 'rejected') return 'archived';
   return 'draft';
@@ -187,8 +187,13 @@ export class StateManager {
   /** Sessions awaiting /clear replacement — transcript refresh is suppressed until replaced. */
   private pendingClearSessions = new Set<string>();
   getPendingClearSessions(): string[] { return [...this.pendingClearSessions]; }
-  private colorOverrides = new Map<string, string>(); // ovrId → color (persisted to data/colors.json)
-  private readonly colorsFile = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../data/colors.json');
+  /**
+   * Legacy colors.json is migrated into sessionStore on boot. The single source
+   * of truth for per-lineage color is `OverlordSession.color` (one file per ovrId
+   * under `~/.claude/overlord/overlord-sessions/`). There is no in-memory cache —
+   * `sessionColorByOvrId` looks it up through `sessionStore` on demand.
+   */
+  private readonly legacyColorsFile = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../data/colors.json');
   /** Sessions that had /clear injected via UI — maps cwd → { sessionId, timestamp } for the next new transcript. */
   private pendingClearReplacements = new Map<string, { sessionId: string; timestamp: number }>();
   /** Timestamp of last PTY output per session — used to override stale 'waiting' state. */
@@ -229,7 +234,7 @@ export class StateManager {
     this.gitAheadTimer = setInterval(() => this.refreshGitAheadCache(), 15_000);
     this.loadAccepted();
     this.loadDeleted();
-    this.loadColors();
+    this.migrateLegacyColors();
     this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
     this.loadKnownSessions();
     this.loadPendingResumes();
@@ -555,11 +560,8 @@ export class StateManager {
     } catch { /* ignore */ }
     const deletedSession = this.sessions.get(sessionId);
     clearSessionCaches(sessionId, deletedSession?.transcriptPath, deletedSession?.cwd);
-    const deletedOvrId = deletedSession?.overlordId;
-    if (deletedOvrId) {
-      this.colorOverrides.delete(deletedOvrId);
-      this.saveColors();
-    }
+    // Color lives on OverlordSession now; removing the lineage record via
+    // sessionStore drops its color with it.
     this.sessions.delete(sessionId);
     this.saveKnownSessions();
     this.onChange();
@@ -578,6 +580,33 @@ export class StateManager {
   trackPendingResume(cwd: string, resumeSessionId: string): void {
     this.pendingResumes.set(normalizePath(cwd), { resumeSessionId, timestamp: Date.now() });
     this.savePendingResumes();
+  }
+
+  /**
+   * Marker-keyed pending resume. Each `terminal:resume` spawn embeds its
+   * `___OVR:<ptyId>` marker in --name; tracking the resume target by that
+   * marker lets concurrent resumes in the same cwd each find their own parent
+   * instead of fighting over a single cwd-keyed slot.
+   */
+  private pendingResumesByMarker = new Map<string, { resumeSessionId: string; timestamp: number }>();
+
+  trackPendingResumeByMarker(ptyId: string, resumeSessionId: string): void {
+    const now = Date.now();
+    this.pendingResumesByMarker.set(ptyId, { resumeSessionId, timestamp: now });
+    for (const [key, entry] of this.pendingResumesByMarker) {
+      if (now - entry.timestamp > 60_000) this.pendingResumesByMarker.delete(key);
+    }
+  }
+
+  consumePendingResumeByMarker(ptyId: string): string | undefined {
+    const entry = this.pendingResumesByMarker.get(ptyId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > 60_000) {
+      this.pendingResumesByMarker.delete(ptyId);
+      return undefined;
+    }
+    this.pendingResumesByMarker.delete(ptyId);
+    return entry.resumeSessionId;
   }
 
   hasPendingResume(cwd: string): boolean {
@@ -662,11 +691,19 @@ export class StateManager {
     if (existingSession?.resumedFrom) {
       resumedFrom = existingSession.resumedFrom;
     } else if (!isFreshSpawn) {
-      const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
-      if (pendingEntry && Date.now() - pendingEntry.timestamp < 60000) {
-        resumedFrom = pendingEntry.resumeSessionId;
-        this.pendingResumes.delete(normalizePath(cwd));
-        this.savePendingResumes();
+      // Marker-keyed lookup first: each resume spawn has its own ___OVR:<ptyId>
+      // so concurrent resumes in the same cwd each find their own parent.
+      if (markerMatch) {
+        const byMarker = this.consumePendingResumeByMarker(markerMatch);
+        if (byMarker) resumedFrom = byMarker;
+      }
+      if (!resumedFrom) {
+        const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
+        if (pendingEntry && Date.now() - pendingEntry.timestamp < 60000) {
+          resumedFrom = pendingEntry.resumeSessionId;
+          this.pendingResumes.delete(normalizePath(cwd));
+          this.savePendingResumes();
+        }
       }
     }
     // Guard against self-loop: when `--resume X` keeps the same sessionId
@@ -853,11 +890,11 @@ export class StateManager {
       }
     }
 
-    // Persist plans via planStore — dedupes on claudePlanToolUseId so repeated
-    // readTranscriptState calls are idempotent.
+    // Persist plans via artifactStore — dedupes on claudePlanToolUseId so repeated
+    // readTranscriptState calls are idempotent. Always kind='plan'.
     if (transcript?.detectedPlans && transcript.detectedPlans.length > 0) {
       for (const p of transcript.detectedPlans) {
-        planStore.upsertFromClaude({
+        artifactStore.upsertFromClaude({
           overlordId,
           cwd,
           claudePlanToolUseId: p.planToolUseId,
@@ -1851,6 +1888,42 @@ export class StateManager {
   }
 
   /**
+   * Delete on-disk overlord-session records whose underlying Claude transcripts
+   * are either missing or untouched for longer than `maxAgeMs`.
+   *
+   * Uses transcript mtime as the freshness signal (OverlordSession.lastActivity
+   * is only seeded once and drifts). Skips records that are currently hydrated
+   * in memory; archived records are never touched (listActive excludes them).
+   */
+  purgeStaleOverlordSessionFiles(maxAgeMs = 2 * 24 * 60 * 60 * 1000): number {
+    const now = Date.now();
+    const liveOvrIds = new Set<string>();
+    for (const s of this.sessions.values()) {
+      if (s.overlordId) liveOvrIds.add(s.overlordId);
+    }
+    const cutoff = now - maxAgeMs;
+    let removed = 0;
+    for (const rec of sessionStore.listActive()) {
+      if (liveOvrIds.has(rec.overlordId)) continue;
+      let newest = -Infinity;
+      for (const h of rec.lineage?.history ?? []) {
+        const tp = h.transcriptPath ?? findTranscriptPath(rec.cwd, h.sessionId) ?? findTranscriptPathAnywhere(h.sessionId);
+        if (!tp) continue;
+        try {
+          const st = fs.statSync(tp);
+          if (st.mtimeMs > newest) newest = st.mtimeMs;
+        } catch { /* missing transcript — counts as unknown */ }
+      }
+      // No surviving transcript OR newest transcript older than cutoff → delete.
+      if (newest === -Infinity || newest < cutoff) {
+        sessionStore.remove(rec.overlordId);
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  /**
    * Periodic GC: remove internal haiku-worker sessions (pid=0, cwd inside ~/.claude)
    * and close sessions that have been closed and inactive for >30 minutes.
    */
@@ -1925,6 +1998,8 @@ export class StateManager {
 
     for (const session of this.sessions.values()) {
       if (session.replacedBy) continue;
+      // Color is lineage-scoped; `setSessionColor` updates every live session
+      // in the lineage at write time. No re-derivation needed here.
       const { cwd } = session;
       if (!roomMap.has(cwd)) {
         const slug = cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
@@ -1936,6 +2011,35 @@ export class StateManager {
         });
       }
       roomMap.get(cwd)!.sessions.push(this.projectLatestPlan(session));
+    }
+
+    // Surface every configured room even if it currently has no hydrated
+    // sessions — the user should always see a room they own so they can spawn
+    // a fresh session in it. We reverse-map slug → cwd via sessionStore (the
+    // slug alone is lossy, but any OverlordSession that ever lived in the room
+    // carries the original cwd).
+    const configuredSlugs = new Set(listConfiguredRoomSlugs());
+    if (configuredSlugs.size > 0) {
+      const presentSlugs = new Set<string>();
+      for (const cwd of roomMap.keys()) presentSlugs.add(slugForCwd(cwd));
+      const missingSlugs = [...configuredSlugs].filter(s => !presentSlugs.has(s));
+      if (missingSlugs.length > 0) {
+        const slugToCwd = new Map<string, string>();
+        for (const rec of sessionStore.listAll()) {
+          const s = slugForCwd(rec.cwd);
+          if (!slugToCwd.has(s)) slugToCwd.set(s, rec.cwd);
+        }
+        for (const slug of missingSlugs) {
+          const cwd = slugToCwd.get(slug);
+          if (!cwd || roomMap.has(cwd)) continue;
+          roomMap.set(cwd, {
+            id: cwd.replace(/[\\:/]/g, '-').replace(/^-+/, ''),
+            name: path.basename(cwd) || cwd,
+            cwd,
+            sessions: [],
+          });
+        }
+      }
     }
 
     const rooms = Array.from(roomMap.values());
@@ -2025,7 +2129,7 @@ export class StateManager {
   }
 
   private projectLatestPlan(session: Session): Session {
-    const plans = planStore.listByOverlord(session.overlordId);
+    const plans = artifactStore.listByOverlord(session.overlordId, 'plan');
     if (plans.length === 0) return session;
     const latest = plans
       .filter(p => p.status !== 'archived')
@@ -2034,7 +2138,7 @@ export class StateManager {
     return {
       ...session,
       latestPlan: {
-        planId: latest.planId,
+        artifactId: latest.artifactId,
         title: latest.title,
         body: latest.body,
         status: latest.status,
@@ -2078,22 +2182,26 @@ export class StateManager {
   /** Look up the color for a session by claudeSessionId. Resolves ovrId internally. */
   sessionColor(sessionId: string): string {
     const ovrId = this.sessions.get(sessionId)?.overlordId;
-    if (ovrId && this.colorOverrides.has(ovrId)) return this.colorOverrides.get(ovrId)!;
-    return StateManager.DEFAULT_COLOR;
+    return ovrId ? this.sessionColorByOvrId(ovrId) : StateManager.DEFAULT_COLOR;
   }
 
-  /** Look up the color for an ovrId directly. */
+  /** Look up the color for an ovrId directly — reads the canonical `OverlordSession.color`. */
   sessionColorByOvrId(ovrId: string): string {
-    return this.colorOverrides.get(ovrId) ?? StateManager.DEFAULT_COLOR;
+    return sessionStore.getByOverlordId(ovrId)?.color ?? StateManager.DEFAULT_COLOR;
   }
 
-  /** Set a custom color for a session (keyed by its ovrId) and persist. */
+  /** Set a custom color for a session (keyed by its ovrId) and persist to OverlordSession. */
   setSessionColor(sessionId: string, color: string): boolean {
-    const session = this.sessions.get(sessionId);
-    if (!session?.overlordId) return false;
-    this.colorOverrides.set(session.overlordId, color);
-    session.color = color;
-    this.saveColors();
+    let rec = sessionStore.getBySessionId(sessionId);
+    const live = this.sessions.get(sessionId);
+    if (!rec && live) rec = sessionStore.ensureFromLive(live);
+    if (!rec) return false;
+    sessionStore.patch(rec.overlordId, { color });
+    // Propagate to every live session sharing this ovrId so snapshots are
+    // consistent without waiting for the next re-derivation tick.
+    for (const s of this.sessions.values()) {
+      if (s.overlordId === rec.overlordId) s.color = color;
+    }
     this.onChange();
     return true;
   }
@@ -2125,24 +2233,28 @@ export class StateManager {
     return true;
   }
 
-  private loadColors(): void {
+  /**
+   * One-shot migration: if the legacy `data/colors.json` exists, fold every
+   * entry into the matching OverlordSession record, then remove the file.
+   * Idempotent — safe to run on every boot until the file disappears.
+   */
+  private migrateLegacyColors(): void {
     try {
-      if (!fs.existsSync(this.colorsFile)) return;
-      const data = JSON.parse(fs.readFileSync(this.colorsFile, 'utf-8')) as Record<string, string>;
+      if (!fs.existsSync(this.legacyColorsFile)) return;
+      const data = JSON.parse(fs.readFileSync(this.legacyColorsFile, 'utf-8')) as Record<string, string>;
+      let merged = 0;
       for (const [ovrId, color] of Object.entries(data)) {
-        this.colorOverrides.set(ovrId, color);
+        const rec = sessionStore.getByOverlordId(ovrId);
+        if (!rec) continue;
+        if (rec.color === color) continue;
+        sessionStore.patch(ovrId, { color });
+        merged++;
       }
-    } catch { /* ignore */ }
-  }
-
-  private saveColors(): void {
-    try {
-      const dir = path.dirname(this.colorsFile);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const obj: Record<string, string> = {};
-      for (const [ovrId, color] of this.colorOverrides) obj[ovrId] = color;
-      fs.writeFileSync(this.colorsFile, JSON.stringify(obj, null, 2), 'utf-8');
-    } catch { /* ignore */ }
+      fs.unlinkSync(this.legacyColorsFile);
+      if (merged > 0) console.log(`[migrate] merged ${merged} legacy color overrides into OverlordSession records`);
+    } catch (err) {
+      console.warn('[migrate] legacy colors.json migration failed:', (err as Error).message);
+    }
   }
 
   /**

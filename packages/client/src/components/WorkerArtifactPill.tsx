@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom';
 import { marked } from 'marked';
-import styles from './WorkerPlanPill.module.css';
+import styles from './WorkerArtifactPill.module.css';
 
 const planMarkdownCache = new Map<string, string>();
 function renderPlanMarkdown(text: string): string {
@@ -13,12 +13,17 @@ function renderPlanMarkdown(text: string): string {
   return html;
 }
 
+type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
+
 interface Props {
+  artifactId: string;
   title: string;
   planContent: string;
-  planStatus: 'approved' | 'rejected' | 'pending';
+  planStatus: PlanStatus;
   timestamp: string;
 }
+
+const STATUS_OPTIONS: PlanStatus[] = ['draft', 'active', 'done', 'archived'];
 
 const TITLE_MAX = 48;
 
@@ -41,22 +46,49 @@ function relativeTime(iso: string): string {
   return `${d}d ago`;
 }
 
-function statusLabel(s: Props['planStatus']): string {
+function statusLabel(s: PlanStatus): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function statusPillClass(s: Props['planStatus']): string {
-  if (s === 'approved') return styles.statusPillApproved;
-  if (s === 'rejected') return styles.statusPillRejected;
-  return styles.statusPillPending;
+function statusPillClass(s: PlanStatus): string {
+  if (s === 'active')   return styles.statusPillActive;
+  if (s === 'done')     return styles.statusPillDone;
+  if (s === 'archived') return styles.statusPillArchived;
+  return styles.statusPillDraft;
 }
 
-export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Props) {
+export function WorkerArtifactPill({ artifactId, title, planContent, planStatus, timestamp }: Props) {
   const [pinned, setPinned] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingStatus, setPendingStatus] = useState<PlanStatus | null>(null);
   const pillRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const statusMenuRef = useRef<HTMLDivElement>(null);
+
+  const currentStatus = pendingStatus ?? planStatus;
+
+  useEffect(() => {
+    if (pendingStatus && planStatus === pendingStatus) setPendingStatus(null);
+  }, [planStatus, pendingStatus]);
+
+  const changeStatus = async (next: PlanStatus) => {
+    setMenuOpen(false);
+    if (next === currentStatus) return;
+    setPendingStatus(next);
+    try {
+      const r = await fetch(`/api/artifacts/${artifactId}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: next }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    } catch (err) {
+      console.error('Failed to update plan status', err);
+      setPendingStatus(null);
+    }
+  };
 
   const open = pinned;
 
@@ -66,10 +98,11 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
       const t = e.target as Node | null;
       if (popoverRef.current?.contains(t)) return;
       if (pillRef.current?.contains(t)) return;
+      setMenuOpen(false);
       setPinned(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPinned(false);
+      if (e.key === 'Escape') { setMenuOpen(false); setPinned(false); }
     };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
@@ -127,9 +160,32 @@ export function WorkerPlanPill({ title, planContent, planStatus, timestamp }: Pr
           onClick={(e) => e.stopPropagation()}
         >
           <div className={styles.popoverHeader}>
-            <span className={`${styles.statusPill} ${statusPillClass(planStatus)}`}>
-              {statusLabel(planStatus)}
-            </span>
+            <div className={styles.statusMenuWrap} ref={statusMenuRef}>
+              <button
+                type="button"
+                className={`${styles.statusPill} ${styles.statusPillButton} ${statusPillClass(currentStatus)}`}
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o); }}
+                title="Change status"
+              >
+                {statusLabel(currentStatus)}
+                <span className={styles.statusCaret}>▾</span>
+              </button>
+              {menuOpen && (
+                <div className={styles.statusMenu} onClick={(e) => e.stopPropagation()}>
+                  {STATUS_OPTIONS.map(opt => (
+                    <button
+                      key={opt}
+                      type="button"
+                      className={`${styles.statusMenuItem} ${opt === currentStatus ? styles.statusMenuItemActive : ''}`}
+                      onClick={() => changeStatus(opt)}
+                    >
+                      <span className={`${styles.statusDot} ${styles['statusDot_' + opt]}`} />
+                      {statusLabel(opt)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <span className={styles.popoverTitle}>{title}</span>
             <span className={styles.popoverTime}>{relativeTime(timestamp)}</span>
           </div>

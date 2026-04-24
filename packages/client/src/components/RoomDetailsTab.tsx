@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Plan, PlanStatus, Session } from '../types';
-import { usePlansByCwd } from '../hooks/usePlansByCwd';
+import type { Artifact, ArtifactStatus, Session } from '../types';
+import { useArtifactsByCwd } from '../hooks/useArtifactsByCwd';
 import styles from './RoomDetailsTab.module.css';
 
 interface Props {
@@ -148,7 +148,7 @@ export function RoomDetailsTab({ cwd }: Props) {
   );
 }
 
-function statusClass(s: PlanStatus): string {
+function statusClass(s: ArtifactStatus): string {
   switch (s) {
     case 'draft': return styles.planStatusDraft;
     case 'active': return styles.planStatusActive;
@@ -178,7 +178,7 @@ interface RoomPlansTabProps {
 }
 
 export function RoomPlansTab({ cwd, sessions, customNames }: RoomPlansTabProps) {
-  const { plans, isLoading } = usePlansByCwd(cwd);
+  const { artifacts, isLoading } = useArtifactsByCwd(cwd, 'plan');
 
   const agentName = (overlordId: string): string | undefined => {
     const s = sessions.find(s => s.overlordId === overlordId);
@@ -186,16 +186,16 @@ export function RoomPlansTab({ cwd, sessions, customNames }: RoomPlansTabProps) 
     return customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? s.sessionId.slice(0, 8);
   };
 
-  const sorted: Plan[] = [...plans].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const sorted: Artifact[] = [...artifacts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const active = sorted.filter(p => p.status === 'active');
   const rest = sorted.filter(p => p.status !== 'active' && p.status !== 'archived');
   const archived = sorted.filter(p => p.status === 'archived');
   const visible = [...active, ...rest];
 
-  const renderCard = (p: Plan, faded = false) => {
+  const renderCard = (p: Artifact, faded = false) => {
     const agent = agentName(p.overlordId);
     return (
-      <div key={p.planId} className={`${styles.planCard} ${faded ? styles.planCardArchived : ''}`}>
+      <div key={p.artifactId} className={`${styles.planCard} ${faded ? styles.planCardArchived : ''}`}>
         <div className={styles.planCardTop}>
           <span className={`${styles.planDot} ${styles['planDot_' + p.status]}`} />
           <span className={styles.planCardTitle} title={p.title}>{p.title || 'Untitled'}</span>

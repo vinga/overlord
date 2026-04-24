@@ -204,7 +204,10 @@ export function App() {
     // Prefer live snapshot over archivedSession so a just-resumed session
     // replaces the archived placeholder the moment it appears.
     const all = snapshot?.rooms.flatMap(r => r.sessions) ?? [];
-    const live = all.find(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId);
+    const matches = all.filter(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId);
+    // Prefer an active session over closed ones (same lineage can have both after a resume).
+    const live = matches.find(s => s.state !== 'closed')
+      ?? [...matches].sort((a, b) => b.startedAt - a.startedAt)[0];
     if (live) return live;
     if (archivedSession && archivedSession.sessionId === selectedSessionId) {
       return archivedSession;

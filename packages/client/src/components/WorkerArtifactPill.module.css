@@ -100,9 +100,79 @@
   flex-shrink: 0;
 }
 
-.statusPillApproved { color: #22c55e; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3); }
-.statusPillRejected { color: #ef4444; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.3); }
-.statusPillPending  { color: rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.18); }
+.statusPillApproved,
+.statusPillActive   { color: #22c55e; background: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3); }
+.statusPillRejected,
+.statusPillArchived { color: #9ca3af; background: rgba(107, 114, 128, 0.15); border: 1px solid rgba(107, 114, 128, 0.3); }
+.statusPillPending,
+.statusPillDraft    { color: rgba(255, 255, 255, 0.6); background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.18); }
+.statusPillDone     { color: #93c5fd; background: rgba(96, 165, 250, 0.12); border: 1px solid rgba(96, 165, 250, 0.3); }
+
+.statusPillButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: filter 0.12s;
+}
+.statusPillButton:hover { filter: brightness(1.25); }
+
+.statusCaret {
+  font-size: 8px;
+  opacity: 0.7;
+  margin-top: 1px;
+}
+
+.statusMenuWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.statusMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 10000;
+  min-width: 120px;
+  background: #1a1a26;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: popIn 0.1s ease-out;
+}
+
+.statusMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.8);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.statusMenuItem:hover { background: rgba(255, 255, 255, 0.06); }
+
+.statusMenuItemActive {
+  background: rgba(167, 139, 250, 0.12);
+  color: #fff;
+}
+
+.statusDot_draft    { background: #6b7280; }
+.statusDot_active   { background: #4ade80; box-shadow: 0 0 4px rgba(74,222,128,0.5); }
+.statusDot_done     { background: #60a5fa; }
+.statusDot_archived { background: #4b5563; }
 
 .popoverTitle {
   flex: 1;

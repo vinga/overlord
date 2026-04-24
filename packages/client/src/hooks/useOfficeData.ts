@@ -72,14 +72,15 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
           } else if (data.type === 'archive:removed') {
             const detail = data as unknown as { roomId?: string };
             window.dispatchEvent(new CustomEvent('archive:changed', { detail: { roomId: detail.roomId } }));
-          } else if (data.type === 'plan:changed') {
+          } else if (data.type === 'artifact:changed') {
             const detail = data as unknown as {
-              planId: string;
+              artifactId: string;
+              kind: 'plan' | 'summary' | 'compact';
               overlordId: string;
               cwd: string;
               op: 'create' | 'update' | 'delete';
             };
-            window.dispatchEvent(new CustomEvent('plan:changed', { detail }));
+            window.dispatchEvent(new CustomEvent('artifact:changed', { detail }));
           } else if (data.type === 'session:replaced') {
             // Session replacement (e.g. Claude Code's /clear command)
             const msg = data as unknown as { type: string; oldSessionId: string; newSessionId: string };

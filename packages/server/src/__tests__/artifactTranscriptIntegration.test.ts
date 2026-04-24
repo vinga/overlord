@@ -3,10 +3,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { readTranscriptState } from '../session/transcriptReader.js';
-import { PlanStore } from '../plans/planStore.js';
-import type { PlanStatus } from '../plans/types.js';
+import { ArtifactStore } from '../artifacts/artifactStore.js';
+import type { ArtifactStatus } from '../artifacts/types.js';
 
-function planStatusFromClaude(s: 'approved' | 'rejected' | 'pending'): PlanStatus {
+function planStatusFromClaude(s: 'approved' | 'rejected' | 'pending'): ArtifactStatus {
   if (s === 'approved') return 'active';
   if (s === 'rejected') return 'archived';
   return 'draft';
@@ -24,16 +24,16 @@ function writeTranscript(dir: string, entries: unknown[]): string {
   return filePath;
 }
 
-describe('transcript → planStore integration', () => {
+describe('transcript → artifactStore integration', () => {
   let baseDir: string;
   let transcriptDir: string;
-  let store: PlanStore;
+  let store: ArtifactStore;
 
   beforeEach(() => {
-    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'planTx-'));
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifactTx-'));
     transcriptDir = path.join(baseDir, 'transcripts');
     fs.mkdirSync(transcriptDir, { recursive: true });
-    store = new PlanStore({ baseDir, debounceMs: 20 });
+    store = new ArtifactStore({ baseDir, debounceMs: 20 });
   });
 
   afterEach(async () => {
@@ -101,8 +101,8 @@ describe('transcript → planStore integration', () => {
     expect(plans[0].status).toBe('active');
     expect(plans[0].body).toBe('# My Plan\n\nbody text');
 
-    const plansDir = path.join(baseDir, 'plans');
-    const files = fs.readdirSync(plansDir).filter(f => f.endsWith('.md'));
+    const artifactsDir = path.join(baseDir, 'artifacts');
+    const files = fs.readdirSync(artifactsDir).filter(f => f.endsWith('.md'));
     expect(files).toHaveLength(1);
   });
 
@@ -146,8 +146,8 @@ describe('transcript → planStore integration', () => {
     const plans = store.listByOverlord('ovr-txd');
     expect(plans).toHaveLength(1);
 
-    const plansDir = path.join(baseDir, 'plans');
-    const files = fs.readdirSync(plansDir).filter(f => f.endsWith('.md'));
+    const artifactsDir = path.join(baseDir, 'artifacts');
+    const files = fs.readdirSync(artifactsDir).filter(f => f.endsWith('.md'));
     expect(files).toHaveLength(1);
   });
 

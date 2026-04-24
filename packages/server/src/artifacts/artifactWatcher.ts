@@ -1,32 +1,32 @@
 import chokidar, { type FSWatcher } from 'chokidar';
 import path from 'node:path';
-import type { PlanStore } from './planStore.js';
-import type { PlanChangedEvent } from './types.js';
+import type { ArtifactStore } from './artifactStore.js';
+import type { ArtifactChangedEvent } from './types.js';
 
-export type PlanChangeListener = (event: PlanChangedEvent) => void;
+export type ArtifactChangeListener = (event: ArtifactChangedEvent) => void;
 
 /**
- * Watches `{baseDir}/plans/*.md` for external edits (user editing files in an
- * editor, migration writes, etc.). Calls `planStore.refreshFromDisk()` on every
- * change event and fires the listener with `plan:changed` when the parsed state
- * differs from what we hold in-memory.
+ * Watches `{baseDir}/artifacts/*.md` for external edits (user editing files in an
+ * editor, etc.). Calls `artifactStore.refreshFromDisk()` on every change event and
+ * fires the listener with `artifact:changed` when the parsed state differs from
+ * what we hold in-memory.
  *
- * Own writes are suppressed via the `planStore.ownWrites` set — each atomic
+ * Own writes are suppressed via the `artifactStore.ownWrites` set — each atomic
  * write records the basename, then the first change event with that basename
  * clears the suppression.
  */
-export class PlanWatcher {
+export class ArtifactWatcher {
   private watcher: FSWatcher | null = null;
 
   constructor(
-    private readonly store: PlanStore,
-    private readonly listener: PlanChangeListener,
+    private readonly store: ArtifactStore,
+    private readonly listener: ArtifactChangeListener,
     private readonly debounceMs = 100,
   ) {}
 
   start(): void {
     if (this.watcher) return;
-    const pattern = path.join(this.store.plansDir, '*.md');
+    const pattern = path.join(this.store.artifactsDir, '*.md');
     this.watcher = chokidar.watch(pattern, {
       persistent: true,
       ignoreInitial: true,
@@ -50,14 +50,15 @@ export class PlanWatcher {
       this.store.ownWrites.delete(base);
       return;
     }
-    const planId = base.replace(/\.md$/, '');
-    const result = this.store.refreshFromDisk(planId);
+    const artifactId = base.replace(/\.md$/, '');
+    const result = this.store.refreshFromDisk(artifactId);
     if (!result || !result.changed) return;
     this.listener({
-      type: 'plan:changed',
-      planId: result.plan.planId,
-      overlordId: result.plan.overlordId,
-      cwd: result.plan.cwd,
+      type: 'artifact:changed',
+      artifactId: result.artifact.artifactId,
+      kind: result.artifact.kind,
+      overlordId: result.artifact.overlordId,
+      cwd: result.artifact.cwd,
       op,
     });
   }
@@ -68,14 +69,15 @@ export class PlanWatcher {
       this.store.ownWrites.delete(base);
       return;
     }
-    const planId = base.replace(/\.md$/, '');
-    const existing = this.store.get(planId);
+    const artifactId = base.replace(/\.md$/, '');
+    const existing = this.store.get(artifactId);
     if (!existing) return;
     // External deletion: drop from memory without re-deleting the file.
-    this.store.remove(planId);
+    this.store.remove(artifactId);
     this.listener({
-      type: 'plan:changed',
-      planId: existing.planId,
+      type: 'artifact:changed',
+      artifactId: existing.artifactId,
+      kind: existing.kind,
       overlordId: existing.overlordId,
       cwd: existing.cwd,
       op: 'delete',
