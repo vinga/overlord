@@ -97,11 +97,11 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 - `getSnapshot()` also surfaces configured rooms (`~/.claude/overlord/rooms/*.config.json`) even if zero sessions are hydrated for that cwd — via `listConfiguredRoomSlugs()` + reverse slug lookup through sessionStore.
 - `purgeStaleOverlordSessionFiles()` runs 30s after boot, then daily. Deletes records whose transcripts are missing or older than 2 days — **but only when the ovrId is not hydrated into `this.sessions`**. Since boot hydrates every active record, nothing user-visible ever gets purged. Only truly orphaned records (hydration failed) drop. Do not revive cwd-keyed or `lastActivity`-based purges.
 
-## Development: Plan Driven Development
+## Plan-Driven Development
 
-Plans live in Overlord, not in `specs/` or `docs/sdd.md`. Manage them via the `overlord-plans` skill (REST to `/api/plans`).
+Manage plans via the `overlord-plans` skill (REST to `/api/plans`). Flow: draft → paste full body in chat → user approves → status `active` → implement → status `done`. Never code before approval. Paste the full plan body, not a link.
 
-**Flow:** draft plan → show full body inline in chat → user approves → set status `active` → implement → set status `done`. Never code before plan is approved. Always paste the full plan body in chat, not just a link or title.
+**Required when:** refactor touches > 2 files, any persistence or schema change, any auto-scheduled job, anything user-visible after restart. Small single-file bug fixes: skip the plan.
 
 ## Browser Verification
 
@@ -126,10 +126,12 @@ Delegate to subagents as often as possible. Prefer parallel tool calls when inde
 - **Memory = surprises only.** Not what `git log` answers — non-obvious decisions only.
 - **Platform-guard or remove.** OS-specific blocks must match `uname` or be deleted.
 
-## Communication
+## Destructive Operations
 
-⚠️ CRITICAL — EVERY RESPONSE, NO EXCEPTIONS:
-- Short sentences only (3-6 words).
-- No filler. Never start with "I'll", "Let me", "Sure", "Great".
-- Tool first, result first. Explain only if asked.
-- Pass to all subagents.
+- File deletions (`fs.unlinkSync`, `sessionStore.remove`, `rm -rf`): if count > 5 OR touches `~/.claude/overlord/overlord-sessions/` AND count > 0, dry-run first and print the list before deleting. Wait for explicit user approval.
+- Auto-jobs that delete data must default to OFF. Enable via an explicit toggle (env var, settings flag, or CLAUDE.md-documented manual invocation). No `setTimeout(destructiveFn, 30s)` on boot.
+- Before any delete: also check whether data has a second source (e.g. transcript file mtime), and use that as the freshness signal instead of self-reported metadata fields (spec: `specs/lineage-single-source.md` — `OverlordSession.lastActivity` is seed-once, do not trust it).
+
+## Interrupts
+
+When the user sends a message mid-tool-call (`<system-reminder>The user sent a new message…</system-reminder>`), finish the in-flight call only if it's a read. For writes/destructive actions, stop, re-read the latest user message, confirm before continuing.
