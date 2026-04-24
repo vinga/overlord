@@ -235,6 +235,7 @@ export class StateManager {
     this.loadAccepted();
     this.loadDeleted();
     this.migrateLegacyColors();
+    this.hydrateAllActiveSessions();
     this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
     this.loadKnownSessions();
     this.loadPendingResumes();
@@ -2265,6 +2266,22 @@ export class StateManager {
    * Clears the deleted blocklist entry (archive's deleteSession path added it),
    * loads transcript state, and inserts as 'closed' so it renders in the room.
    */
+  /**
+   * On boot, load every non-archived OverlordSession into `this.sessions` as a
+   * closed worker. Transcripts may be absent — that's fine, the room just gets
+   * an idle card and the user can resume or delete it. Skips records already
+   * hydrated (e.g. by loadKnownSessions) and records on the deleted blocklist.
+   */
+  private hydrateAllActiveSessions(): void {
+    for (const rec of sessionStore.listActive()) {
+      const sid = rec.lineage?.currentSessionId;
+      if (!sid) continue;
+      if (this.sessions.has(sid)) continue;
+      if (this.deletedSessionIds.has(sid)) continue;
+      try { this.rehydrateFromSessionStore(sid); } catch { /* swallow — one bad record shouldn't block boot */ }
+    }
+  }
+
   rehydrateFromSessionStore(sessionId: string): Session | null {
     const rec = sessionStore.getBySessionId(sessionId);
     if (!rec) return null;

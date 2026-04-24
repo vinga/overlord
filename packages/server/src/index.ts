@@ -836,11 +836,13 @@ setInterval(() => {
 }, 60_000).unref();
 
 // Delete overlord-session files whose transcripts are missing or untouched
-// for >2 days. Safe: skips live-in-memory records and archived records.
+// for >2 days. Protected: every record hydrated into stateManager on boot
+// (hydrateAllActiveSessions) is in liveOvrIds and is never touched, even when
+// its state is "closed". Only truly orphaned records get dropped.
 const purgeStaleFiles = () => {
   try {
     const n = stateManager.purgeStaleOverlordSessionFiles();
-    if (n > 0) console.log(`[purge] removed ${n} overlord-session files with missing/old transcripts (>2d)`);
+    if (n > 0) console.log(`[purge] removed ${n} overlord-session files (missing/old transcripts, not hydrated)`);
   } catch (err) {
     console.warn('[purge] failed:', (err as Error).message);
   }
