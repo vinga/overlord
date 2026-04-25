@@ -8,6 +8,14 @@ Run all session diagnostic checks automatically and produce a summary report. Di
 
 ---
 
+## When the user hands you a single ovrId or sessionId
+
+Run `tools/inspect-session.sh <ovrId|sessionId>` first. It performs depth-first checks on one target: disk record, live snapshot, **persistent-field diff disk-vs-live** (catches "setSessionType not patching sessionStore"-class bugs), transcript freshness, PID liveness, bridge socket + bridge process, embedded `ptyAlive`, recent log lines, and `LIKELY:` verdicts.
+
+The verdicts are HINTS, not conclusions — verify in code before acting. If the script flags nothing but the symptom is real, fall through to the breadth-first steps below.
+
+---
+
 ## Step 0 — The "Mess After Restart" Triage (Start Here)
 
 This is the recurring class of problem: after a server restart, the user sees too many sessions, too few, unnamed ones, or ones whose PTY chip says open but injection fails. Run these three checks **before** anything else. All are cross-platform (macOS primary, paths under `~/.claude`).

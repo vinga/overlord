@@ -204,7 +204,7 @@ const SELF_IMPROVE = [
 ].join("\n");
 
 const PROPOSE_TITLE = [
-  "Propose a concise title for this conversation and set it as the session name.",
+  "Generate a concise title for this conversation and set it as the session name.",
   "",
   "Rules:",
   "- 3-7 words. Noun phrase or gerund. Present tense. No period.",
@@ -218,11 +218,36 @@ const PROPOSE_TITLE = [
   "The Overlord server detects that marker in your last assistant message and renames the session automatically. Do not add any other text before or after.",
 ].join("\n");
 
+const WHY_REFACTOR = [
+  "# Why — higher-order code refactor",
+  "",
+  "Reason about why the code exists, not just its shape. For each lens below, apply to the current diff or working area, propose changes before touching anything, then implement.",
+  "",
+  "## 1. First-principles",
+  "For each module in the diff, ask: what is its single responsibility? If you can't name it in one sentence, it's doing too much — split it. If two modules share a sentence, merge them.",
+  "",
+  "## 2. Deletion-first",
+  "What could I delete from this codebase and have nothing important break? Rank candidates by (lines removed × risk of breakage⁻¹). Propose the top three before touching anything.",
+  "",
+  "## 3. Invariant-driven",
+  "List the invariants this code is trying to maintain. For each, find the cheapest place to enforce it. Remove every check that duplicates an invariant already enforced upstream.",
+  "",
+  "## 4. Cost-of-change",
+  "Identify the parts of this code most likely to change in the next six months, and the parts least likely. Push volatility outward (toward edges/config), push stability inward (toward core). Reshape accordingly.",
+  "",
+  "## 5. Boundary audit",
+  "Where are the real boundaries in this system (process, network, trust, persistence)? Validate at boundaries only. Delete validation, error handling, and defensive coding that lives in the interior.",
+  "",
+  "## 6. The meta one",
+  "Read this code and tell me what it would look like if the person who wrote it knew then what they know now. Then make that change.",
+].join("\n");
+
 export const QUICK_PROMPTS: QuickPrompt[] = [
   { id: 'remind',         label: 'Remind me where we left off', body: REMIND },
   { id: 'cut-fluff',      label: 'Cut the fluff',               body: CUT_FLUFF },
-  { id: 'propose-title',  label: 'Propose a title',             body: PROPOSE_TITLE },
+  { id: 'propose-title',  label: 'Generate a title',            body: PROPOSE_TITLE },
   { id: 'pr-review',      label: 'Handle PR Review Comments',   body: PR_REVIEW },
   { id: 'change-summary', label: 'Code Change Summary',         body: CHANGE_SUMMARY },
   { id: 'self-improve',   label: 'Self-improve guidance',       body: SELF_IMPROVE },
+  { id: 'why-refactor',   label: 'Why — code refactor',         body: WHY_REFACTOR },
 ];
