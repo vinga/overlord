@@ -171,7 +171,10 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
       addedCount: untracked.length,
     };
   } catch (err) {
-    console.error('[gitStatus] failed', cwd, (err as Error).message);
+    const msg = (err as Error).message ?? '';
+    // Non-git directories are expected; don't log as an error.
+    if (/not a git repository/i.test(msg)) return null;
+    console.error('[gitStatus] failed', cwd, msg);
     return null;
   }
 }

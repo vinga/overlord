@@ -231,6 +231,11 @@ export interface OverlordSession {
 
   /** Last observed git branch for this session (persisted to survive restart). */
   gitBranch?: string;
+
+  /** Pending --resume targeting this lineage from `cwd` started at `at` (epoch ms).
+   *  Replaces the legacy ~/.claude/overlord/pending-resumes.json file. Cleared
+   *  when consumed in addOrUpdate or invalidated by a fresh PTY spawn. */
+  pendingResume?: { cwd: string; at: number };
   currentTask?: Task;
   completionSummaries?: Task[];
   completionHint?: 'done' | 'awaiting';

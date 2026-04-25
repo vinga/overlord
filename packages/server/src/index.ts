@@ -17,6 +17,7 @@ import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIs
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { detectModeFromText } from './session/modeDetect.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from './session/transcriptReader.js';
+import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from './session/transcriptShadow.js';
 import { buildOpencodeResumeArgs } from './session/opencodeSession.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
@@ -142,7 +143,7 @@ function checkBridgePermission(sessionId: string): void {
   stateManager.setNeedsPermission(sessionId, hasPrompt, hasPrompt ? extractBridgePromptBlock(text) : undefined);
 }
 
-// Flag to skip clear detection during startup (loadKnownSessions + initial file scan)
+// Flag to skip clear detection during startup (hydration + initial file scan)
 let startupComplete = false;
 
 // Map ptySessionId → clone name, applied after PTY is linked to a real Claude session
@@ -209,7 +210,11 @@ async function openTerminalWindow(cwd: string, command: string, title?: string, 
       if (sessionId) {
         stateManager.setSessionType(sessionId, 'bridge');
         bridgeManager.enableReconnect(sessionId);
-        setTimeout(() => bridgeManager.connect(sessionId), 3000);
+        // Use connectBridgePipe (dual-socket OUTPT+INPUT handshake) — bridgeManager.connect
+        // is the legacy single-socket path that opens a TCP connection but never sends a
+        // handshake byte, so the bridge blocks on conn.Read(header) and never adds the
+        // socket to its broadcast set → no output ever reaches the client.
+        setTimeout(() => connectBridgePipe(sessionId, pipeName!), 3000);
       } else {
         // Embed a unique marker in the command's --name flag for reliable matching
         const bridgeMarker = `brg-${Date.now().toString(36)}`;
@@ -364,7 +369,7 @@ function connectBridgePipe(sessionId: string, pipeName: string): void {
       console.log(`[bridge] input socket connected for ${sessionId.slice(0, 8)}`);
       pendingBridgeConnect.delete(sessionId); // connection established, unblock guard
       bridgeManager.registerSocket(sessionId, inputSocket, pipeAddr);
-      // Revive sessions loaded as 'closed' from known-sessions on restart.
+      // Revive sessions hydrated as 'closed' from sessionStore on restart.
       // The bridge is alive → the process is still running → session is active again.
       stateManager.reviveClosedSession(sessionId);
       // Find the TTY of the Terminal.app tab hosting this bridge (macOS only).
@@ -808,18 +813,44 @@ async function autoResumePtySessions(): Promise<void> {
     // it stops reappearing in the UI and is not retried on the next restart.
     const resolved = resolveResumableSessionId(sessionId, cwd);
     if (!resolved) {
-      console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing`);
-      stateManager.markDeleted(sessionId);
-      stateManager.remove(sessionId);
-      sessionStore.removeBySessionId(sessionId);
+      // Skip the resume but DO NOT delete the OverlordSession record. A
+      // missing transcript on one sid doesn't invalidate the whole lineage:
+      // the record may still hold artifacts (plans, color, title, history)
+      // and the sid can become resolvable later (shadow link, restore, etc).
+      // Past behavior of `markDeleted + sessionStore.removeBySessionId` was
+      // the source of the OV Cedar disappearance — once a sid landed in
+      // deleted-sessions.json, hydrate skipped it forever.
+      console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing (record retained)`);
       continue;
     }
     const effectiveResumeId = resolved.sessionId;
     if (effectiveResumeId !== sessionId) {
       console.log(`[auto-resume] ${sessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${effectiveResumeId.slice(0, 8)}`);
     }
+    // If the resolved transcript lives only in the shadow store, claude --resume
+    // will start but its TUI cannot load the conversation (it looks at the
+    // canonical project dir, not the shadow). Hard-link shadow → canonical so
+    // the conversation loads. Without this, the input loop silently dies.
+    if (resolved.transcriptPath.startsWith(SHADOW_ROOT_DIR)) {
+      const ovr = sessionStore.getBySessionId(effectiveResumeId);
+      if (ovr) {
+        const restored = restoreCanonicalFromShadow(ovr.overlordId, effectiveResumeId, cwd);
+        if (restored) {
+          console.log(`[auto-resume] restored canonical transcript for ${effectiveResumeId.slice(0, 8)} from shadow`);
+        } else {
+          console.warn(`[auto-resume] failed to restore canonical for ${effectiveResumeId.slice(0, 8)}; --resume may not load`);
+        }
+      }
+    }
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     try {
+      // Seed the marker→resumeTarget map BEFORE spawning. spawn returns once
+      // the child claude is launched; that claude writes its `{pid}.json`
+      // file, which sessionWatcher picks up via chokidar `add`, which calls
+      // addOrUpdate — and consumePendingResumeByMarker must already see the
+      // entry, otherwise the new sid gets a fresh ovr instead of attaching to
+      // the original lineage.
+      stateManager.trackPendingResumeByMarker(ptySessionId, effectiveResumeId);
       ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
       pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
       console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
@@ -1077,9 +1108,7 @@ async function shutdown(signal: string) {
   wss.clients.forEach(client => {
     try { client.send(JSON.stringify({ type: 'server:shutdown' })); } catch { /* ignore */ }
   });
-  // 2. Save known-sessions state so restart picks up where we left off
-  try { stateManager.saveKnownSessions(); } catch { /* ignore */ }
-  // 2b. Flush any pending SessionStore writes so durable state lands on disk
+  // 2. Flush any pending SessionStore writes so durable state lands on disk
   try { await sessionStore.flushAll(); } catch { /* ignore */ }
   // 2c. Flush pending artifact writes and stop watcher
   try { await artifactStore.flushAll(); } catch { /* ignore */ }

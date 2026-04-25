@@ -71,9 +71,8 @@ function cleanup(): void {
 // ---------------------------------------------------------------------------
 // StateManager path patching
 //
-// StateManager hard-codes three file paths in its constructor:
+// StateManager hard-codes two file paths in its constructor:
 //   this.ptySessionsFile  → ~/.claude/overlord/pty-sessions.json
-//   this.deletedFile      → ~/.claude/overlord/deleted-sessions.json   (private; write via markDeleted)
 //   this.acceptedFile     → ~/.claude/overlord-accepted.json           (private; write via acceptSession)
 //
 // All three are private readonly fields, so the cleanest way to redirect
@@ -104,16 +103,14 @@ function makeStateManager(dir: string, onChange?: () => void): StateManager {
   // Override the private paths — TypeScript's readonly modifier is erased at
   // runtime, so this works fine with `as any`.
   (sm as any).ptySessionsFile = path.join(dir, 'pty-sessions.json');
-  (sm as any).deletedFile     = path.join(dir, 'deleted-sessions.json');
   (sm as any).acceptedFile    = path.join(dir, 'accepted.json');
 
   // Reload from the new (empty) file locations so any data loaded during
   // construction from the real home directory is discarded.
-  (sm as any).ptySessions        = new Set<string>();
-  (sm as any).deletedSessionIds  = new Set<string>();
-  (sm as any).acceptedSessions   = new Set<string>();
+  (sm as any).ptySessions          = new Set<string>();
+  (sm as any).recentlyDeletedSids  = new Map<string, number>();
+  (sm as any).acceptedSessions     = new Set<string>();
   (sm as any).loadPtySessionIds();
-  (sm as any).loadDeleted();
   (sm as any).loadAccepted();
 
   return sm;

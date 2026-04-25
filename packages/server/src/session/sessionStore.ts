@@ -55,7 +55,13 @@ export interface ArchiveSnapshot {
 export class SessionStore {
   private active = new Map<string, OverlordSession>();
   private archived = new Map<string, OverlordSession>();
-  private sidIndex = new Map<string, string>(); // sessionId → overlordId
+  // Two-tier sid index: active sids resolve before archived. Single-map
+  // priority broke when archived loaded after active and silently overwrote
+  // the live mapping (repro: `getBySessionId(sid)` returned an archived
+  // ovrId for a sid still owned by an active record's lineage, which then
+  // got "reused" as a fresh active record on the next compose).
+  private sidIndexActive = new Map<string, string>();    // sessionId → overlordId (active)
+  private sidIndexArchived = new Map<string, string>();  // sessionId → overlordId (archived)
 
   private flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private writeChain = new Map<string, Promise<void>>();
@@ -80,22 +86,40 @@ export class SessionStore {
   private archivedPath(ovrId: string): string { return path.join(this.archiveDir, `${ovrId}.json`); }
 
   private reindex(record: OverlordSession): void {
-    this.sidIndex.set(record.lineage.currentSessionId, record.overlordId);
-    for (const entry of record.lineage.history) {
-      this.sidIndex.set(entry.sessionId, record.overlordId);
+    // Clear any stale entries for this ovrId in both maps first, then write
+    // to the correct map based on current active/archived status.
+    this.dropFromIndex(record);
+    const isArchived = this.archived.has(record.overlordId);
+    const sids = [record.lineage.currentSessionId, ...record.lineage.history.map(h => h.sessionId)];
+    for (const sid of sids) {
+      if (isArchived) {
+        // Active always wins — only index archived sids that no active record claims.
+        // (Stale archived dupes can share sids with a live lineage; do not let
+        // them shadow the active mapping that mint guards rely on.)
+        if (!this.sidIndexActive.has(sid)) this.sidIndexArchived.set(sid, record.overlordId);
+      } else {
+        this.sidIndexActive.set(sid, record.overlordId);
+        // If this sid was previously held by some archived dupe, drop that mapping —
+        // we now have an active owner and that's the only truth callers should see.
+        if (this.sidIndexArchived.get(sid) !== record.overlordId) this.sidIndexArchived.delete(sid);
+      }
     }
   }
 
   private dropFromIndex(record: OverlordSession): void {
-    for (const [sid, ovr] of this.sidIndex) {
-      if (ovr === record.overlordId) this.sidIndex.delete(sid);
+    for (const [sid, ovr] of this.sidIndexActive) {
+      if (ovr === record.overlordId) this.sidIndexActive.delete(sid);
+    }
+    for (const [sid, ovr] of this.sidIndexArchived) {
+      if (ovr === record.overlordId) this.sidIndexArchived.delete(sid);
     }
   }
 
   loadAll(): void {
     this.active.clear();
     this.archived.clear();
-    this.sidIndex.clear();
+    this.sidIndexActive.clear();
+    this.sidIndexArchived.clear();
 
     this.ensureDir(this.activeDir);
     this.ensureDir(this.archiveDir);
@@ -138,13 +162,20 @@ export class SessionStore {
   }
 
   getBySessionId(sessionId: string): OverlordSession | undefined {
-    const ovr = this.sidIndex.get(sessionId);
+    const ovr = this.sidIndexActive.get(sessionId) ?? this.sidIndexArchived.get(sessionId);
     if (!ovr) return undefined;
     return this.getByOverlordId(ovr);
   }
 
+  /** Active records only — use this for mint guards / new-session attach lookups
+   *  so a stale archived lineage doesn't get "reused" as a fresh active record. */
   resolveOverlordId(sessionId: string): string | undefined {
-    return this.sidIndex.get(sessionId);
+    return this.sidIndexActive.get(sessionId);
+  }
+
+  /** Active first, then archived — for callers that must locate a sid anywhere. */
+  resolveOverlordIdAny(sessionId: string): string | undefined {
+    return this.sidIndexActive.get(sessionId) ?? this.sidIndexArchived.get(sessionId);
   }
 
   listActive(): OverlordSession[] { return [...this.active.values()]; }
@@ -202,7 +233,7 @@ export class SessionStore {
 
   /** Patch by sessionId — resolves to overlordId first. */
   patchBySessionId(sessionId: string, partial: Partial<OverlordSession>): OverlordSession | undefined {
-    const ovrId = this.sidIndex.get(sessionId);
+    const ovrId = this.resolveOverlordIdAny(sessionId);
     if (!ovrId) return undefined;
     return this.patch(ovrId, partial);
   }
@@ -318,6 +349,7 @@ export class SessionStore {
 
     this.active.delete(ovrId);
     this.archived.set(ovrId, archivedRec);
+    this.reindex(archivedRec); // moves sids from active→archived index
     this.flushSync(ovrId, 'archive');
     try { fs.unlinkSync(this.activePath(ovrId)); } catch { /* ignore */ }
     return archivedRec;
@@ -337,6 +369,7 @@ export class SessionStore {
 
     this.archived.delete(ovrId);
     this.active.set(ovrId, restored);
+    this.reindex(restored); // moves sids from archived→active index
     this.flushSync(ovrId, 'active');
     try { fs.unlinkSync(this.archivedPath(ovrId)); } catch { /* ignore */ }
     return restored;
@@ -358,7 +391,7 @@ export class SessionStore {
 
   /** Remove by sessionId (resolved via index). */
   removeBySessionId(sessionId: string): void {
-    const ovrId = this.sidIndex.get(sessionId);
+    const ovrId = this.resolveOverlordIdAny(sessionId);
     if (ovrId) this.remove(ovrId);
   }
 

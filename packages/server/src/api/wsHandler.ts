@@ -756,7 +756,14 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const isRaw = claudeSession?.sessionType === 'raw';
         // For non-raw TUIs, only replay from the last BSU chunk (coherent frame start).
         // Raw shells have no BSU, so keep the full-buffer replay (line output is idempotent).
-        const replaySlice = isRaw ? (buf ?? []) : sliceBufferFromLastBsu(buf);
+        let replaySlice = isRaw ? (buf ?? []) : sliceBufferFromLastBsu(buf);
+        // Fallback: if no BSU has been emitted yet (e.g. claude --resume that
+        // hasn't reached its first synchronized frame), but the buffer holds
+        // chunks, send the tail anyway. Worst case = a brief unframed paint;
+        // current behavior = blank xterm forever when the TUI is frozen.
+        if (!isRaw && replaySlice.length === 0 && buf && buf.length > 0) {
+          replaySlice = buf.slice(Math.max(0, buf.length - 32));
+        }
         console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} sliceChunks=${replaySlice.length} cols=${cols} rows=${rows} raw=${isRaw}`);
         // Raw sessions with a disk log: replay from disk when no live buffer is available.
         // This covers both historyOnly revived sessions and fresh reconnects where the

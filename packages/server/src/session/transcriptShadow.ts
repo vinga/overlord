@@ -8,6 +8,48 @@ export function shadowPathFor(ovrId: string, sessionId: string): string {
   return path.join(SHADOW_ROOT, ovrId, `${sessionId}.jsonl`);
 }
 
+export const SHADOW_ROOT_DIR = SHADOW_ROOT;
+
+function claudeProjectSlug(cwd: string): string {
+  return cwd.replace(/[\\:/.]/g, '-');
+}
+
+function canonicalPathFor(cwd: string, sessionId: string): string {
+  return path.join(os.homedir(), '.claude', 'projects', claudeProjectSlug(cwd), `${sessionId}.jsonl`);
+}
+
+/**
+ * Ensure `~/.claude/projects/<slug>/<sid>.jsonl` exists by hard-linking from the
+ * shadow store. `claude --resume <sid>` reads the canonical path; if /clear (or
+ * any external tool) deleted it, the TUI starts but cannot load the conversation
+ * and the input loop dies. Returns the canonical path on success, null otherwise.
+ */
+export function restoreCanonicalFromShadow(ovrId: string, sessionId: string, cwd: string): string | null {
+  if (!ovrId || !sessionId || !cwd) return null;
+  const canonical = canonicalPathFor(cwd, sessionId);
+  try {
+    if (fs.existsSync(canonical)) return canonical;
+  } catch { return null; }
+  const shadow = shadowPathFor(ovrId, sessionId);
+  try {
+    if (!fs.existsSync(shadow)) return null;
+  } catch { return null; }
+  try { fs.mkdirSync(path.dirname(canonical), { recursive: true }); } catch { /* ignore */ }
+  try {
+    fs.linkSync(shadow, canonical);
+    return canonical;
+  } catch (err: any) {
+    if (err?.code === 'EEXIST') return canonical;
+    if (err?.code === 'EXDEV') {
+      try {
+        fs.copyFileSync(shadow, canonical);
+        return canonical;
+      } catch { return null; }
+    }
+    return null;
+  }
+}
+
 let warnedExdev = false;
 
 /**

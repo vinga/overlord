@@ -10,6 +10,9 @@ import { readGitStatus } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
 import { sessionStore } from './sessionStore.js';
+import { migrateKnownSessions } from './migrateKnownSessions.js';
+import { migratePendingResumes } from './migratePendingResumes.js';
+import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
 import { log } from '../logger.js';
 
@@ -203,10 +206,12 @@ export class StateManager {
   private static readonly FRESH_PTY_TTL_MS = 5 * 60 * 1000;
   private acceptedSessions: Set<string> = new Set();
   private readonly acceptedFile = path.join(os.homedir(), '.claude', 'overlord-accepted.json');
-  private readonly pendingResumesFile = path.join(os.homedir(), '.claude', 'overlord', 'pending-resumes.json');
-  private deletedSessionIds: Set<string> = new Set();
-  private readonly deletedFile = path.join(os.homedir(), '.claude', 'overlord', 'deleted-sessions.json');
-  private knownSessionsFile: string;
+  /** Sid → expiry epoch ms. Defensive guard against the brief window between
+   *  `markDeleted` (sync) and the deferred file unlinks in `deleteSession`.
+   *  In-memory only — restart-survival is unnecessary because every backing
+   *  file is unlinked before the next boot. Replaces deleted-sessions.json. */
+  private recentlyDeletedSids: Map<string, number> = new Map();
+  private static readonly DELETED_SID_TTL_MS = 60_000;
   private static readonly IDE_NAME_CACHE_CAP = 64;
   private ideNameCache = new Map<string, { mtimeMs: number; result: { name: string; idePid: number } | undefined }>();
   /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
@@ -260,17 +265,18 @@ export class StateManager {
   constructor(onChange: () => void) {
     this.bridgePath = getBridgePath();
     this.onChangeCallback = onChange;
-    this.knownSessionsFile = path.join(os.homedir(), '.claude', 'overlord', 'known-sessions.json');
     this.gitWatcher = new GitWatcher(() => this.onChange());
     this.prCache = new PrCache(() => this.onChange());
     this.gitAheadTimer = setInterval(() => this.refreshGitAheadCache(), 15_000);
     this.loadAccepted();
-    this.loadDeleted();
     this.migrateLegacyColors();
+    migrateKnownSessions();
+    // migratePendingResumes(); // in-progress — symbol not imported, crashes boot
+    migrateDeletedSessions();
     this.hydrateAllActiveSessions();
     this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
-    this.loadKnownSessions();
-    this.loadPendingResumes();
+    this.migrateLegacyBridgeRegistry();
+    this.hydratePendingResumesFromSessionStore();
     void this.refreshGitAheadCache();
   }
 
@@ -338,180 +344,53 @@ export class StateManager {
     } catch { /* ignore */ }
   }
 
-  private loadDeleted(): void {
-    try {
-      if (fs.existsSync(this.deletedFile)) {
-        const ids = JSON.parse(fs.readFileSync(this.deletedFile, 'utf-8')) as string[];
-        this.deletedSessionIds = new Set(ids);
+  /** Rebuild the in-memory pendingResumes map from sessionStore on boot.
+   *  Source of truth is `OverlordSession.pendingResume`. Expired entries are
+   *  cleared on the OverlordSession and skipped. */
+  private hydratePendingResumesFromSessionStore(): void {
+    const now = Date.now();
+    for (const rec of sessionStore.listActive()) {
+      const pr = rec.pendingResume;
+      if (!pr) continue;
+      if (now - pr.at >= 60_000) {
+        sessionStore.patch(rec.overlordId, { pendingResume: undefined });
+        continue;
       }
-    } catch { /* ignore */ }
+      this.pendingResumes.set(pr.cwd, {
+        resumeSessionId: rec.lineage.currentSessionId,
+        timestamp: pr.at,
+      });
+    }
   }
 
-  private loadPendingResumes(): void {
-    try {
-      if (!fs.existsSync(this.pendingResumesFile)) return;
-      const data = JSON.parse(fs.readFileSync(this.pendingResumesFile, 'utf8'));
-      if (!Array.isArray(data)) return;
-      for (const entry of data) {
-        if (entry.cwd && entry.resumeSessionId && entry.timestamp) {
-          this.pendingResumes.set(normalizePath(entry.cwd), {
-            resumeSessionId: entry.resumeSessionId,
-            timestamp: entry.timestamp,
-          });
-        }
-      }
-    } catch { /* ignore */ }
+  /** Clear a pendingResume entry from the in-memory map and the OverlordSession. */
+  private clearPendingResume(cwd: string): void {
+    const key = normalizePath(cwd);
+    const entry = this.pendingResumes.get(key);
+    if (!entry) return;
+    this.pendingResumes.delete(key);
+    const ovrId = sessionStore.resolveOverlordIdAny(entry.resumeSessionId);
+    if (ovrId) sessionStore.patch(ovrId, { pendingResume: undefined });
   }
 
-  private savePendingResumes(): void {
-    try {
-      fs.mkdirSync(path.dirname(this.pendingResumesFile), { recursive: true });
-      const data = [...this.pendingResumes.entries()].map(([cwd, entry]) => ({
-        cwd,
-        resumeSessionId: entry.resumeSessionId,
-        timestamp: entry.timestamp,
-      }));
-      fs.writeFileSync(this.pendingResumesFile, JSON.stringify(data));
-    } catch { /* ignore */ }
-  }
-
-  private loadKnownSessions(): void {
-    try {
-      if (!fs.existsSync(this.knownSessionsFile)) return;
-      const data = JSON.parse(fs.readFileSync(this.knownSessionsFile, 'utf8'));
-      if (!Array.isArray(data)) return;
-
-      let dirty = false;
-      let migratedNames = 0;
-      const cleaned: typeof data = [];
-      for (const entry of data) {
-        if (!entry.sessionId || !entry.cwd) continue;
-        if (this.deletedSessionIds.has(entry.sessionId) || entry.cwd.includes('haiku-worker')) {
-          dirty = true;
-          continue; // remove from file
-        }
-        // Purge <local-command-caveat> ghost sessions
-        if ((entry.proposedName ?? entry.name ?? '').startsWith('<local-command-caveat')) {
-          this.deletedSessionIds.add(entry.sessionId);
-          dirty = true;
-          continue;
-        }
-        cleaned.push(entry);
-        // Pre-populate as closed; SessionWatcher will update active ones
-        const storedOvrId = (entry.overlordId as string | undefined) ?? this.generateOvrId();
-        this.sessionsByOvrId.set(storedOvrId, entry.sessionId);
-        const color = this.sessionColorByOvrId(storedOvrId);
-        // sessionStore is the authoritative source for proposedName. However,
-        // legacy code paths (clone-info, /clear transfer, transcript updates)
-        // historically mutated session.proposedName in memory without patching
-        // sessionStore, so known-sessions.json may hold a fresher value. Boot-
-        // time reconciliation: if known-sessions has a non-empty proposedName
-        // that differs from sessionStore's value, known-sessions wins (it
-        // reflects last-saved in-memory state). After the drift sites are
-        // closed (see S6), subsequent boots find no drift.
-        const storedRec = sessionStore.getBySessionId(entry.sessionId);
-        const entryName = typeof entry.proposedName === 'string' ? entry.proposedName : undefined;
-        let resolvedProposedName = storedRec?.proposedName ?? entryName;
-        if (entryName && entryName !== storedRec?.proposedName) {
-          sessionStore.patch(storedOvrId, { proposedName: entryName });
-          resolvedProposedName = entryName;
-          migratedNames += 1;
-        }
-        const storedHistory = (entry.sessionHistory as Array<{ sessionId: string; attachedAt: number }> | undefined)
-          ?? [{ sessionId: entry.sessionId, attachedAt: entry.startedAt ?? Date.now() }];
-        this.sessions.set(entry.sessionId, {
-          sessionId: entry.sessionId,
-          overlordId: storedOvrId,
-          sessionHistory: storedHistory,
-          provider: entry.provider ?? 'claude',
-          providerSessionId: (entry.providerSessionId as string | undefined) ?? storedRec?.providerSessionId,
-          cwd: entry.cwd,
-          pid: entry.pid ?? 0,
-          startedAt: entry.startedAt ?? Date.now(),
-          state: 'closed',
-          lastActivity: new Date(entry.startedAt ?? Date.now()).toISOString(),
-          // On startup, re-evaluate Overlord-tagged sessions to catch misclassifications.
-          // If the process is alive but NOT spawned by Overlord, correct the label now.
-          sessionType: (() => {
-            // Backward compat: map old launchMethod values to new sessionType
-            let stored: Session['sessionType'];
-            if (entry.sessionType) {
-              stored = entry.sessionType;
-            } else if (entry.launchMethod) {
-              const lm = entry.launchMethod as string;
-              if (lm === 'overlord-pty' || lm === 'overlord-resume') stored = 'embedded';
-              else if (lm === 'ide') stored = 'ide';
-              else stored = 'plain';
-            } else {
-              stored = 'plain';
-            }
-            if (stored !== 'embedded') return stored;
-            const pid = entry.pid ?? 0;
-            if (pid > 0 && !this.isSpawnedByOverlord(pid)) {
-              const ideInfo = this.readIdeInfo(entry.cwd ?? '');
-              const isIde = ideInfo != null && this.isChildOfIde(pid, ideInfo.idePid);
-              return isIde ? 'ide' : 'plain';
-            }
-            return stored;
-          })(),
-          replacedBy: entry.replacedBy,
-          color,
-          subagents: [],
-          proposedName: resolvedProposedName,
-          resumedFrom: entry.resumedFrom,
-          userAccepted: entry.userAccepted,
-          bridgePipeName: entry.bridgePipeName,
-          bridgeMarker: entry.bridgeMarker,
-          transcriptPath: entry.transcriptPath,
-          acknowledged: loadAck(entry.sessionId),
-          gitBranch: storedRec?.gitBranch,
-        });
-
-        // Load transcript for closed sessions so conversation history is visible after restart
-        const transcriptPath = resolveTranscriptPath({
-          cwd: entry.cwd,
-          sessionId: entry.sessionId,
-          resumedFrom: entry.resumedFrom,
-          transcriptPath: entry.transcriptPath,
-        });
-        if (transcriptPath) {
-          try {
-            const result = readTranscriptState(transcriptPath);
-            const s = this.sessions.get(entry.sessionId)!;
-            s.activityFeed = result.activityFeed;
-            if (result.lastActivity) s.lastActivity = result.lastActivity;
-            s.lastMessage = result.lastMessage;
-            s.model = result.model;
-            s.inputTokens = result.inputTokens;
-            s.compactCount = result.compactCount;
-            // Do NOT override state — keep it 'closed'
-          } catch { /* ignore */ }
-        }
-      }
-      if (dirty) {
-        fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
-        fs.writeFileSync(this.knownSessionsFile, JSON.stringify(cleaned, null, 2));
-      }
-      if (migratedNames > 0) {
-        console.log(`[migration] reconciled ${migratedNames} proposedName entries into sessionStore`);
-      }
-    } catch { /* ignore */ }
-
-    // Migration: populate bridgePipeName from old registry file for sessions that don't have it yet
+  /** Backfill bridgePipeName from the legacy `overlord-bridge-registry.json`
+   *  for hydrated bridge sessions that lack it. Patches the OverlordSession too
+   *  so the value survives subsequent restarts without the legacy file. */
+  private migrateLegacyBridgeRegistry(): void {
     try {
       const registryPath = path.join(os.tmpdir(), 'overlord-bridge-registry.json');
-      if (fs.existsSync(registryPath)) {
-        const oldRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, string>;
-        let migrated = false;
-        for (const [sessionId, pipeName] of Object.entries(oldRegistry)) {
-          const session = this.sessions.get(sessionId);
-          if (session && session.sessionType === 'bridge' && !session.bridgePipeName && pipeName) {
-            session.bridgePipeName = pipeName;
-            migrated = true;
-          }
+      if (!fs.existsSync(registryPath)) return;
+      const oldRegistry = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, string>;
+      let migrated = false;
+      for (const [sessionId, pipeName] of Object.entries(oldRegistry)) {
+        const session = this.sessions.get(sessionId);
+        if (session && session.sessionType === 'bridge' && !session.bridgePipeName && pipeName) {
+          session.bridgePipeName = pipeName;
+          if (session.overlordId) sessionStore.patch(session.overlordId, { bridgePipeName: pipeName });
+          migrated = true;
         }
-        if (migrated) console.log('[stateManager] migrated bridge pipe names from old registry');
       }
+      if (migrated) console.log('[stateManager] migrated bridge pipe names from old registry');
     } catch { /* ignore */ }
   }
 
@@ -533,76 +412,42 @@ export class StateManager {
         const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         const currentSessionId = raw.sessionId as string;
         if (!currentSessionId || currentSessionId === oldSessionId) continue;
-        if (this.deletedSessionIds.has(currentSessionId)) continue;
+        if (this.isDeleted(currentSessionId)) continue;
         // The PID file has a different sessionId — /clear happened while we were down
         const newSession = this.sessions.get(currentSessionId);
         if (!newSession) continue; // new session not yet registered (shouldn't happen after sessionWatcher.start)
         console.log(`[clear:startup] PID ${session.pid} changed: ${oldSessionId.slice(0, 8)} → ${currentSessionId.slice(0, 8)}`);
         this.transferSessionState(oldSessionId, currentSessionId);
-        // Mark old session as replaced
+        // Mark old session as replaced. The OS rewrites {pid}.json in place so
+        // the old sid will not reappear in the file scan; no tombstone needed.
         const old = this.sessions.get(oldSessionId);
-        if (old) {
-          old.state = 'closed';
-          this.deletedSessionIds.add(oldSessionId);
-        }
+        if (old) old.state = 'closed';
         this.onChange();
       } catch { /* ignore read errors */ }
     }
   }
 
-  saveKnownSessions(): void {
-    try {
-      fs.mkdirSync(path.dirname(this.knownSessionsFile), { recursive: true });
-      const entries = [...this.sessions.values()]
-        .filter(s => !s.isWorker && !s.cwd.toLowerCase().replace(/\\/g, '/').includes('/.claude/'))
-        .map(s => ({
-          sessionId: s.sessionId,
-          overlordId: s.overlordId,
-          sessionHistory: s.sessionHistory,
-          provider: s.provider,
-          providerSessionId: s.providerSessionId,
-          cwd: s.cwd,
-          sessionType: s.sessionType,
-          replacedBy: s.replacedBy,
-          startedAt: s.startedAt,
-          pid: s.pid,
-          // proposedName intentionally omitted — sessionStore (OverlordSession) is the durable source.
-          resumedFrom: s.resumedFrom,
-          userAccepted: s.userAccepted,
-          bridgePipeName: s.bridgePipeName,
-          bridgeMarker: s.bridgeMarker,
-          transcriptPath: s.transcriptPath,
-        }));
-      fs.writeFileSync(this.knownSessionsFile, JSON.stringify(entries, null, 2));
-      this.saveBridgeRegistry();
-    } catch { /* ignore */ }
-  }
-
   isDeleted(sessionId: string): boolean {
-    return this.deletedSessionIds.has(sessionId);
+    const expiry = this.recentlyDeletedSids.get(sessionId);
+    if (expiry === undefined) return false;
+    if (Date.now() >= expiry) {
+      this.recentlyDeletedSids.delete(sessionId);
+      return false;
+    }
+    return true;
   }
 
   undelete(sessionId: string): void {
-    if (!this.deletedSessionIds.has(sessionId)) return;
-    this.deletedSessionIds.delete(sessionId);
-    try {
-      fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
-    } catch { /* ignore */ }
+    this.recentlyDeletedSids.delete(sessionId);
   }
 
   markDeleted(sessionId: string): void {
-    this.deletedSessionIds.add(sessionId);
-    try {
-      const dir = path.dirname(this.deletedFile);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.deletedFile, JSON.stringify([...this.deletedSessionIds]), 'utf-8');
-    } catch { /* ignore */ }
+    this.recentlyDeletedSids.set(sessionId, Date.now() + StateManager.DELETED_SID_TTL_MS);
     const deletedSession = this.sessions.get(sessionId);
     clearSessionCaches(sessionId, deletedSession?.transcriptPath, deletedSession?.cwd);
     // Color lives on OverlordSession now; removing the lineage record via
     // sessionStore drops its color with it.
     this.sessions.delete(sessionId);
-    this.saveKnownSessions();
     this.onChange();
   }
 
@@ -618,8 +463,12 @@ export class StateManager {
   }
 
   trackPendingResume(cwd: string, resumeSessionId: string): void {
-    this.pendingResumes.set(normalizePath(cwd), { resumeSessionId, timestamp: Date.now() });
-    this.savePendingResumes();
+    const key = normalizePath(cwd);
+    const now = Date.now();
+    this.pendingResumes.set(key, { resumeSessionId, timestamp: now });
+    sessionStore.patchBySessionId(resumeSessionId, {
+      pendingResume: { cwd: key, at: now },
+    });
   }
 
   /**
@@ -672,8 +521,7 @@ export class StateManager {
       // A fresh spawn in this cwd invalidates any stale pendingResume
       // that was never consumed — it can no longer belong to this PTY.
       if (this.pendingResumes.has(normalizePath(cwd))) {
-        this.pendingResumes.delete(normalizePath(cwd));
-        this.savePendingResumes();
+        this.clearPendingResume(cwd);
       }
     }
   }
@@ -682,7 +530,7 @@ export class StateManager {
     const { pid, sessionId, cwd, startedAt } = raw;
 
     // Skip sessions that were explicitly deleted by the user
-    if (this.deletedSessionIds.has(sessionId)) {
+    if (this.isDeleted(sessionId)) {
       return { isNewWaiting: false };
     }
 
@@ -741,15 +589,14 @@ export class StateManager {
         const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
         if (pendingEntry && Date.now() - pendingEntry.timestamp < 60000) {
           resumedFrom = pendingEntry.resumeSessionId;
-          this.pendingResumes.delete(normalizePath(cwd));
-          this.savePendingResumes();
+          this.clearPendingResume(cwd);
         }
       }
     }
     // Guard against self-loop: when `--resume X` keeps the same sessionId
     // (Claude takes over the parent sid), the pending resume target equals
     // the incoming sid. Leaving resumedFrom === sessionId breaks transcript
-    // fallback resolution and persists a broken record to known-sessions.
+    // fallback resolution and persists a broken record to sessionStore.
     if (resumedFrom === sessionId) resumedFrom = undefined;
 
     // Read transcript — own first, then fall back to resumed-from (for --resume which appends to parent)
@@ -779,13 +626,24 @@ export class StateManager {
     const lastActivity = transcript?.lastActivity ?? new Date().toISOString();
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
+    const bridgeMarker = raw.name?.includes('___BRG:') ? raw.name.split('___BRG:')[1] : undefined;
     if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
     // Resolve overlordId now (was previously below) so we can consult sessionStore
     // — the canonical source for proposedName — before falling back to rawName.
     // raw.name from {pid}.json is set at spawn time and never updated; if it
     // wins over the stored name, sentinel renames and user renames get
     // clobbered on every sessionWatcher tick (see OV Nell drift repro).
+    // Consult sessionStore by sid first — its index covers `lineage.history`,
+    // so any sid Overlord has ever attached reattaches to its owning record
+    // instead of minting a duplicate ovr (repro: lineage advances past sid X,
+    // a later transcript event for X spawns a fresh ovr for the same sid).
+    // Also: bridge sessions carry `___BRG:<originalSid>` — when a bridged
+    // claude reconnects with a fresh sid, the marker still names the
+    // original; route the new sid into the original's lineage by ovrId
+    // (otherwise we get duplicate Linden-style twin records).
     const resolvedOverlordId = existingSession?.overlordId
+      ?? sessionStore.resolveOverlordId(sessionId)
+      ?? (bridgeMarker ? sessionStore.resolveOverlordId(bridgeMarker) : undefined)
       ?? (resumedFrom
         ? (sessionStore.resolveOverlordId(resumedFrom) ?? this.sessions.get(resumedFrom)?.overlordId)
         : undefined);
@@ -928,7 +786,23 @@ export class StateManager {
 
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(overlordId, sessionId);
-    sessionStore.ensureFromLive(session);
+
+    // Skip ovr-record persistence for phantom sessions — Claude sometimes
+    // writes a transient `~/.claude/sessions/{pid}.json` for an internal
+    // sub-step (e.g. file-history snapshot) that exits before any transcript
+    // is created. Without this guard, sessionWatcher mints a permanent
+    // `ovr-XXX.json` for every such ghost (no name, no messages, never
+    // resumable). Persist only when there's evidence of a real session:
+    // a transcript file, an existing record, or the process is still alive.
+    const isPhantom =
+      isNew
+      && !transcriptPath
+      && !sessionStore.getByOverlordId(overlordId)
+      && state === 'closed'
+      && !existingSession;
+    if (!isPhantom) {
+      sessionStore.ensureFromLive(session);
+    }
 
     // When a resume inherits the parent's ovrId, mark the parent session as replaced
     // so it no longer appears as an active / stale entry in the UI (mirrors /clear behaviour).
@@ -936,6 +810,7 @@ export class StateManager {
       const parentSession = this.sessions.get(resumedFrom);
       if (parentSession && parentSession.overlordId === overlordId && !parentSession.replacedBy) {
         parentSession.replacedBy = sessionId;
+        sessionStore.patch(overlordId, { replacedBy: sessionId });
       }
     }
 
@@ -954,9 +829,6 @@ export class StateManager {
       }
     }
 
-    if (isNew) {
-      this.saveKnownSessions();
-    }
     this.onChange();
     return { isNewWaiting: isNew && state === 'waiting', lastMessage: transcript?.lastMessage };
   }
@@ -972,7 +844,6 @@ export class StateManager {
       }
       this.sessions.delete(sessionId);
       clearSessionCaches(sessionId, existing.transcriptPath, existing.cwd);
-      this.saveKnownSessions();
       this.onChange();
     }
   }
@@ -1065,7 +936,6 @@ export class StateManager {
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(sessionId, sessionId);
     sessionStore.ensureFromLive(session);
-    this.saveKnownSessions();
     this.onChange();
     return session;
   }
@@ -1077,7 +947,6 @@ export class StateManager {
     session.state = 'working';
     session.lastActivity = new Date().toISOString();
     session.loadedAt = Date.now();
-    this.saveKnownSessions();
     this.onChange();
   }
 
@@ -1124,12 +993,15 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (session && session.sessionType !== type) {
       this.sessions.set(sessionId, { ...session, sessionType: type });
+      if (session.overlordId) {
+        sessionStore.patch(session.overlordId, { sessionType: type });
+      }
       this.onChange();
     }
   }
 
   /**
-   * Revive a bridge session that was loaded as 'closed' from known-sessions on restart.
+   * Revive a bridge session that was hydrated as 'closed' from sessionStore on restart.
    * Called when the bridge pipe successfully reconnects — the process is still alive,
    * so we re-open the session to 'idle' and let transcriptWatcher/processChecker take over.
    */
@@ -1173,7 +1045,7 @@ export class StateManager {
     // Inherit stable overlordId — this is the core of the ovrId design.
     // The new session takes over the old session's lineage identity so PTY routing
     // (keyed by ovrId) does not need to change.
-    // If newSession already has an overlordId (e.g. it was loaded from known-sessions at startup),
+    // If newSession already has an overlordId (e.g. it was hydrated from sessionStore at startup),
     // keep it — don't clobber an established PTY link with an interim session's generated ovrId.
     const inheritedOvrId = newSession.overlordId || oldSession.overlordId;
     newSession.overlordId = inheritedOvrId;
@@ -1194,7 +1066,25 @@ export class StateManager {
     oldSession.bridgePipeName = undefined;
     oldSession.bridgeMarker = undefined;
     oldSession.ptySessionId = undefined;
-    this.saveKnownSessions();
+    // Persist durable fields onto the (possibly shared) overlord record. The
+    // old and new sessions normally share inheritedOvrId, so a single patch
+    // captures bridge metadata + replacedBy. If they don't share an ovrId
+    // (oldSession had its own), patch oldSession's overlord too to clear bridge.
+    sessionStore.patch(inheritedOvrId, {
+      bridgePipeName: newSession.bridgePipeName,
+      bridgeMarker: newSession.bridgeMarker,
+      sessionType: newSession.sessionType,
+      replacedBy: oldSession.replacedBy,
+      resumedFrom: newSession.resumedFrom,
+    });
+    if (oldSession.overlordId && oldSession.overlordId !== inheritedOvrId) {
+      sessionStore.patch(oldSession.overlordId, {
+        replacedBy: newSessionId,
+        bridgePipeName: undefined,
+        bridgeMarker: undefined,
+      });
+    }
+    this.saveBridgeRegistry();
   }
 
   /**
@@ -1207,7 +1097,7 @@ export class StateManager {
   isRevertCandidate(ovrId: string, candidateSid: string): boolean {
     const activeSid = this.sessionsByOvrId.get(ovrId);
     if (!activeSid || activeSid === candidateSid) return false;
-    if (this.deletedSessionIds.has(candidateSid)) return false;
+    if (this.isDeleted(candidateSid)) return false;
     const active = this.sessions.get(activeSid);
     const history = active?.sessionHistory;
     if (!history || history.length < 2) return false;
@@ -1262,7 +1152,12 @@ export class StateManager {
     clearSessionCaches(interimSessionId, interim.transcriptPath, interim.cwd);
 
     log('sid:revert', 'Reverted ovrId to prior sid', { sessionId: targetSessionId, sessionName: target.proposedName ?? targetSessionId.slice(0, 8), extra: `ovrId=${ovrId} interim=${interimSessionId.slice(0, 8)} target=${targetSessionId.slice(0, 8)}` });
-    this.saveKnownSessions();
+    sessionStore.patch(ovrId, {
+      replacedBy: undefined,
+      bridgePipeName: target.bridgePipeName,
+      bridgeMarker: target.bridgeMarker,
+      sessionType: target.sessionType,
+    });
     this.onChange();
   }
 
@@ -1283,7 +1178,7 @@ export class StateManager {
       if (marker !== undefined) patch.bridgeMarker = marker;
       sessionStore.patch(session.overlordId, patch);
     }
-    this.saveKnownSessions();
+    this.saveBridgeRegistry();
     this.onChange();
   }
 
@@ -1312,7 +1207,7 @@ export class StateManager {
   findActiveBridgeByMarker(marker: string): Session | undefined {
     const derivedPipe = derivePipeNameFromMarker(marker);
     for (const session of this.sessions.values()) {
-      if (this.deletedSessionIds.has(session.sessionId)) continue;
+      if (this.isDeleted(session.sessionId)) continue;
       if (session.state === 'closed') continue;
       if (session.sessionType !== 'bridge') continue;
       if (session.bridgeMarker === marker || session.bridgePipeName === derivedPipe) {
@@ -1344,7 +1239,6 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (session && session.pid !== pid) {
       session.pid = pid;
-      this.saveKnownSessions();
       this.onChange();
     }
   }
@@ -1356,7 +1250,6 @@ export class StateManager {
     if (session.overlordId) {
       sessionStore.patch(session.overlordId, { providerSessionId });
     }
-    this.saveKnownSessions();
     this.onChange();
   }
 
@@ -1483,7 +1376,12 @@ export class StateManager {
       }
       session.activityFeed = mergedFeed.length > 0 ? mergedFeed : undefined;
       session.feedTruncated = (result as { feedTruncated?: boolean }).feedTruncated;
-      session.model = result.model;
+      if (session.model !== result.model) {
+        session.model = result.model;
+        if (session.overlordId && result.model) {
+          sessionStore.patch(session.overlordId, { model: result.model });
+        }
+      }
       session.inputTokens = result.inputTokens;
       session.compactCount = result.compactCount;
       // Keep isCompacting sticky while PTY has seen "Compacting conversation…"
@@ -1556,7 +1454,12 @@ export class StateManager {
       }
       // Update pendingQuestion: set when present, clear when gone
       session.pendingQuestion = result.pendingQuestion ?? undefined;
-      session.slug = slug;
+      if (session.slug !== slug) {
+        session.slug = slug;
+        if (session.overlordId && slug) {
+          sessionStore.patch(session.overlordId, { slug });
+        }
+      }
       if (session.proposedName !== proposedName) {
         session.proposedName = proposedName;
         if (session.overlordId) {
@@ -1767,6 +1670,7 @@ export class StateManager {
     if (!session) return;
     if (session.intent === intent) return;
     session.intent = intent;
+    if (session.overlordId) sessionStore.patch(session.overlordId, { intent });
     this.onChange();
   }
 
@@ -2031,8 +1935,8 @@ export class StateManager {
   }
 
   removePtySession(_sessionId: string): void {
-    // No-op: sessions stay tracked in known-sessions.json as closed;
-    // markDeleted() handles explicit removal when user deletes a session.
+    // No-op: sessions stay tracked in sessionStore as closed; markDeleted()
+    // handles explicit removal when the user deletes a session.
   }
 
   getPtySessionIds(): string[] {
@@ -2068,8 +1972,20 @@ export class StateManager {
     // hot-path cost from O(N×M) to O(M+N).
     const plansByOvr = this.buildPlansByOvr();
 
+    // Dedupe by overlordId — keep only the entry whose sid matches the
+    // store's `lineage.currentSessionId`. After a resume the in-memory map
+    // can hold both the old sid (closed) and the new sid (waiting) for the
+    // same ovr; rendering both produces duplicate room cards.
+    const liveSidByOvr = new Map<string, string>();
+    for (const s of this.sessions.values()) {
+      if (!s.overlordId || s.overlordId.startsWith('raw-')) continue;
+      const rec = sessionStore.getByOverlordId(s.overlordId);
+      if (rec?.lineage?.currentSessionId) liveSidByOvr.set(s.overlordId, rec.lineage.currentSessionId);
+    }
     for (const session of this.sessions.values()) {
       if (session.replacedBy) continue;
+      const liveSid = session.overlordId ? liveSidByOvr.get(session.overlordId) : undefined;
+      if (liveSid && liveSid !== session.sessionId) continue;
       // Color is lineage-scoped; `setSessionColor` updates every live session
       // in the lineage at write time. No re-derivation needed here.
       const { cwd } = session;
@@ -2266,7 +2182,11 @@ export class StateManager {
       out.provider = overlord.provider ?? session.provider;
       out.providerSessionId = overlord.providerSessionId ?? session.providerSessionId;
       out.resumedFrom = overlord.resumedFrom ?? session.resumedFrom;
-      out.replacedBy = overlord.replacedBy ?? session.replacedBy;
+      // Strip self-referential replacedBy (record claims it was replaced by
+      // itself — a stale write from an old transferSessionState). Otherwise
+      // getSnapshot's `if (replacedBy) continue` permanently hides the session.
+      const candidateReplacedBy = overlord.replacedBy ?? session.replacedBy;
+      out.replacedBy = candidateReplacedBy === session.sessionId ? undefined : candidateReplacedBy;
       out.bridgePipeName = overlord.bridgePipeName ?? session.bridgePipeName;
       out.bridgeMarker = overlord.bridgeMarker ?? session.bridgeMarker;
       out.historyOnly = overlord.historyOnly ?? session.historyOnly;
@@ -2352,9 +2272,7 @@ export class StateManager {
    * and archived sessions — archived records patch through sessionStore only.
    * Pass an empty string to clear the name.
    *
-   * sessionStore (OverlordSession) is the durable write path for proposedName;
-   * known-sessions.json no longer carries the field and loadKnownSessions()
-   * reads it back from sessionStore on boot.
+   * sessionStore (OverlordSession) is the durable write path for proposedName.
    */
   setSessionName(sessionId: string, name: string): boolean {
     const trimmed = name.trim();
@@ -2435,8 +2353,8 @@ export class StateManager {
   /**
    * On boot, load every non-archived OverlordSession into `this.sessions` as a
    * closed worker. Transcripts may be absent — that's fine, the room just gets
-   * an idle card and the user can resume or delete it. Skips records already
-   * hydrated (e.g. by loadKnownSessions) and records on the deleted blocklist.
+   * an idle card and the user can resume or delete it. Skips records on the
+   * deleted blocklist.
    */
   private hydrateAllActiveSessions(): void {
     // Backfill shadow links for every known sessionId in every lineage —
@@ -2452,7 +2370,7 @@ export class StateManager {
       const sid = rec.lineage?.currentSessionId;
       if (!sid) continue;
       if (this.sessions.has(sid)) continue;
-      if (this.deletedSessionIds.has(sid)) continue;
+      if (this.isDeleted(sid)) continue;
       // Hydrate every active record, even if its transcript can't be resolved.
       // External tools (Claude itself) can delete a `.jsonl` mid-lineage — e.g.
       // after /clear the pre-clear transcript sometimes vanishes. Dropping the
@@ -2508,7 +2426,10 @@ export class StateManager {
       color: rec.color,
       subagents: [],
       resumedFrom: rec.resumedFrom,
-      replacedBy: rec.replacedBy,
+      // Drop self-referential replacedBy — a record whose currentSessionId
+      // equals its replacedBy is its own successor; honoring it would hide
+      // the session from snapshots forever (`getSnapshot` skips replaced).
+      replacedBy: rec.replacedBy === sessionId ? undefined : rec.replacedBy,
       bridgePipeName: rec.bridgePipeName,
       bridgeMarker: rec.bridgeMarker,
       transcriptPath: transcriptPath ?? undefined,
@@ -2521,7 +2442,6 @@ export class StateManager {
 
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(rec.overlordId, sessionId);
-    this.saveKnownSessions();
     this.onChange();
     return session;
   }
@@ -2552,6 +2472,12 @@ export class StateManager {
         // Skip sessions already in state (active sessions)
         if (this.sessions.has(sessionId)) continue;
 
+        // Skip sids already owned by some OverlordSession's lineage (current or
+        // historical). Without this, a sid that has been resumed past (so it's
+        // in `lineage.history` but no longer `currentSessionId`) gets re-minted
+        // here as a new ovr — producing duplicate "twin" rooms (repro: OV Cedar).
+        if (sessionStore.resolveOverlordId(sessionId)) continue;
+
         // Skip sessions that are predecessors of already-known resumed sessions
         let isResumedPredecessor = false;
         for (const existing of this.sessions.values()) {
@@ -2563,7 +2489,7 @@ export class StateManager {
         if (isResumedPredecessor) continue;
 
         // Skip sessions that were explicitly deleted by the user
-        if (this.deletedSessionIds.has(sessionId)) continue;
+        if (this.isDeleted(sessionId)) continue;
 
         const transcriptPath = path.join(slugDir, file);
         scanned++;

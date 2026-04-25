@@ -2,18 +2,11 @@
 
 ## Project
 
-**Claude Office Monitor** — real-time visualization of Claude Code sessions as office workers in a 2D top-down view. Sessions are grouped into rooms by workspace (cwd). Subagents appear as smaller characters near their parent. Click a worker to open a detail panel.
+**Claude Office Monitor** — real-time visualization of Claude Code sessions as office workers in a 2D top-down view. Sessions grouped into rooms by workspace (cwd). Subagents appear as smaller characters near their parent. Click a worker to open a detail panel.
 
-## Higher Purpose & Design Standard
+## UI Standard
 
-Provide a **truly beautiful, comfortable, at-a-glance useful** overview of active Claude sessions. Every UI decision must serve this goal.
-
-**Never be lazy with the UI.** When making visual changes:
-- Ask: does this look modern, clean, polished? (think Linear, Vercel, Raycast)
-- Use Inter (sans-serif), not monospace, for readable text
-- Use proper spacing, visual hierarchy, color contrast
-- Take a screenshot via Chrome DevTools MCP and critically evaluate it
-- If it looks dated or cluttered — fix it before moving on
+Target: Linear / Vercel / Raycast polish. Inter (sans-serif), not monospace, for readable text. Proper spacing, hierarchy, contrast. After any client change: screenshot via Chrome DevTools MCP at `http://localhost:5173`, evaluate, fix before declaring done.
 
 ## Commands
 
@@ -29,15 +22,9 @@ npm run build                            # production
 ```
 packages/
 ├── server/   Node.js + TypeScript + Express + ws + chokidar
-│   └── src/
-│       ├── session/   session lifecycle, state, transcript watching
-│       ├── pty/       terminal injection (PTY, bridge pipe, scheduling)
-│       ├── ai/        classification, LLM queries, task storage
-│       └── api/       REST routes + WebSocket handler
+│   └── src/{session,pty,ai,api}/
 ├── client/   React 18 + TypeScript + Vite + CSS Modules
-│   └── src/
-│       ├── hooks/      useOfficeData, useTerminal, useCustomNames, …
-│       └── components/ Office, Room, Worker, DetailPanel, …
+│   └── src/{hooks,components}/
 └── bridge/   Go binary — named-pipe relay for terminal injection
 ```
 
@@ -50,7 +37,7 @@ packages/
 - `client/src/components/DetailPanel.tsx` — chat UI, activity feed, terminal embed
 - `client/src/hooks/useTerminal.ts` — PTY lifecycle hook
 
-For deep dives, see `docs/`.
+Deep dives: `docs/architecture.md`, `docs/session-lifecycle.md`.
 
 ## Bridge Binary
 
@@ -68,45 +55,17 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 - **PID matching** when spawner knows child PID
 - **sessionId matching** (e.g. `pendingPtyByResumeId`) when target sessionId is known
 
-**Pending resume is marker-keyed**, not cwd-keyed (`stateManager.trackPendingResumeByMarker(ptyId, resumeSessionId)`). A cwd-keyed single-shot map loses the target on the second concurrent resume and breaks lineage linking. Both keys still exist — marker first, cwd fallback.
+**Pending resume is marker-keyed**, not cwd-keyed (`stateManager.trackPendingResumeByMarker(ptyId, resumeSessionId)`). Cwd-keyed loses the target on the second concurrent resume. Both keys still exist — marker first, cwd fallback.
 
-## /clear Detection
+## Session Lifecycle
 
-`/clear` creates new transcript + sessionId; PID stays the same; `{pid}.json` updates in-place. Detection uses **only PID-based mechanisms** (spec: `specs/clear-detection-simplification.md`):
+See `docs/session-lifecycle.md` for lineage/persistence, boot hydration & purge, PTY liveness, /clear detection. Highlights:
 
-1. **Live** (`sessionEventHandlers.ts`): `changed` event, PID matches, different sessionId → `transferSessionState()`
-2. **Periodic** (`transcriptWatcher.ts`, 3s): stale transcript → re-read `{pid}.json`, detect mismatch
-3. **Startup** (`stateManager.detectClearOnStartup()`): compare stored sessionId vs `{pid}.json` after watcher starts
-4. **UI-injected** (`transcriptWatcher.ts`): explicit pending clear via `consumePendingClearReplacement()`
-
-**Do NOT add** new /clear detection paths. CWD matching, transcript scanning, orphan scans, bridge marker suffix — all removed (raced and caused cascading bugs). Fix existing 3 paths instead.
-
-## Lineage & Persistence
-
-**Single source of truth for lineage-scoped fields = `OverlordSession` (one `{ovrId}.json`).**
-
-- `color` lives on `OverlordSession.color`. No separate `colors.json`, no `colorOverrides` map. Read via `stateManager.sessionColorByOvrId(ovrId)`; write via `setSessionColor()` which calls `sessionStore.patch`.
-- `proposedName`, `intent`, `gitBranch`, `sessionType` similarly canonical on OverlordSession; `Session.*` copies are derived at snapshot time.
-- Don't add a second cache. `getSnapshot()` previously re-derived color every build — that band-aid was removed after the refactor.
-
-**`OverlordSession.lastActivity` is NOT a freshness signal.** It's only seeded once on create and never updated. For "is this session alive", use the transcript file's mtime (`findTranscriptPath` + `fs.statSync`).
-
-**Transcript shadow store.** Claude externally deletes `.jsonl` files (notably after `/clear`). To survive this, every transcript Overlord observes is hard-linked into `~/.claude/overlord/transcripts/<ovrId>/<sid>.jsonl` via `ensureShadow()` in `transcriptShadow.ts`. Hard links share the inode, so when Claude unlinks the canonical path the data stays alive under our shadow until `sessionStore.remove(ovrId)` calls `removeShadowDir`. `findTranscriptPath` / `findTranscriptPathAnywhere` fall back to the shadow lookup (sid → ovrId via `sessionStore.getBySessionId`). Link points: `attachSession`, `ensureFromLive`, `rehydrateFromSessionStore`, plus a boot backfill loop in `hydrateAllActiveSessions`.
-
-## Boot Hydration & Purge
-
-- `hydrateAllActiveSessions()` loads every non-archived OverlordSession into `this.sessions` as closed on boot, so the user sees every room/session from disk without interacting first.
-- **No transcript gate on hydrate.** Every active OverlordSession record is hydrated on boot regardless of whether `findTranscriptPath` resolves. `/clear` (and other external tooling) can delete the lineage's current `.jsonl` out from under us; dropping the record would destroy linked artifacts (plans, colors, titles) with no recovery. `rehydrateFromSessionStore` tolerates a missing transcript. Since all records hydrate into `this.sessions`, the purge's "skip hydrated ovrIds" rule means nothing is auto-deleted.
-- `getSnapshot()` also surfaces configured rooms (`~/.claude/overlord/rooms/*.config.json`) even if zero sessions are hydrated for that cwd — via `listConfiguredRoomSlugs()` + reverse slug lookup through sessionStore.
-- `purgeStaleOverlordSessionFiles()` runs 30s after boot, then daily. Deletes records whose transcripts are missing or older than 2 days — **but only when the ovrId is not hydrated into `this.sessions`**. Since boot hydrates every active record with a transcript, only truly orphaned records (hydration failed) drop. Do not revive cwd-keyed or `lastActivity`-based purges.
-- **`.tmp` sweep.** `sessionStore.loadAll()` unlinks any leftover `*.tmp` in `active/` and `archive/` dirs before loading — crashed `atomic-write` calls leave these behind and they get mistaken for live records by casual inspection.
-
-## PTY Liveness in Snapshots
-
-- `sessionType: 'embedded'` on `OverlordSession` is **persisted** and outlives a server restart, but the corresponding PTY (tracked only in the in-memory `ovrToPty` map in `index.ts`) does NOT. After restart, every embedded record is PTY-less until the user re-spawns one.
-- Snapshots carry `Session.ptyAlive: boolean` for embedded sessions. It's stamped by `stateManager.setHasLivePtyFn(...)` which index.ts wires to `ovrToPty.get(ovrId) && ptyManager.has(ptyId)`. Use `ptyAlive` (server truth) over client-side `isPty` (only true after the current client opened a PTY) when gating "attached" UI.
-- Injection guard: `wsHandler.ts` refuses `terminal:send` on embedded sessions with no live PTY — CGEvent can't reach a node-pty child, so the alternative is a misleading "Accessibility" error. Surfacing this as an error is correct; the client should display "Resume in new PTY" instead.
-- **Orphaned `claude --resume` from prior boot.** A claude child from a previous server run holds the `~/.claude/sessions/{pid}.json` lock for its sessionId; reparented to launchd (ppid=1) after the server died. `terminal:resume` would otherwise fail with claude exiting immediately on lock collision. `findExistingClaudeResumePid` in `wsHandler.ts` classifies it as `killable` when ppid===server.pid OR the process command line carries our `___OVR:` / `___BRG:` marker — both cases are SIGTERM'd (escalating to SIGKILL after 2s) before respawning. Foreign claude processes without our marker are refused with an actionable kill-pid message.
+- `OverlordSession` is the single source of truth for `color`, `proposedName`, `intent`, `gitBranch`, `sessionType`. No second cache.
+- `OverlordSession.lastActivity` is seed-only — use transcript mtime for freshness.
+- Boot hydrates every active record into `this.sessions` (no transcript gate). Purge skips hydrated ovrIds.
+- `Session.ptyAlive` (server truth) > client-side `isPty` for "attached" UI.
+- /clear detection: 4 PID-based paths only. Do NOT add new ones.
 
 ## Plan-Driven Development
 
@@ -114,19 +73,33 @@ Manage plans via the `overlord-plans` skill (REST to `/api/plans`). Flow: draft 
 
 **Required when:** refactor touches > 2 files, any persistence or schema change, any auto-scheduled job, anything user-visible after restart. Small single-file bug fixes: skip the plan.
 
-## Browser Verification
-
-After any client-side change, verify in browser via Chrome DevTools MCP (`http://localhost:5173`). Check console errors, layout, behavior. Fix issues before marking done.
-
 ## Independence & Self-Testing
 
-Never ask the user to test something you can test yourself. Only ask when verification requires human judgment or physical interaction.
-
-If port 5173 or 3000 is not running — start it with `npm run dev`. Do not ask.
+Never ask the user to test something you can test yourself. Only ask when verification requires human judgment. If port 5173 or 3000 is not running — start it with `npm run dev`. Do not ask.
 
 ## Agent Usage
 
-Delegate to subagents as often as possible. Prefer parallel tool calls when independent.
+Delegate to subagents whenever independent work parallelizes. Prefer parallel tool calls.
+
+## Destructive Operations
+
+- File deletions (`fs.unlinkSync`, `sessionStore.remove`, `rm -rf`): if count > 5 OR touches `~/.claude/overlord/overlord-sessions/` AND count > 0, dry-run first and print the list before deleting. Wait for explicit user approval.
+- Auto-jobs that delete data must default to OFF. Enable via explicit toggle (env var, settings flag, or CLAUDE.md-documented manual invocation). No `setTimeout(destructiveFn, 30s)` on boot.
+- Cross-check freshness against a second source (transcript mtime, not `lastActivity`).
+
+## Interrupts
+
+When the user sends a message mid-tool-call, finish the in-flight call only if it's a read. For writes/destructive actions, stop, re-read the latest user message, confirm before continuing.
+
+## Options & Restarts
+
+- When the user picks an option by number/letter, implement THAT option. If you deviate, say so before coding.
+- Server code changes (`packages/server/**`) do NOT hot-reload — `tsx watch` was removed. After touching server code, prompt the user to run the `restart-server` skill. Do not claim a server feature "works" until restart is confirmed.
+- Before editing any file that shows a `<system-reminder>` "was modified" notice, re-read it.
+
+## React Render Hygiene
+
+New derived arrays/objects in render bodies of `DetailPanel.tsx`, `Office.tsx`, `Room.tsx` must be `useMemo`'d on the underlying snapshot reference. These re-render every WebSocket tick; an unmemoized `.filter()` / `.map()` breaks downstream memoization and the UI stutters. If the transform is a no-op in the common case, preflight-scan and return the original reference.
 
 ## Guidelines
 
@@ -136,23 +109,3 @@ Delegate to subagents as often as possible. Prefer parallel tool calls when inde
 - **Rules must be followed or removed.** A violated rule is noise.
 - **Memory = surprises only.** Not what `git log` answers — non-obvious decisions only.
 - **Platform-guard or remove.** OS-specific blocks must match `uname` or be deleted.
-
-## Destructive Operations
-
-- File deletions (`fs.unlinkSync`, `sessionStore.remove`, `rm -rf`): if count > 5 OR touches `~/.claude/overlord/overlord-sessions/` AND count > 0, dry-run first and print the list before deleting. Wait for explicit user approval.
-- Auto-jobs that delete data must default to OFF. Enable via an explicit toggle (env var, settings flag, or CLAUDE.md-documented manual invocation). No `setTimeout(destructiveFn, 30s)` on boot.
-- Before any delete: also check whether data has a second source (e.g. transcript file mtime), and use that as the freshness signal instead of self-reported metadata fields (spec: `specs/lineage-single-source.md` — `OverlordSession.lastActivity` is seed-once, do not trust it).
-
-## Interrupts
-
-When the user sends a message mid-tool-call (`<system-reminder>The user sent a new message…</system-reminder>`), finish the in-flight call only if it's a read. For writes/destructive actions, stop, re-read the latest user message, confirm before continuing.
-
-## Options & Restarts
-
-- When the user picks an option by number/letter, implement THAT option. If you deviate (simpler approach, different dedupe, etc.), say so before coding.
-- Server code changes (`packages/server/**`) do NOT hot-reload — `tsx watch` was removed. After touching server code, prompt the user to run the `restart-server` skill. Do not claim a server feature "works" until restart is confirmed.
-- Before editing any file that shows a `<system-reminder>` "was modified" notice, re-read it — constraints may have shifted mid-session.
-
-## React Render Hygiene
-
-New derived arrays/objects in the render body of `DetailPanel.tsx`, `Office.tsx`, `Room.tsx` must be wrapped in `useMemo` keyed on the underlying snapshot reference. These components re-render on every WebSocket tick; an unmemoized `.filter()` / `.map()` breaks downstream memoization and the UI visibly stutters. If the transform is a no-op in the common case, preflight-scan and return the original reference.
