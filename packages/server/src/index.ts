@@ -13,10 +13,12 @@ import { CodexSessionWatcher } from './session/codexSessionWatcher.js';
 import { ProcessChecker } from './session/processChecker.js';
 import { PtyManager } from './pty/ptyManager.js';
 import { getBridgePath, getPipeName, bridgeManager, injectViaPipe, nudgeBridgePipe, resizeAndNudgeBridgePipe } from './pty/pipeInjector.js';
+import { openTerminalWindow as openTerminalWindowImpl, queryBridgeTTY } from './pty/terminalLauncher.js';
+import { deleteSession as deleteSessionImpl } from './session/sessionDeleter.js';
 import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { detectModeFromText } from './session/modeDetect.js';
-import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from './session/transcriptReader.js';
+import { findTranscriptPath, resolveResumableSessionId } from './session/transcriptReader.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from './session/transcriptShadow.js';
 import { buildOpencodeResumeArgs } from './session/opencodeSession.js';
 import { initLogger, log, getBuffer } from './logger.js';
@@ -191,138 +193,11 @@ function pruneStalePendingBridgeMarkers(): void {
 }
 
 // Helper: open a terminal window via overlord-bridge for reliable injection
-async function openTerminalWindow(cwd: string, command: string, title?: string, sessionId?: string, useBridge: boolean = true): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const windowTitle = (title ?? 'Claude').replace(/"/g, '');
-    // Compute clean display name once — used for both --title flag and AppleScript custom title
-    const displayTitle = windowTitle.replace(/___[A-Z]+:[^\s"]+/g, '').trim() || 'Claude';
-    const safeTitle = displayTitle.replace(/"/g, '');
-    const bridgePath = getBridgePath();
-    const bridgeExists = useBridge && fs.existsSync(bridgePath);
-    let pipeName: string | undefined;
-
-    // Platform-independent bridge setup: configure pipe name and session state
-    if (bridgeExists) {
-      pipeName = sessionId
-        ? getPipeName(sessionId)
-        : `overlord-new-${Date.now().toString(36)}`;
-
-      if (sessionId) {
-        stateManager.setSessionType(sessionId, 'bridge');
-        bridgeManager.enableReconnect(sessionId);
-        // Use connectBridgePipe (dual-socket OUTPT+INPUT handshake) — bridgeManager.connect
-        // is the legacy single-socket path that opens a TCP connection but never sends a
-        // handshake byte, so the bridge blocks on conn.Read(header) and never adds the
-        // socket to its broadcast set → no output ever reaches the client.
-        setTimeout(() => connectBridgePipe(sessionId, pipeName!), 3000);
-      } else {
-        // Embed a unique marker in the command's --name flag for reliable matching
-        const bridgeMarker = `brg-${Date.now().toString(36)}`;
-        pruneStalePendingBridgeMarkers();
-        pendingBridgeByMarker.set(bridgeMarker, { pipeName, timestamp: Date.now() });
-        command = command.replace(/--name "([^"]*)"/, `--name "$1___BRG:${bridgeMarker}"`);
-      }
-    }
-
-    let child: ReturnType<typeof spawn>;
-
-    if (process.platform === 'darwin') {
-      // macOS: build a bash command and run it in Terminal.app via osascript
-      const safeCwd = cwd.replace(/"/g, '\\"');
-      let bashCmd: string;
-      if (bridgeExists && pipeName) {
-        bashCmd = `cd "${safeCwd}" && "${bridgePath}" --pipe "${pipeName}" --title "${safeTitle}" -- ${command}`;
-        console.log(`[open-terminal] macOS bridge, pipe=${pipeName}`);
-      } else {
-        bashCmd = `cd "${safeCwd}" && ${command}`;
-        console.log('[open-terminal] macOS direct');
-      }
-      // Escape double-quotes for embedding inside an AppleScript string literal
-      const safeForAS = bashCmd.replace(/"/g, '\\"');
-      // Open window, set it to a comfortable size (160×50), and bring Terminal to front.
-      // Creates (once) an "Overlord Bridge" settings set that shows only the custom title —
-      // no process name, no arguments, no window size — keeping the title bar short.
-      const script = [
-        'tell application "Terminal"',
-        '  -- Create/update the Overlord Bridge profile to show only custom title',
-        '  if not (exists settings set "Overlord Bridge") then',
-        '    make new settings set with properties {name:"Overlord Bridge"}',
-        '  end if',
-        '  tell settings set "Overlord Bridge"',
-        '    set title displays custom title to true',
-        '    set title displays shell path to false',
-        '    set title displays device name to false',
-        '    set title displays window size to false',
-        '    set title displays settings name to false',
-        '  end tell',
-        `  set t to do script "${safeForAS}"`,
-        '  set current settings of t to settings set "Overlord Bridge"',
-        `  set custom title of t to "${safeTitle}"`,
-        '  tell window 1',
-        '    set number of columns to 160',
-        '    set number of rows to 50',
-        '  end tell',
-        '  activate',
-        'end tell',
-      ].join('\n');
-      console.log('[open-terminal] osascript:', script.split('\n')[0]);
-      child = spawn('osascript', ['-e', script], { stdio: 'ignore' });
-    } else {
-      // Windows: use cmd.exe start command
-      const safeBridge = bridgePath.replace(/\//g, '\\');
-      let fullCmd: string;
-      if (bridgeExists && pipeName) {
-        // Run bridge directly (no cmd.exe /K) so it owns the console from row 0.
-        fullCmd = `start "${windowTitle}" /D "${cwd}" ${safeBridge} --pipe ${pipeName} -- ${command}`;
-        console.log(`[open-terminal] using bridge, pipe=${pipeName}`);
-      } else {
-        // Direct spawn — run command in a new terminal window.
-        // If command starts with a quoted exe path, use start directly (no cmd.exe /K wrapper)
-        // to avoid nested quote parsing issues. Otherwise wrap in cmd.exe /K.
-        if (command.startsWith('"')) {
-          fullCmd = `start "${windowTitle}" /D "${cwd}" ${command}`;
-        } else {
-          fullCmd = `start "${windowTitle}" /D "${cwd}" cmd.exe /K ${command}`;
-        }
-        console.log('[open-terminal] direct spawn');
-      }
-      console.log('[open-terminal] running:', fullCmd);
-      child = spawn(fullCmd, [], { shell: true, stdio: 'ignore' });
-    }
-
-    child.on('error', (err) => {
-      console.log('[open-terminal] error:', err.message);
-      reject(err);
-    });
-    child.on('close', (code) => {
-      if (code === 0) {
-        console.log('[open-terminal] success');
-        resolve();
-      } else {
-        reject(new Error(`terminal open exited with code ${code}`));
-      }
-    });
-  });
-}
-
-/**
- * Find the TTY device path of the terminal hosting a bridge session (macOS only).
- * Uses: claude PID → parent PID (bridge process) → ps tty.
- * Returns e.g. "/dev/ttys003", or "" on failure or non-macOS.
- *
- * Note: We intentionally do NOT use the GETTY pipe command here because old bridge
- * binaries (without GETTY support) would forward "GETTY\n" as text input to Claude.
- */
-function queryBridgeTTY(claudePid: number | undefined): string {
-  if (process.platform !== 'darwin' || !claudePid) return '';
-  try {
-    const ppidOut = execSync(`ps -o ppid= -p ${claudePid}`, { encoding: 'utf-8', timeout: 3000 }).trim();
-    const bridgePid = parseInt(ppidOut);
-    if (isNaN(bridgePid) || bridgePid <= 1) return '';
-    const ttyOut = execSync(`ps -o tty= -p ${bridgePid}`, { encoding: 'utf-8', timeout: 3000 }).trim();
-    if (!ttyOut || ttyOut === '??' || ttyOut === '?') return '';
-    return `/dev/${ttyOut}`;
-  } catch { return ''; }
+function openTerminalWindow(cwd: string, command: string, title?: string, sessionId?: string, useBridge: boolean = true): Promise<void> {
+  return openTerminalWindowImpl(
+    { stateManager, bridgeManager, connectBridgePipe, pruneStalePendingBridgeMarkers, pendingBridgeByMarker },
+    cwd, command, title, sessionId, useBridge,
+  );
 }
 
 // Connect to a bridge pipe for a given session. Used for both initial linking and reconnection.
@@ -595,8 +470,31 @@ function linkPendingBridge(sessionId: string, _cwd: string, rawName?: string): v
 // Reconnect to all known bridge pipes on startup
 function reconnectBridgePipes(): void {
   const registry = stateManager.deriveBridgeRegistry();
+  // Heal: surface bridge sessions whose bridgePipeName was never persisted.
+  // For legacy sessions opened via terminal:open-bridged (pipe = `overlord-{sid}`)
+  // OR sessions created before setBridgePipe persisted, derive the pipe name
+  // from the sessionId or the running bridge process command line.
+  for (const session of stateManager.getAllSessions()) {
+    if (session.sessionType !== 'bridge' || session.bridgePipeName) continue;
+    if (registry[session.sessionId]) continue;
+    // Legacy default: `overlord-${sessionId}`. The bridge socket lives in os.tmpdir().
+    const candidate = `overlord-${session.sessionId}`;
+    const sockPath = join(os.tmpdir(), `${candidate}.sock`);
+    if (fs.existsSync(sockPath)) {
+      console.log(`[bridge] healing missing bridgePipeName for ${session.sessionId.slice(0, 8)} → ${candidate}`);
+      stateManager.setBridgePipe(session.sessionId, candidate);
+      registry[session.sessionId] = candidate;
+    }
+  }
   const entries = Object.entries(registry);
   if (entries.length === 0) return;
+
+  // Pre-seed linkedBridgeSessions with every known bridge so the first
+  // post-boot `connected` event is treated as a reconnect (replay: true).
+  // Without this, the initial terminal:linked omits replay → client treats
+  // it as a fresh spawn → onSpawned fires → App.tsx auto-select effect
+  // overwrites the selection the user had stored in the URL hash.
+  for (const [sessionId] of entries) linkedBridgeSessions.add(sessionId);
 
   console.log(`[bridge] reconnecting to ${entries.length} known bridge pipes...`);
   for (const [sessionId, pipeName] of entries) {
@@ -851,7 +749,21 @@ async function autoResumePtySessions(): Promise<void> {
       // entry, otherwise the new sid gets a fresh ovr instead of attaching to
       // the original lineage.
       stateManager.trackPendingResumeByMarker(ptySessionId, effectiveResumeId);
+      // Reserve the existing lineage's ovrId against this marker so the new
+      // sid created by claude --resume re-joins instead of splitting off.
+      const existingOvrId = sessionStore.resolveOverlordId(sessionId);
+      if (existingOvrId) stateManager.reserveOvrIdForMarker(ptySessionId, existingOvrId);
       ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
+      // Also reserve by PID once the child process exists. claude --resume
+      // sometimes drops the --name marker from {pid}.json, so the marker
+      // reservation can miss; PID always matches.
+      if (existingOvrId) {
+        const pid = ptyManager.getPid(ptySessionId);
+        if (pid) stateManager.reserveOvrIdForPid(pid, existingOvrId);
+        else ptyManager.once('pid-ready', (sid: string, p: number) => {
+          if (sid === ptySessionId && p) stateManager.reserveOvrIdForPid(p, existingOvrId);
+        });
+      }
       pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
       console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
     } catch (err) {
@@ -944,112 +856,10 @@ bridgeManager.on('disconnected', (sessionId: string) => {
 // Fast path (in-memory state + snapshot broadcast) runs synchronously; slow path
 // (process kill + file I/O) is deferred via setImmediate so the UI updates first.
 function deleteSession(sessionId: string, pid?: number, reason?: string): void {
-  const caller = reason ?? new Error().stack?.split('\n')[2]?.trim() ?? 'unknown';
-  log('session:killed', `Session deleted (${caller})`, { sessionId, sessionName: sessionId.slice(0, 8), extra: pid ? `PID ${pid}` : 'no PID' });
-  console.log(`[deleteSession] sessionId=${sessionId} pid=${pid} reason=${caller}`);
-
-  // Capture refs that later cleanup needs — stateManager.remove wipes them.
-  const existing = stateManager.getSession(sessionId);
-  const ovrId = existing?.overlordId;
-  const ptyId = ovrId ? ovrToPty.get(ovrId) : undefined;
-  const wasBridge = stateManager.isBridge(sessionId);
-
-  // FAST PATH — in-memory state updates that drive the snapshot broadcast.
-  stateManager.markDeleted(sessionId);
-  stateManager.remove(sessionId);
-  console.log(`[deleteSession] removed ${sessionId} from state`);
-
-  if (ptyId && ovrId) {
-    ovrToPty.delete(ovrId);
-    ptyToOvr.delete(ptyId);
-    ptyManager.kill(ptyId);
-    console.log(`[deleteSession] cleaned up PTY maps ovrId=${ovrId} pty=${ptyId}`);
-  }
-
-  if (wasBridge) {
-    bridgeManager.disconnect(sessionId);
-    bridgePermText.delete(sessionId); bridgePermMode.delete(sessionId);
-    stateManager.setBridgeActive(sessionId, false);
-    linkedBridgeSessions.delete(sessionId);
-    bridgeIdOverrides.delete(sessionId);
-    for (const [k, v] of bridgeIdOverrides) {
-      if (v === sessionId) bridgeIdOverrides.delete(k);
-    }
-    console.log(`[deleteSession] cleaned up bridge state for ${sessionId.slice(0, 8)}`);
-  }
-
-  // SLOW PATH — process kill + file I/O deferred so the snapshot broadcast
-  // (queued by stateManager.remove via setImmediate) fires first.
-  setImmediate(() => {
-    if (pid) {
-      try {
-        try { execSync(`pkill -P ${pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
-        execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
-        console.log(`[deleteSession] killed pid=${pid} via kill -9`);
-      } catch {
-        // Process already dead — fine
-      }
-    }
-
-    const sessionFile = join(os.homedir(), '.claude', 'sessions', `${sessionId}.json`);
-    try {
-      if (fs.existsSync(sessionFile)) {
-        fs.unlinkSync(sessionFile);
-        console.log(`[deleteSession] deleted ${sessionFile}`);
-      }
-    } catch (err) {
-      console.warn(`[deleteSession] failed to delete file for ${sessionId}:`, (err as Error).message);
-    }
-
-    const transcriptFile = findTranscriptPathAnywhere(sessionId);
-    if (transcriptFile) {
-      try {
-        fs.unlinkSync(transcriptFile);
-        console.log(`[deleteSession] deleted transcript ${transcriptFile}`);
-      } catch (err) {
-        console.warn(`[deleteSession] failed to delete transcript for ${sessionId}:`, (err as Error).message);
-      }
-    }
-
-    try {
-      const projectsBase = join(os.homedir(), '.claude', 'projects');
-      if (fs.existsSync(projectsBase)) {
-        for (const slug of fs.readdirSync(projectsBase)) {
-          const sessionSubdir = join(projectsBase, slug, sessionId);
-          if (fs.existsSync(sessionSubdir)) {
-            fs.rmSync(sessionSubdir, { recursive: true, force: true });
-            console.log(`[deleteSession] deleted subdir ${sessionSubdir}`);
-          }
-        }
-      }
-    } catch (err) {
-      console.warn(`[deleteSession] failed to delete session subdir for ${sessionId}:`, (err as Error).message);
-    }
-
-    const tasksBase = join(os.homedir(), '.claude', 'overlord', 'tasks', sessionId);
-    for (const ext of ['.json', '.hint']) {
-      const p = `${tasksBase}${ext}`;
-      try {
-        if (fs.existsSync(p)) {
-          fs.unlinkSync(p);
-          console.log(`[deleteSession] deleted task file ${p}`);
-        }
-      } catch (err) {
-        console.warn(`[deleteSession] failed to delete task file ${p}:`, (err as Error).message);
-      }
-    }
-
-    try {
-      deleteShellHistoryLog(sessionId);
-    } catch (err) {
-      console.warn(`[deleteSession] failed to delete shell history for ${sessionId}:`, (err as Error).message);
-    }
-
-    // Drop the OverlordSession record unless it was just archived
-    // (archive must survive deleteSession).
-    const storeRec = sessionStore.getBySessionId(sessionId);
-    if (!storeRec?.archive) sessionStore.removeBySessionId(sessionId);
-  });
+  deleteSessionImpl(
+    { stateManager, ptyManager, ovrToPty, ptyToOvr, bridgePermText, bridgePermMode, linkedBridgeSessions, bridgeIdOverrides },
+    sessionId, pid, reason,
+  );
 }
 
 // WebSocket handler (moved to wsHandler.ts)
