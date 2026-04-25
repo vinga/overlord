@@ -14,35 +14,14 @@ import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
+import { GitAttribution } from './gitAttribution.js';
+import { ClearLifecycleManager } from './clearLifecycleManager.js';
+import { PtyResumeTracker } from './ptyResumeTracker.js';
+import { normalizePath } from './pathNormalize.js';
 import { log } from '../logger.js';
 
 const QUERY_WORKER_CWD = path.join(os.homedir(), '.claude', 'overlord', 'query-worker');
 const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
-
-const CHECKOUT_RE = /\bgit\s+(?:-[cC]\s+\S+\s+)*(?:checkout|switch|worktree)\b/;
-
-/** Scan the tail of an activityFeed for the most recent git checkout/switch/worktree Bash call. Returns 0 if none. */
-function findLatestCheckoutTs(feed: import('../types.js').ActivityItem[] | undefined): number {
-  if (!feed || feed.length === 0) return 0;
-  const start = Math.max(0, feed.length - 30);
-  let latest = 0;
-  for (let i = feed.length - 1; i >= start; i--) {
-    const item = feed[i];
-    if (item.kind !== 'tool' || item.toolName !== 'Bash') continue;
-    let cmd = '';
-    if (item.inputJson) {
-      try {
-        const parsed = JSON.parse(item.inputJson) as { command?: unknown };
-        if (typeof parsed.command === 'string') cmd = parsed.command;
-      } catch { /* fall through */ }
-    }
-    if (!cmd) cmd = item.content ?? '';
-    if (!CHECKOUT_RE.test(cmd)) continue;
-    const ts = item.timestamp ? new Date(item.timestamp).getTime() : 0;
-    if (ts > latest) latest = ts;
-  }
-  return latest;
-}
 
 function sweepOrphanQueryWorkerFiles(): void {
   try {
@@ -163,14 +142,6 @@ function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined):
   return true;
 }
 
-function normalizePath(p: string): string {
-  // Convert WSL path /mnt/c/... to c:/...
-  const wslMatch = p.match(/^\/mnt\/([a-z])\/(.*)/i);
-  if (wslMatch) return `${wslMatch[1]}:/${wslMatch[2]}`.toLowerCase();
-  // Normalize backslashes and lowercase
-  return p.replace(/\\/g, '/').toLowerCase();
-}
-
 function resolveTranscriptPath(session: {
   cwd: string;
   sessionId: string;
@@ -192,18 +163,7 @@ export class StateManager {
   private onChangeCallback: () => void;
   private onChangePending = false;
   private broadcastSuppressed = false;
-  private pendingResumes = new Map<string, { resumeSessionId: string; timestamp: number }>();
-  private pendingPtySpawns: Map<string, number> = new Map(); // cwd → timestamp
-  /**
-   * ptyIds spawned as FRESH sessions (terminal:start, not terminal:resume),
-   * mapped to insertion timestamp for TTL cleanup. Used by addOrUpdate to
-   * skip the cwd-keyed pendingResumes lookup and prevent stale resume state
-   * from contaminating an unrelated fresh spawn. Entries are not consumed
-   * on lookup because a single PTY may trigger multiple addOrUpdate calls
-   * (initial add + subsequent changed events).
-   */
-  private freshPtySpawns = new Map<string, number>();
-  private static readonly FRESH_PTY_TTL_MS = 5 * 60 * 1000;
+  private resumeTracker = new PtyResumeTracker();
   private acceptedSessions: Set<string> = new Set();
   private readonly acceptedFile = path.join(os.homedir(), '.claude', 'overlord-accepted.json');
   /** Sid → expiry epoch ms. Defensive guard against the brief window between
@@ -217,9 +177,8 @@ export class StateManager {
   /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
   private processSnapshot = new Map<number, { parentPid: number; name: string }>();
   private processSnapshotAge = 0;
-  /** Sessions awaiting /clear replacement — transcript refresh is suppressed until replaced. */
-  private pendingClearSessions = new Set<string>();
-  getPendingClearSessions(): string[] { return [...this.pendingClearSessions]; }
+  private clearLifecycle = new ClearLifecycleManager();
+  getPendingClearSessions(): string[] { return this.clearLifecycle.getInFlightSessions(); }
   /**
    * Legacy colors.json is migrated into sessionStore on boot. The single source
    * of truth for per-lineage color is `OverlordSession.color` (one file per ovrId
@@ -227,8 +186,6 @@ export class StateManager {
    * `sessionColorByOvrId` looks it up through `sessionStore` on demand.
    */
   private readonly legacyColorsFile = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../data/colors.json');
-  /** Sessions that had /clear injected via UI — maps cwd → { sessionId, timestamp } for the next new transcript. */
-  private pendingClearReplacements = new Map<string, { sessionId: string; timestamp: number }>();
   /** Timestamp of last PTY output per session — used to override stale 'waiting' state. */
   private lastPtyActivityAt = new Map<string, number>();
   /** Suppress 'waiting' → 'working' promotion until this timestamp. Used after cycle-permission-mode
@@ -245,8 +202,7 @@ export class StateManager {
   private prCache: PrCache;
   private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
-  /** Per-overlord timestamp (ms) of most recent git checkout/switch/worktree Bash call we've bound to a branch. */
-  private lastCheckoutSeenAt = new Map<string, number>();
+  private gitAttribution = new GitAttribution();
   /** Injected from index.ts after construction — reports whether an ovrId has a live PTY in `ovrToPty`.
    *  Stamped into every snapshot so the client can tell "embedded + live" from "embedded + orphan". */
   private hasLivePtyFn: (ovrId: string) => boolean = () => false;
@@ -348,28 +304,17 @@ export class StateManager {
    *  Source of truth is `OverlordSession.pendingResume`. Expired entries are
    *  cleared on the OverlordSession and skipped. */
   private hydratePendingResumesFromSessionStore(): void {
-    const now = Date.now();
-    for (const rec of sessionStore.listActive()) {
-      const pr = rec.pendingResume;
-      if (!pr) continue;
-      if (now - pr.at >= 60_000) {
-        sessionStore.patch(rec.overlordId, { pendingResume: undefined });
-        continue;
-      }
-      this.pendingResumes.set(pr.cwd, {
-        resumeSessionId: rec.lineage.currentSessionId,
-        timestamp: pr.at,
-      });
+    const { expiredOvrIds } = this.resumeTracker.hydrate(sessionStore.listActive());
+    for (const ovrId of expiredOvrIds) {
+      sessionStore.patch(ovrId, { pendingResume: undefined });
     }
   }
 
   /** Clear a pendingResume entry from the in-memory map and the OverlordSession. */
   private clearPendingResume(cwd: string): void {
-    const key = normalizePath(cwd);
-    const entry = this.pendingResumes.get(key);
-    if (!entry) return;
-    this.pendingResumes.delete(key);
-    const ovrId = sessionStore.resolveOverlordIdAny(entry.resumeSessionId);
+    const cleared = this.resumeTracker.clearResume(cwd);
+    if (!cleared) return;
+    const ovrId = sessionStore.resolveOverlordIdAny(cleared);
     if (ovrId) sessionStore.patch(ovrId, { pendingResume: undefined });
   }
 
@@ -463,66 +408,35 @@ export class StateManager {
   }
 
   trackPendingResume(cwd: string, resumeSessionId: string): void {
-    const key = normalizePath(cwd);
-    const now = Date.now();
-    this.pendingResumes.set(key, { resumeSessionId, timestamp: now });
+    const { key, ts } = this.resumeTracker.trackResume(cwd, resumeSessionId);
     sessionStore.patchBySessionId(resumeSessionId, {
-      pendingResume: { cwd: key, at: now },
+      pendingResume: { cwd: key, at: ts },
     });
   }
 
-  /**
-   * Marker-keyed pending resume. Each `terminal:resume` spawn embeds its
-   * `___OVR:<ptyId>` marker in --name; tracking the resume target by that
-   * marker lets concurrent resumes in the same cwd each find their own parent
-   * instead of fighting over a single cwd-keyed slot.
-   */
-  private pendingResumesByMarker = new Map<string, { resumeSessionId: string; timestamp: number }>();
-
   trackPendingResumeByMarker(ptyId: string, resumeSessionId: string): void {
-    const now = Date.now();
-    this.pendingResumesByMarker.set(ptyId, { resumeSessionId, timestamp: now });
-    for (const [key, entry] of this.pendingResumesByMarker) {
-      if (now - entry.timestamp > 60_000) this.pendingResumesByMarker.delete(key);
-    }
+    this.resumeTracker.trackResumeByMarker(ptyId, resumeSessionId);
   }
 
   consumePendingResumeByMarker(ptyId: string): string | undefined {
-    const entry = this.pendingResumesByMarker.get(ptyId);
-    if (!entry) return undefined;
-    if (Date.now() - entry.timestamp > 60_000) {
-      this.pendingResumesByMarker.delete(ptyId);
-      return undefined;
-    }
-    this.pendingResumesByMarker.delete(ptyId);
-    return entry.resumeSessionId;
+    return this.resumeTracker.consumeResumeByMarker(ptyId);
   }
 
   hasPendingResume(cwd: string): boolean {
-    const entry = this.pendingResumes.get(normalizePath(cwd));
-    return entry != null && Date.now() - entry.timestamp < 60000;
+    return this.resumeTracker.hasResume(cwd);
   }
 
   getPendingResumeTarget(cwd: string): string | undefined {
-    const entry = this.pendingResumes.get(normalizePath(cwd));
-    if (entry && Date.now() - entry.timestamp < 60000) return entry.resumeSessionId;
-    return undefined;
+    return this.resumeTracker.getResumeTarget(cwd);
   }
 
   trackPendingPtySpawn(cwd: string, ptySessionId?: string): void {
-    const now = Date.now();
-    this.pendingPtySpawns.set(normalizePath(cwd), now);
-    if (ptySessionId) {
-      this.freshPtySpawns.set(ptySessionId, now);
-      // Evict expired fresh markers opportunistically so the map does not grow.
-      for (const [key, ts] of this.freshPtySpawns) {
-        if (now - ts > StateManager.FRESH_PTY_TTL_MS) this.freshPtySpawns.delete(key);
-      }
-      // A fresh spawn in this cwd invalidates any stale pendingResume
-      // that was never consumed — it can no longer belong to this PTY.
-      if (this.pendingResumes.has(normalizePath(cwd))) {
-        this.clearPendingResume(cwd);
-      }
+    const { staleResumeCleared } = this.resumeTracker.trackPtySpawn(cwd, ptySessionId);
+    // A fresh spawn in this cwd invalidates any stale pendingResume
+    // that was never consumed — it can no longer belong to this PTY.
+    if (staleResumeCleared) {
+      const ovrId = sessionStore.resolveOverlordIdAny(staleResumeCleared);
+      if (ovrId) sessionStore.patch(ovrId, { pendingResume: undefined });
     }
   }
 
@@ -571,7 +485,7 @@ export class StateManager {
     // a single PTY can trigger multiple addOrUpdate calls (initial add plus
     // subsequent changed events) and all of them must see the flag.
     const markerMatch = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[1] : undefined;
-    const isFreshSpawn = markerMatch !== undefined && this.freshPtySpawns.has(markerMatch);
+    const isFreshSpawn = markerMatch !== undefined && this.resumeTracker.isFreshSpawn(markerMatch);
 
     // Check for a pending resume: if this session was just resumed from another, link them.
     // Resolved early so the transcript fallback below can use it.
@@ -586,9 +500,9 @@ export class StateManager {
         if (byMarker) resumedFrom = byMarker;
       }
       if (!resumedFrom) {
-        const pendingEntry = this.pendingResumes.get(normalizePath(cwd));
-        if (pendingEntry && Date.now() - pendingEntry.timestamp < 60000) {
-          resumedFrom = pendingEntry.resumeSessionId;
+        const target = this.resumeTracker.getResumeTarget(cwd);
+        if (target) {
+          resumedFrom = target;
           this.clearPendingResume(cwd);
         }
       }
@@ -677,12 +591,12 @@ export class StateManager {
     // Determine session type only on first creation; preserve it on subsequent updates.
     let sessionType: Session['sessionType'];
     if (isNew) {
-      const pendingSpawnTs = this.pendingPtySpawns.get(normalizePath(cwd));
+      const pendingSpawnTs = this.resumeTracker.getPtySpawnTs(cwd);
       const isPendingPtySpawn = pendingSpawnTs != null && Date.now() - pendingSpawnTs < 5000
         && (raw.pid === 0 || this.isSpawnedByOverlord(raw.pid));
       if (isPendingPtySpawn) {
         sessionType = 'embedded';
-        this.pendingPtySpawns.delete(normalizePath(cwd));
+        this.resumeTracker.consumePtySpawn(cwd);
       } else if (resumedFrom) {
         // Resumed via /clear or other detection — inherit the old session's sessionType
         const origSession = this.sessions.get(resumedFrom);
@@ -693,7 +607,7 @@ export class StateManager {
         sessionType = 'plain';
       }
     } else {
-      const hasPendingPty = this.pendingPtySpawns.has(normalizePath(cwd)) || this.hasPendingResume(cwd);
+      const hasPendingPty = this.resumeTracker.hasPtySpawn(cwd) || this.hasPendingResume(cwd);
       const pidChanged = raw.pid > 0 && existingSession!.pid > 0 && raw.pid !== existingSession!.pid;
       const wasClosedNowActive = existingSession!.state === 'closed' && state !== 'closed';
       // Re-evaluate sessionType if the PID changed (session was resumed in a new process)
@@ -834,7 +748,7 @@ export class StateManager {
   }
 
   remove(sessionId: string): void {
-    this.pendingClearSessions.delete(sessionId);
+    this.clearLifecycle.completeReplacement(sessionId);
     const existing = this.sessions.get(sessionId);
     if (existing) {
       const ovrId = existing.overlordId;
@@ -981,7 +895,7 @@ export class StateManager {
   }
 
   markClosed(sessionId: string): void {
-    this.pendingClearSessions.delete(sessionId);
+    this.clearLifecycle.completeReplacement(sessionId);
     const session = this.sessions.get(sessionId);
     if (session && session.state !== 'closed') {
       session.state = 'closed';
@@ -1266,9 +1180,9 @@ export class StateManager {
     // re-populating feed). BUT: if the transcript was truncated in place (same sid,
     // smaller file — typical for /clear inside a --resume'd session), that IS the
     // replacement event. Clear the pending flag and proceed normally.
-    if (this.pendingClearSessions.has(sessionId)) {
+    if (this.clearLifecycle.isInFlight(sessionId)) {
       if (result.transcriptTruncated) {
-        this.pendingClearSessions.delete(sessionId);
+        this.clearLifecycle.completeReplacement(sessionId);
         // Also consume the pending clear replacement entry so the transcript
         // watcher doesn't later match an unrelated orphan to this session.
         this.consumePendingClearReplacement(session.cwd);
@@ -1635,30 +1549,19 @@ export class StateManager {
   clearActivityFeed(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    this.pendingClearSessions.add(sessionId);
+    this.clearLifecycle.markCleared(sessionId);
     session.activityFeed = [];
     session.pendingQuestion = undefined;
     session.lastMessage = undefined;
     this.onChange();
   }
 
-  /** Record that /clear was injected into sessionId (via UI). The next new transcript
-   *  in the same cwd will be linked as replacement. */
   markPendingClearReplacement(sessionId: string, cwd: string): void {
-    const key = normalizePath(cwd);
-    console.log(`[pending-clear] marked: ${sessionId.slice(0, 8)} key="${key}"`);
-    this.pendingClearReplacements.set(key, { sessionId, timestamp: Date.now() });
+    this.clearLifecycle.markPendingReplacement(sessionId, cwd);
   }
 
-  /** Consume the pending clear replacement for cwd if it exists and is fresh (<60s). */
   consumePendingClearReplacement(cwd: string): { sessionId: string } | null {
-    const key = normalizePath(cwd);
-    const entry = this.pendingClearReplacements.get(key);
-    console.log(`[pending-clear] consume key="${key}" found=${!!entry} keys=[${[...this.pendingClearReplacements.keys()].join(',')}]`);
-    if (!entry) return null;
-    this.pendingClearReplacements.delete(key);
-    if (Date.now() - entry.timestamp > 60_000) return null;
-    return { sessionId: entry.sessionId };
+    return this.clearLifecycle.consumePendingReplacement(cwd);
   }
 
   /** @deprecated No-op. Request summaries superseded by Task.title. */
@@ -2056,35 +1959,10 @@ export class StateManager {
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;
 
-      // Per-session branch attribution:
-      //   Rule A (initial capture) — if a session has no branch recorded yet
-      //     and it is currently active, adopt the room's branch.
-      //   Rule B (update on checkout) — scan the session's recent Bash tool
-      //     calls for git checkout/switch/worktree; if a newer one is found
-      //     since we last bound, re-read branch and bind to this session.
-      //   Otherwise: keep previously recorded branch (sticky).
-      const ACTIVE_WINDOW_MS = 60_000;
       const now = Date.now();
       for (const session of room.sessions) {
         const live = this.sessions.get(session.sessionId);
-        let nextBranch: string | undefined = session.gitBranch;
-
-        // Rule B — detect a recent git checkout in this session's feed.
-        const latestCheckoutAt = findLatestCheckoutTs(session.activityFeed);
-        if (latestCheckoutAt > 0) {
-          const lastSeen = this.lastCheckoutSeenAt.get(session.overlordId) ?? 0;
-          if (latestCheckoutAt > lastSeen) {
-            this.lastCheckoutSeenAt.set(session.overlordId, latestCheckoutAt);
-            if (branch) nextBranch = branch;
-          }
-        }
-
-        // Rule A — first-time capture for an active session without a branch.
-        if (!nextBranch && branch) {
-          const isActive = session.state !== 'closed'
-            && now - new Date(session.lastActivity).getTime() < ACTIVE_WINDOW_MS;
-          if (isActive) nextBranch = branch;
-        }
+        const nextBranch = this.gitAttribution.attribute(session, branch, now);
 
         if (nextBranch && nextBranch !== session.gitBranch) {
           session.gitBranch = nextBranch;
