@@ -109,7 +109,7 @@ function derivePlanTitle(plan: string): string {
  *  items via REST when the user scrolls past this boundary. Full feed (~300
  *  items × ~250 bytes) ships ~75KB per session × N sessions = MBs per snapshot,
  *  which starved the WS pipe of PTY data during long-session resume. */
-const SNAPSHOT_FEED_TAIL = 30;
+const SNAPSHOT_FEED_TAIL = 200;
 
 function trimActivityFeed<T>(feed: T[] | undefined): T[] | undefined {
   if (!feed || feed.length <= SNAPSHOT_FEED_TAIL) return feed;
@@ -2327,28 +2327,32 @@ export class StateManager {
     }
   }
 
-  private logBootSummary(): void {
+  private buildSessionStats() {
     const active = sessionStore.listActive();
     const archived = sessionStore.listArchived();
-    const totalStore = active.length + archived.length;
 
-    // Group store records by cwd
-    const roomCounts = new Map<string, { active: number; archived: number }>();
+    const rooms: Record<string, { active: number; archived: number; total: number; snapshotBytes: number }> = {};
     for (const rec of active) {
       const name = path.basename(rec.cwd) || rec.cwd;
-      const entry = roomCounts.get(name) ?? { active: 0, archived: 0 };
-      entry.active++;
-      roomCounts.set(name, entry);
+      rooms[name] ??= { active: 0, archived: 0, total: 0, snapshotBytes: 0 };
+      rooms[name].active++;
+      rooms[name].total++;
     }
     for (const rec of archived) {
       const name = path.basename(rec.cwd) || rec.cwd;
-      const entry = roomCounts.get(name) ?? { active: 0, archived: 0 };
-      entry.archived++;
-      roomCounts.set(name, entry);
+      rooms[name] ??= { active: 0, archived: 0, total: 0, snapshotBytes: 0 };
+      rooms[name].archived++;
+      rooms[name].total++;
     }
 
-    // Count .jsonl transcript files across ~/.claude/projects/
-    let transcriptCount = 0;
+    // Measure each room's serialized snapshot size
+    const snap = this.getSnapshot();
+    for (const room of snap.rooms) {
+      const name = path.basename(room.cwd) || room.cwd;
+      if (rooms[name]) rooms[name].snapshotBytes = Buffer.byteLength(JSON.stringify(room));
+    }
+
+    let transcriptsOnDisk = 0;
     const projectsDir = path.join(os.homedir(), '.claude', 'projects');
     if (fs.existsSync(projectsDir)) {
       try {
@@ -2356,20 +2360,44 @@ export class StateManager {
           const slugDir = path.join(projectsDir, slug);
           try {
             if (!fs.statSync(slugDir).isDirectory()) continue;
-            transcriptCount += fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl')).length;
+            transcriptsOnDisk += fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl')).length;
           } catch { /* skip unreadable dirs */ }
         }
       } catch { /* ignore */ }
     }
 
-    const inMemory = this.sessions.size;
-    console.log(
-      `[boot] sessions: ${totalStore} total (${active.length} active, ${archived.length} archived) | in-memory: ${inMemory} | transcripts on disk: ${transcriptCount}`
-    );
+    const toKB = (bytes: number) => `${(bytes / 1024).toFixed(1)} KB`;
+    const totalSnapshotSize = toKB(Buffer.byteLength(JSON.stringify(snap)));
 
-    const roomLines = [...roomCounts.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([name, c]) => `  ${name}: ${c.active + c.archived} (${c.active} active, ${c.archived} archived)`);
+    return {
+      sessions: {
+        total: active.length + archived.length,
+        active: active.length,
+        archived: archived.length,
+        inMemory: this.sessions.size,
+      },
+      transcriptsOnDisk,
+      totalSnapshotSize,
+      rooms: Object.fromEntries(
+        Object.entries(rooms).sort(([a], [b]) => a.localeCompare(b)).map(([name, { snapshotBytes, ...r }]) => [
+          name,
+          { ...r, snapshotSize: toKB(snapshotBytes) },
+        ])
+      ),
+    };
+  }
+
+  getStats() {
+    return this.buildSessionStats();
+  }
+
+  private logBootSummary(): void {
+    const stats = this.buildSessionStats();
+    console.log(
+      `[boot] sessions: ${stats.sessions.total} total (${stats.sessions.active} active, ${stats.sessions.archived} archived) | in-memory: ${stats.sessions.inMemory} | transcripts on disk: ${stats.transcriptsOnDisk}`
+    );
+    const roomLines = Object.entries(stats.rooms)
+      .map(([name, c]) => `  ${name}: ${c.total} (${c.active} active, ${c.archived} archived)`);
     if (roomLines.length > 0) console.log('[boot] rooms:\n' + roomLines.join('\n'));
   }
 

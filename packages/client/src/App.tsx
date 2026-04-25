@@ -17,6 +17,32 @@ import type { GlobalSettings } from './types';
 import { SESSION_NAMES } from './components/Room';
 import type { Room } from './types';
 
+function StatsModal({ onClose }: { onClose: () => void }) {
+  const [json, setJson] = useState<string>('Loading…');
+
+  useEffect(() => {
+    fetch('/api/stats')
+      .then(r => r.json())
+      .then(data => setJson(JSON.stringify(data, null, 2)))
+      .catch(e => setJson(String(e)));
+  }, []);
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
+      <div style={{ background: 'var(--bg, #18181b)', border: '1px solid var(--border, #333)', borderRadius: 10, padding: '20px 24px', width: 520, maxWidth: '90vw', display: 'flex', flexDirection: 'column', gap: 12 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Stats</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.5, fontSize: 18, lineHeight: 1 }}>×</button>
+        </div>
+        <textarea
+          readOnly
+          value={json}
+          style={{ fontFamily: 'monospace', fontSize: 12, background: 'var(--bg-secondary, #111)', border: '1px solid var(--border, #333)', borderRadius: 6, padding: '10px 12px', resize: 'vertical', minHeight: 320, color: 'inherit', width: '100%', boxSizing: 'border-box' }}
+        />
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const [view, setView] = useState<'office' | 'logs'>(() => {
@@ -40,6 +66,7 @@ export function App() {
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showStats, setShowStats] = useState(false);
   const [archivedSession, setArchivedSession] = useState<Session | null>(null);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
   const { rename, migrateSession: migrateNames } = useCustomNames();
@@ -367,6 +394,7 @@ export function App() {
         onNewTerminalSession={handleNewTerminalSession}
         onLogsClick={() => setView('logs')}
         onSettingsClick={() => setShowSettings(true)}
+        onStatsClick={() => setShowStats(true)}
         onOpenAdvancedSearch={() => setShowAdvancedSearch(true)}
 
         selectedSessionId={selectedSessionId}
@@ -396,6 +424,7 @@ export function App() {
           setShowDirectoryPicker(true);
         }}
       />
+      {showStats && <StatsModal onClose={() => setShowStats(false)} />}
       {showSettings && snapshot?.settings && (
         <SettingsModal
           settings={snapshot.settings}

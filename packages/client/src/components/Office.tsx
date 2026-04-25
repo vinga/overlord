@@ -33,11 +33,12 @@ interface OfficeProps {
   onOpenDirectoryPicker?: () => void;
   onLogsClick?: () => void;
   onSettingsClick?: () => void;
+  onStatsClick?: () => void;
   onOpenAdvancedSearch?: () => void;
   platform?: string;
 }
 
-function HeaderMenu({ onNewSession, onLogs, onSettings }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void }) {
+function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -50,7 +51,7 @@ function HeaderMenu({ onNewSession, onLogs, onSettings }: { onNewSession?: () =>
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  if (!onNewSession && !onLogs && !onSettings) return null;
+  if (!onNewSession && !onLogs && !onSettings && !onStats) return null;
 
   return (
     <div ref={ref} className={styles.headerMenu}>
@@ -114,6 +115,23 @@ function HeaderMenu({ onNewSession, onLogs, onSettings }: { onNewSession?: () =>
               <span className={styles.headerMenuItemHint}>Global options</span>
             </button>
           )}
+          {onStats && (
+            <button
+              className={styles.headerMenuItem}
+              onClick={() => { setOpen(false); onStats(); }}
+              role="menuitem"
+            >
+              <span className={styles.headerMenuItemIcon}>
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1.5" y="9" width="3" height="5.5" rx="0.5" />
+                  <rect x="6.5" y="5.5" width="3" height="9" rx="0.5" />
+                  <rect x="11.5" y="1.5" width="3" height="13" rx="0.5" />
+                </svg>
+              </span>
+              <span className={styles.headerMenuItemLabel}>Stats</span>
+              <span className={styles.headerMenuItemHint}>Session counts</span>
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -129,7 +147,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -239,6 +257,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onNewSession={onOpenDirectoryPicker}
           onLogs={onLogsClick}
           onSettings={onSettingsClick}
+          onStats={onStatsClick}
         />
       </header>
       <div className={styles.content}>
