@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -611,6 +611,7 @@ export class StateManager {
     if (!session) return false;
     this.acceptedSessions.add(sessionId);
     session.userAccepted = true;
+    if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: true });
     this.saveAccepted();
     this.onChange();
     return true;
@@ -1277,6 +1278,11 @@ export class StateManager {
     if (!session) return;
     session.bridgePipeName = pipeName;
     if (marker !== undefined) session.bridgeMarker = marker;
+    if (session.overlordId) {
+      const patch: Partial<OverlordSession> = { bridgePipeName: pipeName };
+      if (marker !== undefined) patch.bridgeMarker = marker;
+      sessionStore.patch(session.overlordId, patch);
+    }
     this.saveKnownSessions();
     this.onChange();
   }
@@ -1432,6 +1438,7 @@ export class StateManager {
         session.completionHintByUser = false;
         clearCompletionHint(sessionId);
         session.userAccepted = undefined;
+        if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: undefined });
         this.acceptedSessions.delete(sessionId);
         if (session.acknowledged) {
           session.acknowledged = false;
@@ -1626,6 +1633,7 @@ export class StateManager {
     saveCompletionHintByUser(sessionId, true);
     saveManuallyDone(sessionId, true);
     session.userAccepted = true;
+    if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: true });
     this.acceptedSessions.add(sessionId);
     this.saveAccepted();
     this.onChange();
@@ -2216,34 +2224,62 @@ export class StateManager {
     return out;
   }
 
-  /** Single projector for the wire-format `Session`. Folds the live session with
-   *  the latest plan (from the per-snapshot index) and the PTY-liveness stamp.
-   *  Trims activityFeed (and subagent feeds) to the tail visible without scrolling
-   *  — full feeds were 3 MB+ and starved the WS pipe of PTY data. Older items
-   *  fetched on demand via REST when DetailPanel scrolls past the boundary. */
+  /** Single projector for the wire-format `Session`. **Authoritative reader of
+   *  persistent fields from sessionStore** — overrides live copies so client
+   *  snapshots are drift-proof regardless of what live carries. Live can still
+   *  have stale persistent fields (writers haven't all migrated yet), but
+   *  clients see the truth from disk.
+   *
+   *  Persistent fields routed through sessionStore: proposedName, color, slug,
+   *  model, intent, gitBranch, sessionType, provider, providerSessionId,
+   *  resumedFrom, replacedBy, bridgePipeName, bridgeMarker, historyOnly,
+   *  userAccepted, completionHint, completionHintByUser, manuallyDone,
+   *  acknowledged. (lastActivity / lastMessage stay live — transcript-derived.)
+   *
+   *  Also folds in latestPlan (per-snapshot memo), PTY-liveness, and trims
+   *  activityFeed to the tail visible without scrolling. */
   private composeSession(
     session: Session,
     plansByOvr: Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }>,
   ): Session {
+    const overlord = sessionStore.getByOverlordId(session.overlordId);
     const latestPlan = plansByOvr.get(session.overlordId);
     const needsPty = session.sessionType === 'embedded' && session.overlordId;
-    // Closed sessions aren't actively displayed — DetailPanel fetches their
-    // feed via `/api/sessions/:id/activity-before` on click. Drop it from
-    // snapshots entirely; saves ~90KB across N closed sessions per tick.
     const dropFeed = session.state === 'closed';
     const trimmedFeed = dropFeed ? undefined : trimActivityFeed(session.activityFeed);
     const trimmedSubs = trimSubagentFeeds(session.subagents);
     const feedChanged = trimmedFeed !== session.activityFeed;
     const subsChanged = trimmedSubs !== session.subagents;
-    if (!latestPlan && !needsPty && !feedChanged && !subsChanged) return session;
+
     const out: Session = { ...session };
+    if (overlord) {
+      // Persistent fields: sessionStore wins. Use coalescing so a missing
+      // overlord field doesn't wipe a live fallback (e.g. transient hydration
+      // gaps between addOrUpdate and the first sessionStore.patch).
+      out.proposedName = overlord.proposedName ?? session.proposedName;
+      out.color = overlord.color ?? session.color;
+      out.slug = overlord.slug ?? session.slug;
+      out.model = overlord.model ?? session.model;
+      out.intent = overlord.intent ?? session.intent;
+      out.gitBranch = overlord.gitBranch ?? session.gitBranch;
+      out.sessionType = overlord.sessionType ?? session.sessionType;
+      out.provider = overlord.provider ?? session.provider;
+      out.providerSessionId = overlord.providerSessionId ?? session.providerSessionId;
+      out.resumedFrom = overlord.resumedFrom ?? session.resumedFrom;
+      out.replacedBy = overlord.replacedBy ?? session.replacedBy;
+      out.bridgePipeName = overlord.bridgePipeName ?? session.bridgePipeName;
+      out.bridgeMarker = overlord.bridgeMarker ?? session.bridgeMarker;
+      out.historyOnly = overlord.historyOnly ?? session.historyOnly;
+      out.userAccepted = overlord.userAccepted ?? session.userAccepted;
+      out.completionHint = overlord.completionHint ?? session.completionHint;
+      out.completionHintByUser = overlord.completionHintByUser ?? session.completionHintByUser;
+      out.manuallyDone = overlord.manuallyDone ?? session.manuallyDone;
+      out.acknowledged = overlord.acknowledged ?? session.acknowledged;
+    }
     if (latestPlan) out.latestPlan = latestPlan;
     if (needsPty) out.ptyAlive = this.hasLivePtyFn(session.overlordId);
     if (feedChanged) {
       out.activityFeed = trimmedFeed;
-      // Mark truncation whenever we ship fewer items than the live feed has,
-      // including the closed-session full-drop case — DetailPanel reads
-      // feedTruncated to enable lazy-loading older items on scroll.
       if (session.activityFeed && (!trimmedFeed || trimmedFeed.length < session.activityFeed.length)) {
         out.feedTruncated = true;
       }
