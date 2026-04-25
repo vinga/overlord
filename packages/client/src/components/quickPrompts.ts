@@ -215,6 +215,12 @@ const PROPOSE_TITLE = [
   "",
   "<<overlord:title>>Your title here<</overlord:title>>",
   "",
+  "CRITICAL — the marker has TWO different tags:",
+  "  - opening: <<overlord:title>>     (no slash)",
+  "  - closing: <</overlord:title>>    (slash AFTER the second `<`, before `overlord`)",
+  "Using the opening tag on both ends is the most common mistake — the server's regex `<<overlord:title>>([\\s\\S]+?)<<\\/overlord:title>>` will NOT match and the rename will silently fail.",
+  "Before you submit: visually verify the closing tag contains `</` not `<<`.",
+  "",
   "The Overlord server detects that marker in your last assistant message and renames the session automatically. Do not add any other text before or after.",
 ].join("\n");
 

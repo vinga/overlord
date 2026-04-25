@@ -1687,7 +1687,9 @@ const currentDisplayName =
     if (!effectiveScrollTarget) setActiveTab('conversation');
     setSubagentActiveTab('conversation');
     return () => { if (raf !== undefined) cancelAnimationFrame(raf); };
-  }, [selectedSession?.sessionId, selectedSubagentId]);
+    // Use overlordId (stable across /clear & resume lineage swaps), not sessionId,
+    // so this only fires on a real user-driven session change.
+  }, [selectedSession?.overlordId, selectedSubagentId]);
 
   useEffect(() => {
     const sessionId = selectedSession?.sessionId;
