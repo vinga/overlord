@@ -8,6 +8,75 @@ Run all session diagnostic checks automatically and produce a summary report. Di
 
 ---
 
+## Step 0 — The "Mess After Restart" Triage (Start Here)
+
+This is the recurring class of problem: after a server restart, the user sees too many sessions, too few, unnamed ones, or ones whose PTY chip says open but injection fails. Run these three checks **before** anything else. All are cross-platform (macOS primary, paths under `~/.claude`).
+
+**0a. Count OverlordSession records on disk vs hydrated in memory:**
+
+```bash
+echo "files on disk:"; ls ~/.claude/overlord/overlord-sessions/*.json 2>/dev/null | wc -l
+echo "tmp leftovers:"; ls ~/.claude/overlord/overlord-sessions/*.tmp 2>/dev/null | wc -l
+curl -s http://localhost:3000/api/debug/state | node -e "
+const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+console.log('hydrated sessions:', d.sessions.length);
+const unnamed=d.sessions.filter(s=>!s.proposedName);
+console.log('unnamed sessions:', unnamed.length);
+for (const s of unnamed) console.log('  ', s.sessionId.slice(0,8),'|ovr:',s.overlordId,'|sessionType:',s.sessionType,'|cwd:',s.cwd);
+"
+```
+
+**Red flags:**
+- `tmp leftovers > 0` → a prior `sessionStore.atomic-write` crashed. Current code sweeps these on boot; if they persist, boot sweep failed.
+- `hydrated sessions >> named sessions` → zombies (OverlordSession records whose transcripts were never written). With the current hydrate gate they should be dropped on boot; if they persist, the gate is regressed. Verify `hydrateAllActiveSessions()` in `stateManager.ts` still checks `findTranscriptPath` for claude-like records.
+- `unnamed sessions > 0` for a claude-provider session → its transcript exists but has no user/assistant content yet; fine if fresh, suspect if > a few minutes old.
+
+**0b. Find zombie records (Claude records with no transcript on disk):**
+
+```bash
+node -e "
+const fs=require('fs'),path=require('path'),os=require('os');
+const dir=path.join(os.homedir(),'.claude','overlord','overlord-sessions');
+const projects=path.join(os.homedir(),'.claude','projects');
+const slugs=fs.readdirSync(projects).filter(d=>{try{return fs.statSync(path.join(projects,d)).isDirectory()}catch{return false}});
+function findTranscript(sid){for(const s of slugs){const p=path.join(projects,s,sid+'.jsonl');if(fs.existsSync(p))return p;}return null;}
+const files=fs.readdirSync(dir).filter(f=>f.endsWith('.json'));
+const z=[];
+for(const f of files){try{
+  const d=JSON.parse(fs.readFileSync(path.join(dir,f),'utf8'));
+  if ((d.provider??'claude')!=='claude'||d.sessionType==='raw') continue;
+  const sid=d.lineage&&d.lineage.currentSessionId;
+  if(!sid||!/^[0-9a-f-]{36}\$/.test(sid)) continue;
+  if(!findTranscript(sid)) z.push([f,sid.slice(0,8),d.proposedName||'(no name)']);
+}catch{}}
+console.log('Claude zombies (no transcript):',z.length);
+for(const r of z) console.log(' ',r.join(' | '));
+"
+```
+
+Non-zero result *after a restart* = hydration gate failed to drop them. Expected behavior: zero on every boot.
+
+**0c. Find ptyAlive=false on embedded sessions (dangling PTY UI):**
+
+```bash
+curl -s http://localhost:3000/api/debug/state | node -e "
+const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+const bad=d.sessions.filter(s=>s.sessionType==='embedded' && s.ptyAlive===false && s.state!=='closed');
+console.log('Embedded + no live PTY + not closed:',bad.length);
+for(const s of bad) console.log(' ',s.sessionId.slice(0,8),'|ovr:',s.overlordId,'|state:',s.state,'|name:',s.proposedName||'');
+"
+```
+
+Expected for sessions hydrated after restart: `ptyAlive: false` until user clicks "Resume in new PTY". Client should show the "PTY session has ended" notice — NOT a live terminal. If the client UI shows an apparently live terminal while `ptyAlive: false`, the regression is in `DetailPanel.tsx` / `useTerminal.ts` (gating on `isPty` alone instead of `ptyAlive`).
+
+**Remediation if zombies persist:**
+1. Stop the server.
+2. Re-run 0b to confirm the zombie list.
+3. Delete the `.json` files for those ovrIds from `~/.claude/overlord/overlord-sessions/` (this is >5 files touching that dir — show the list to the user and get explicit approval before `rm`).
+4. Restart. Zero zombies expected on the next boot scan.
+
+---
+
 ## Step 1 — Gather Server State
 
 Hit the debug endpoint and capture the full state:

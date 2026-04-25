@@ -661,6 +661,11 @@ artifactWatcher.start();
 const stateManager = new StateManager(() => {
   broadcast(stateManager.getSnapshot());
 });
+// Inject ovrToPty-backed liveness probe so snapshots carry `ptyAlive` for embedded sessions.
+stateManager.setHasLivePtyFn((ovrId) => {
+  const ptyId = ovrToPty.get(ovrId);
+  return !!(ptyId && ptyManager.has(ptyId));
+});
 
 const aiClassifier = new AiClassifier(stateManager);
 const intentSummarizer = new IntentSummarizer(stateManager);

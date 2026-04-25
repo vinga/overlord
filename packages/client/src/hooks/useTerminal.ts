@@ -193,6 +193,12 @@ export function useTerminal(
 
   const resumeSession = useCallback(
     (resumeSessionId: string, cwd: string, cols = 80, rows = 24) => {
+      setSessionErrors((prev) => {
+        if (!prev.has(resumeSessionId)) return prev;
+        const next = new Map(prev);
+        next.delete(resumeSessionId);
+        return next;
+      });
       sendMessage({ type: 'terminal:resume', resumeSessionId, cwd, cols, rows });
     },
     [sendMessage]

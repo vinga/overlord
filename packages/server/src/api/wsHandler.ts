@@ -1,4 +1,7 @@
 import * as fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 import type { WebSocket, WebSocketServer } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
@@ -55,6 +58,39 @@ function stripInternalMarkers(name: string): string {
 
 function resolveCliProvider(provider?: string): 'claude' | 'opencode' {
   return provider === 'opencode' ? 'opencode' : 'claude';
+}
+
+// Returns { pid, killable } for an existing `claude --resume <sessionId>` process.
+// `killable` = true means we know it's ours (one of these conditions):
+//   - ppid === current server pid (dangling child from THIS boot, PTY link dropped)
+//   - command line carries our `___OVR:` or `___BRG:` marker (orphan from a PRIOR
+//     boot reparented to launchd — still our process, still safe to kill).
+// Non-killable = a foreign claude the user launched outside Overlord. Refuse and
+// surface an actionable error rather than killing arbitrary processes.
+async function findExistingClaudeResumePid(
+  sessionId: string,
+): Promise<{ pid: number; killable: boolean } | null> {
+  if (process.platform === 'win32') return null;
+  try {
+    const { stdout: out } = await execFileAsync('ps', ['-Ao', 'pid=,ppid=,command=']);
+    for (const line of out.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      const ppid = Number(m[2]);
+      const cmd = m[3];
+      if (pid === process.pid) continue;
+      if (!/\bclaude\b/.test(cmd)) continue;
+      if (cmd.includes(`--resume ${sessionId}`)) {
+        const ownChild = ppid === process.pid;
+        const carriesOurMarker = /___(OVR|BRG):/.test(cmd);
+        return { pid, killable: ownChild || carriesOurMarker };
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function scheduleOpencodeSessionIdCapture(
@@ -137,7 +173,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       // Don't send historical buffer — terminal:replay will trigger a fresh nudge instead
     }
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(raw.toString()) as Record<string, unknown>;
@@ -287,6 +323,45 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const effectiveResumeId = resolved.sessionId;
         if (effectiveResumeId !== resumeSessionId) {
           console.log(`[terminal:resume] ${resumeSessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${effectiveResumeId.slice(0, 8)}`);
+        }
+
+        // A second `claude --resume <sid>` collides with claude's session lock
+        // and exits immediately. Detect an existing one; if it's OUR child
+        // (dangling from this boot — PTY/ovrToPty link was dropped), kill it
+        // to free the lock and proceed. If it's foreign (e.g. orphan from a
+        // prior boot reparented to launchd), refuse with an actionable error.
+        const existing = await findExistingClaudeResumePid(effectiveResumeId);
+        if (existing !== null) {
+          if (existing.killable) {
+            console.log(
+              `[terminal:resume] killing existing overlord-owned claude pid=${existing.pid} holding ${effectiveResumeId.slice(0, 8)} to free session lock`,
+            );
+            try { process.kill(existing.pid, 'SIGTERM'); } catch { /* ignore */ }
+            // Wait up to 300ms for claude to release the lock before we
+            // spawn the replacement. claude typically exits within ~100ms of
+            // SIGTERM; the previous 2s ceiling padded session-resume by 1.5s+
+            // on every orphan kill. Escalate to SIGKILL fast — a zombie can't
+            // hold the lock anyway. Poll with async sleeps so the WS event
+            // loop stays responsive.
+            const deadline = Date.now() + 300;
+            let alive = true;
+            while (Date.now() < deadline) {
+              try { process.kill(existing.pid, 0); } catch { alive = false; break; }
+              await new Promise((r) => setTimeout(r, 25));
+            }
+            if (alive) {
+              try { process.kill(existing.pid, 'SIGKILL'); } catch { /* ignore */ }
+              // Brief follow-up wait for kernel to tear down the lock holder.
+              await new Promise((r) => setTimeout(r, 50));
+            }
+          } else {
+            sendToClient(ws, {
+              type: 'terminal:error',
+              sessionId: ptySessionId,
+              message: `Cannot resume: claude process (pid ${existing.pid}) is already attached to this session and was not launched by Overlord. Kill it first: kill ${existing.pid}`,
+            });
+            return;
+          }
         }
 
         stateManager.trackPendingResume(cwd, effectiveResumeId);
@@ -533,6 +608,25 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         const isBridge = stateManager.isBridge(claudeSessionId);
+        const sessionType = claudeSession?.sessionType;
+        const ptyIdEarly = ovrToPty.get(ovrId);
+        const hasLivePty = !!(ptyIdEarly && ptyManager.has(ptyIdEarly));
+
+        // Embedded sessions live inside a node-pty child. CGEvent injection
+        // cannot reach node-pty children (no GUI terminal in the parent chain),
+        // so if the PTY link is gone — typically an orphan from a prior server
+        // boot — bail early with an actionable error instead of letting
+        // injectViaMac surface a misleading "Accessibility permission" failure.
+        if (!isBridge && sessionType === 'embedded' && !hasLivePty) {
+          sendToClient(ws, {
+            type: 'terminal:error',
+            sessionId: ovrId,
+            message:
+              `This embedded session is not linked to a live PTY (likely an orphan from a prior server boot). ` +
+              `Kill the stale claude process (kill ${targetPid}) and resume the session.`,
+          });
+          return;
+        }
 
         // Mark pending clear so the replacement transcript gets linked to this session
         if (text.trimStart().startsWith('/clear')) {

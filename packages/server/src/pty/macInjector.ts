@@ -390,6 +390,18 @@ export async function injectViaMac(pid: number, text: string, extraEnter = false
   const { name: app, guiPid } = detectTerminalInfo(pid);
   console.log(`[inject:mac] pid=${pid} app="${app}" guiPid=${guiPid} extraEnter=${extraEnter}`);
 
+  // CGEvent can only reach GUI terminal apps. If the PID's parent chain has no
+  // recognized GUI terminal (e.g. a node-pty child that isn't linked into
+  // ovrToPty, or an orphan claude from a prior server boot), bail with an
+  // actionable error rather than a misleading "Accessibility permission" one.
+  if (app === 'unknown') {
+    throw new Error(
+      `Cannot inject into session: process ${pid} is not inside a known terminal app. ` +
+      `This usually means the session is orphaned from a prior Overlord server boot. ` +
+      `Kill the stale claude process (kill ${pid}) and resume the session to reattach.`
+    );
+  }
+
   if (app === 'Terminal') {
     // CGEvent + brief activate (~20ms focus steal): reliable for all Terminal.app sessions.
     // `do script` is not used — it silently fails to deliver bytes for many sessions.

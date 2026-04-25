@@ -91,11 +91,22 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 
 **`OverlordSession.lastActivity` is NOT a freshness signal.** It's only seeded once on create and never updated. For "is this session alive", use the transcript file's mtime (`findTranscriptPath` + `fs.statSync`).
 
+**Transcript shadow store.** Claude externally deletes `.jsonl` files (notably after `/clear`). To survive this, every transcript Overlord observes is hard-linked into `~/.claude/overlord/transcripts/<ovrId>/<sid>.jsonl` via `ensureShadow()` in `transcriptShadow.ts`. Hard links share the inode, so when Claude unlinks the canonical path the data stays alive under our shadow until `sessionStore.remove(ovrId)` calls `removeShadowDir`. `findTranscriptPath` / `findTranscriptPathAnywhere` fall back to the shadow lookup (sid → ovrId via `sessionStore.getBySessionId`). Link points: `attachSession`, `ensureFromLive`, `rehydrateFromSessionStore`, plus a boot backfill loop in `hydrateAllActiveSessions`.
+
 ## Boot Hydration & Purge
 
 - `hydrateAllActiveSessions()` loads every non-archived OverlordSession into `this.sessions` as closed on boot, so the user sees every room/session from disk without interacting first.
+- **No transcript gate on hydrate.** Every active OverlordSession record is hydrated on boot regardless of whether `findTranscriptPath` resolves. `/clear` (and other external tooling) can delete the lineage's current `.jsonl` out from under us; dropping the record would destroy linked artifacts (plans, colors, titles) with no recovery. `rehydrateFromSessionStore` tolerates a missing transcript. Since all records hydrate into `this.sessions`, the purge's "skip hydrated ovrIds" rule means nothing is auto-deleted.
 - `getSnapshot()` also surfaces configured rooms (`~/.claude/overlord/rooms/*.config.json`) even if zero sessions are hydrated for that cwd — via `listConfiguredRoomSlugs()` + reverse slug lookup through sessionStore.
-- `purgeStaleOverlordSessionFiles()` runs 30s after boot, then daily. Deletes records whose transcripts are missing or older than 2 days — **but only when the ovrId is not hydrated into `this.sessions`**. Since boot hydrates every active record, nothing user-visible ever gets purged. Only truly orphaned records (hydration failed) drop. Do not revive cwd-keyed or `lastActivity`-based purges.
+- `purgeStaleOverlordSessionFiles()` runs 30s after boot, then daily. Deletes records whose transcripts are missing or older than 2 days — **but only when the ovrId is not hydrated into `this.sessions`**. Since boot hydrates every active record with a transcript, only truly orphaned records (hydration failed) drop. Do not revive cwd-keyed or `lastActivity`-based purges.
+- **`.tmp` sweep.** `sessionStore.loadAll()` unlinks any leftover `*.tmp` in `active/` and `archive/` dirs before loading — crashed `atomic-write` calls leave these behind and they get mistaken for live records by casual inspection.
+
+## PTY Liveness in Snapshots
+
+- `sessionType: 'embedded'` on `OverlordSession` is **persisted** and outlives a server restart, but the corresponding PTY (tracked only in the in-memory `ovrToPty` map in `index.ts`) does NOT. After restart, every embedded record is PTY-less until the user re-spawns one.
+- Snapshots carry `Session.ptyAlive: boolean` for embedded sessions. It's stamped by `stateManager.setHasLivePtyFn(...)` which index.ts wires to `ovrToPty.get(ovrId) && ptyManager.has(ptyId)`. Use `ptyAlive` (server truth) over client-side `isPty` (only true after the current client opened a PTY) when gating "attached" UI.
+- Injection guard: `wsHandler.ts` refuses `terminal:send` on embedded sessions with no live PTY — CGEvent can't reach a node-pty child, so the alternative is a misleading "Accessibility" error. Surfacing this as an error is correct; the client should display "Resume in new PTY" instead.
+- **Orphaned `claude --resume` from prior boot.** A claude child from a previous server run holds the `~/.claude/sessions/{pid}.json` lock for its sessionId; reparented to launchd (ppid=1) after the server died. `terminal:resume` would otherwise fail with claude exiting immediately on lock collision. `findExistingClaudeResumePid` in `wsHandler.ts` classifies it as `killable` when ppid===server.pid OR the process command line carries our `___OVR:` / `___BRG:` marker — both cases are SIGTERM'd (escalating to SIGKILL after 2s) before respawning. Foreign claude processes without our marker are refused with an actionable kill-pid message.
 
 ## Plan-Driven Development
 
@@ -135,3 +146,13 @@ Delegate to subagents as often as possible. Prefer parallel tool calls when inde
 ## Interrupts
 
 When the user sends a message mid-tool-call (`<system-reminder>The user sent a new message…</system-reminder>`), finish the in-flight call only if it's a read. For writes/destructive actions, stop, re-read the latest user message, confirm before continuing.
+
+## Options & Restarts
+
+- When the user picks an option by number/letter, implement THAT option. If you deviate (simpler approach, different dedupe, etc.), say so before coding.
+- Server code changes (`packages/server/**`) do NOT hot-reload — `tsx watch` was removed. After touching server code, prompt the user to run the `restart-server` skill. Do not claim a server feature "works" until restart is confirmed.
+- Before editing any file that shows a `<system-reminder>` "was modified" notice, re-read it — constraints may have shifted mid-session.
+
+## React Render Hygiene
+
+New derived arrays/objects in the render body of `DetailPanel.tsx`, `Office.tsx`, `Room.tsx` must be wrapped in `useMemo` keyed on the underlying snapshot reference. These components re-render on every WebSocket tick; an unmemoized `.filter()` / `.map()` breaks downstream memoization and the UI visibly stutters. If the transform is a no-op in the common case, preflight-scan and return the original reference.

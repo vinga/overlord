@@ -20,6 +20,8 @@ import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
 
+const TITLE_SENTINEL_RE = /^\s*<<overlord:title>>[\s\S]+?<<\/overlord:title>>\s*$/;
+
 // Open all links in new tab
 marked.use({
   hooks: {
@@ -87,6 +89,14 @@ function renderMarkdown(text: string): string {
 
 function formatModel(model: string): string {
   return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+}
+
+function getContextWindow(model: string | undefined, inputTokens: number | undefined): number {
+  // Haiku family is 200k. Opus/Sonnet 4.x support a 1M context beta; if observed
+  // tokens exceed 200k we know the session is on 1M, otherwise assume 200k.
+  if (model && /haiku/i.test(model)) return 200_000;
+  if (inputTokens !== undefined && inputTokens > 200_000) return 1_000_000;
+  return 200_000;
 }
 
 function getFirstLineInfo(content: string): { index: number; text: string } {
@@ -2004,6 +2014,14 @@ const currentDisplayName =
   const isPty = selectedSession ? isPtySession(effectiveOvrId) : false;
   const isExited = selectedSession ? exitedSessions.has(effectiveOvrId) : false;
   const sessionError = selectedSession ? getError(effectiveOvrId) : undefined;
+  // Treat embedded sessions with no live PTY as needing resume even when state
+  // is 'waiting'/'working' — server-side process may still hold the lock but we
+  // can't reach it (e.g. PTY map dropped after a server restart). Without this
+  // the chat input lets the user type into a black hole.
+  const needsResume = !!selectedSession && (
+    selectedSession.state === 'closed' ||
+    (selectedSession.sessionType === 'embedded' && selectedSession.ptyAlive === false)
+  );
 
 
   // Clear stale pending messages after 30s (safety net — count-based clearing handles normal flow)
@@ -2038,7 +2056,15 @@ const currentDisplayName =
   // Extra feed items loaded from server when scrollTarget is near the top of the trimmed feed
   const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
 
-  const realFeed = selectedSession?.activityFeed ?? [];
+  const rawFeed = selectedSession?.activityFeed;
+  const realFeed = useMemo(() => {
+    if (!rawFeed) return [];
+    let hit = false;
+    for (const i of rawFeed) {
+      if (i.kind === 'message' && i.role === 'assistant' && TITLE_SENTINEL_RE.test(i.content ?? '')) { hit = true; break; }
+    }
+    return hit ? rawFeed.filter(i => !(i.kind === 'message' && i.role === 'assistant' && TITLE_SENTINEL_RE.test(i.content ?? ''))) : rawFeed;
+  }, [rawFeed]);
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
   // activityFeed is oldest-first — find the NEWEST user message by searching from the end
@@ -2146,7 +2172,7 @@ const currentDisplayName =
           <>
             {/* Context progress strip */}
             {selectedSession.inputTokens !== undefined ? (() => {
-              const contextWindow = 200_000;
+              const contextWindow = getContextWindow(selectedSession.model, selectedSession.inputTokens);
               const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
               const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
               const totalK = (contextWindow / 1000).toFixed(0);
@@ -2899,7 +2925,7 @@ const currentDisplayName =
                           </span>
                         </div>
                       )}
-                      <div className={`${styles.sendArea} ${selectedSession.state === 'closed' ? styles.sendAreaClosed : ''} ${selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' ? styles.sendAreaDisabled : ''}`}>
+                      <div className={`${styles.sendArea} ${needsResume ? styles.sendAreaClosed : ''} ${selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' ? styles.sendAreaDisabled : ''}`}>
                         {sessionError && (
                           <div className={styles.sendError}>{sessionError}</div>
                         )}
@@ -2937,19 +2963,19 @@ const currentDisplayName =
                             )}
                           </div>
                           <textarea
-                            className={`${styles.sendTextarea} ${selectedSession.state === 'closed' ? styles.sendTextareaClosed : ''}`}
+                            className={`${styles.sendTextarea} ${needsResume ? styles.sendTextareaClosed : ''}`}
                             value={sendInput2}
                             disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
                             onChange={e => setSendInput2(e.target.value)}
                             onClick={() => {
-                              if (selectedSession.state === 'closed' && onResumeSession && !resuming) {
+                              if (needsResume && onResumeSession && !resuming) {
                                 setResuming(true);
                                 onResumeSession(selectedSession.sessionId, selectedSession.cwd);
                               }
                             }}
                             onKeyDown={e => {
                               if (selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded') { e.preventDefault(); return; }
-                              if (selectedSession.state === 'closed') {
+                              if (needsResume) {
                                 e.preventDefault();
                                 if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
@@ -2970,7 +2996,7 @@ const currentDisplayName =
                               }
                             }}
                             onPaste={async e => {
-                              if (selectedSession.state === 'closed') {
+                              if (needsResume) {
                                 e.preventDefault();
                                 if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
@@ -2998,13 +3024,13 @@ const currentDisplayName =
                               };
                               reader.readAsDataURL(blob);
                             }}
-                            placeholder={selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (selectedSession.state === 'closed' ? 'Session exited — click to resume' : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected'))}
+                            placeholder={selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (needsResume ? (selectedSession.state === 'closed' ? 'Session exited — click to resume' : 'PTY disconnected — click to resume') : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected'))}
                             rows={2}
                           />
                           <button
                             className={styles.sendButton}
                             onClick={() => {
-                              if (selectedSession.state === 'closed') {
+                              if (needsResume) {
                                 if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
                               }
@@ -3231,7 +3257,7 @@ const currentDisplayName =
                         </div>
                       )}
                       {selectedSession.inputTokens !== undefined && (() => {
-                        const contextWindow = 200_000;
+                        const contextWindow = getContextWindow(selectedSession.model, selectedSession.inputTokens);
                         const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
                         const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
                         const totalK = (contextWindow / 1000).toFixed(0);

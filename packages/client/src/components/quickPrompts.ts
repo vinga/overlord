@@ -145,17 +145,16 @@ const CHANGE_SUMMARY = [
 const SELF_IMPROVE = [
   "# Self-improve guidance",
   "",
-  "You are improving your own operating instructions. Not formatting — actual quality. Read session history first, then fix the files.",
+  "You are improving your own operating instructions. Not formatting — actual quality. Diagnose from this conversation, then fix the files.",
   "",
   "## Phase 1: Diagnose",
   "",
-  "Read recent sessions to find patterns:",
-  "- `~/.claude/history.jsonl` (last 50 entries)",
+  "Review the current conversation — you already have it in context. Look for patterns across the whole session, not just the last turn. Also read:",
   "- `~/.claude/projects/.../memory/*.md`",
   "- `CLAUDE.md` and `~/.claude/CLAUDE.md`",
   "",
   "Answer these before touching any file:",
-  "1. What mistakes recur across sessions?",
+  "1. What mistakes recurred in this session?",
   "2. What rules exist but are routinely ignored?",
   "3. What situations arise that have no rule?",
   "4. What rules are vague enough to misapply?",
@@ -204,9 +203,25 @@ const SELF_IMPROVE = [
   "Communication: short sentences, no preamble, tool first.",
 ].join("\n");
 
+const PROPOSE_TITLE = [
+  "Propose a concise title for this conversation and set it as the session name.",
+  "",
+  "Rules:",
+  "- 3-7 words. Noun phrase or gerund. Present tense. No period.",
+  "- Capture the core task, not the first message.",
+  "- No quotes, no preamble, no explanation.",
+  "",
+  "Output format — your entire response must be EXACTLY this single line, nothing else:",
+  "",
+  "<<overlord:title>>Your title here<</overlord:title>>",
+  "",
+  "The Overlord server detects that marker in your last assistant message and renames the session automatically. Do not add any other text before or after.",
+].join("\n");
+
 export const QUICK_PROMPTS: QuickPrompt[] = [
   { id: 'remind',         label: 'Remind me where we left off', body: REMIND },
   { id: 'cut-fluff',      label: 'Cut the fluff',               body: CUT_FLUFF },
+  { id: 'propose-title',  label: 'Propose a title',             body: PROPOSE_TITLE },
   { id: 'pr-review',      label: 'Handle PR Review Comments',   body: PR_REVIEW },
   { id: 'change-summary', label: 'Code Change Summary',         body: CHANGE_SUMMARY },
   { id: 'self-improve',   label: 'Self-improve guidance',       body: SELF_IMPROVE },

@@ -20,8 +20,15 @@ export function feedCompactDetector(
   chunk: string,
   onDetect: (line: string) => void,
 ): void {
-  const stripped = stripForMatch(chunk);
+  // Hot path: PTY data callback fires hundreds of times per second during
+  // session resume / claude streaming. The 5 regex passes in stripForMatch
+  // are expensive — gate on a cheap substring before doing any of it.
+  // Compact spinner always emits the literal "ompacting" (covers case where
+  // 'C' falls on a chunk boundary). Anything else cannot become a match no
+  // matter how the rolling buffer concatenates.
   const prev = buffers.get(key) ?? '';
+  if (!prev && chunk.indexOf('ompacting') === -1) return;
+  const stripped = stripForMatch(chunk);
   const combined = (prev + stripped).slice(-BUF_SIZE);
   buffers.set(key, combined);
   if (combined.includes('Compacting conversation')) {

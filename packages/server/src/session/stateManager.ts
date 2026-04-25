@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -104,8 +104,9 @@ import {
   readProposedName,
   clearSessionCaches,
 } from './transcriptReader.js';
+import { ensureShadow } from './transcriptShadow.js';
 import type { RawSession } from './sessionWatcher.js';
-import { saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck } from '../ai/taskStorage.js';
+import { saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck, saveCompletionHintByUser, saveManuallyDone, loadManuallyDone, loadCompletionHintByUser } from '../ai/taskStorage.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { ArtifactStatus } from '../artifacts/types.js';
 
@@ -119,6 +120,33 @@ function derivePlanTitle(plan: string): string {
   const firstLine = plan.split('\n').map(l => l.trim()).find(l => l.length > 0) ?? 'Plan';
   const stripped = firstLine.replace(/^#+\s*/, '').replace(/^[-*]\s*/, '');
   return stripped.length > 80 ? stripped.slice(0, 77) + '…' : stripped;
+}
+
+/** Tail length for activityFeed in WS snapshots. DetailPanel lazy-loads older
+ *  items via REST when the user scrolls past this boundary. Full feed (~300
+ *  items × ~250 bytes) ships ~75KB per session × N sessions = MBs per snapshot,
+ *  which starved the WS pipe of PTY data during long-session resume. */
+const SNAPSHOT_FEED_TAIL = 30;
+
+function trimActivityFeed<T>(feed: T[] | undefined): T[] | undefined {
+  if (!feed || feed.length <= SNAPSHOT_FEED_TAIL) return feed;
+  return feed.slice(feed.length - SNAPSHOT_FEED_TAIL);
+}
+
+function trimSubagentFeeds(subs: Subagent[] | undefined): Subagent[] | undefined {
+  if (!subs || subs.length === 0) return subs;
+  let changed = false;
+  const out: Subagent[] = [];
+  for (const s of subs) {
+    const trimmed = trimActivityFeed(s.activityFeed);
+    if (trimmed !== s.activityFeed) {
+      changed = true;
+      out.push({ ...s, activityFeed: trimmed });
+    } else {
+      out.push(s);
+    }
+  }
+  return changed ? out : subs;
 }
 
 /** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
@@ -214,6 +242,10 @@ export class StateManager {
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
   /** Per-overlord timestamp (ms) of most recent git checkout/switch/worktree Bash call we've bound to a branch. */
   private lastCheckoutSeenAt = new Map<string, number>();
+  /** Injected from index.ts after construction — reports whether an ovrId has a live PTY in `ovrToPty`.
+   *  Stamped into every snapshot so the client can tell "embedded + live" from "embedded + orphan". */
+  private hasLivePtyFn: (ovrId: string) => boolean = () => false;
+  setHasLivePtyFn(fn: (ovrId: string) => boolean): void { this.hasLivePtyFn = fn; }
 
   private generateOvrId(): string {
     return 'ovr-' + Math.random().toString(36).slice(2, 10);
@@ -268,11 +300,17 @@ export class StateManager {
   private onChange(): void {
     if (this.onChangePending) return;
     this.onChangePending = true;
-    setImmediate(() => {
+    // Throttle to 5Hz. setImmediate coalesces only within one event-loop tick;
+    // a 200ms timer coalesces transcript changes, PTY output, classify hits,
+    // etc. across many ticks. With N=20+ sessions the snapshot can be 100KB+ —
+    // bunching broadcasts frees the WS pipe and event loop for PTY data streams
+    // during session resume. UI feels live at 5Hz; raising further hurts
+    // perceived responsiveness on state transitions.
+    setTimeout(() => {
       this.onChangePending = false;
       if (this.broadcastSuppressed) return;
       this.onChangeCallback();
-    });
+    }, 200);
   }
 
   /** Suppress snapshot broadcasts. Call resumeBroadcast() when done to fire one consolidated snapshot. */
@@ -741,14 +779,24 @@ export class StateManager {
     let rawName = raw.name?.includes('___OVR:') ? raw.name.split('___OVR:')[0] : raw.name;
     // Also strip bridge marker (___BRG:xxx) from display name
     if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
-    // Prefer the in-memory name on existing sessions — it reflects user renames
-    // (written to sessionStore and into live.proposedName). `rawName` from
-    // {pid}.json is set at spawn time and never updated, so using it as the
-    // primary source would overwrite renames on every sessionWatcher tick.
+    // Resolve overlordId now (was previously below) so we can consult sessionStore
+    // — the canonical source for proposedName — before falling back to rawName.
+    // raw.name from {pid}.json is set at spawn time and never updated; if it
+    // wins over the stored name, sentinel renames and user renames get
+    // clobbered on every sessionWatcher tick (see OV Nell drift repro).
+    const resolvedOverlordId = existingSession?.overlordId
+      ?? (resumedFrom
+        ? (sessionStore.resolveOverlordId(resumedFrom) ?? this.sessions.get(resumedFrom)?.overlordId)
+        : undefined);
+    const stored = resolvedOverlordId ? sessionStore.getByOverlordId(resolvedOverlordId) : undefined;
+    const storedName = stored?.proposedName?.startsWith('<local-command-caveat')
+      ? undefined
+      : stored?.proposedName;
     const existingName = existingSession?.proposedName?.startsWith('<local-command-caveat')
       ? undefined
       : existingSession?.proposedName;
-    const resolvedName = existingName
+    const resolvedName = storedName
+      ?? existingName
       ?? (rawName || undefined)
       ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
       ?? (resumedFrom ? this.sessions.get(resumedFrom)?.proposedName : undefined);
@@ -808,11 +856,8 @@ export class StateManager {
     // Preserve overlordId across updates; generate once on first creation.
     // On resume, inherit the parent's ovrId so the new sessionId attaches to the
     // existing lineage rather than minting a duplicate OverlordSession record.
-    const overlordId = existingSession?.overlordId
-      ?? (resumedFrom
-        ? (sessionStore.resolveOverlordId(resumedFrom) ?? this.sessions.get(resumedFrom)?.overlordId)
-        : undefined)
-      ?? this.generateOvrId();
+    // resolvedOverlordId was computed above for storedName lookup; reuse it.
+    const overlordId = resolvedOverlordId ?? this.generateOvrId();
     color = this.sessionColorByOvrId(overlordId);
     // Preserve sessionHistory; initialize with first entry on creation.
     const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
@@ -868,6 +913,8 @@ export class StateManager {
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
       activeMonitors: transcript?.activeMonitors,
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
+      completionHintByUser: state === 'waiting' ? (existingSession?.completionHintByUser ?? (isNew ? loadCompletionHintByUser(sessionId) : false)) : false,
+      manuallyDone: state === 'waiting' ? (existingSession?.manuallyDone ?? (isNew ? loadManuallyDone(sessionId) : false)) : false,
       acknowledged: state === 'waiting' ? (existingSession?.acknowledged ?? (isNew ? loadAck(sessionId) : false)) : false,
       userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
       isWorker: raw.kind === 'haiku-worker',
@@ -1509,6 +1556,10 @@ export class StateManager {
           sessionStore.patch(session.overlordId, { proposedName });
         }
       }
+      // Apply title sentinel AFTER proposedName reconciliation — otherwise the
+      // reconcile step above would clobber the sentinel rename using the stale
+      // `proposedName` local captured before the sentinel ran.
+      this.applyTitleSentinelIfPresent(sessionId, result.lastMessage);
       session.subagents = subagents;
       session.transcriptPath = transcriptPath;
     }
@@ -1517,6 +1568,8 @@ export class StateManager {
     if (session.manuallyDone && result.state !== 'waiting') {
       session.manuallyDone = false;
       session.completionHintByUser = false;
+      saveManuallyDone(sessionId, false);
+      saveCompletionHintByUser(sessionId, false);
       changed = true;
     }
 
@@ -1525,12 +1578,15 @@ export class StateManager {
       if (session.completionHint !== 'done' || !session.completionHintByUser) {
         session.completionHint = 'done';
         session.completionHintByUser = true;
+        saveCompletionHint(sessionId, 'done');
+        saveCompletionHintByUser(sessionId, true);
         changed = true;
       }
     } else if (session.completionHintByUser && !session.manuallyDone) {
       // User sent something other than DONE — clear the user-set hint
       session.completionHint = undefined;
       session.completionHintByUser = false;
+      clearCompletionHint(sessionId);
       changed = true;
     }
 
@@ -1567,6 +1623,8 @@ export class StateManager {
     session.completionHintByUser = true;
     session.manuallyDone = true;
     saveCompletionHint(sessionId, 'done');
+    saveCompletionHintByUser(sessionId, true);
+    saveManuallyDone(sessionId, true);
     session.userAccepted = true;
     this.acceptedSessions.add(sessionId);
     this.saveAccepted();
@@ -1996,6 +2054,11 @@ export class StateManager {
 
   getSnapshot(): OfficeSnapshot {
     const roomMap = new Map<string, Room>();
+    // Per-snapshot memo (Tier 1 + Tier 2 from snapshot-cost plan): build the
+    // plan index ONCE per tick instead of running artifactStore.listByOverlord
+    // per session. With N=20+ sessions and 50+ plan artifacts this drops the
+    // hot-path cost from O(N×M) to O(M+N).
+    const plansByOvr = this.buildPlansByOvr();
 
     for (const session of this.sessions.values()) {
       if (session.replacedBy) continue;
@@ -2011,7 +2074,7 @@ export class StateManager {
           sessions: [],
         });
       }
-      roomMap.get(cwd)!.sessions.push(this.projectLatestPlan(session));
+      roomMap.get(cwd)!.sessions.push(this.composeSession(session, plansByOvr));
     }
 
     // Surface every configured room even if it currently has no hydrated
@@ -2129,24 +2192,64 @@ export class StateManager {
     return this.sessions.get(sessionId);
   }
 
-  private projectLatestPlan(session: Session): Session {
-    const plans = artifactStore.listByOverlord(session.overlordId, 'plan');
-    if (plans.length === 0) return session;
-    const latest = plans
-      .filter(p => p.status !== 'archived')
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-    if (!latest) return session;
-    return {
-      ...session,
-      latestPlan: {
-        artifactId: latest.artifactId,
-        title: latest.title,
-        body: latest.body,
-        status: latest.status,
-        claudePlanToolUseId: latest.claudePlanToolUseId,
-        updatedAt: latest.updatedAt,
-      },
-    };
+  /** Per-snapshot plan index. Built once at the top of `getSnapshot()` and passed
+   *  to `composeSession()` so each session lookup is O(1) instead of running an
+   *  artifactStore scan per session. Pulled from `composeSession` rather than
+   *  computing inline so other in-process consumers can build the wire-format
+   *  Session shape without re-running the projection logic. */
+  private buildPlansByOvr(): Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }> {
+    const out = new Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }>();
+    for (const a of artifactStore.list('plan')) {
+      if (a.status === 'archived') continue;
+      const cur = out.get(a.overlordId);
+      if (!cur || a.updatedAt.localeCompare(cur.updatedAt) > 0) {
+        out.set(a.overlordId, {
+          artifactId: a.artifactId,
+          title: a.title,
+          body: a.body,
+          status: a.status,
+          claudePlanToolUseId: a.claudePlanToolUseId,
+          updatedAt: a.updatedAt,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Single projector for the wire-format `Session`. Folds the live session with
+   *  the latest plan (from the per-snapshot index) and the PTY-liveness stamp.
+   *  Trims activityFeed (and subagent feeds) to the tail visible without scrolling
+   *  — full feeds were 3 MB+ and starved the WS pipe of PTY data. Older items
+   *  fetched on demand via REST when DetailPanel scrolls past the boundary. */
+  private composeSession(
+    session: Session,
+    plansByOvr: Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }>,
+  ): Session {
+    const latestPlan = plansByOvr.get(session.overlordId);
+    const needsPty = session.sessionType === 'embedded' && session.overlordId;
+    // Closed sessions aren't actively displayed — DetailPanel fetches their
+    // feed via `/api/sessions/:id/activity-before` on click. Drop it from
+    // snapshots entirely; saves ~90KB across N closed sessions per tick.
+    const dropFeed = session.state === 'closed';
+    const trimmedFeed = dropFeed ? undefined : trimActivityFeed(session.activityFeed);
+    const trimmedSubs = trimSubagentFeeds(session.subagents);
+    const feedChanged = trimmedFeed !== session.activityFeed;
+    const subsChanged = trimmedSubs !== session.subagents;
+    if (!latestPlan && !needsPty && !feedChanged && !subsChanged) return session;
+    const out: Session = { ...session };
+    if (latestPlan) out.latestPlan = latestPlan;
+    if (needsPty) out.ptyAlive = this.hasLivePtyFn(session.overlordId);
+    if (feedChanged) {
+      out.activityFeed = trimmedFeed;
+      // Mark truncation whenever we ship fewer items than the live feed has,
+      // including the closed-session full-drop case — DetailPanel reads
+      // feedTruncated to enable lazy-loading older items on scroll.
+      if (session.activityFeed && (!trimmedFeed || trimmedFeed.length < session.activityFeed.length)) {
+        out.feedTruncated = true;
+      }
+    }
+    if (subsChanged && trimmedSubs) out.subagents = trimmedSubs;
+    return out;
   }
 
   /** Exposed so on-demand git-status endpoint can share the single PR cache. */
@@ -2234,6 +2337,33 @@ export class StateManager {
     return true;
   }
 
+  /** Detect `<<overlord:title>>...<</overlord:title>>` in the latest assistant text
+   *  and rename the session. With Step 3 in place (addOrUpdate now reads
+   *  proposedName from sessionStore.getByOverlordId before falling back), live
+   *  no longer drifts from disk — so a single titleSentinel-text dedupe is
+   *  sufficient. */
+  private applyTitleSentinelIfPresent(sessionId: string, lastMessage: string | undefined): void {
+    if (!lastMessage) return;
+    const match = lastMessage.match(/<<overlord:title>>([\s\S]+?)<<\/overlord:title>>/);
+    if (!match) return;
+    const title = match[1].trim().slice(0, 80);
+    if (!title) return;
+    const rec = sessionStore.getBySessionId(sessionId);
+    if (!rec) return;
+    if (rec.titleSentinel === title) return;
+    // Preserve a short uppercase prefix the user added to group sessions
+    // (e.g. "OV", "PS-B"); only the topic suffix is replaced.
+    const prefixMatch = rec.proposedName?.match(/^([A-Z][A-Z0-9-]{0,5})\s+/);
+    const nextName = prefixMatch ? `${prefixMatch[1]} ${title}` : title;
+    sessionStore.patch(rec.overlordId, { titleSentinel: title, proposedName: nextName });
+    const live = this.sessions.get(sessionId);
+    if (live) {
+      live.proposedName = nextName;
+      this.onChange();
+    }
+    log('info', 'Title set via sentinel', { sessionId, sessionName: nextName });
+  }
+
   /**
    * One-shot migration: if the legacy `data/colors.json` exists, fold every
    * entry into the matching OverlordSession record, then remove the file.
@@ -2273,11 +2403,26 @@ export class StateManager {
    * hydrated (e.g. by loadKnownSessions) and records on the deleted blocklist.
    */
   private hydrateAllActiveSessions(): void {
+    // Backfill shadow links for every known sessionId in every lineage —
+    // catches existing installs and re-links anything Claude hasn't yet
+    // deleted. ensureShadow is idempotent and silent on missing originals.
+    for (const rec of sessionStore.listActive()) {
+      for (const h of rec.lineage?.history ?? []) {
+        const original = findTranscriptPath(rec.cwd, h.sessionId) ?? findTranscriptPathAnywhere(h.sessionId);
+        if (original) ensureShadow(rec.overlordId, h.sessionId, original);
+      }
+    }
     for (const rec of sessionStore.listActive()) {
       const sid = rec.lineage?.currentSessionId;
       if (!sid) continue;
       if (this.sessions.has(sid)) continue;
       if (this.deletedSessionIds.has(sid)) continue;
+      // Hydrate every active record, even if its transcript can't be resolved.
+      // External tools (Claude itself) can delete a `.jsonl` mid-lineage — e.g.
+      // after /clear the pre-clear transcript sometimes vanishes. Dropping the
+      // record on boot loses linked artifacts (plans, colors, titles) with no
+      // recovery path. `rehydrateFromSessionStore` already tolerates a missing
+      // transcript — it just omits transcriptState.
       try { this.rehydrateFromSessionStore(sid); } catch { /* swallow — one bad record shouldn't block boot */ }
     }
   }
@@ -2289,6 +2434,7 @@ export class StateManager {
     this.undelete(sessionId);
 
     const transcriptPath = findTranscriptPath(rec.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+    if (transcriptPath) ensureShadow(rec.overlordId, sessionId, transcriptPath);
 
     let transcriptState: ReturnType<typeof readTranscriptState> | null = null;
     if (transcriptPath) {

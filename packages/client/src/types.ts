@@ -98,6 +98,8 @@ interface Session {
   isCompacting?: boolean;
   resumedFrom?: string;
   sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  /** True when sessionType==='embedded' and the server has a live PTY for this ovrId. */
+  ptyAlive?: boolean;
   bridgeTty?: string;         // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
   historyOnly?: boolean;      // revived raw-shell session (disk log only, no live PTY)
   bridgeDead?: boolean;       // output pipe exhausted retries — terminal feed is gone

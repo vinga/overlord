@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor } from '../types.js';
 import { sessionStore } from './sessionStore.js';
+import { shadowPathFor } from './transcriptShadow.js';
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -130,6 +131,14 @@ export function clearProposedNameCache(sessionId: string): void {
   proposedNameCache.delete(sessionId);
 }
 
+/** Look up shadow path for a sessionId via sessionStore (ovrId required). */
+function findShadowTranscript(sessionId: string): string | null {
+  const rec = sessionStore.getBySessionId(sessionId);
+  if (!rec?.overlordId) return null;
+  const shadow = shadowPathFor(rec.overlordId, sessionId);
+  try { return fs.existsSync(shadow) ? shadow : null; } catch { return null; }
+}
+
 export function cwdToSlug(cwd: string): string {
   // Replace \, :, / with -
   const slug = cwd.replace(/[\\:/]/g, '-');
@@ -147,7 +156,7 @@ export function findTranscriptPath(cwd: string, sessionId: string): string | nul
   } catch {
     // ignore
   }
-  return null;
+  return findShadowTranscript(sessionId);
 }
 
 /**
@@ -293,7 +302,7 @@ export function findTranscriptPathAnywhere(sessionId: string): string | null {
       } catch { /* skip */ }
     }
   } catch { /* ignore */ }
-  return null;
+  return findShadowTranscript(sessionId);
 }
 
 /**

@@ -132,6 +132,11 @@ export interface Session {
   // PTY/embedded connection metadata (populated when sessionType === 'embedded')
   ptySessionId?: string;     // e.g. "pty-abc123" — the PTY manager's session ID
   transcriptPath?: string;
+  /** True when sessionType==='embedded' AND a PTY is currently registered for this
+   *  ovrId in `ovrToPty`. After a server restart, persisted sessionType stays
+   *  'embedded' but no PTY exists — client uses this flag to show "reopen"
+   *  instead of a live terminal. */
+  ptyAlive?: boolean;
 
   // Raw shell history-only marker — revived from disk log on startup, no live PTY.
   // User can click "Restart shell" in DetailPanel to spawn a fresh shell at original cwd.
@@ -214,6 +219,11 @@ export interface OverlordSession {
   lastActivity?: string;
   lastMessage?: string;
 
+  /** Body of the most recently applied <<overlord:title>>…<</overlord:title>> sentinel.
+   *  Used to dedupe sentinel-driven renames across transcript rereads and restarts:
+   *  the apply path is a no-op when the extracted title matches this. */
+  titleSentinel?: string;
+
   intent?: string;
   intentTurnCount?: number;
   intentUpdatedAt?: number;
@@ -223,7 +233,14 @@ export interface OverlordSession {
   gitBranch?: string;
   currentTask?: Task;
   completionSummaries?: Task[];
-  completionHint?: 'done';
+  completionHint?: 'done' | 'awaiting';
+  /** True when completionHint was set by the user (DONE command) rather than by
+   *  Haiku auto-classification. Persisted so a manual mark survives restart. */
+  completionHintByUser?: boolean;
+  /** Explicit user mark via "I'm done" UI action. Distinct from completionHint
+   *  because manuallyDone outlives the waiting→working transitions that clear
+   *  the auto-classified hint. Persisted across restarts. */
+  manuallyDone?: boolean;
   acknowledged?: boolean;
 
   /** Presence = archived. Written when the record moves to the archive dir. */

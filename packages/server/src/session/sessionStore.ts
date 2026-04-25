@@ -8,6 +8,7 @@ import type {
   ArchivedTranscript,
   PullRequestSnapshot,
 } from '../types.js';
+import { ensureShadow, removeShadowDir } from './transcriptShadow.js';
 
 function defaultBaseDir(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
@@ -102,6 +103,12 @@ export class SessionStore {
     const loadDir = (dir: string, target: Map<string, OverlordSession>): void => {
       let files: string[];
       try { files = fs.readdirSync(dir); } catch { return; }
+      // Sweep leftover *.tmp files from crashed writes — they accumulate and
+      // get mistaken for live records by casual `ls` inspection.
+      for (const f of files) {
+        if (!f.endsWith('.tmp')) continue;
+        try { fs.unlinkSync(path.join(dir, f)); } catch { /* ignore */ }
+      }
       for (const f of files) {
         if (!f.endsWith('.json') || f.endsWith('.tmp')) continue;
         const full = path.join(dir, f);
@@ -219,6 +226,7 @@ export class SessionStore {
     target.set(ovrId, merged);
     this.reindex(merged);
     this.scheduleFlush(ovrId);
+    if (entry.transcriptPath) ensureShadow(ovrId, entry.sessionId, entry.transcriptPath);
     return merged;
   }
 
@@ -284,6 +292,7 @@ export class SessionStore {
       intent: live.intent,
     };
     this.upsertActive(seed);
+    if (live.transcriptPath) ensureShadow(ovrId, live.sessionId, live.transcriptPath);
     return seed;
   }
 
@@ -344,6 +353,7 @@ export class SessionStore {
     this.archived.delete(ovrId);
     try { fs.unlinkSync(this.activePath(ovrId)); } catch { /* not found is fine */ }
     try { fs.unlinkSync(this.archivedPath(ovrId)); } catch { /* not found is fine */ }
+    removeShadowDir(ovrId);
   }
 
   /** Remove by sessionId (resolved via index). */
