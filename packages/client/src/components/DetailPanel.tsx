@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
-import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
+import type { Session, WorkerState, ActivityItem, Subagent } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
@@ -16,6 +16,8 @@ import { FileEditorOverlay } from './FileEditorOverlay';
 import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { ArtifactsTab } from './ArtifactsTab';
+import { QuestionPrompt } from './QuestionPrompt';
+import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
@@ -521,108 +523,6 @@ function PermissionPrompt({ sessionId, promptText, isLimitPrompt, styles }: {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function QuestionPrompt({ sessionId, questionSet, initialStage, onStageChange, styles }: {
-  sessionId: string;
-  questionSet: PendingQuestionSet;
-  initialStage: number;
-  onStageChange: (stage: number) => void;
-  styles: Record<string, string>;
-}) {
-  const [stage, setStage] = React.useState(initialStage);
-  const [responding, setResponding] = React.useState(false);
-  const [selected, setSelected] = React.useState<string | null>(null);
-  const [error, setError] = React.useState(false);
-
-  const questions = questionSet.questions ?? [];
-  if (questions.length === 0) return null;
-  const question = questions[stage];
-  if (!question) return null;
-  const total = questions.length;
-
-  // AskUserQuestion TUI uses arrow-key navigation.
-  // We send arrows first, wait for the TUI to process them, then send Enter.
-  const doInject = async (text: string, raw = false) => {
-    const r = await fetch(`/api/sessions/${sessionId}/inject`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, raw }),
-    });
-    if (!r.ok) throw new Error(`inject failed: ${r.status}`);
-  };
-
-  const respond = async (optionIndex: number, label: string) => {
-    setResponding(true);
-    setSelected(label);
-    setError(false);
-    try {
-      // Send each arrow individually (raw=true so no auto-appended \r), then Enter
-      for (let i = 0; i < optionIndex; i++) {
-        await doInject('\x1b[B', true);
-        await new Promise(r => setTimeout(r, 80));
-      }
-      await doInject('\r');
-      if (stage < total - 1) {
-        // Advance to next question after a brief pause
-        setTimeout(() => {
-          const next = stage + 1;
-          setStage(next);
-          onStageChange(next);
-          setSelected(null);
-          setResponding(false);
-        }, 400);
-      } else {
-        // Last question answered — TUI shows a "Review + Submit" confirmation step.
-        // Auto-confirm by sending Enter (selects "Submit answers", option 1) after a delay.
-        setTimeout(() => void doInject('\r').catch(() => null), 600);
-        // Clear persisted stage so next question set starts at 0
-        onStageChange(0);
-        // Leave responding=true until transcript clears the prompt
-      }
-    } catch {
-      setError(true);
-      setSelected(null);
-      setResponding(false);
-      setTimeout(() => setError(false), 3000);
-    }
-  };
-
-  return (
-    <div className={styles.questionPrompt}>
-      <div className={styles.questionMeta}>
-        {question.header && <span className={styles.questionHeader}>{question.header}</span>}
-        {total > 1 && (
-          <span className={styles.questionProgress}>{stage + 1} / {total}</span>
-        )}
-      </div>
-      <div className={styles.questionText}>{question.question}</div>
-      {question.options.length > 0 ? (
-        <div className={styles.questionOptions}>
-          {question.options.map((opt, i) => (
-            <button
-              key={i}
-              className={`${styles.questionOption} ${selected === opt.label ? styles.questionOptionSelected : ''} ${error ? styles.questionOptionError : ''}`}
-              onClick={() => void respond(i, opt.label)}
-              disabled={responding}
-            >
-              <span className={styles.questionOptionNum}>{i + 1}</span>
-              <span className={styles.questionOptionBody}>
-                <span className={styles.questionOptionLabel}>{opt.label}</span>
-                {opt.description && <span className={styles.questionOptionDesc}>{opt.description}</span>}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : (
-        <div className={styles.questionPromptActions}>
-          <button className={`${styles.permissionBtn} ${styles.permissionBtnYes}`} onClick={() => void respond(0, 'Continue')} disabled={responding}>
-            {error ? 'Failed' : 'Continue'}
-          </button>
-        </div>
-      )}
     </div>
   );
 }
@@ -1441,14 +1341,6 @@ export function DetailPanel({
     };
   }, [selectedSession?.cwd]);
 
-  const transcriptRef = useRef<HTMLDivElement>(null);
-  const isAtBottomRef = useRef(true);
-  // When the user initiates an up-jump, lock out auto-scroll-to-bottom for a short
-  // window. The smooth-scroll animation starts from scrollTop ≈ bottom, so the first
-  // few scroll frames would otherwise re-mark us as "at bottom" and let the feed
-  // autoscroll effect hijack the scroll back to MAX_SAFE_INTEGER.
-  const autoScrollLockUntilRef = useRef(0);
-  const [scrollJumpLabels, setScrollJumpLabels] = useState<{ up: { label: string; depth: number } | null; down: { label: string; depth: number } | null }>({ up: null, down: null });
   // Persist question stage across remounts (snapshot refreshes can unmount/remount QuestionPrompt)
   const questionStageRef = useRef<Map<string, number>>(new Map());
 
@@ -1486,172 +1378,9 @@ export function DetailPanel({
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  function handleTranscriptScroll() {
-    const el = transcriptRef.current;
-    if (!el) return;
-    const threshold = 40; // px from bottom counts as "at bottom"
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
-    // During an active up-jump, don't let early animation frames flip us back to "at bottom".
-    if (!(atBottom && Date.now() < autoScrollLockUntilRef.current)) {
-      isAtBottomRef.current = atBottom;
-    }
-    // Once the user scrolls back to the bottom, release the scroll target
-    if (atBottom && effectiveScrollTarget) { setInternalScrollTarget(undefined); setInternalScrollQuery(undefined); onScrollTargetConsumed?.(); }
-    updateScrollJump();
-  }
-
-  type JumpAction = { label: string; depth: number; run: () => void };
-
-  function countScopeDepth(targetEl: HTMLElement | null, outer: HTMLElement): number {
-    if (!targetEl || targetEl === outer) return 0;
-    let depth = 0;
-    let cur: HTMLElement | null = targetEl;
-    while (cur && cur !== outer) {
-      const cls = cur.className;
-      if (typeof cls === 'string' && (cls.includes('inlineAgentFeed') || cls.includes('transcriptBubble'))) {
-        depth++;
-      }
-      cur = cur.parentElement;
-    }
-    return depth;
-  }
-
-  function findLongBubbleAtCenter(outer: HTMLElement): HTMLElement | null {
-    const outerRect = outer.getBoundingClientRect();
-    const targetY = outerRect.top + outerRect.height / 2;
-    const minHeight = outer.clientHeight * 1.5;
-    const bubbles = outer.querySelectorAll<HTMLElement>('[class*="transcriptBubble"]');
-    let best: HTMLElement | null = null;
-    for (const b of bubbles) {
-      const r = b.getBoundingClientRect();
-      if (r.height < minHeight) continue;
-      if (r.top <= targetY && r.bottom >= targetY) {
-        // Prefer the innermost matching bubble
-        if (!best || best.contains(b)) best = b;
-      }
-    }
-    return best;
-  }
-
-  function findAgentBlockAtCenter(outer: HTMLElement): HTMLElement | null {
-    const blocks = outer.querySelectorAll<HTMLElement>('[class*="inlineAgentFeed"]');
-    const outerRect = outer.getBoundingClientRect();
-    const targetY = outerRect.top + outerRect.height / 2;
-    for (const b of blocks) {
-      const r = b.getBoundingClientRect();
-      if (r.top <= targetY && r.bottom >= targetY) return b;
-    }
-    return null;
-  }
-
-  function scrollElement(el: HTMLElement, top: number) {
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduceMotion) el.scrollTop = top;
-    else el.scrollTo({ top, behavior: 'smooth' });
-  }
-
-  function computeJumps(): { up: JumpAction | null; down: JumpAction | null } {
-    const outer = transcriptRef.current;
-    if (!outer) return { up: null, down: null };
-    const outerScrollable = outer.scrollHeight - outer.clientHeight;
-    if (outerScrollable < 16) return { up: null, down: null };
-
-    const outerEl: HTMLElement = outer;
-    const bubble = findLongBubbleAtCenter(outerEl);
-    const agentBlock = findAgentBlockAtCenter(outerEl);
-    const room = 200; // conservative: need ≥ 200px of travel to show the arrow
-    const outerRect = outerEl.getBoundingClientRect();
-
-    function topInOuter(el: HTMLElement) {
-      return el.getBoundingClientRect().top - outerRect.top + outerEl.scrollTop;
-    }
-    function bottomInOuter(el: HTMLElement) {
-      return el.getBoundingClientRect().bottom - outerRect.top + outerEl.scrollTop;
-    }
-
-    let up: JumpAction | null = null;
-    let down: JumpAction | null = null;
-
-    // UP
-    const upExtra = 100;
-    if (bubble) {
-      const bTop = topInOuter(bubble);
-      if (outer.scrollTop - bTop >= room) {
-        up = { label: 'Bubble top', depth: countScopeDepth(bubble, outerEl), run: () => scrollElement(outer, Math.max(0, bTop - 8 - upExtra)) };
-      }
-    }
-    if (!up && agentBlock) {
-      const aTop = topInOuter(agentBlock);
-      if (outer.scrollTop - aTop >= room) {
-        up = { label: 'Agent start', depth: countScopeDepth(agentBlock, outerEl), run: () => scrollElement(outer, Math.max(0, aTop - 8 - upExtra)) };
-      }
-    }
-    if (!up && outerEl.scrollTop >= 64) {
-      up = { label: 'Session top', depth: 0, run: () => scrollElement(outerEl, 0) };
-    }
-
-    // DOWN
-    const viewBottom = outer.scrollTop + outer.clientHeight;
-    if (bubble) {
-      const bBot = bottomInOuter(bubble);
-      if (bBot - viewBottom >= room) {
-        down = { label: 'Bubble bottom', depth: countScopeDepth(bubble, outerEl), run: () => scrollElement(outer, bBot - outer.clientHeight + 8) };
-      }
-    }
-    if (!down && agentBlock) {
-      const aBot = bottomInOuter(agentBlock);
-      if (aBot - viewBottom >= room) {
-        down = { label: 'Agent end', depth: countScopeDepth(agentBlock, outerEl), run: () => scrollElement(outer, aBot - outer.clientHeight + 8) };
-      }
-    }
-    if (!down && outer.scrollHeight - viewBottom >= Math.min(room, 64)) {
-      down = { label: 'Session latest', depth: 0, run: () => scrollElement(outer, outer.scrollHeight) };
-    }
-
-    return { up, down };
-  }
-
-  function updateScrollJump() {
-    const { up, down } = computeJumps();
-    setScrollJumpLabels(prev => {
-      const upNext = up ? { label: up.label, depth: up.depth } : null;
-      const downNext = down ? { label: down.label, depth: down.depth } : null;
-      if (prev.up?.label === upNext?.label && prev.up?.depth === upNext?.depth &&
-          prev.down?.label === downNext?.label && prev.down?.depth === downNext?.depth) return prev;
-      return { up: upNext, down: downNext };
-    });
-  }
-
-  function handleScrollJumpUp() {
-    const { up } = computeJumps();
-    if (!up) return;
-    // Disengage auto-scroll-to-bottom and lock it out for the duration of the
-    // smooth-scroll animation. Without the lock, the first scroll frames still
-    // register as "at bottom" (< 40px moved) and feed updates mid-animation
-    // would snap scrollTop back to MAX_SAFE_INTEGER.
-    isAtBottomRef.current = false;
-    autoScrollLockUntilRef.current = Date.now() + 1000;
-    up.run();
-  }
-
-  function handleScrollJumpDown() {
-    const { down } = computeJumps();
-    if (!down) return;
-    if (down.label === 'Session latest') isAtBottomRef.current = true;
-    down.run();
-  }
-
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
-  // Recompute jump pill state when transcript tab or target changes
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => {
-      requestAnimationFrame(updateScrollJump);
-    });
-    return () => cancelAnimationFrame(raf);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSubagentId, subagentActiveTab, activeTab, selectedSession?.sessionId]);
   const [notesContent, setNotesContent] = useState('');
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notesSessionIdRef = useRef<string | undefined>(undefined);
@@ -1712,33 +1441,35 @@ const currentDisplayName =
 
   const elapsedSeconds = useElapsedSeconds(selectedSession?.lastActivity);
 
-  // Auto-scroll when feed changes, only if already at bottom
+  const {
+    transcriptRef,
+    isAtBottomRef,
+    scrollJumpLabels,
+    handleTranscriptScroll,
+    handleScrollJumpUp,
+    handleScrollJumpDown,
+    recomputeJump,
+  } = useTranscriptScroll({
+    feed: selectedSession?.activityFeed,
+    subagentFeed: selectedSubagent?.activityFeed,
+    activeTab,
+    sendCount: localSent.length,
+    hasScrollTarget: !!effectiveScrollTarget,
+    onReachedBottomWithTarget: () => {
+      setInternalScrollTarget(undefined);
+      setInternalScrollQuery(undefined);
+      onScrollTargetConsumed?.();
+    },
+  });
+
+  // Recompute jump pill state when transcript tab or target changes
   useEffect(() => {
-    if (Date.now() < autoScrollLockUntilRef.current) return;
-    if (!isAtBottomRef.current) return;
-    // Double rAF: wait for React render + browser layout/paint before scrolling
     const raf = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (transcriptRef.current) {
-          transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
-        }
-      });
+      requestAnimationFrame(recomputeJump);
     });
     return () => cancelAnimationFrame(raf);
-  }, [selectedSession?.activityFeed, selectedSubagent?.activityFeed, activeTab]);
-
-  // Force scroll to bottom when user sends a message
-  useEffect(() => {
-    if (localSent.length === 0) return;
-    isAtBottomRef.current = true;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (transcriptRef.current) {
-          transcriptRef.current.scrollTop = Number.MAX_SAFE_INTEGER;
-        }
-      });
-    });
-  }, [localSent.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSubagentId, subagentActiveTab, activeTab, selectedSession?.sessionId]);
 
   // Clear extraFeed and reset hasMore when session changes
   useEffect(() => {
