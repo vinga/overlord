@@ -23,9 +23,7 @@ export interface WsHandlerContext {
   wsSessionMap: Map<WebSocket, Set<string>>;
   ovrToPty: Map<string, string>;     // ovrId → ptySessionId
   ptyToOvr: Map<string, string>;     // ptySessionId → ovrId
-  pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
-  pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
+  linkageTracker: import('../session/ptyLinkageTracker.js').PtyLinkageTracker;
   ptyOutputBuffer: Map<string, Buffer[]>;
   broadcastRaw: (msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
@@ -121,9 +119,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     wsSessionMap,
     ovrToPty,
     ptyToOvr,
-    pendingPtyByPid,
-    pendingPtyByResumeId,
-    pendingCloneInfo,
+    linkageTracker,
     ptyOutputBuffer,
     broadcastRaw,
     sendToClient,
@@ -396,7 +392,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           const resumePtyName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
           log('pty:started', 'PTY session started', { sessionId: ovrId, sessionName: resumePtyName });
 
-          pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, ws, timestamp: Date.now() });
+          linkageTracker.trackResume(effectiveResumeId, { ptySessionId, ws, timestamp: Date.now() });
         } catch (err) {
           sendToClient(ws, {
             type: 'terminal:error',
@@ -938,7 +934,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         // Store clone info (name + original session) so it gets applied after
         // the PTY links to the new forked session via PID matching.
-        pendingCloneInfo.set(ptySessionId, { name: cloneName, originalSessionId: sessionId });
+        linkageTracker.trackCloneInfo(ptySessionId, { name: cloneName, originalSessionId: sessionId });
 
         try {
           ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
@@ -947,7 +943,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             sessionName: cloneName,
           });
         } catch (err) {
-          pendingCloneInfo.delete(ptySessionId);
+          linkageTracker.dropCloneInfo(ptySessionId);
           sendToClient(ws, {
             type: 'terminal:error',
             sessionId: ptySessionId,

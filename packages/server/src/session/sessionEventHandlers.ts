@@ -3,6 +3,7 @@ import type { StateManager } from './stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import type { AiClassifier } from '../ai/aiClassifier.js';
 import type { SessionSource } from './sessionWatcher.js';
+import type { PtyLinkageTracker } from './ptyLinkageTracker.js';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
 import { sessionStore } from './sessionStore.js';
 import { log } from '../logger.js';
@@ -15,9 +16,7 @@ export interface SessionEventContext {
   wsSessionMap: Map<WebSocket, Set<string>>;
   ovrToPty: Map<string, string>;   // ovrId → ptySessionId
   ptyToOvr: Map<string, string>;   // ptySessionId → ovrId
-  pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
-  pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
+  linkageTracker: PtyLinkageTracker;
   ptyOutputBuffer: Map<string, Buffer[]>;
   migrateBridgeSession?: (oldId: string, newId: string) => void;
   broadcastRaw: (msg: object) => void;
@@ -26,9 +25,9 @@ export interface SessionEventContext {
   linkPendingBridge?: (sessionId: string, cwd: string, rawName?: string) => void;
 }
 
-// Helper: check if any PTY resume is currently in progress (pendingPtyByResumeId not yet consumed)
+// Helper: check if any PTY resume is currently in progress (linkageTracker.byResumeId not yet consumed)
 export function hasActiveResumeInProgress(ctx: SessionEventContext): boolean {
-  return ctx.pendingPtyByResumeId.size > 0;
+  return ctx.linkageTracker.hasAnyResume();
 }
 
 // Helper: close or remove a replaced session during /clear detection.
@@ -63,9 +62,8 @@ function linkPtyToOvr(ctx: SessionEventContext, ovrId: string, ptySessionId: str
 export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx: SessionEventContext): void {
 
   function applyPendingCloneInfo(ptySessionId: string, claudeSessionId: string): void {
-    const info = ctx.pendingCloneInfo.get(ptySessionId);
+    const info = ctx.linkageTracker.consumeCloneInfo(ptySessionId);
     if (info) {
-      ctx.pendingCloneInfo.delete(ptySessionId);
       const session = ctx.stateManager.getSession(claudeSessionId);
       if (session) {
         session.proposedName = info.name;
@@ -106,7 +104,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     // If there's a pending PTY resume for this CWD and this is NOT the target ID, skip it —
     // but only if the interim has no transcript (safety: don't discard sessions with real data).
     const pendingResumeTarget = ctx.stateManager.getPendingResumeTarget(raw.cwd);
-    if (pendingResumeTarget && raw.sessionId !== pendingResumeTarget && ctx.pendingPtyByResumeId.has(pendingResumeTarget)) {
+    if (pendingResumeTarget && raw.sessionId !== pendingResumeTarget && ctx.linkageTracker.hasResume(pendingResumeTarget)) {
       const interimTranscript = findTranscriptPathAnywhere(raw.sessionId);
       if (!interimTranscript) {
         console.log(`[session:skip-interim] ${raw.sessionId.slice(0, 8)} is interim for resume target ${pendingResumeTarget.slice(0, 8)}, skipping (no transcript)`);
@@ -171,8 +169,8 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     }
 
     // ── Link PTY session to real Claude session by PID ──
-    if (!linkedToPty && raw.pid && ctx.pendingPtyByPid.has(raw.pid)) {
-      const entry = ctx.pendingPtyByPid.get(raw.pid)!;
+    if (!linkedToPty && raw.pid && ctx.linkageTracker.hasPid(raw.pid)) {
+      const entry = ctx.linkageTracker.byPid.get(raw.pid)!;
 
       // Check if this PTY already has an ovrId (compaction-during-resume case).
       // If so, the new session is a replacement — inherit the existing ovrId.
@@ -181,7 +179,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
         const existingSession = ctx.stateManager.getActiveClaudeByOvr(existingOvrId);
         if (existingSession && existingSession.sessionId !== raw.sessionId) {
           // Compaction: Z replaces 1a9b865b. PTY stays linked to same ovrId.
-          ctx.pendingPtyByPid.delete(raw.pid);
+          ctx.linkageTracker.consumePid(raw.pid);
           linkedToPty = true;
           ctx.stateManager.suppressBroadcast();
           ctx.stateManager.transferSessionState(existingSession.sessionId, raw.sessionId);
@@ -196,12 +194,12 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
           log('clear:detected', 'Compaction detected in PTY (PID path, added)', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${inheritedOvrId} ${existingSession.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)}` });
         } else {
           // Same session re-appearing (shouldn't normally happen) — just consume the entry
-          ctx.pendingPtyByPid.delete(raw.pid);
+          ctx.linkageTracker.consumePid(raw.pid);
           linkedToPty = true;
         }
       } else {
         // Normal new spawn — link PTY to this session's ovrId
-        ctx.pendingPtyByPid.delete(raw.pid);
+        ctx.linkageTracker.consumePid(raw.pid);
         linkedToPty = true;
         linkPtyToOvr(ctx, ovrId, entry.ptySessionId);
         ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
@@ -212,15 +210,15 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
         const ptySessionName = ctx.stateManager.getSession(raw.sessionId)?.proposedName ?? raw.proposedName ?? raw.sessionId.slice(0, 8);
         log('pty:linked', 'PTY linked via PID', { sessionId: raw.sessionId, sessionName: ptySessionName, extra: `ovrId=${ovrId} ptyId=${entry.ptySessionId}` });
       }
-    } else if (raw.pid && !ctx.pendingPtyByPid.has(raw.pid) && ctx.stateManager.hasPendingResume(raw.cwd)) {
+    } else if (raw.pid && !ctx.linkageTracker.hasPid(raw.pid) && ctx.stateManager.hasPendingResume(raw.cwd)) {
       // PID not in pendingPtyByPid yet — PTY may not have emitted pid-ready; retry after 500ms
       const retryPid = raw.pid;
       const retrySessionId = raw.sessionId;
       const retryOvrId = ovrId;
       setTimeout(() => {
-        if (ctx.pendingPtyByPid.has(retryPid)) {
-          const entry = ctx.pendingPtyByPid.get(retryPid)!;
-          ctx.pendingPtyByPid.delete(retryPid);
+        if (ctx.linkageTracker.hasPid(retryPid)) {
+          const entry = ctx.linkageTracker.byPid.get(retryPid)!;
+          ctx.linkageTracker.consumePid(retryPid);
           const existingOvrId = ctx.ptyToOvr.get(entry.ptySessionId);
           if (existingOvrId) {
             // Compaction case in retry path — same logic as above
@@ -253,9 +251,9 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     }
 
     // ── Fallback linking: match by sessionId directly in pendingPtyByResumeId (ConPTY resume flow) ──
-    if (!linkedToPty && ctx.pendingPtyByResumeId.has(raw.sessionId)) {
-      const entry = ctx.pendingPtyByResumeId.get(raw.sessionId)!;
-      ctx.pendingPtyByResumeId.delete(raw.sessionId);
+    if (!linkedToPty && ctx.linkageTracker.hasResume(raw.sessionId)) {
+      const entry = ctx.linkageTracker.byResumeId.get(raw.sessionId)!;
+      ctx.linkageTracker.consumeResume(raw.sessionId);
       linkedToPty = true;
       linkPtyToOvr(ctx, ovrId, entry.ptySessionId);
       // Clear startup noise from the PTY buffer before linking
@@ -271,7 +269,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     // ── Detect session replacement: same PID, different UUID (e.g. Claude Code's /clear) ──
     // Skip if linked to PTY — it's a resume, not a /clear.
     // Skip during startup — known sessions from the initial scan are not /clear replacements.
-    if (ctx.isStartupComplete() && !linkedToPty && raw.pid && raw.pid > 0 && !ctx.pendingPtyByPid.has(raw.pid) && !hasActiveResumeInProgress(ctx)) {
+    if (ctx.isStartupComplete() && !linkedToPty && raw.pid && raw.pid > 0 && !ctx.linkageTracker.hasPid(raw.pid) && !hasActiveResumeInProgress(ctx)) {
       // Pass raw.startedAt so we only match an in-place /clear (same pid AND
       // same startedAt) — not a concurrent --resume with the same pid.
       const oldSession = ctx.stateManager.findSessionByPid(raw.pid, raw.sessionId, raw.startedAt);
@@ -381,9 +379,9 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     }
 
     // ── Check for pending PTY resume link (ConPTY: session file settles to target ID) ──
-    if (ctx.pendingPtyByResumeId.has(raw.sessionId)) {
-      const entry = ctx.pendingPtyByResumeId.get(raw.sessionId)!;
-      ctx.pendingPtyByResumeId.delete(raw.sessionId);
+    if (ctx.linkageTracker.hasResume(raw.sessionId)) {
+      const entry = ctx.linkageTracker.byResumeId.get(raw.sessionId)!;
+      ctx.linkageTracker.consumeResume(raw.sessionId);
       linkPtyToOvr(ctx, ovrId, entry.ptySessionId);
       ctx.ptyOutputBuffer.delete(entry.ptySessionId);
       broadcastPtyLinked(entry.ptySessionId, raw.sessionId, ovrId, entry.ws ?? null);

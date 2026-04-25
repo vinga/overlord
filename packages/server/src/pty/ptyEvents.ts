@@ -11,8 +11,7 @@ export interface PtyEventsContext {
   wsSessionMap: Map<WebSocket, Set<string>>;
   ovrToPty: Map<string, string>;   // ovrId → ptySessionId
   ptyToOvr: Map<string, string>;   // ptySessionId → ovrId
-  pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
+  linkageTracker: import('../session/ptyLinkageTracker.js').PtyLinkageTracker;
   ptyOutputBuffer: Map<string, Buffer[]>;
   PTY_BUFFER_MAX_CHUNKS: number;
   broadcastRaw: (msg: object) => void;
@@ -188,20 +187,8 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
   });
 
   ctx.ptyManager.on('exit', (ptySessionId: string, code: number) => {
-    // Clean up any pending PID entry for this PTY session
-    for (const [pid, entry] of ctx.pendingPtyByPid) {
-      if (entry.ptySessionId === ptySessionId) {
-        ctx.pendingPtyByPid.delete(pid);
-        break;
-      }
-    }
-    // Clean up any pending resume entry for this PTY session
-    for (const [resumeId, entry] of ctx.pendingPtyByResumeId) {
-      if (entry.ptySessionId === ptySessionId) {
-        ctx.pendingPtyByResumeId.delete(resumeId);
-        break;
-      }
-    }
+    ctx.linkageTracker.removePidEntriesByPty(ptySessionId);
+    ctx.linkageTracker.removeResumeEntriesByPty(ptySessionId);
     clearCompactDetector(ptySessionId);
     activeDetectBuf.delete(ptySessionId);
     lastDetectedMode.delete(ptySessionId);
@@ -268,6 +255,6 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       }
     }
     // Use null ws sentinel for auto-resume (broadcast to all clients)
-    ctx.pendingPtyByPid.set(pid, { ptySessionId, ws: (ownerWs ?? null) as unknown as WebSocket });
+    ctx.linkageTracker.trackPid(pid, { ptySessionId, ws: (ownerWs ?? null) as unknown as WebSocket });
   });
 }

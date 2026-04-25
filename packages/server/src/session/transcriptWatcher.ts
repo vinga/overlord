@@ -18,8 +18,7 @@ export interface TranscriptWatcherContext {
   intentSummarizer: IntentSummarizer;
   sessionCtx: SessionEventContext;
   broadcastRaw: (msg: object) => void;
-  pendingPtyByPid: Map<number, { ptySessionId: string; ws: unknown }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: unknown; timestamp: number }>;
+  linkageTracker: import('./ptyLinkageTracker.js').PtyLinkageTracker;
 }
 
 export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
@@ -292,16 +291,16 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
 
   // Periodic cleanup of leaked PTY entries (every 60s)
   setInterval(() => {
-    for (const [pid, entry] of ctx.pendingPtyByPid) {
+    for (const [pid, entry] of ctx.linkageTracker.byPid) {
       if (!ctx.ptyManager.has(entry.ptySessionId)) {
-        ctx.pendingPtyByPid.delete(pid);
+        ctx.linkageTracker.consumePid(pid);
       }
     }
-    // Clean up stale pendingPtyByResumeId entries (older than 60s or PTY no longer alive)
+    // Clean up stale byResumeId entries (older than 60s or PTY no longer alive)
     const now = Date.now();
-    for (const [resumeId, entry] of ctx.pendingPtyByResumeId) {
+    for (const [resumeId, entry] of ctx.linkageTracker.byResumeId) {
       if (now - entry.timestamp > 60_000 || !ctx.ptyManager.has(entry.ptySessionId)) {
-        ctx.pendingPtyByResumeId.delete(resumeId);
+        ctx.linkageTracker.consumeResume(resumeId);
       }
     }
   }, 60_000);

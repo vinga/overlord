@@ -32,9 +32,7 @@ import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } fro
 export interface PtyMaps {
   ovrToPty: Map<string, string>;     // ovrId → ptySessionId
   ptyToOvr: Map<string, string>;     // ptySessionId → ovrId
-  pendingPtyByPid: Map<number, { ptySessionId: string; ws: WebSocket }>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>;
-  pendingCloneInfo: Map<string, { name: string; originalSessionId: string }>;
+  linkageTracker: import('../session/ptyLinkageTracker.js').PtyLinkageTracker;
 }
 
 export function registerApiRoutes(
@@ -46,11 +44,15 @@ export function registerApiRoutes(
   ptyOutputBuffer: Map<string, Buffer[]>,
   broadcastRaw?: (msg: object) => void,
 ): void {
-  const { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo } = ptyMaps;
+  const { ovrToPty, ptyToOvr, linkageTracker } = ptyMaps;
 
   // Server info endpoint — returns bridge binary path and platform
   app.get('/api/info', (_req, res) => {
     res.json({ bridgePath: getBridgePath(), platform: process.platform });
+  });
+
+  app.get('/api/stats', (_req, res) => {
+    res.json(stateManager.getStats());
   });
 
   app.get('/api/settings', (_req, res) => {
@@ -117,13 +119,13 @@ export function registerApiRoutes(
     const cloneName = String(req.body?.name ?? `Clone (test)`);
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     stateManager.trackPendingPtySpawn(session.cwd);
-    pendingCloneInfo.set(ptySessionId, { name: cloneName, originalSessionId: sessionId });
+    linkageTracker.trackCloneInfo(ptySessionId, { name: cloneName, originalSessionId: sessionId });
     try {
       ptyManager.spawn(ptySessionId, session.cwd, 80, 24, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
       log('pty:started', 'PTY test clone', { sessionId: ptySessionId, sessionName: cloneName });
       res.json({ ok: true, ptySessionId, cloneName });
     } catch (err) {
-      pendingCloneInfo.delete(ptySessionId);
+      linkageTracker.dropCloneInfo(ptySessionId);
       res.status(500).json({ error: (err as Error).message });
     }
   });
@@ -153,8 +155,8 @@ export function registerApiRoutes(
       })),
       ovrToPty: Object.fromEntries(ovrToPty),
       ptyToOvr: Object.fromEntries(ptyToOvr),
-      pendingPtyByPid: Object.fromEntries([...pendingPtyByPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
-      pendingPtyByResumeId: Object.fromEntries([...pendingPtyByResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
+      pendingPtyByPid: Object.fromEntries([...linkageTracker.byPid].map(([pid, entry]) => [pid, entry.ptySessionId])),
+      pendingPtyByResumeId: Object.fromEntries([...linkageTracker.byResumeId].map(([id, entry]) => [id, entry.ptySessionId])),
       pendingClearSessions: stateManager.getPendingClearSessions(),
       bridgeSessions: Object.keys(stateManager.deriveBridgeRegistry()),
       bridgeConnected: Object.keys(stateManager.deriveBridgeRegistry()).map(id => ({ id: id.slice(0, 8), connected: bridgeManager.isConnected(id), pipeAddr: bridgeManager.getPipeAddr(id) })),

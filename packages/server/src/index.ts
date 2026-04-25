@@ -20,6 +20,7 @@ import { startPermissionChecker } from './session/permissionChecker.js';
 import { detectModeFromText } from './session/modeDetect.js';
 import { findTranscriptPath } from './session/transcriptReader.js';
 import { autoResumePtySessions as autoResumePtySessionsImpl } from './session/autoResumeBootstrap.js';
+import { PtyLinkageTracker } from './session/ptyLinkageTracker.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
 import { IntentSummarizer } from './ai/intentSummary.js';
@@ -57,11 +58,10 @@ const ptyManager = new PtyManager();
 // Track which WebSocket client owns which PTY sessions: ws → Set<sessionId>
 const wsSessionMap = new Map<WebSocket, Set<string>>();
 
-// Track pending PTY sessions by PID so we can link them to real Claude sessions
-const pendingPtyByPid = new Map<number, { ptySessionId: string; ws: WebSocket }>();
-
-// Track PTY sessions waiting to be linked by resumeSessionId (for ConPTY PID mismatch on Windows)
-const pendingPtyByResumeId = new Map<string, { ptySessionId: string; ws?: WebSocket; timestamp: number }>();
+// Tracks PTY spawns waiting to link to their live Claude session.
+// Owns: byPid (linked once watcher sees the PID), byResumeId (ConPTY fallback),
+// cloneInfo (--fork-session metadata applied on link).
+const linkageTracker = new PtyLinkageTracker();
 
 // Stable overlordId ↔ pty-xxx mapping (replaces ptyToClaudeId / claudeToPtyId).
 // ovrId is stable across /clear and compaction; PTY id can change on restart.
@@ -149,9 +149,8 @@ let startupComplete = false;
 
 // Map ptySessionId → clone name, applied after PTY is linked to a real Claude session
 // Track pending clone info (name + original session) by ptySessionId.
-// When the forked session links via PID, we apply the name and set resumedFrom
-// so the transcript fallback in stateManager shows the parent's conversation.
-const pendingCloneInfo = new Map<string, { name: string; originalSessionId: string }>();
+// pendingCloneInfo (--fork-session metadata) now lives on linkageTracker.cloneInfo
+// — see PtyLinkageTracker for the lifecycle methods.
 
 // Tracks sessions currently mid-connection (async connect in progress).
 // Prevents the session watcher and reconnectBridgePipes from both connecting.
@@ -627,9 +626,7 @@ const sessionCtx: SessionEventContext = {
   wsSessionMap,
   ovrToPty,
   ptyToOvr,
-  pendingPtyByPid,
-  pendingPtyByResumeId,
-  pendingCloneInfo,
+  linkageTracker,
   ptyOutputBuffer,
   migrateBridgeSession,
   broadcastRaw,
@@ -683,7 +680,7 @@ try {
 }
 
 function autoResumePtySessions(): Promise<void> {
-  return autoResumePtySessionsImpl({ stateManager, ptyManager, ovrToPty, ptyToOvr, pendingPtyByResumeId });
+  return autoResumePtySessionsImpl({ stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker });
 }
 // auto-resume is now triggered on first client WebSocket connection (see wss.on('connection'))
 
@@ -721,8 +718,7 @@ startTranscriptWatcher({
   intentSummarizer,
   sessionCtx,
   broadcastRaw,
-  pendingPtyByPid,
-  pendingPtyByResumeId,
+  linkageTracker,
 });
 
 // PTY event handlers (moved to ptyEvents.ts)
@@ -732,8 +728,7 @@ wirePtyEvents({
   wsSessionMap,
   ovrToPty,
   ptyToOvr,
-  pendingPtyByPid,
-  pendingPtyByResumeId,
+  linkageTracker,
   ptyOutputBuffer,
   PTY_BUFFER_MAX_CHUNKS,
   broadcastRaw,
@@ -783,9 +778,7 @@ setupWebSocketHandler(wss, {
   wsSessionMap,
   ovrToPty,
   ptyToOvr,
-  pendingPtyByPid,
-  pendingPtyByResumeId,
-  pendingCloneInfo,
+  linkageTracker,
   ptyOutputBuffer,
   broadcastRaw,
   sendToClient,
@@ -800,7 +793,7 @@ registerApiRoutes(
   app,
   stateManager,
   ptyManager,
-  { ovrToPty, ptyToOvr, pendingPtyByPid, pendingPtyByResumeId, pendingCloneInfo },
+  { ovrToPty, ptyToOvr, linkageTracker },
   deleteSession,
   ptyOutputBuffer,
   broadcastRaw,

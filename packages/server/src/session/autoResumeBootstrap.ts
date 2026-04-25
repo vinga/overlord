@@ -1,5 +1,6 @@
 import type { StateManager } from './stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
+import type { PtyLinkageTracker } from './ptyLinkageTracker.js';
 import { resolveResumableSessionId } from './transcriptReader.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from './transcriptShadow.js';
 import { buildOpencodeResumeArgs } from './opencodeSession.js';
@@ -10,7 +11,7 @@ export interface AutoResumeDeps {
   ptyManager: PtyManager;
   ovrToPty: Map<string, string>;
   ptyToOvr: Map<string, string>;
-  pendingPtyByResumeId: Map<string, { ptySessionId: string; ws?: import('ws').WebSocket; timestamp: number }>;
+  linkageTracker: PtyLinkageTracker;
 }
 
 /**
@@ -27,7 +28,7 @@ export interface AutoResumeDeps {
  *    re-joins the original OverlordSession instead of splitting off.
  */
 export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void> {
-  const { stateManager, ptyManager, ovrToPty, ptyToOvr, pendingPtyByResumeId } = deps;
+  const { stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker } = deps;
   const sessions = stateManager.getPtySessionsToResume();
   if (sessions.length === 0) {
     console.log('[auto-resume] no embedded sessions to resume');
@@ -108,7 +109,7 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
           if (sid === ptySessionId && p) stateManager.reserveOvrIdForPid(p, existingOvrId);
         });
       }
-      pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
+      linkageTracker.trackResume(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
       console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
     } catch (err) {
       console.warn(`[auto-resume] failed to spawn PTY for ${sessionId.slice(0, 8)}:`, err);
