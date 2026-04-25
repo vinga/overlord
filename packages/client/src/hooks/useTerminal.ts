@@ -71,14 +71,11 @@ export function useTerminal(
         } catch { /* ignore */ }
       }
     } else if (msg.type === 'terminal:spawned') {
-      // msg.sessionId is the ptySessionId (before linking).
-      // Add temporarily; terminal:linked replaces it with ovrId.
       setPtySessionIds((prev) => {
         const next = new Set(prev);
         next.add(msg.sessionId);
         return next;
       });
-      if (onSpawnedRef.current) onSpawnedRef.current(msg.sessionId);
     } else if (msg.type === 'terminal:exit') {
       // msg.sessionId is ovrId
       setPtySessionIds((prev) => {
@@ -122,19 +119,19 @@ export function useTerminal(
         outputBuffer.current.set(msg.sessionId, buf);
       }
     } else if (msg.type === 'terminal:linked') {
-      // ovrId is the stable overlord session ID; all state should be keyed by it.
-      // ptySessionId was a temporary ID used before linking (added by terminal:spawned).
+      // ovrId is the stable overlord session ID. Server pre-mints it at PTY
+      // spawn time, so terminal:spawned already added it to ptySessionIds and
+      // App selection is already on ovrId. terminal:linked is informational —
+      // it announces the claudeSessionId that this PTY is now bound to.
       const { ovrId, ptySessionId, claudeSessionId, replay } = msg;
 
-      // Transition: remove temporary ptySessionId, add stable ovrId.
-      // Also add claudeSessionId so isPtySession() returns true even if the
-      // snapshot hasn't arrived yet with overlordId (snapshot race fix).
+      // Add claudeSessionId so isPtySession() lookups succeed before the snapshot
+      // delivers overlordId. Idempotent if ovrId already present.
       setPtySessionIds(prev => {
-        if (prev.has(ovrId)) return prev; // already known
+        if (prev.has(ovrId) && prev.has(claudeSessionId)) return prev;
         const next = new Set(prev);
-        next.delete(ptySessionId); // remove pre-link entry
         next.add(ovrId);
-        next.add(claudeSessionId); // temporary until snapshot delivers overlordId
+        next.add(claudeSessionId);
         return next;
       });
 
@@ -152,14 +149,15 @@ export function useTerminal(
       }
 
       if (!replay) {
-        // Clear buffered output and reset xterm to discard startup noise from --resume
+        // Targeted send to originator → fresh spawn for this client.
+        // Fire onSpawned with the stable ovrId so App can select it.
+        if (onSpawnedRef.current) onSpawnedRef.current(ovrId);
+        // Reset xterm to discard startup noise from --resume.
         outputBuffer.current.delete(ovrId);
         const handler = outputHandlers.current.get(ovrId);
         if (handler) {
           handler(new TextEncoder().encode('\x1b[2J\x1b[H'));
         }
-        // Notify App.tsx with claudeSessionId so it can select the session in the UI
-        if (onSpawnedRef.current) onSpawnedRef.current(claudeSessionId);
       }
     }
   }, []);

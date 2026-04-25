@@ -165,6 +165,15 @@ export function registerApiRoutes(
   // OverlordSession. Such records are hidden forever by getSnapshot's
   // replacedBy filter. The boot loadAll scrub fixes them on restart;
   // this endpoint runs the same scrub live.
+  // Force-complete a stuck /clear inFlight flag. Used when claude's auto-compact
+  // overlapped a /clear inject and the replacement transcript never arrived,
+  // freezing the activity feed. POST /api/debug/unstick-clear/:sessionId
+  app.post('/api/debug/unstick-clear/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const cleared = stateManager.forceCompleteClear(sessionId);
+    res.json({ sessionId, cleared });
+  });
+
   app.post('/api/debug/heal-replaced-by', (_req, res) => {
     const fixed: string[] = [];
     for (const rec of sessionStore.listActive()) {

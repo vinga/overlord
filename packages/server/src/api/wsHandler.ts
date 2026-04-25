@@ -228,32 +228,38 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           return;
         }
 
-        // Generate a unique sessionId for this PTY session
-        const sessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // Internal PTY id (used as ptyManager key, marker, and ptyOutputBuffer key).
+        const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // Pre-mint the ovrId reserved against this PTY's marker. Adopted by
+        // addOrUpdate when the live Claude session lands. The client sees only
+        // ovrId — pty- never appears in its selection state.
+        const ovrId = stateManager.mintReservedOvrId(ptySessionId);
+        ovrToPty.set(ovrId, ptySessionId);
+        ptyToOvr.set(ptySessionId, ovrId);
 
         // Pass the ptyId so stateManager can flag this as a fresh spawn and
         // skip the cwd-keyed pendingResumes lookup in addOrUpdate (which
         // would otherwise contaminate this fresh session with a stale
         // resume entry from another PTY in the same cwd).
-        stateManager.trackPendingPtySpawn(cwd, sessionId);
+        stateManager.trackPendingPtySpawn(cwd, ptySessionId);
 
         const sessions = wsSessionMap.get(ws);
-        if (sessions) sessions.add(sessionId);
+        if (sessions) { sessions.add(ovrId); sessions.add(ptySessionId); }
 
-        broadcastRaw({ type: 'terminal:spawned', sessionId, pid: 0 });
-        // Spawn after notifying client of sessionId (pid will be 0 until we have it)
+        broadcastRaw({ type: 'terminal:spawned', sessionId: ovrId, pid: 0 });
+        // Spawn after notifying client of ovrId (pid will be 0 until we have it)
         try {
           // Embed ptySessionId as hidden marker in session name for reliable PTY linking
           // (ConPTY on Windows may give a wrapper PID that doesn't match claude.exe PID)
           // If the user provided a name, prepend it before the marker.
-          const sessionName = name ? `${name}___OVR:${sessionId}` : `___OVR:${sessionId}`;
-          ptyManager.spawn(sessionId, cwd, cols, rows, ['--name', sessionName]);
-          log('pty:started', 'PTY session started', { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
+          const sessionName = name ? `${name}___OVR:${ptySessionId}` : `___OVR:${ptySessionId}`;
+          ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--name', sessionName]);
+          log('pty:started', 'PTY session started', { sessionId: ovrId, sessionName: name ?? ptySessionId.slice(0, 8) });
           // pid-ready event handler populates pendingPtyByPid asynchronously
         } catch (err) {
           sendToClient(ws, {
             type: 'terminal:error',
-            sessionId,
+            sessionId: ovrId,
             message: `Spawn failed: ${(err as Error).message}`,
           });
         }
@@ -307,6 +313,18 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
 
         const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // For resume (NOT clone/fork): reuse the existing lineage's ovrId so
+        // the resumed session lands in the same OverlordSession record. Minting
+        // a fresh ovrId here would split the lineage in two — same name, two
+        // ovr records, two visible workers. Falls back to a fresh reservation
+        // only when the resume target is unknown to stateManager (orphan).
+        const existingOvrId = targetSession?.overlordId
+          ?? sessionStore.resolveOverlordId(resumeSessionId);
+        const ovrId = existingOvrId
+          ? (stateManager.reserveOvrIdForMarker(ptySessionId, existingOvrId), existingOvrId)
+          : stateManager.mintReservedOvrId(ptySessionId);
+        ovrToPty.set(ovrId, ptySessionId);
+        ptyToOvr.set(ptySessionId, ovrId);
 
         // Resolve to a sessionId whose jsonl actually exists. When a resumed session
         // keeps writing to the parent's jsonl (no new {sessionId}.jsonl is created),
@@ -370,19 +388,19 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         log('session:resumed', 'Session resumed', { sessionId: effectiveResumeId, sessionName: resumedName });
 
         const sessions = wsSessionMap.get(ws);
-        if (sessions) sessions.add(ptySessionId);
+        if (sessions) { sessions.add(ovrId); sessions.add(ptySessionId); }
 
-        sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
+        sendToClient(ws, { type: 'terminal:spawned', sessionId: ovrId, pid: 0 });
         try {
           ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
           const resumePtyName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
-          log('pty:started', 'PTY session started', { sessionId: ptySessionId, sessionName: resumePtyName });
+          log('pty:started', 'PTY session started', { sessionId: ovrId, sessionName: resumePtyName });
 
           pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, ws, timestamp: Date.now() });
         } catch (err) {
           sendToClient(ws, {
             type: 'terminal:error',
-            sessionId: ptySessionId,
+            sessionId: ovrId,
             message: `Resume failed: ${(err as Error).message}`,
           });
         }
@@ -906,13 +924,17 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // in stateManager (no transcript copying needed).
 
         const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // Pre-mint ovrId — client selection sees only ovr-XXX.
+        const ovrId = stateManager.mintReservedOvrId(ptySessionId);
+        ovrToPty.set(ovrId, ptySessionId);
+        ptyToOvr.set(ptySessionId, ovrId);
 
         stateManager.trackPendingPtySpawn(cwd);
 
         const sessions = wsSessionMap.get(ws);
-        if (sessions) sessions.add(ptySessionId);
+        if (sessions) { sessions.add(ovrId); sessions.add(ptySessionId); }
 
-        sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
+        sendToClient(ws, { type: 'terminal:spawned', sessionId: ovrId, pid: 0 });
 
         // Store clone info (name + original session) so it gets applied after
         // the PTY links to the new forked session via PID matching.
@@ -921,7 +943,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         try {
           ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
           log('pty:started', 'PTY clone started (fork-session)', {
-            sessionId: ptySessionId,
+            sessionId: ovrId,
             sessionName: cloneName,
           });
         } catch (err) {

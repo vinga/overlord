@@ -84,17 +84,20 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
     ovrId: string,
     ws?: WebSocket | null,
   ): void {
-    const msg = { type: 'terminal:linked', ovrId, ptySessionId, claudeSessionId };
+    const base = { type: 'terminal:linked' as const, ovrId, ptySessionId, claudeSessionId };
     if (ws) {
+      // Targeted send → originator. No `replay` → client auto-selects the session.
       const wsSessions = ctx.wsSessionMap.get(ws);
-      if (wsSessions) { wsSessions.add(ptySessionId); wsSessions.add(ovrId); }
-      ctx.sendToClient(ws, msg);
+      if (wsSessions) wsSessions.add(claudeSessionId);
+      ctx.sendToClient(ws, base);
     } else {
+      // Broadcast → no originator. `replay: true` prevents other clients from
+      // stealing the user's URL-stored selection on boot-time re-links.
       for (const sessions of ctx.wsSessionMap.values()) {
         sessions.add(ptySessionId);
         sessions.add(ovrId);
       }
-      ctx.broadcastRaw(msg);
+      ctx.broadcastRaw({ ...base, replay: true });
     }
   }
 

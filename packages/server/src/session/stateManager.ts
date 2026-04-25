@@ -17,6 +17,7 @@ import { globalSettingsStore } from './globalSettingsStore.js';
 import { GitAttribution } from './gitAttribution.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
+import { OvrIdReservation } from './ovrIdReservation.js';
 import { normalizePath } from './pathNormalize.js';
 import { log } from '../logger.js';
 
@@ -179,6 +180,15 @@ export class StateManager {
   private processSnapshotAge = 0;
   private clearLifecycle = new ClearLifecycleManager();
   getPendingClearSessions(): string[] { return this.clearLifecycle.getInFlightSessions(); }
+  /** Force-clear inFlight state for a session (recovery path when /clear got
+   *  marked but the replacement transcript never arrived). Returns true if a
+   *  flag was actually cleared. */
+  forceCompleteClear(sessionId: string): boolean {
+    const had = this.clearLifecycle.isInFlight(sessionId);
+    this.clearLifecycle.completeReplacement(sessionId);
+    if (had) this.refreshTranscript(sessionId);
+    return had;
+  }
   /**
    * Legacy colors.json is migrated into sessionStore on boot. The single source
    * of truth for per-lineage color is `OverlordSession.color` (one file per ovrId
@@ -208,9 +218,14 @@ export class StateManager {
   private hasLivePtyFn: (ovrId: string) => boolean = () => false;
   setHasLivePtyFn(fn: (ovrId: string) => boolean): void { this.hasLivePtyFn = fn; }
 
-  private generateOvrId(): string {
-    return 'ovr-' + Math.random().toString(36).slice(2, 10);
-  }
+  private ovrIdReservation = new OvrIdReservation();
+
+  private generateOvrId(): string { return this.ovrIdReservation.generate(); }
+  mintReservedOvrId(marker: string): string { return this.ovrIdReservation.mint(marker); }
+  reserveOvrIdForMarker(marker: string, ovrId: string): void { this.ovrIdReservation.reserveForMarker(marker, ovrId); }
+  consumeReservedOvrIdForMarker(marker: string): string | undefined { return this.ovrIdReservation.consumeByMarker(marker); }
+  reserveOvrIdForPid(pid: number, ovrId: string): void { this.ovrIdReservation.reserveForPid(pid, ovrId); }
+  consumeReservedOvrIdForPid(pid: number): string | undefined { return this.ovrIdReservation.consumeByPid(pid); }
 
   /** Return the active session for a given overlordId. */
   getActiveClaudeByOvr(ovrId: string): Session | undefined {
@@ -234,6 +249,7 @@ export class StateManager {
     this.migrateLegacyBridgeRegistry();
     this.hydratePendingResumesFromSessionStore();
     void this.refreshGitAheadCache();
+    this.logBootSummary();
   }
 
   /** Refresh the full process snapshot (one OS call). */
@@ -442,15 +458,6 @@ export class StateManager {
 
   addOrUpdate(raw: RawSession): { isNewWaiting: boolean; lastMessage?: string } {
     const { pid, sessionId, cwd } = raw;
-    // Preserve the earliest observed startedAt — `raw.startedAt` from {pid}.json
-    // may differ from the persisted/hydrated value (process respawn, /clear-driven
-    // sid swap with a new pid). Snapshot sort is by startedAt; letting raw win on
-    // every tick reorders rooms during boot as hydrated→live transitions land
-    // one-by-one. Keep the older value so position is stable.
-    const existingForStartedAt = this.sessions.get(sessionId);
-    const startedAt = existingForStartedAt?.startedAt && existingForStartedAt.startedAt < raw.startedAt
-      ? existingForStartedAt.startedAt
-      : raw.startedAt;
 
     // Skip sessions that were explicitly deleted by the user
     if (this.isDeleted(sessionId)) {
@@ -477,12 +484,12 @@ export class StateManager {
       existingSession.pid > 0 &&
       pid > 0 &&
       existingSession.pid !== pid &&
-      existingSession.startedAt !== startedAt
+      existingSession.startedAt !== raw.startedAt
     ) {
       console.log(
         `[stateManager] rejecting conflicting update for ${sessionId.slice(0, 8)}: ` +
         `existing pid=${existingSession.pid} startedAt=${existingSession.startedAt} (live), ` +
-        `incoming pid=${pid} startedAt=${startedAt} — likely concurrent --resume`
+        `incoming pid=${pid} startedAt=${raw.startedAt} — likely concurrent --resume`
       );
       return { isNewWaiting: false };
     }
@@ -551,6 +558,15 @@ export class StateManager {
     // Also strip bridge marker (___BRG:xxx) from display name
     const bridgeMarker = raw.name?.includes('___BRG:') ? raw.name.split('___BRG:')[1] : undefined;
     if (rawName?.includes('___BRG:')) rawName = rawName.split('___BRG:')[0];
+    // Extract OVR marker (the value after ___OVR:, before any ___BRG:). Used both
+    // for marker-based linking AND for adopting a pre-reserved ovrId minted by
+    // the spawn site (see mintReservedOvrId). The marker may be a legacy pty-XXX
+    // (still emitted by un-migrated spawn paths) or a fresh ovr-XXX (post-refactor).
+    const ovrMarker = (() => {
+      if (!raw.name?.includes('___OVR:')) return undefined;
+      const after = raw.name.split('___OVR:')[1] ?? '';
+      return after.split('___BRG:')[0] || undefined;
+    })();
     // Resolve overlordId now (was previously below) so we can consult sessionStore
     // — the canonical source for proposedName — before falling back to rawName.
     // raw.name from {pid}.json is set at spawn time and never updated; if it
@@ -567,9 +583,17 @@ export class StateManager {
     const resolvedOverlordId = existingSession?.overlordId
       ?? sessionStore.resolveOverlordId(sessionId)
       ?? (bridgeMarker ? sessionStore.resolveOverlordId(bridgeMarker) : undefined)
+      // Adopt a pre-reserved ovrId minted at PTY spawn time. The marker
+      // ___OVR:<ovrId> embedded in the spawn's --name flag carries the
+      // reservation key. Consume on first match so subsequent matches mint fresh.
+      ?? (ovrMarker ? this.consumeReservedOvrIdForMarker(ovrMarker) : undefined)
       ?? (resumedFrom
         ? (sessionStore.resolveOverlordId(resumedFrom) ?? this.sessions.get(resumedFrom)?.overlordId)
-        : undefined);
+        : undefined)
+      // Last resort before mint: PID-keyed reservation. Set by auto-resume
+      // when claude --resume drops the --name marker on the floor and we
+      // need a way to re-attach the new sid to its lineage.
+      ?? (raw.pid ? this.consumeReservedOvrIdForPid(raw.pid) : undefined);
     const stored = resolvedOverlordId ? sessionStore.getByOverlordId(resolvedOverlordId) : undefined;
     const storedName = stored?.proposedName?.startsWith('<local-command-caveat')
       ? undefined
@@ -652,6 +676,25 @@ export class StateManager {
     // resolvedOverlordId was computed above for storedName lookup; reuse it.
     const overlordId = resolvedOverlordId ?? this.generateOvrId();
     color = this.sessionColorByOvrId(overlordId);
+
+    // Pin startedAt to the lineage's first-observed value, not just this sid's.
+    // Auto-resume / /clear creates a fresh sid for the same lineage; matching
+    // only by sessionId loses the link and lets raw.startedAt (= recent boot
+    // time) win, which reorders rooms by recency on every restart. Sources, in
+    // order: existing in-memory same-sid → in-memory session for resumedFrom →
+    // any other in-memory session under this ovrId → persisted OverlordSession.
+    const startedAt = (() => {
+      if (existingSession?.startedAt) return existingSession.startedAt;
+      if (resumedFrom) {
+        const fromResumed = this.sessions.get(resumedFrom)?.startedAt;
+        if (fromResumed) return fromResumed;
+      }
+      for (const s of this.sessions.values()) {
+        if (s.overlordId === overlordId && s.startedAt) return s.startedAt;
+      }
+      const recStarted = sessionStore.getByOverlordId(overlordId)?.startedAt;
+      return recStarted ?? raw.startedAt;
+    })();
     // Preserve sessionHistory; initialize with first entry on creation.
     const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
       existingSession?.sessionHistory ?? [{ sessionId, attachedAt: Date.now() }];
@@ -2133,6 +2176,12 @@ export class StateManager {
     return Array.from(this.sessions.keys());
   }
 
+  /** Iterate over every in-memory Session. Used by external healers (boot
+   *  bridge reconnect) that need to scan for sessions in unusual states. */
+  getAllSessions(): Session[] {
+    return Array.from(this.sessions.values());
+  }
+
   /** Default avatar color for new sessions. */
   private static readonly DEFAULT_COLOR = 'hsl(30, 75%, 55%)';
 
@@ -2276,6 +2325,52 @@ export class StateManager {
       // transcript — it just omits transcriptState.
       try { this.rehydrateFromSessionStore(sid); } catch { /* swallow — one bad record shouldn't block boot */ }
     }
+  }
+
+  private logBootSummary(): void {
+    const active = sessionStore.listActive();
+    const archived = sessionStore.listArchived();
+    const totalStore = active.length + archived.length;
+
+    // Group store records by cwd
+    const roomCounts = new Map<string, { active: number; archived: number }>();
+    for (const rec of active) {
+      const name = path.basename(rec.cwd) || rec.cwd;
+      const entry = roomCounts.get(name) ?? { active: 0, archived: 0 };
+      entry.active++;
+      roomCounts.set(name, entry);
+    }
+    for (const rec of archived) {
+      const name = path.basename(rec.cwd) || rec.cwd;
+      const entry = roomCounts.get(name) ?? { active: 0, archived: 0 };
+      entry.archived++;
+      roomCounts.set(name, entry);
+    }
+
+    // Count .jsonl transcript files across ~/.claude/projects/
+    let transcriptCount = 0;
+    const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    if (fs.existsSync(projectsDir)) {
+      try {
+        for (const slug of fs.readdirSync(projectsDir)) {
+          const slugDir = path.join(projectsDir, slug);
+          try {
+            if (!fs.statSync(slugDir).isDirectory()) continue;
+            transcriptCount += fs.readdirSync(slugDir).filter(f => f.endsWith('.jsonl')).length;
+          } catch { /* skip unreadable dirs */ }
+        }
+      } catch { /* ignore */ }
+    }
+
+    const inMemory = this.sessions.size;
+    console.log(
+      `[boot] sessions: ${totalStore} total (${active.length} active, ${archived.length} archived) | in-memory: ${inMemory} | transcripts on disk: ${transcriptCount}`
+    );
+
+    const roomLines = [...roomCounts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, c]) => `  ${name}: ${c.active + c.archived} (${c.active} active, ${c.archived} archived)`);
+    if (roomLines.length > 0) console.log('[boot] rooms:\n' + roomLines.join('\n'));
   }
 
   rehydrateFromSessionStore(sessionId: string): Session | null {

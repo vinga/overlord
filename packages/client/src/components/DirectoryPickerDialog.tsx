@@ -108,6 +108,12 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
     if (open) setTimeout(() => pathInputRef.current?.focus(), 100);
   }, [open]);
 
+  const availableModes: TerminalSpawnMode[] = provider === 'opencode' ? ['embedded'] : ['embedded', 'bridge', 'plain'];
+
+  useEffect(() => {
+    if (!availableModes.includes(mode)) setMode('embedded');
+  }, [availableModes, mode]);
+
   if (!open) return null;
 
   const segments = currentPath.split(/[\\/]/).filter(Boolean);
@@ -116,14 +122,13 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
     const pathParts = segments.slice(0, i + 1);
     const fullPath = i === 0 && /^[A-Za-z]:$/.test(pathParts[0])
       ? pathParts[0] + '\\'
-      : pathParts.join('\\');
+      : '/' + pathParts.join('/');
     breadcrumbs.push({ label: segments[i], path: fullPath });
   }
 
   const safeName = sessionName.trim().replace(/"/g, '-');
   const bridgeBin = bridgePath ? `"${bridgePath}"` : 'overlord-bridge';
   const marker = markerRef.current;
-  const availableModes: TerminalSpawnMode[] = provider === 'opencode' ? ['embedded'] : ['embedded', 'bridge', 'plain'];
   const effectiveMode = availableModes.includes(mode) ? mode : 'embedded';
 
   const modeRows = [
@@ -132,10 +137,6 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
     { key: 'plain',    label: 'Direct',   cmd: currentPath && sessionName && provider === 'claude' ? `cd "${currentPath}" && claude --name "${sessionName.trim()}"` : null },
   ] as { key: TerminalSpawnMode; label: string; cmd: string | null }[];
   const visibleModeRows = modeRows.filter(row => availableModes.includes(row.key));
-
-  useEffect(() => {
-    if (!availableModes.includes(mode)) setMode('embedded');
-  }, [availableModes, mode]);
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
@@ -181,7 +182,7 @@ export function DirectoryPickerDialog({ open, onClose, onSpawn, defaultPath, sug
                 </button>
               )}
               {dirs.map(dir => (
-                <button key={dir} className={styles.dirItem} onClick={() => navigateTo(currentPath + '\\' + dir)}>
+                <button key={dir} className={styles.dirItem} onClick={() => navigateTo(currentPath + '/' + dir)}>
                   <span className={styles.dirName}>{dir}</span>
                 </button>
               ))}

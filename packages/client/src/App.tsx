@@ -144,30 +144,16 @@ export function App() {
   terminalHandlerRef.current = terminal.handleTerminalMessage;
 
 
-  // Auto-select PTY sessions in DetailPanel when they are spawned/resumed.
-  // For pty-xxx IDs (pre-linking), immediately show the terminal panel.
-  // When terminal:linked fires, activePtySessionId switches to the claudeSessionId —
-  // we resolve its ovrId from the snapshot so selectedSessionId stays as an ovrId.
-  // IMPORTANT: snapshot is read via ref, NOT a dep. During boot the snapshot updates
-  // many times; if snapshot were a dep, this effect would re-fire on every tick while
-  // activePtySessionId was truthy, repeatedly rewriting the URL hash. Reading via ref
-  // means we only run when activePtySessionId actually changes.
-  const snapshotRef = useRef(snapshot);
-  snapshotRef.current = snapshot;
+  // Auto-select sessions in DetailPanel when this tab spawns one. Server pre-mints
+  // the ovrId at spawn time, so `activePtySessionId` is always already an `ovr-XXX`
+  // (or a legacy raw-/opencode- internal id for those provider paths). We only
+  // Auto-select on spawn: activePtySessionId is always an ovrId (set via terminal:linked).
+  // Boot-time replays never call onSpawned, so this only fires for user-initiated spawns.
   useEffect(() => {
     if (!activePtySessionId) return;
-    if (activePtySessionId.startsWith('pty-')) {
-      // Immediately show the PTY terminal (before session file is created / linked)
-      setSelectedSessionId(activePtySessionId);
-      setSelectedSubagentId(undefined);
-      setActivePtySessionId(null);
-      return;
-    }
-    const claudeId = activePtySessionId;
+    const targetId = activePtySessionId;
     setActivePtySessionId(null);
-    const all = snapshotRef.current?.rooms.flatMap(r => r.sessions) ?? [];
-    const linked = all.find(s => s.sessionId === claudeId);
-    setSelectedSessionId(linked?.overlordId ?? claudeId);
+    setSelectedSessionId(targetId);
     setSelectedSubagentId(undefined);
   }, [activePtySessionId]);
 

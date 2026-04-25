@@ -1190,6 +1190,14 @@
   color: rgba(255, 255, 255, 0.7);
 }
 
+.copyBubbleBtn {
+  right: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+}
+
 .feedTimestamp {
   position: absolute;
   top: 6px;
@@ -2547,6 +2555,46 @@
 .quickMenuItem:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #f9fafb;
+}
+
+.convMenuAnchor {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.convMenuTrigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  padding: 0;
+}
+
+.convMenuTrigger:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.convMenu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: #1e2028;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 180px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  animation: quickMenuFadeIn 120ms ease-out;
+  z-index: 50;
 }
 
 .sendTextarea:focus {

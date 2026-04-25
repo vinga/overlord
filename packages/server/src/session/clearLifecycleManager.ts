@@ -14,17 +14,26 @@ const REPLACEMENT_TTL_MS = 60_000;
  * the data they read, but does NOT add a 5th detection path.
  */
 export class ClearLifecycleManager {
-  private inFlight = new Set<string>();
+  private inFlight = new Map<string, number>();
   private pendingReplacements = new Map<string, { sessionId: string; timestamp: number }>();
 
   /** Mark a session as having had its feed cleared (blocks re-read). */
   markCleared(sessionId: string): void {
-    this.inFlight.add(sessionId);
+    this.inFlight.set(sessionId, Date.now());
   }
 
-  /** Is this session currently blocked from transcript re-read? */
+  /** Is this session currently blocked from transcript re-read?
+   *  Auto-expires after REPLACEMENT_TTL_MS so a missed replacement (e.g. claude
+   *  ignored /clear, auto-compaction overlapped) doesn't freeze the feed forever. */
   isInFlight(sessionId: string): boolean {
-    return this.inFlight.has(sessionId);
+    const ts = this.inFlight.get(sessionId);
+    if (ts === undefined) return false;
+    if (Date.now() - ts > REPLACEMENT_TTL_MS) {
+      console.warn(`[clear-lifecycle] inFlight TTL expired for ${sessionId.slice(0, 8)} — unblocking transcript re-read`);
+      this.inFlight.delete(sessionId);
+      return false;
+    }
+    return true;
   }
 
   /** Called from any /clear detection path once the replacement is observed. */
@@ -33,7 +42,7 @@ export class ClearLifecycleManager {
   }
 
   getInFlightSessions(): string[] {
-    return [...this.inFlight];
+    return [...this.inFlight.keys()];
   }
 
   /** Record that /clear was injected into sessionId (via UI). The next new

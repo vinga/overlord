@@ -389,7 +389,7 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
         <div className={dialogStyles.config} style={{ paddingBottom: 0, paddingTop: 10 }}>
           <div className={dialogStyles.configRow}>
             <label className={dialogStyles.label}>Provider</label>
-            <div style={{ display: 'flex', gap: 8, flex: 1 }}>
+            <div style={{ display: 'flex', gap: 4, flex: 1 }}>
               {([
                 { key: 'claude', label: 'Claude' },
                 { key: 'opencode', label: 'OpenCode' },
@@ -403,10 +403,12 @@ function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, o
                     background: provider === option.key ? 'rgba(212,175,55,0.08)' : 'rgba(255,255,255,0.03)',
                     color: provider === option.key ? '#d4af37' : 'rgba(255,255,255,0.65)',
                     borderRadius: 6,
-                    padding: '8px 12px',
+                    padding: '7px 14px',
                     cursor: 'pointer',
-                    fontSize: 12,
+                    fontSize: 13,
                     fontWeight: 600,
+                    fontFamily: "'Inter', system-ui, sans-serif",
+                    transition: 'all 0.15s',
                   }}
                 >{option.label}</button>
               ))}
