@@ -94,7 +94,7 @@ When the user sends a message mid-tool-call, finish the in-flight call only if i
 ## Options & Restarts
 
 - When the user picks an option by number/letter, implement THAT option. If you deviate, say so before coding.
-- Server code changes (`packages/server/**`) do NOT hot-reload — `tsx watch` was removed. After touching server code, prompt the user to run the `restart-server` skill. Do not claim a server feature "works" until restart is confirmed.
+- Server code changes (`packages/server/**`) do NOT hot-reload — `tsx watch` was removed. After editing any `packages/server/**` file, invoke the `restart-server` skill yourself before asking the user to verify. Do not tell the user to restart manually unless they opted out. Do not claim a server feature "works" until restart returns `server:200`.
 - Before editing any file that shows a `<system-reminder>` "was modified" notice, re-read it.
 
 ## React Render Hygiene

@@ -441,7 +441,16 @@ export class StateManager {
   }
 
   addOrUpdate(raw: RawSession): { isNewWaiting: boolean; lastMessage?: string } {
-    const { pid, sessionId, cwd, startedAt } = raw;
+    const { pid, sessionId, cwd } = raw;
+    // Preserve the earliest observed startedAt — `raw.startedAt` from {pid}.json
+    // may differ from the persisted/hydrated value (process respawn, /clear-driven
+    // sid swap with a new pid). Snapshot sort is by startedAt; letting raw win on
+    // every tick reorders rooms during boot as hydrated→live transitions land
+    // one-by-one. Keep the older value so position is stable.
+    const existingForStartedAt = this.sessions.get(sessionId);
+    const startedAt = existingForStartedAt?.startedAt && existingForStartedAt.startedAt < raw.startedAt
+      ? existingForStartedAt.startedAt
+      : raw.startedAt;
 
     // Skip sessions that were explicitly deleted by the user
     if (this.isDeleted(sessionId)) {
@@ -568,11 +577,22 @@ export class StateManager {
     const existingName = existingSession?.proposedName?.startsWith('<local-command-caveat')
       ? undefined
       : existingSession?.proposedName;
+    // Inherit the resumed-from session's name BEFORE falling back to rawName.
+    // On boot, a /clear-driven new sid Y can land in addOrUpdate before the
+    // sessionStore index merges Y into the hydrated lineage. storedName is then
+    // undefined (resolveOverlordId misses Y), existingName is undefined (Y is
+    // new in-memory), and the chain would drop to `rawName` — typically the
+    // raw `--name` flag (slug/marker). The UI shows the slug for one tick,
+    // then the real name once the lineage merge lands. Pulling from the
+    // resumed-from session keeps the visible name stable across the merge.
+    const resumedFromName = resumedFrom
+      ? (this.sessions.get(resumedFrom)?.proposedName ?? sessionStore.getBySessionId(resumedFrom)?.proposedName)
+      : undefined;
     const resolvedName = storedName
       ?? existingName
+      ?? resumedFromName
       ?? (rawName || undefined)
-      ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined)
-      ?? (resumedFrom ? this.sessions.get(resumedFrom)?.proposedName : undefined);
+      ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined);
     // Strip <local-command-caveat> prefix — treat it as no name so transferName can override
     const proposedName = resolvedName?.startsWith('<local-command-caveat') ? undefined : resolvedName;
 
@@ -988,7 +1008,6 @@ export class StateManager {
       bridgePipeName: newSession.bridgePipeName,
       bridgeMarker: newSession.bridgeMarker,
       sessionType: newSession.sessionType,
-      replacedBy: oldSession.replacedBy,
       resumedFrom: newSession.resumedFrom,
     });
     if (oldSession.overlordId && oldSession.overlordId !== inheritedOvrId) {

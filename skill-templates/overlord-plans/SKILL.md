@@ -52,12 +52,20 @@ else:
 Create a new plan. Title comes from args; body is optional (use `''` if absent).
 If no title is provided in args, ask the user before posting.
 
+**Always create as `draft` first**, then ask the user for explicit approval before
+flipping to `active`. Do not skip the draft step. Do not implement before approval.
+
 ```bash
 curl -s -X POST "$OVERLORD_BASE/api/artifacts" \
   -H 'Content-Type: application/json' \
   -d "{\"kind\":\"plan\",\"overlordId\":\"$OVERLORD_ID\",\"title\":\"$TITLE\",\"body\":\"$BODY\",\"status\":\"draft\"}" \
   | python3 -c "import sys,json; p=json.load(sys.stdin)['artifact']; print(f\"Created {p['artifactId']}  '{p['title']}' [{p['status']}]\")"
 ```
+
+After the POST returns, paste the full plan body in chat and ask:
+> "Draft plan `<artifactId>` created. Approve to activate?"
+
+Only on explicit user approval, run `update <artifactId> status=active`.
 
 ### update `<artifactId>` `<field>=<value> …`
 Update one or more fields. Valid fields: `title`, `body`, `status`.
@@ -101,6 +109,7 @@ print(p['body'])
 
 - Set `OVERLORD_BASE` at the start of every invocation; never hardcode a host.
 - For `create`, ask for title if not provided in args.
+- For `create`, always POST as `status=draft` first, paste the body, then wait for explicit user approval before flipping to `active`. Never go straight to `active`.
 - For `delete`, always confirm with the user before calling DELETE.
 - For `update`, include only the fields the user specified in the PATCH JSON.
 - If any curl returns a non-2xx status, surface the error body verbatim.

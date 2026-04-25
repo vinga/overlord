@@ -161,6 +161,21 @@ export function registerApiRoutes(
     });
   });
 
+  // Recovery endpoint: scrub self-referential replacedBy on every active
+  // OverlordSession. Such records are hidden forever by getSnapshot's
+  // replacedBy filter. The boot loadAll scrub fixes them on restart;
+  // this endpoint runs the same scrub live.
+  app.post('/api/debug/heal-replaced-by', (_req, res) => {
+    const fixed: string[] = [];
+    for (const rec of sessionStore.listActive()) {
+      if (rec.replacedBy && rec.replacedBy === rec.lineage?.currentSessionId) {
+        sessionStore.patch(rec.overlordId, { replacedBy: undefined });
+        fixed.push(rec.overlordId);
+      }
+    }
+    res.json({ fixed, count: fixed.length });
+  });
+
   // Debug endpoint: dump raw PTY buffer tail for a session (hex + stripped),
   // used to diagnose status-bar mode detection failures.
   app.get('/api/debug/pty-buffer/:sessionId', (req, res) => {

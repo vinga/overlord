@@ -148,6 +148,12 @@ export function App() {
   // For pty-xxx IDs (pre-linking), immediately show the terminal panel.
   // When terminal:linked fires, activePtySessionId switches to the claudeSessionId —
   // we resolve its ovrId from the snapshot so selectedSessionId stays as an ovrId.
+  // IMPORTANT: snapshot is read via ref, NOT a dep. During boot the snapshot updates
+  // many times; if snapshot were a dep, this effect would re-fire on every tick while
+  // activePtySessionId was truthy, repeatedly rewriting the URL hash. Reading via ref
+  // means we only run when activePtySessionId actually changes.
+  const snapshotRef = useRef(snapshot);
+  snapshotRef.current = snapshot;
   useEffect(() => {
     if (!activePtySessionId) return;
     if (activePtySessionId.startsWith('pty-')) {
@@ -159,12 +165,11 @@ export function App() {
     }
     const claudeId = activePtySessionId;
     setActivePtySessionId(null);
-    // Resolve ovrId — prefer it over the raw claudeId for stable routing
-    const all = snapshot?.rooms.flatMap(r => r.sessions) ?? [];
+    const all = snapshotRef.current?.rooms.flatMap(r => r.sessions) ?? [];
     const linked = all.find(s => s.sessionId === claudeId);
     setSelectedSessionId(linked?.overlordId ?? claudeId);
     setSelectedSubagentId(undefined);
-  }, [activePtySessionId, snapshot]);
+  }, [activePtySessionId]);
 
   // Upgrade legacy Claude UUID hash → ovrId once snapshot arrives.
   // Runs once per UUID-style selectedSessionId; no-op if already an ovrId.

@@ -140,6 +140,18 @@ export class SessionStore {
           const raw = fs.readFileSync(full, 'utf-8');
           const parsed = JSON.parse(raw) as OverlordSession;
           if (parsed?.overlordId && parsed.lineage?.currentSessionId) {
+            // Scrub self-referential replacedBy left by old transferSessionState
+            // writes. A record whose currentSessionId === replacedBy is hidden
+            // forever by getSnapshot's filter.
+            if (parsed.replacedBy && parsed.replacedBy === parsed.lineage.currentSessionId) {
+              console.warn(`[sessionStore] scrubbing self-referential replacedBy on ${parsed.overlordId}`);
+              parsed.replacedBy = undefined;
+              try {
+                const tmp = `${full}.tmp`;
+                fs.writeFileSync(tmp, JSON.stringify(parsed, null, 2), 'utf-8');
+                fs.renameSync(tmp, full);
+              } catch { /* best-effort */ }
+            }
             target.set(parsed.overlordId, parsed);
             this.reindex(parsed);
           } else {
@@ -224,6 +236,13 @@ export class SessionStore {
       overlordId: existing.overlordId,
       lineage: partial.lineage ?? existing.lineage,
     };
+    // Refuse to write self-referential replacedBy. A record whose
+    // currentSessionId === replacedBy is hidden forever by getSnapshot.
+    // Catches stray writes from callers that pass the wrong sid.
+    if (merged.replacedBy && merged.replacedBy === merged.lineage?.currentSessionId) {
+      console.warn(`[sessionStore] dropping self-referential replacedBy on ${ovrId} (sid=${merged.replacedBy.slice(0, 8)})`);
+      merged.replacedBy = undefined;
+    }
     const target = this.active.has(ovrId) ? this.active : this.archived;
     target.set(ovrId, merged);
     this.reindex(merged);
