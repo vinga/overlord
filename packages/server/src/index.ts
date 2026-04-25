@@ -18,9 +18,8 @@ import { deleteSession as deleteSessionImpl } from './session/sessionDeleter.js'
 import { normalizePipeName, derivePipeNameFromMarker, resolvePipeName, computeIsReconnect } from './bridge/bridgeNameUtils.js';
 import { startPermissionChecker } from './session/permissionChecker.js';
 import { detectModeFromText } from './session/modeDetect.js';
-import { findTranscriptPath, resolveResumableSessionId } from './session/transcriptReader.js';
-import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from './session/transcriptShadow.js';
-import { buildOpencodeResumeArgs } from './session/opencodeSession.js';
+import { findTranscriptPath } from './session/transcriptReader.js';
+import { autoResumePtySessions as autoResumePtySessionsImpl } from './session/autoResumeBootstrap.js';
 import { initLogger, log, getBuffer } from './logger.js';
 import { AiClassifier } from './ai/aiClassifier.js';
 import { IntentSummarizer } from './ai/intentSummary.js';
@@ -683,93 +682,8 @@ try {
   console.warn('[startup] shell-history revival failed:', (err as Error).message);
 }
 
-async function autoResumePtySessions(): Promise<void> {
-  const sessions = stateManager.getPtySessionsToResume();
-  if (sessions.length === 0) {
-    console.log('[auto-resume] no embedded sessions to resume');
-    return;
-  }
-  console.log(`[auto-resume] resuming ${sessions.length} embedded session(s)`);
-  for (const { sessionId, cwd, provider, providerSessionId } of sessions) {
-    if (provider === 'opencode') {
-      try {
-        ptyManager.spawn(sessionId, cwd, 220, 50, buildOpencodeResumeArgs(providerSessionId), 'opencode');
-        const pid = ptyManager.getPid(sessionId) ?? 0;
-        stateManager.reviveManagedProviderSession(sessionId, pid);
-        ovrToPty.set(sessionId, sessionId);
-        ptyToOvr.set(sessionId, sessionId);
-        console.log(`[auto-resume] resumed OpenCode PTY ${sessionId.slice(0, 8)}`);
-      } catch (err) {
-        console.warn(`[auto-resume] failed to resume OpenCode PTY for ${sessionId.slice(0, 8)}:`, err);
-      }
-      continue;
-    }
-    // Claude --resume requires the transcript file to exist at
-    // ~/.claude/projects/<slug>/<sessionId>.jsonl. If cleanupStaleTranscripts
-    // (or archive/delete) removed it, spawning blindly just prints
-    // "No conversation found" and exits. Skip and mark the session deleted so
-    // it stops reappearing in the UI and is not retried on the next restart.
-    const resolved = resolveResumableSessionId(sessionId, cwd);
-    if (!resolved) {
-      // Skip the resume but DO NOT delete the OverlordSession record. A
-      // missing transcript on one sid doesn't invalidate the whole lineage:
-      // the record may still hold artifacts (plans, color, title, history)
-      // and the sid can become resolvable later (shadow link, restore, etc).
-      // Past behavior of `markDeleted + sessionStore.removeBySessionId` was
-      // the source of the OV Cedar disappearance — once a sid landed in
-      // deleted-sessions.json, hydrate skipped it forever.
-      console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing (record retained)`);
-      continue;
-    }
-    const effectiveResumeId = resolved.sessionId;
-    if (effectiveResumeId !== sessionId) {
-      console.log(`[auto-resume] ${sessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${effectiveResumeId.slice(0, 8)}`);
-    }
-    // If the resolved transcript lives only in the shadow store, claude --resume
-    // will start but its TUI cannot load the conversation (it looks at the
-    // canonical project dir, not the shadow). Hard-link shadow → canonical so
-    // the conversation loads. Without this, the input loop silently dies.
-    if (resolved.transcriptPath.startsWith(SHADOW_ROOT_DIR)) {
-      const ovr = sessionStore.getBySessionId(effectiveResumeId);
-      if (ovr) {
-        const restored = restoreCanonicalFromShadow(ovr.overlordId, effectiveResumeId, cwd);
-        if (restored) {
-          console.log(`[auto-resume] restored canonical transcript for ${effectiveResumeId.slice(0, 8)} from shadow`);
-        } else {
-          console.warn(`[auto-resume] failed to restore canonical for ${effectiveResumeId.slice(0, 8)}; --resume may not load`);
-        }
-      }
-    }
-    const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    try {
-      // Seed the marker→resumeTarget map BEFORE spawning. spawn returns once
-      // the child claude is launched; that claude writes its `{pid}.json`
-      // file, which sessionWatcher picks up via chokidar `add`, which calls
-      // addOrUpdate — and consumePendingResumeByMarker must already see the
-      // entry, otherwise the new sid gets a fresh ovr instead of attaching to
-      // the original lineage.
-      stateManager.trackPendingResumeByMarker(ptySessionId, effectiveResumeId);
-      // Reserve the existing lineage's ovrId against this marker so the new
-      // sid created by claude --resume re-joins instead of splitting off.
-      const existingOvrId = sessionStore.resolveOverlordId(sessionId);
-      if (existingOvrId) stateManager.reserveOvrIdForMarker(ptySessionId, existingOvrId);
-      ptyManager.spawn(ptySessionId, cwd, 220, 50, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
-      // Also reserve by PID once the child process exists. claude --resume
-      // sometimes drops the --name marker from {pid}.json, so the marker
-      // reservation can miss; PID always matches.
-      if (existingOvrId) {
-        const pid = ptyManager.getPid(ptySessionId);
-        if (pid) stateManager.reserveOvrIdForPid(pid, existingOvrId);
-        else ptyManager.once('pid-ready', (sid: string, p: number) => {
-          if (sid === ptySessionId && p) stateManager.reserveOvrIdForPid(p, existingOvrId);
-        });
-      }
-      pendingPtyByResumeId.set(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
-      console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
-    } catch (err) {
-      console.warn(`[auto-resume] failed to spawn PTY for ${sessionId.slice(0, 8)}:`, err);
-    }
-  }
+function autoResumePtySessions(): Promise<void> {
+  return autoResumePtySessionsImpl({ stateManager, ptyManager, ovrToPty, ptyToOvr, pendingPtyByResumeId });
 }
 // auto-resume is now triggered on first client WebSocket connection (see wss.on('connection'))
 
