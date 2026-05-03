@@ -47,6 +47,12 @@ export function useTerminal(
   // Bridge sessions tracked by ovrId
   const bridgeSessionIds = useRef(new Set<string>());
 
+  // FIFO counter of spawn intents originating from THIS client. Each
+  // spawn*/resume call increments; the next terminal:spawned consumes one and
+  // fires onSpawned immediately so the UI can redirect to the new session
+  // before terminal:linked arrives.
+  const pendingLocalSpawnsRef = useRef(0);
+
   const onSpawnedRef = useRef(onSpawned);
   onSpawnedRef.current = onSpawned;
 
@@ -76,6 +82,13 @@ export function useTerminal(
         next.add(msg.sessionId);
         return next;
       });
+      // If this client originated a spawn, fire onSpawned now so the UI can
+      // redirect to the new ovrId immediately. terminal:linked still fires
+      // later (idempotent re-select).
+      if (pendingLocalSpawnsRef.current > 0) {
+        pendingLocalSpawnsRef.current -= 1;
+        if (onSpawnedRef.current) onSpawnedRef.current(msg.sessionId);
+      }
     } else if (msg.type === 'terminal:exit') {
       // msg.sessionId is ovrId
       setPtySessionIds((prev) => {
@@ -164,6 +177,7 @@ export function useTerminal(
 
   const spawnSession = useCallback(
     (cwd: string, cols = 80, rows = 24, name?: string, provider: SessionProvider = 'claude') => {
+      pendingLocalSpawnsRef.current += 1;
       sendMessage({ type: 'terminal:spawn', cwd, cols, rows, name, provider });
     },
     [sendMessage]
@@ -171,6 +185,7 @@ export function useTerminal(
 
   const spawnRawShell = useCallback(
     (cwd: string, cols = 80, rows = 24, name?: string) => {
+      pendingLocalSpawnsRef.current += 1;
       sendMessage({ type: 'terminal:spawn-raw', cwd, cols, rows, name });
     },
     [sendMessage]
@@ -197,6 +212,7 @@ export function useTerminal(
         next.delete(resumeSessionId);
         return next;
       });
+      pendingLocalSpawnsRef.current += 1;
       sendMessage({ type: 'terminal:resume', resumeSessionId, cwd, cols, rows });
     },
     [sendMessage]
