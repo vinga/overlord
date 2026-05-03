@@ -491,9 +491,48 @@ interface RoomProps {
   terminalSpawnCwd?: string | null;
   onTerminalSpawnCommit?: (name: string | null) => void;
   isPtySession?: (sessionId: string) => boolean;
+  pendingSpawns?: Array<{ id: string; cwd: string; fullName: string; startedAt: number }>;
   platform?: string;
   onRoomDragStart?: (e: React.DragEvent) => void;
   onRoomDragEnd?: () => void;
+}
+
+function SpawningDesk({ name }: { name: string }) {
+  return (
+    <div className={`${styles.desk} ${styles.deskSpawning}`} aria-busy="true">
+      <div className={styles.deskInfo}>
+        <div className={styles.deskTimeLabel}>spawning</div>
+      </div>
+      <div className={styles.spawningWorker}>
+        <svg
+          width="48"
+          height="63"
+          viewBox="0 0 40 52"
+          xmlns="http://www.w3.org/2000/svg"
+          className={styles.spawningSvg}
+        >
+          <defs>
+            <linearGradient id={`spawn-grad-${name}`} x1="0%" y1="0%" x2="60%" y2="100%">
+              <stop offset="0%" stopColor="rgba(212,175,55,0.55)" />
+              <stop offset="100%" stopColor="rgba(212,175,55,0.18)" />
+            </linearGradient>
+          </defs>
+          <circle cx="20" cy="12" r="10" fill={`url(#spawn-grad-${name})`} />
+          <rect x="10" y="24" width="20" height="22" rx="3" fill={`url(#spawn-grad-${name})`} />
+          <rect x="2" y="24" width="7" height="14" rx="2" fill="rgba(212,175,55,0.22)" />
+          <rect x="31" y="24" width="7" height="14" rx="2" fill="rgba(212,175,55,0.22)" />
+          <rect x="11" y="46" width="7" height="6" rx="2" fill="rgba(212,175,55,0.22)" />
+          <rect x="22" y="46" width="7" height="6" rx="2" fill="rgba(212,175,55,0.22)" />
+        </svg>
+        <span className={styles.spawningLabel}>{name}</span>
+        <span className={styles.spawningHint}>
+          <span className={styles.spawningDot} />
+          <span className={styles.spawningDot} />
+          <span className={styles.spawningDot} />
+        </span>
+      </div>
+    </div>
+  );
 }
 
 function DeskMenu({ onDelete, onClone, onClear, onArchive }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void }) {
@@ -650,7 +689,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -1073,6 +1112,9 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             </div>
           );
         })}
+        {pendingSpawns?.map(p => (
+          <SpawningDesk key={p.id} name={p.fullName} />
+        ))}
       </div>}
       {!collapsed && archiveEntries.length > 0 && (
         <div className={styles.archiveFooter}>

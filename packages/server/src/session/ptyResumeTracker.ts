@@ -25,6 +25,12 @@ export class PtyResumeTracker {
   private pendingResumesByMarker = new Map<string, ResumeEntry>();
   private pendingPtySpawns = new Map<string, number>();
   /**
+   * cwd → ptyId for the most-recently-tracked fresh PTY spawn in that directory.
+   * Allows resolving the reserved ovrId when the session file first appears without
+   * its --name field (Claude writes {pid}.json before populating `name`).
+   */
+  private pendingPtySpawnId = new Map<string, string>();
+  /**
    * ptyIds spawned as FRESH sessions (terminal:start, not terminal:resume),
    * mapped to insertion timestamp for TTL cleanup. Used by addOrUpdate to
    * skip the cwd-keyed pendingResumes lookup and prevent stale resume state
@@ -92,6 +98,7 @@ export class PtyResumeTracker {
     this.pendingPtySpawns.set(key, now);
     if (!ptySessionId) return {};
     this.freshPtySpawns.set(ptySessionId, now);
+    this.pendingPtySpawnId.set(key, ptySessionId);
     for (const [k, ts] of this.freshPtySpawns) {
       if (now - ts > FRESH_PTY_TTL_MS) this.freshPtySpawns.delete(k);
     }
@@ -109,12 +116,23 @@ export class PtyResumeTracker {
     return this.pendingPtySpawns.get(normalizePath(cwd));
   }
 
+  /** Returns the ptyId registered for a pending spawn in this cwd, if any. */
+  getPtyIdForCwd(cwd: string): string | undefined {
+    return this.pendingPtySpawnId.get(normalizePath(cwd));
+  }
+
   consumePtySpawn(cwd: string): void {
-    this.pendingPtySpawns.delete(normalizePath(cwd));
+    const key = normalizePath(cwd);
+    this.pendingPtySpawns.delete(key);
+    this.pendingPtySpawnId.delete(key);
   }
 
   isFreshSpawn(ptyId: string): boolean {
     return this.freshPtySpawns.has(ptyId);
+  }
+
+  consumeFreshSpawn(ptyId: string): void {
+    this.freshPtySpawns.delete(ptyId);
   }
 
   /** Hydrate cwd-keyed pendingResumes from sessionStore on boot.

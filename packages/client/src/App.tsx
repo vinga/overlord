@@ -69,6 +69,7 @@ export function App() {
   const [showStats, setShowStats] = useState(false);
   const [archivedSession, setArchivedSession] = useState<Session | null>(null);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
+  const [pendingSpawns, setPendingSpawns] = useState<Array<{ id: string; cwd: string; fullName: string; startedAt: number }>>([]);
   const { rename, migrateSession: migrateNames } = useCustomNames();
   const { migrateSession: migrateRoomOrder } = useRoomOrder();
 
@@ -171,6 +172,37 @@ export function App() {
   terminalHandlerRef.current = terminal.handleTerminalMessage;
 
 
+  // Clear pendingSpawns once the live session lands in the snapshot (matched by
+  // cwd + proposedName, with startedAt > pending.startedAt) or after 25s timeout.
+  useEffect(() => {
+    if (pendingSpawns.length === 0) return;
+    const matched = new Set<string>();
+    const now = Date.now();
+    for (const p of pendingSpawns) {
+      if (now - p.startedAt > 25_000) { matched.add(p.id); continue; }
+      const room = snapshot?.rooms.find(r => r.cwd === p.cwd);
+      if (!room) continue;
+      const startedAfter = p.startedAt - 5_000;
+      const hit = room.sessions.find(s =>
+        s.proposedName === p.fullName && s.startedAt >= startedAfter
+      );
+      if (hit) matched.add(p.id);
+    }
+    if (matched.size > 0) {
+      setPendingSpawns(prev => prev.filter(p => !matched.has(p.id)));
+    }
+  }, [snapshot, pendingSpawns]);
+
+  // Tick every 2s while pendingSpawns non-empty so the timeout cleanup fires
+  // even without snapshot changes.
+  useEffect(() => {
+    if (pendingSpawns.length === 0) return;
+    const id = setInterval(() => {
+      setPendingSpawns(prev => prev.filter(p => Date.now() - p.startedAt <= 25_000));
+    }, 2000);
+    return () => clearInterval(id);
+  }, [pendingSpawns.length]);
+
   // Auto-select sessions in DetailPanel when this tab spawns one. Server pre-mints
   // the ovrId at spawn time, so `activePtySessionId` is always already an `ovr-XXX`
   // (or a legacy raw-/opencode- internal id for those provider paths). We only
@@ -266,9 +298,16 @@ export function App() {
     setPendingSpawnName('');
   }
 
+  function addPendingSpawn(cwd: string, fullName: string) {
+    const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setPendingSpawns(prev => [...prev, { id, cwd, fullName, startedAt: Date.now() }]);
+  }
+
   function handleSpawnCommit(name: string | null) {
     if (name !== null && spawnCwd) {
-      terminal.spawnSession(spawnCwd, 80, 24, name.trim() || undefined);
+      const trimmed = name.trim();
+      terminal.spawnSession(spawnCwd, 80, 24, trimmed || undefined);
+      if (trimmed) addPendingSpawn(spawnCwd, trimmed);
     }
     setSpawnCwd(null);
     setPendingSpawnName('');
@@ -290,8 +329,10 @@ export function App() {
     setShowDirectoryPicker(false);
     if (mode === 'embedded') {
       terminal.spawnSession(cwd, 80, 24, name || undefined, provider);
+      if (name) addPendingSpawn(cwd, name);
     } else if (mode === 'raw') {
       terminal.spawnRawShell(cwd, 80, 24, name || undefined);
+      if (name) addPendingSpawn(cwd, name);
     } else {
       terminal.openNewTerminal(cwd, name || undefined, mode, provider);
     }
@@ -411,6 +452,7 @@ export function App() {
         onOpenArchive={handleOpenArchive}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
+        pendingSpawns={pendingSpawns}
         platform={snapshot?.platform ?? 'darwin'}
         onOpenDirectoryPicker={() => {
           const usedNames = new Set(

@@ -539,6 +539,8 @@ artifactWatcher.start();
 // Ensure skill-templates are linked into ~/.claude/skills/ so Claude Code sessions
 // in any room can invoke them as slash commands. Uses absolute targets since the
 // symlinks live outside the repo. No-op if already linked and pointing correctly.
+// On Windows, directory symlinks require elevated privileges — falls back to
+// junction points (no elevation needed) and logs a warning on any remaining failure.
 (function linkSkillTemplates() {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const templatesDir = join(repoRoot, 'skill-templates');
@@ -553,8 +555,14 @@ artifactWatcher.start();
       if (existing.isSymbolicLink() && fs.readlinkSync(link) === absoluteTarget) continue;
       fs.unlinkSync(link);
     } catch { /* doesn't exist yet */ }
-    fs.symlinkSync(absoluteTarget, link);
-    log('info', `[skills] linked ~/.claude/skills/${name} → ${absoluteTarget}`);
+    try {
+      // Use 'junction' on Windows for directories — no elevated privileges needed.
+      const linkType = process.platform === 'win32' ? 'junction' : undefined;
+      fs.symlinkSync(absoluteTarget, link, linkType);
+      log('info', `[skills] linked ~/.claude/skills/${name} → ${absoluteTarget}`);
+    } catch (err: any) {
+      log('warn', `[skills] could not link ~/.claude/skills/${name}: ${err.message} (skills in that directory will be unavailable)`);
+    }
   }
 })();
 
@@ -844,3 +852,10 @@ async function shutdown(signal: string) {
 }
 process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.on('SIGINT', () => { void shutdown('SIGINT'); });
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] unhandledRejection:', reason);
+});

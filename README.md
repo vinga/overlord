@@ -19,7 +19,8 @@ Real-time visualization of your active [Claude Code](https://claude.ai/code) ses
 ```bash
 # Install dependencies
 npm install
-
+```
+```bash
 # Start both server and client
 npm run dev[CLAUDE.md](../../.claude/CLAUDE.md)
 ```

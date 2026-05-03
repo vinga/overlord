@@ -186,6 +186,28 @@ describe('session stealing — fresh spawn does not inherit stale pendingResume 
     expect(sm.getSession('neda-sid')?.resumedFrom).toBeUndefined();
   });
 
+  it('marks all concurrent PTY spawns in same cwd as embedded via marker', async () => {
+    const sm = await freshStateManager();
+    const cwd = '/tmp/projects/overlord';
+    const ptyA = 'pty-A', ptyB = 'pty-B', ptyC = 'pty-C';
+
+    // Three spawns in the same cwd back-to-back. The cwd-keyed pendingPtySpawns
+    // entry gets overwritten by each call; only ptyId-keyed freshPtySpawns
+    // preserves a per-spawn fingerprint that lets each Claude session find its
+    // own match.
+    sm.trackPendingPtySpawn(cwd, ptyA);
+    sm.trackPendingPtySpawn(cwd, ptyB);
+    sm.trackPendingPtySpawn(cwd, ptyC);
+
+    sm.addOrUpdate({ sessionId: 's1', pid: 100, cwd, startedAt: 1000, name: `Alpha___OVR:${ptyA}` });
+    sm.addOrUpdate({ sessionId: 's2', pid: 101, cwd, startedAt: 1001, name: `Beta___OVR:${ptyB}` });
+    sm.addOrUpdate({ sessionId: 's3', pid: 102, cwd, startedAt: 1002, name: `Gamma___OVR:${ptyC}` });
+
+    expect(sm.getSession('s1')?.sessionType).toBe('embedded');
+    expect(sm.getSession('s2')?.sessionType).toBe('embedded');
+    expect(sm.getSession('s3')?.sessionType).toBe('embedded');
+  });
+
   it('a real resume still populates resumedFrom (no marker in raw.name → falls through to pendingResumes)', async () => {
     const sm = await freshStateManager();
     const cwd = '/tmp/projects/overlord';

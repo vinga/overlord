@@ -64,6 +64,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
 
   const emit = (h: number, s: number, l: number) => {
     onChange(`hsl(${h}, ${s}%, ${l}%)`);
+    setOpen(false);
   };
 
   const handleHueChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -142,7 +143,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
           <button
             type="button"
             className={styles.resetBtn}
-            onClick={() => onChange(DEFAULT_COLOR)}
+            onClick={() => { onChange(DEFAULT_COLOR); setOpen(false); }}
           >
             Reset to default
           </button>

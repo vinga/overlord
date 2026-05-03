@@ -587,6 +587,13 @@ export class StateManager {
       // ___OVR:<ovrId> embedded in the spawn's --name flag carries the
       // reservation key. Consume on first match so subsequent matches mint fresh.
       ?? (ovrMarker ? this.consumeReservedOvrIdForMarker(ovrMarker) : undefined)
+      // cwd-based fallback: session file arrived before --name was written
+      // (Claude writes {pid}.json without name first, then updates). Look up
+      // the ptyId registered for this cwd and consume its reserved ovrId.
+      ?? (() => {
+        const ptyId = this.resumeTracker.getPtyIdForCwd(cwd);
+        return ptyId ? this.consumeReservedOvrIdForMarker(ptyId) : undefined;
+      })()
       ?? (resumedFrom
         ? (sessionStore.resolveOverlordId(resumedFrom) ?? this.sessions.get(resumedFrom)?.overlordId)
         : undefined)
@@ -635,12 +642,32 @@ export class StateManager {
     // Determine session type only on first creation; preserve it on subsequent updates.
     let sessionType: Session['sessionType'];
     if (isNew) {
-      const pendingSpawnTs = this.resumeTracker.getPtySpawnTs(cwd);
-      const isPendingPtySpawn = pendingSpawnTs != null && Date.now() - pendingSpawnTs < 5000
-        && (raw.pid === 0 || this.isSpawnedByOverlord(raw.pid));
-      if (isPendingPtySpawn) {
+      // Prefer ptyId-keyed lookup when the ___OVR:<ptyId> marker is present —
+      // each spawn has its own ptyId, so concurrent spawns in the same cwd
+      // each get their own match. Cwd fallback retained for boot auto-resume
+      // paths where the marker can be lost.
+      const isFreshByMarker = ovrMarker
+        ? this.resumeTracker.isFreshSpawn(ovrMarker)
+        : false;
+      const pendingTsByCwd = isFreshByMarker
+        ? undefined
+        : this.resumeTracker.getPtySpawnTs(cwd);
+      // On Windows, process-tree traversal (isSpawnedByOverlord) is unreliable —
+      // skip it there and rely on cwd + 5s timing alone. On macOS/Linux the check
+      // is accurate and adds an extra guard against false positives.
+      const isFreshByCwd = pendingTsByCwd != null
+        && Date.now() - pendingTsByCwd < 5000
+        && (process.platform === 'win32' || raw.pid === 0 || this.isSpawnedByOverlord(raw.pid));
+
+      if (isFreshByMarker || isFreshByCwd) {
         sessionType = 'embedded';
-        this.resumeTracker.consumePtySpawn(cwd);
+        if (isFreshByMarker) this.resumeTracker.consumeFreshSpawn(ovrMarker!);
+        else this.resumeTracker.consumePtySpawn(cwd);
+      } else if (ovrMarker) {
+        // Session name contains ___OVR:<marker> — it was definitively spawned by Overlord,
+        // even if the server restarted and the freshPtySpawns map is now empty.
+        // The marker is the authoritative proof of embedded origin.
+        sessionType = 'embedded';
       } else if (resumedFrom) {
         // Resumed via /clear or other detection — inherit the old session's sessionType
         const origSession = this.sessions.get(resumedFrom);
@@ -658,8 +685,11 @@ export class StateManager {
       // or if a closed embedded session became active again without a pending PTY spawn.
       const wasEmbeddedSession = existingSession!.sessionType === 'embedded';
       if (!hasPendingPty && (pidChanged || wasClosedNowActive) && wasEmbeddedSession) {
-        // Re-check if this process is still Overlord-spawned; if not, correct the label
-        const stillOverlord = raw.pid > 0 && this.isSpawnedByOverlord(raw.pid);
+        // Re-check if this process is still Overlord-spawned; if not, correct the label.
+        // But never downgrade while a live PTY is still linked — the PTY link is the
+        // authoritative signal that this is an embedded session.
+        const hasLivePty = resolvedOverlordId ? this.hasLivePtyFn(resolvedOverlordId) : false;
+        const stillOverlord = hasLivePty || (raw.pid > 0 && this.isSpawnedByOverlord(raw.pid));
         if (!stillOverlord) {
           sessionType = isIdeSession ? 'ide' : 'plain';
         } else {

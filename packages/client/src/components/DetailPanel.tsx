@@ -1506,6 +1506,25 @@ const currentDisplayName =
     setHasMore(selectedSession?.feedTruncated ?? false);
   }, [selectedSession?.sessionId, selectedSession?.feedTruncated]);
 
+  // Closed sessions: server drops activityFeed from the snapshot
+  // (stateManager.composeSession), so fetch history once from disk.
+  useEffect(() => {
+    if (!selectedSession || selectedSession.state !== 'closed') return;
+    if ((selectedSession.activityFeed?.length ?? 0) > 0) return;
+    const controller = new AbortController();
+    const sessionId = selectedSession.sessionId;
+    fetch(`/api/sessions/${sessionId}/activity-before?timestamp=${encodeURIComponent(new Date().toISOString())}&limit=100`, {
+      signal: controller.signal,
+    })
+      .then(r => r.json())
+      .then((data: { items?: ActivityItem[]; hasMore?: boolean }) => {
+        setExtraFeed(data.items ?? []);
+        setHasMore(data.hasMore ?? false);
+      })
+      .catch(() => { /* ignore aborts and errors */ });
+    return () => controller.abort();
+  }, [selectedSession?.sessionId, selectedSession?.state]);
+
   // When scrollTarget is set: switch to conversation tab, fetch older messages if needed, then scroll
   useEffect(() => {
     if (!effectiveScrollTarget || !selectedSession) return;
@@ -2100,7 +2119,9 @@ const currentDisplayName =
                           method: 'PUT',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ color: newColor }),
-                        });
+                        }).then(r => {
+                          if (!r.ok) console.warn('[color] PUT failed', r.status, selectedSession.sessionId);
+                        }).catch(e => console.warn('[color] PUT error', e));
                       }}
                     />
                   <div className={styles.headerMain}>

@@ -30,6 +30,7 @@ interface OfficeProps {
   onRenameSession?: (sessionId: string, name: string) => void;
   onCloneSession?: (sessionId: string) => void;
   isPtySession?: (sessionId: string) => boolean;
+  pendingSpawns?: Array<{ id: string; cwd: string; fullName: string; startedAt: number }>;
   onOpenDirectoryPicker?: () => void;
   onLogsClick?: () => void;
   onSettingsClick?: () => void;
@@ -147,7 +148,7 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -305,6 +306,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                   onRenameSession={onRenameSession}
                   onCloneSession={onCloneSession}
                   isPtySession={isPtySession}
+                  pendingSpawns={pendingSpawns?.filter(p => p.cwd === room.cwd)}
                   platform={platform}
                   onRoomDragStart={e => handleDragStart(e, room.id)}
                   onRoomDragEnd={handleDragEnd}
