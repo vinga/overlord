@@ -149,14 +149,21 @@ function resolveTranscriptPath(session: {
   resumedFrom?: string;
   transcriptPath?: string;
 }): string | null {
+  // Canonical sessionId-derived path always wins when it exists. A cached
+  // transcriptPath may point to the parent file from --fork-session, set
+  // before the new fork's jsonl was written; canonical must override it
+  // once the fork file appears.
+  const canonical = findTranscriptPath(session.cwd, session.sessionId);
+  if (canonical) return canonical;
   if (session.transcriptPath && fs.existsSync(session.transcriptPath)) {
     return session.transcriptPath;
   }
-  let transcriptPath = findTranscriptPath(session.cwd, session.sessionId) ?? findTranscriptPathAnywhere(session.sessionId);
-  if (!transcriptPath && session.resumedFrom) {
-    transcriptPath = findTranscriptPath(session.cwd, session.resumedFrom) ?? findTranscriptPathAnywhere(session.resumedFrom);
+  const anywhere = findTranscriptPathAnywhere(session.sessionId);
+  if (anywhere) return anywhere;
+  if (session.resumedFrom) {
+    return findTranscriptPath(session.cwd, session.resumedFrom) ?? findTranscriptPathAnywhere(session.resumedFrom);
   }
-  return transcriptPath;
+  return null;
 }
 
 export class StateManager {
