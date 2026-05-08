@@ -561,14 +561,19 @@ artifactWatcher.start();
       fs.symlinkSync(absoluteTarget, link, linkType);
       log('info', `[skills] linked ~/.claude/skills/${name} → ${absoluteTarget}`);
     } catch (err: any) {
-      log('warn', `[skills] could not link ~/.claude/skills/${name}: ${err.message} (skills in that directory will be unavailable)`);
+      log('info', `[skills] could not link ~/.claude/skills/${name}: ${err.message} (skills in that directory will be unavailable)`);
     }
   }
 })();
 
 // Setup state manager
 const stateManager = new StateManager(() => {
-  broadcast(stateManager.getSnapshot());
+  const t0 = Date.now();
+  const snap = stateManager.getSnapshot();
+  const t1 = Date.now();
+  broadcast(snap);
+  const t2 = Date.now();
+  if (t2 - t0 > 100) console.log(`[perf] broadcast: getSnapshot=${t1 - t0}ms send=${t2 - t1}ms`);
 });
 // Inject ovrToPty-backed liveness probe so snapshots carry `ptyAlive` for embedded sessions.
 stateManager.setHasLivePtyFn((ovrId) => {

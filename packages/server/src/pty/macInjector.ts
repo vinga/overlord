@@ -417,9 +417,16 @@ export async function injectViaMac(pid: number, text: string, extraEnter = false
   if (cgResult === 'ok') return true;
 
   if (cgResult === 'accessibility:denied') {
+    // Accessibility is granted to the binary that calls CGEventPost — that's
+    // packages/server/mac-inject (spawned by injectViaCGEvent), NOT the GUI
+    // app named in `${app}`. Reference the actual executable that needs the
+    // grant so the user knows what to add. macOS typically attributes the
+    // grant to whatever process launched the dev server (Terminal.app,
+    // IntelliJ IDEA, etc.) — that's what shows up in System Settings.
     throw new Error(
-      `Injection into ${app} requires Accessibility permission. ` +
-      `Go to System Settings → Privacy & Security → Accessibility and add Terminal.app.`
+      `Injection into ${app} (PID ${guiPid}) was blocked: Accessibility permission denied for the mac-inject helper. ` +
+      `Open System Settings → Privacy & Security → Accessibility and grant access to whichever app launched the Overlord dev server (e.g. Terminal.app, IntelliJ IDEA, iTerm2). ` +
+      `An "Overlord"-named entry covers a different binary and does NOT cover the mac-inject helper.`
     );
   }
 

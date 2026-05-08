@@ -131,15 +131,34 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
   let autoResumeTriggered = false;
 
+  // Track per-WS tab visibility so PR polling can pause when no client tab is
+  // visible. Default true on connect — clients explicitly send visibility:hidden
+  // when document.visibilityState becomes 'hidden'.
+  const wsVisible = new Map<WebSocket, boolean>();
+  const recomputePolling = (): void => {
+    let anyVisible = false;
+    for (const v of wsVisible.values()) {
+      if (v) { anyVisible = true; break; }
+    }
+    stateManager.getPrCache().setPollingEnabled(anyVisible);
+  };
+
   wss.on('connection', (ws) => {
-    // Trigger auto-resume on the first client connection
+    // Trigger auto-resume on the first client connection. Defer to the next
+    // tick so the snapshot/log:history sends below run first — otherwise the
+    // synchronous prefix of autoResumePtySessions delays the first frames the
+    // client sees, leaving the UI blank during the PTY spawn-storm.
     if (!autoResumeTriggered) {
       autoResumeTriggered = true;
-      autoResumePtySessions().catch(err => console.warn('[auto-resume] error:', err));
+      setImmediate(() => {
+        autoResumePtySessions().catch(err => console.warn('[auto-resume] error:', err));
+      });
     }
 
     // Register this client in the session map
     wsSessionMap.set(ws, new Set());
+    wsVisible.set(ws, true);
+    recomputePolling();
 
     const snapshot = stateManager.getSnapshot();
     ws.send(JSON.stringify({ type: 'snapshot', ...snapshot }));
@@ -178,6 +197,13 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       const { type } = msg;
+
+      if (type === 'visibility') {
+        const visible = msg.visible !== false;
+        wsVisible.set(ws, visible);
+        recomputePolling();
+        return;
+      }
 
       if (type === 'terminal:spawn') {
         const cwd = String(msg.cwd ?? process.cwd());
@@ -818,15 +844,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         // Find the real Claude session by PID and delete it
         if (ptyPid) {
-          const snap = stateManager.getSnapshot();
-          for (const room of snap.rooms) {
-            for (const session of room.sessions) {
-              if (session.pid === ptyPid) {
-                deleteSession(session.sessionId, ptyPid, 'terminal:kill');
-                break;
-              }
-            }
-          }
+          const target = stateManager.findLiveSessionByPid(ptyPid);
+          if (target) deleteSession(target.sessionId, ptyPid, 'terminal:kill');
         }
         return;
       }
@@ -843,16 +862,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
       if (type === 'session:delete') {
         const sessionId = String(msg.sessionId ?? '');
-
-        // Find PID for this session
-        const snap = stateManager.getSnapshot();
-        let targetPid: number | undefined;
-        outer2: for (const room of snap.rooms) {
-          for (const session of room.sessions) {
-            if (session.sessionId === sessionId) { targetPid = session.pid; break outer2; }
-          }
-        }
-
+        const targetPid = stateManager.getSession(sessionId)?.pid;
         deleteSession(sessionId, targetPid, 'session:delete (UI)');
         return;
       }
@@ -871,20 +881,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           return;
         }
 
-        // Determine clone name
-        const snap = stateManager.getSnapshot();
-        let originalName = '';
-        let originalCwd = '';
-        for (const room of snap.rooms) {
-          for (const session of room.sessions) {
-            if (session.sessionId === sessionId) {
-              originalName = session.proposedName ?? '';
-              originalCwd = session.cwd;
-              break;
-            }
-          }
-          if (originalName) break;
-        }
+        // Determine clone name (drift-proof names from sessionStore via stateManager)
+        const liveSessions = stateManager.listLiveSessions();
+        const original = stateManager.getSession(sessionId);
+        let originalName = original ? (stateManager.getProjectedProposedName(original) ?? '') : '';
+        let originalCwd = original?.cwd ?? '';
 
         // Fall back to archive entry (cloning a previously archived session)
         if (!originalCwd) {
@@ -895,7 +896,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           }
         }
 
-        const cwd = originalCwd || stateManager.getSession(sessionId)?.cwd || process.cwd();
+        const cwd = originalCwd || process.cwd();
 
         let cloneName: string;
         if (!originalName) {
@@ -903,13 +904,10 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         } else {
           const pattern = new RegExp(`^${originalName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\((\\d+)\\)$`);
           let maxN = 0;
-          for (const room of snap.rooms) {
-            for (const session of room.sessions) {
-              const match = (session.proposedName ?? '').match(pattern);
-              if (match) {
-                maxN = Math.max(maxN, parseInt(match[1], 10));
-              }
-            }
+          for (const s of liveSessions) {
+            const name = stateManager.getProjectedProposedName(s) ?? '';
+            const match = name.match(pattern);
+            if (match) maxN = Math.max(maxN, parseInt(match[1], 10));
           }
           cloneName = `${originalName} (${maxN + 1})`;
         }
@@ -962,6 +960,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       // Don't kill PTY sessions on WS close — they should survive tab refreshes
       // and be reconnectable from other tabs. Only clean up the session map.
       wsSessionMap.delete(ws);
+      wsVisible.delete(ws);
+      recomputePolling();
     });
   });
 }

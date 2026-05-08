@@ -22,8 +22,6 @@ import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
 
-const TITLE_SENTINEL_RE = /^\s*<<overlord:title>>[\s\S]+?<<\/overlord:title>>\s*$/;
-
 // Open all links in new tab
 marked.use({
   hooks: {
@@ -1838,14 +1836,7 @@ const currentDisplayName =
   const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
 
   const rawFeed = selectedSession?.activityFeed;
-  const realFeed = useMemo(() => {
-    if (!rawFeed) return [];
-    let hit = false;
-    for (const i of rawFeed) {
-      if (i.kind === 'message' && i.role === 'assistant' && TITLE_SENTINEL_RE.test(i.content ?? '')) { hit = true; break; }
-    }
-    return hit ? rawFeed.filter(i => !(i.kind === 'message' && i.role === 'assistant' && TITLE_SENTINEL_RE.test(i.content ?? ''))) : rawFeed;
-  }, [rawFeed]);
+  const realFeed = rawFeed ?? [];
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
   // activityFeed is oldest-first — find the NEWEST user message by searching from the end

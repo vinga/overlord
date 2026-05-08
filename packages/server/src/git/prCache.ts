@@ -28,61 +28,115 @@ export interface PrFull {
 }
 
 interface CacheEntry {
+  cwd: string;
   branch: string;
   value: PrInfo | null;
   checks: Check[];
   mergeable: string | null;
   error: string | null;
+  rateLimited: boolean;
   fetchedAt: number;
+  /** Set when checks + mergeable were last lazy-loaded via getOrFetchFull.
+   *  Independent from fetchedAt (which tracks the cheap REST PR list). */
+  detailsFetchedAt?: number;
   inFlight?: Promise<void>;
 }
 
-const HIT_TTL_MS = 30 * 1000;       // re-check existing PR every 30s
-const MISS_TTL_MS = 60 * 1000;      // re-check absent PR every 60s
+function entryKey(cwd: string, branch: string): string {
+  return `${cwd}\0${branch}`;
+}
+
+const HIT_TTL_MS = 15 * 60 * 1000;        // re-check existing PR every 15 min
+const MISS_TTL_MS = 30 * 60 * 1000;       // re-check absent PR every 30 min
+const RATE_LIMIT_TTL_MS = 30 * 60 * 1000; // back off 30 min when GitHub rate-limits us
+
+function isRateLimitError(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return lower.includes('api rate limit') || lower.includes('secondary rate limit');
+}
 
 export class PrCache {
   private entries = new Map<string, CacheEntry>();
   private onUpdate: () => void;
+  // Background polling is gated by client visibility. When all clients have
+  // their tab hidden, scheduleRefresh becomes a no-op so we don't burn the
+  // GitHub GraphQL quota on data nobody is looking at. User-triggered fetches
+  // (getOrFetchFull) bypass this gate.
+  private pollingEnabled = true;
 
   constructor(onUpdate: () => void) {
     this.onUpdate = onUpdate;
   }
 
+  setPollingEnabled(enabled: boolean): void {
+    if (this.pollingEnabled === enabled) return;
+    this.pollingEnabled = enabled;
+  }
+
   /** Synchronous read. Triggers a background refresh if stale. */
   get(cwd: string, branch: string | undefined): PrInfo | null | undefined {
     if (!branch) return undefined;
-    const entry = this.entries.get(cwd);
-    if (!entry || entry.branch !== branch) {
+    const entry = this.entries.get(entryKey(cwd, branch));
+    if (!entry) {
       this.scheduleRefresh(cwd, branch);
       return undefined;
     }
-    const ttl = entry.value ? HIT_TTL_MS : MISS_TTL_MS;
+    const ttl = entry.rateLimited ? RATE_LIMIT_TTL_MS : entry.value ? HIT_TTL_MS : MISS_TTL_MS;
     if (Date.now() - entry.fetchedAt > ttl) this.scheduleRefresh(cwd, branch);
     return entry.value;
   }
 
   getError(cwd: string, branch: string | undefined): string | null {
     if (!branch) return null;
-    const entry = this.entries.get(cwd);
-    if (!entry || entry.branch !== branch) return null;
+    const entry = this.entries.get(entryKey(cwd, branch));
+    if (!entry) return null;
+    // Rate-limit is a global GitHub state, not a per-room problem. Don't
+    // surface it as a per-room warning — back off silently and retry later.
+    if (entry.rateLimited) return null;
     return entry.error;
   }
 
   /**
    * Full read for the tooltip endpoint: returns PR info, checks, mergeable.
    * Awaits in-flight refresh on cache miss (OK from user-triggered endpoints).
+   * User-triggered, so bypasses rate-limit backoff — a click should always
+   * attempt a fresh fetch even if background polling is paused.
    */
   async getOrFetchFull(cwd: string, branch: string | undefined): Promise<PrFull> {
     const empty: PrFull = { pullRequest: null, checks: [], mergeable: null, error: null };
     if (!branch) return empty;
-    // Trigger refresh if missing/stale (mutates cache state).
-    this.get(cwd, branch);
-    const entry = this.entries.get(cwd);
-    if (entry?.inFlight && entry.branch === branch) {
+    const key = entryKey(cwd, branch);
+    const existing = this.entries.get(key);
+    const fresh = existing
+      && Date.now() - existing.fetchedAt <= (existing.value ? HIT_TTL_MS : MISS_TTL_MS)
+      && !existing.rateLimited;
+    if (!fresh) this.scheduleRefresh(cwd, branch, true);
+    const entry = this.entries.get(key);
+    if (entry?.inFlight) {
       try { await entry.inFlight; } catch { /* ignore */ }
     }
-    const latest = this.entries.get(cwd);
-    if (!latest || latest.branch !== branch) return empty;
+    const latest = this.entries.get(key);
+    if (!latest) return empty;
+    if (!latest.value) {
+      return { pullRequest: null, checks: [], mergeable: null, error: latest.error };
+    }
+    // Lazy-load checks + mergeable on demand. Cache them on the entry so
+    // repeat tooltip opens reuse them within HIT_TTL.
+    const detailsStale = !latest.detailsFetchedAt || Date.now() - latest.detailsFetchedAt > HIT_TTL_MS;
+    if (detailsStale) {
+      const [checks, detail] = await Promise.all([
+        fetchChecks(cwd, branch),
+        fetchPrDetail(cwd, latest.value.number),
+      ]);
+      const updated: CacheEntry = {
+        ...latest,
+        checks,
+        mergeable: detail.mergeable,
+        detailsFetchedAt: Date.now(),
+      };
+      this.entries.set(key, updated);
+      return { pullRequest: updated.value, checks, mergeable: detail.mergeable, error: null };
+    }
     return {
       pullRequest: latest.value,
       checks: latest.checks,
@@ -92,111 +146,204 @@ export class PrCache {
   }
 
   retain(activeCwds: Set<string>): void {
-    for (const cwd of this.entries.keys()) {
-      if (!activeCwds.has(cwd)) this.entries.delete(cwd);
+    for (const [key, entry] of this.entries) {
+      if (!activeCwds.has(entry.cwd)) this.entries.delete(key);
+    }
+    for (const cwd of repoIdentCache.keys()) {
+      if (!activeCwds.has(cwd)) repoIdentCache.delete(cwd);
     }
   }
 
-  private scheduleRefresh(cwd: string, branch: string): void {
-    const existing = this.entries.get(cwd);
-    if (existing?.inFlight && existing.branch === branch) return;
+  private scheduleRefresh(cwd: string, branch: string, force = false): void {
+    if (!this.pollingEnabled && !force) return;
+    const key = entryKey(cwd, branch);
+    const existing = this.entries.get(key);
+    if (existing?.inFlight) return;
 
     const placeholder: CacheEntry = {
+      cwd,
       branch,
-      value: existing?.branch === branch ? existing.value : null,
-      checks: existing?.branch === branch ? existing.checks : [],
-      mergeable: existing?.branch === branch ? existing.mergeable : null,
-      error: existing?.branch === branch ? existing.error : null,
-      fetchedAt: existing?.branch === branch ? existing.fetchedAt : 0,
+      value: existing?.value ?? null,
+      checks: existing?.checks ?? [],
+      mergeable: existing?.mergeable ?? null,
+      error: existing?.error ?? null,
+      rateLimited: existing?.rateLimited ?? false,
+      fetchedAt: existing?.fetchedAt ?? 0,
     };
-    this.entries.set(cwd, placeholder);
+    this.entries.set(key, placeholder);
 
     placeholder.inFlight = this.fetch(cwd, branch).then(result => {
-      this.entries.set(cwd, {
+      this.entries.set(key, {
+        cwd,
         branch,
         value: result.pullRequest,
         checks: result.checks,
         mergeable: result.mergeable,
         error: result.error,
+        rateLimited: !!result.error && isRateLimitError(result.error),
         fetchedAt: Date.now(),
       });
       this.onUpdate();
     }).catch(err => {
-      this.entries.set(cwd, {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.entries.set(key, {
+        cwd,
         branch,
         value: null,
         checks: [],
         mergeable: null,
-        error: err instanceof Error ? err.message : String(err),
+        error: msg,
+        rateLimited: isRateLimitError(msg),
         fetchedAt: Date.now(),
       });
       this.onUpdate();
     });
   }
 
+  /** Background refresh path. Uses REST (core quota pool) and skips checks
+   *  to keep the background load tiny. Checks + mergeable load on demand via
+   *  `getOrFetchFull` (user opens the tooltip). */
   private async fetch(cwd: string, branch: string): Promise<PrFull> {
-    // Fetch PR metadata first — if no PR, skip the checks call entirely.
-    const prResult = await fetchPrView(cwd, branch);
-    if (!prResult.value) {
-      return { pullRequest: null, checks: [], mergeable: null, error: prResult.error };
-    }
-    // Fetch checks + mergeable in parallel.
-    const [checks, mergeable] = await Promise.all([
-      fetchChecks(cwd, branch).catch(() => []),
-      fetchMergeable(cwd, branch).catch(() => null),
-    ]);
-    return { pullRequest: prResult.value, checks, mergeable, error: null };
+    const prResult = await fetchPrREST(cwd, branch);
+    return { pullRequest: prResult.value, checks: [], mergeable: null, error: prResult.error };
   }
 }
 
-async function fetchPrView(cwd: string, branch: string): Promise<{ value: PrInfo | null; error: string | null }> {
+// repoIdent (owner/name) is derived once per cwd from `git remote get-url
+// origin`. No API call. Cached for the process lifetime — origin URLs don't
+// change in practice, and cache is dropped on `retain()` when cwd disappears.
+const repoIdentCache = new Map<string, { owner: string; repo: string } | null>();
+
+async function getRepoIdent(cwd: string): Promise<{ owner: string; repo: string } | null> {
+  const cached = repoIdentCache.get(cwd);
+  if (cached !== undefined) return cached;
   try {
+    const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd, timeout: 2000 });
+    const url = stdout.trim();
+    // Match git@host:owner/repo(.git)? or https://host/owner/repo(.git)?
+    const m = url.match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?$/);
+    if (!m) { repoIdentCache.set(cwd, null); return null; }
+    const ident = { owner: m[1], repo: m[2] };
+    repoIdentCache.set(cwd, ident);
+    return ident;
+  } catch {
+    repoIdentCache.set(cwd, null);
+    return null;
+  }
+}
+
+interface RestPull {
+  number: number;
+  html_url: string;
+  title: string;
+  state: string;
+  draft?: boolean;
+  merged_at?: string | null;
+}
+
+/** REST-based PR lookup (uses gh's `core` quota pool, separate from GraphQL).
+ *  Returns the most recent PR for the branch — open preferred, otherwise any.
+ */
+async function fetchPrREST(cwd: string, branch: string): Promise<{ value: PrInfo | null; error: string | null }> {
+  const ident = await getRepoIdent(cwd);
+  if (!ident) return { value: null, error: null };
+  try {
+    // `state=all` returns open + closed; we sort by updated to pick the most recent.
     const { stdout } = await execFileAsync(
       'gh',
-      ['pr', 'view', branch, '--json', 'number,url,title,state,isDraft'],
+      [
+        'api',
+        '-X', 'GET',
+        '-H', 'Accept: application/vnd.github+json',
+        `/repos/${ident.owner}/${ident.repo}/pulls`,
+        '-f', `head=${ident.owner}:${branch}`,
+        '-f', 'state=all',
+        '-f', 'sort=updated',
+        '-f', 'direction=desc',
+        '-f', 'per_page=1',
+      ],
       { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }
     );
-    const p = JSON.parse(stdout) as PrInfo;
+    const arr = JSON.parse(stdout) as RestPull[];
+    if (arr.length === 0) return { value: null, error: null };
+    const p = arr[0];
+    let state = p.state.toUpperCase();
+    if (state === 'CLOSED' && p.merged_at) state = 'MERGED';
     return {
       value: {
         number: p.number,
-        url: p.url,
+        url: p.html_url,
         title: p.title,
-        state: p.state,
-        isDraft: !!p.isDraft,
+        state,
+        isDraft: !!p.draft,
       },
       error: null,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const lower = msg.toLowerCase();
-    if (lower.includes('no pull requests found') || lower.includes('no associated') || lower.includes('not found')) {
-      return { value: null, error: null };
-    }
     return { value: null, error: msg };
   }
 }
 
+/** Lazy fetch: PR detail (mergeable) + checks. Only called when the user
+ *  opens the tooltip via getOrFetchFull. Uses GraphQL (mergeable requires it). */
+async function fetchPrDetail(cwd: string, prNumber: number): Promise<{ mergeable: string | null }> {
+  const ident = await getRepoIdent(cwd);
+  if (!ident) return { mergeable: null };
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'api',
+        '-X', 'GET',
+        '-H', 'Accept: application/vnd.github+json',
+        `/repos/${ident.owner}/${ident.repo}/pulls/${prNumber}`,
+      ],
+      { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }
+    );
+    const p = JSON.parse(stdout) as { mergeable?: boolean | null; mergeable_state?: string };
+    if (p.mergeable_state) return { mergeable: p.mergeable_state.toUpperCase() };
+    if (p.mergeable === true) return { mergeable: 'MERGEABLE' };
+    if (p.mergeable === false) return { mergeable: 'CONFLICTING' };
+    return { mergeable: null };
+  } catch {
+    return { mergeable: null };
+  }
+}
+
 async function fetchChecks(cwd: string, branch: string): Promise<Check[]> {
-  const { stdout } = await execFileAsync(
-    'gh',
-    ['pr', 'checks', branch, '--json', 'name,state,bucket,link,startedAt,completedAt'],
-    { cwd, timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
-  );
-  const raw = JSON.parse(stdout) as Array<{
-    name: string;
-    state?: string;
-    bucket?: string;
-    link?: string;
-    startedAt?: string;
-    completedAt?: string;
-  }>;
-  return raw.map(r => ({
-    name: r.name,
-    state: mapCheckState(r.bucket ?? r.state ?? ''),
-    url: r.link || undefined,
-    elapsed: elapsedLabel(r.startedAt, r.completedAt),
-  }));
+  const ident = await getRepoIdent(cwd);
+  if (!ident) return [];
+  try {
+    // REST: list check-runs for the head commit of the branch ref.
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'api',
+        '-X', 'GET',
+        '-H', 'Accept: application/vnd.github+json',
+        `/repos/${ident.owner}/${ident.repo}/commits/${encodeURIComponent(branch)}/check-runs`,
+        '-f', 'per_page=50',
+      ],
+      { cwd, timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
+    );
+    const parsed = JSON.parse(stdout) as { check_runs?: Array<{
+      name: string;
+      status?: string;
+      conclusion?: string | null;
+      html_url?: string;
+      started_at?: string;
+      completed_at?: string;
+    }> };
+    return (parsed.check_runs ?? []).map(r => ({
+      name: r.name,
+      state: mapCheckState(r.conclusion ?? r.status ?? ''),
+      url: r.html_url || undefined,
+      elapsed: elapsedLabel(r.started_at, r.completed_at),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 function mapCheckState(raw: string): CheckState {
@@ -222,16 +369,3 @@ function elapsedLabel(startedAt?: string, completedAt?: string): string | undefi
   return `${hr}h ${min % 60}m`;
 }
 
-async function fetchMergeable(cwd: string, branch: string): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      'gh',
-      ['pr', 'view', branch, '--json', 'mergeable,mergeStateStatus'],
-      { cwd, timeout: 5000, maxBuffer: 256 * 1024 }
-    );
-    const p = JSON.parse(stdout) as { mergeable?: string; mergeStateStatus?: string };
-    return p.mergeStateStatus ?? p.mergeable ?? null;
-  } catch {
-    return null;
-  }
-}

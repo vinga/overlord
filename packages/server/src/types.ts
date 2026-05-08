@@ -147,10 +147,6 @@ export interface Session {
 
   // Timestamp when session was added to state (used by GC to avoid premature removal)
   loadedAt?: number;
-
-  // Current git branch attributed to this session (may differ from room.gitBranch).
-  gitBranch?: string;
-  pullRequest?: PullRequestSnapshot;
 }
 
 /** One attached Claude session UUID in the overlord's lineage. */
@@ -228,9 +224,6 @@ export interface OverlordSession {
   intentTurnCount?: number;
   intentUpdatedAt?: number;
   notes?: string;
-
-  /** Last observed git branch for this session (persisted to survive restart). */
-  gitBranch?: string;
 
   /** Pending --resume targeting this lineage from `cwd` started at `at` (epoch ms).
    *  Replaces the legacy ~/.claude/overlord/pending-resumes.json file. Cleared

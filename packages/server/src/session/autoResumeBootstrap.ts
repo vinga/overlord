@@ -35,7 +35,14 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
     return;
   }
   console.log(`[auto-resume] resuming ${sessions.length} embedded session(s)`);
-  for (const { sessionId, cwd, provider, providerSessionId } of sessions) {
+  // Resume in parallel: the PTY child processes boot concurrently anyway, and
+  // running the per-session setup work in parallel lets the sync filesystem
+  // I/O (transcript shadow restore, sessionStore lookups) interleave via the
+  // microtask queue instead of blocking the event loop serially. Each task
+  // starts with `await setImmediate` so the WS upgrade handler and first
+  // snapshot send win the first event-loop tick.
+  await Promise.all(sessions.map(async ({ sessionId, cwd, provider, providerSessionId }) => {
+    await new Promise<void>(resolve => setImmediate(resolve));
     if (provider === 'opencode') {
       try {
         ptyManager.spawn(sessionId, cwd, 220, 50, buildOpencodeResumeArgs(providerSessionId), 'opencode');
@@ -47,7 +54,7 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
       } catch (err) {
         console.warn(`[auto-resume] failed to resume OpenCode PTY for ${sessionId.slice(0, 8)}:`, err);
       }
-      continue;
+      return;
     }
     // Claude --resume requires the transcript file to exist at
     // ~/.claude/projects/<slug>/<sessionId>.jsonl. If cleanupStaleTranscripts
@@ -64,7 +71,7 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
       // the source of the OV Cedar disappearance — once a sid landed in
       // deleted-sessions.json, hydrate skipped it forever.
       console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing (record retained)`);
-      continue;
+      return;
     }
     const effectiveResumeId = resolved.sessionId;
     if (effectiveResumeId !== sessionId) {
@@ -114,5 +121,5 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
     } catch (err) {
       console.warn(`[auto-resume] failed to spawn PTY for ${sessionId.slice(0, 8)}:`, err);
     }
-  }
+  }));
 }

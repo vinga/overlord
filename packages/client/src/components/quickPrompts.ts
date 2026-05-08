@@ -210,6 +210,7 @@ const PROPOSE_TITLE = [
   "- 3-7 words. Noun phrase or gerund. Present tense. No period.",
   "- Capture the core task, not the first message.",
   "- No quotes, no preamble, no explanation.",
+  "- If there is an associated JIRA ticket (e.g. mentioned in the conversation, branch name, or commits), prefix the title with the ticket key and number, and include the ticket title if known. Format: `PROJ-123 Ticket title — your concise title`. If only the key is known, use `PROJ-123 your concise title`.",
   "",
   "Output format — your entire response must be EXACTLY this single line, nothing else:",
   "",

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import chokidar, { type FSWatcher } from 'chokidar';
 
 export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw';
 export type RoomLastProvider = 'claude' | 'opencode';
@@ -26,11 +27,52 @@ function cwdToRoomSlug(cwd: string): string {
     .slice(0, 200);
 }
 
-function getRoomConfigPath(cwd: string): string {
-  return path.join(os.homedir(), '.claude', 'overlord', 'rooms', `${cwdToRoomSlug(cwd)}.config.json`);
+function roomsDir(): string {
+  return path.join(os.homedir(), '.claude', 'overlord', 'rooms');
 }
 
-export function readRoomConfig(cwd: string): RoomConfig {
+function getRoomConfigPath(cwd: string): string {
+  return path.join(roomsDir(), `${cwdToRoomSlug(cwd)}.config.json`);
+}
+
+// In-memory cache. Populated lazily on first read; invalidated on local writes
+// (writeRoomConfig) and on external file changes (chokidar watcher below).
+// `getSnapshot()` reads roomConfig per room every tick — without this cache
+// each tick was N×(fs.existsSync + fs.readFileSync + JSON.parse).
+const configCache = new Map<string, RoomConfig>();
+let slugsCache: string[] | undefined;
+let watcher: FSWatcher | undefined;
+
+function ensureWatcher(): void {
+  if (watcher) return;
+  const dir = roomsDir();
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+  try {
+    watcher = chokidar.watch(dir, {
+      persistent: true,
+      ignoreInitial: true,
+      depth: 0,
+      awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 25 },
+    });
+    const invalidate = (filePath: string) => {
+      const base = path.basename(filePath);
+      if (!base.endsWith('.config.json')) return;
+      const slug = base.replace(/\.config\.json$/, '');
+      // Drop every cwd whose slug matches — slug→cwd is many-to-one in theory,
+      // but in practice the cache is keyed by the cwd we read for, so iterate.
+      for (const [cwd] of configCache) {
+        if (cwdToRoomSlug(cwd) === slug) configCache.delete(cwd);
+      }
+      slugsCache = undefined;
+    };
+    watcher.on('add', invalidate);
+    watcher.on('change', invalidate);
+    watcher.on('unlink', invalidate);
+    watcher.on('error', () => { /* ignore */ });
+  } catch { /* watcher is best-effort */ }
+}
+
+function loadFromDisk(cwd: string): RoomConfig {
   try {
     const p = getRoomConfigPath(cwd);
     if (!fs.existsSync(p)) return { ...DEFAULT_CONFIG };
@@ -50,11 +92,22 @@ export function readRoomConfig(cwd: string): RoomConfig {
   }
 }
 
+export function readRoomConfig(cwd: string): RoomConfig {
+  ensureWatcher();
+  const cached = configCache.get(cwd);
+  if (cached) return cached;
+  const cfg = loadFromDisk(cwd);
+  configCache.set(cwd, cfg);
+  return cfg;
+}
+
 export function writeRoomConfig(cwd: string, cfg: RoomConfig): void {
   try {
     const p = getRoomConfigPath(cwd);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf-8');
+    configCache.set(cwd, { ...cfg });
+    slugsCache = undefined;
   } catch { /* swallow — config is best-effort */ }
 }
 
@@ -64,14 +117,17 @@ export function writeRoomConfig(cwd: string, cfg: RoomConfig): void {
  * new sessions in them.
  */
 export function listConfiguredRoomSlugs(): string[] {
-  const dir = path.join(os.homedir(), '.claude', 'overlord', 'rooms');
+  ensureWatcher();
+  if (slugsCache) return slugsCache;
+  const dir = roomsDir();
   try {
-    return fs.readdirSync(dir)
+    slugsCache = fs.readdirSync(dir)
       .filter(f => f.endsWith('.config.json'))
       .map(f => f.replace(/\.config\.json$/, ''));
   } catch {
-    return [];
+    slugsCache = [];
   }
+  return slugsCache;
 }
 
 export function slugForCwd(cwd: string): string { return cwdToRoomSlug(cwd); }

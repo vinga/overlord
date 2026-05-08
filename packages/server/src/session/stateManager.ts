@@ -14,7 +14,6 @@ import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
-import { GitAttribution } from './gitAttribution.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
@@ -106,10 +105,12 @@ function derivePlanTitle(plan: string): string {
 }
 
 /** Tail length for activityFeed in WS snapshots. DetailPanel lazy-loads older
- *  items via REST when the user scrolls past this boundary. Full feed (~300
- *  items × ~250 bytes) ships ~75KB per session × N sessions = MBs per snapshot,
- *  which starved the WS pipe of PTY data during long-session resume. */
-const SNAPSHOT_FEED_TAIL = 200;
+ *  items via REST (`/api/sessions/:id/activity-before`) when the user scrolls
+ *  past this boundary. Lowered from 200 → 30 because the first snapshot was
+ *  shipping 2.4MB at N=26 sessions, and parsing/rendering that on the client
+ *  caused a multi-second blank UI on reconnect/restart. 30 items covers the
+ *  visible tail of the detail panel without scrolling. */
+const SNAPSHOT_FEED_TAIL = 30;
 
 function trimActivityFeed<T>(feed: T[] | undefined): T[] | undefined {
   if (!feed || feed.length <= SNAPSHOT_FEED_TAIL) return feed;
@@ -219,7 +220,6 @@ export class StateManager {
   private prCache: PrCache;
   private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
-  private gitAttribution = new GitAttribution();
   /** Injected from index.ts after construction — reports whether an ovrId has a live PTY in `ovrToPty`.
    *  Stamped into every snapshot so the client can tell "embedded + live" from "embedded + orphan". */
   private hasLivePtyFn: (ovrId: string) => boolean = () => false;
@@ -1897,12 +1897,12 @@ export class StateManager {
   }
 
   /**
-   * Periodic GC: remove internal haiku-worker sessions (pid=0, cwd inside ~/.claude)
-   * and close sessions that have been closed and inactive for >30 minutes.
+   * Periodic GC: remove internal haiku-worker sessions (pid=0, cwd inside ~/.claude).
+   * Closed user sessions are intentionally NOT evicted here — they remain in
+   * `this.sessions` so their rooms stay visible. On-disk records are pruned
+   * separately by `purgeStaleOverlordSessionFiles` (2-day horizon).
    */
   cleanupStaleSessions(): void {
-    const now = Date.now();
-    const thirtyMin = 30 * 60 * 1000;
     let anyChanged = false;
     for (const [sessionId, session] of this.sessions) {
       // Remove haiku/internal worker sessions — they have pid=0 and cwd inside ~/.claude
@@ -1911,18 +1911,6 @@ export class StateManager {
         clearSessionCaches(sessionId, session.transcriptPath, session.cwd);
         this.sessions.delete(sessionId);
         anyChanged = true;
-        continue;
-      }
-      // Remove old closed sessions with no activity for >30 minutes.
-      // Use loadedAt (set to Date.now() when session is added) so that sessions
-      // recovered from transcripts on startup aren't immediately GC'd.
-      if (session.state === 'closed' && session.pid === 0) {
-        const age = now - (session.loadedAt ?? new Date(session.lastActivity ?? session.startedAt).getTime());
-        if (age > thirtyMin) {
-          clearSessionCaches(sessionId, session.transcriptPath, session.cwd);
-          this.sessions.delete(sessionId);
-          anyChanged = true;
-        }
       }
     }
     // Prune processSnapshot of PIDs that no longer exist (cap growth from fallback inserts).
@@ -1967,12 +1955,14 @@ export class StateManager {
   }
 
   getSnapshot(): OfficeSnapshot {
+    const _t0 = Date.now();
     const roomMap = new Map<string, Room>();
     // Per-snapshot memo (Tier 1 + Tier 2 from snapshot-cost plan): build the
     // plan index ONCE per tick instead of running artifactStore.listByOverlord
     // per session. With N=20+ sessions and 50+ plan artifacts this drops the
     // hot-path cost from O(N×M) to O(M+N).
     const plansByOvr = this.buildPlansByOvr();
+    const _t1 = Date.now();
 
     // Dedupe by overlordId — keep only the entry whose sid matches the
     // store's `lineage.currentSessionId`. After a resume the in-memory map
@@ -2002,6 +1992,7 @@ export class StateManager {
       }
       roomMap.get(cwd)!.sessions.push(this.composeSession(session, plansByOvr));
     }
+    const _t2 = Date.now();
 
     // Surface every configured room even if it currently has no hydrated
     // sessions — the user should always see a room they own so they can spawn
@@ -2041,7 +2032,8 @@ export class StateManager {
       room.sessions.sort((a, b) => a.startedAt - b.startedAt);
     }
 
-    // Attach git branch (and watch for changes) per room cwd
+    // Attach git branch + PR per room cwd. Per-session attribution is
+    // intentionally NOT done here: branches/PRs live at the room level only.
     const activeCwds = new Set<string>();
     for (const room of rooms) {
       activeCwds.add(room.cwd);
@@ -2057,29 +2049,14 @@ export class StateManager {
       }
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;
-
-      const now = Date.now();
-      for (const session of room.sessions) {
-        const live = this.sessions.get(session.sessionId);
-        const nextBranch = this.gitAttribution.attribute(session, branch, now);
-
-        if (nextBranch && nextBranch !== session.gitBranch) {
-          session.gitBranch = nextBranch;
-          if (live) live.gitBranch = nextBranch;
-          sessionStore.patch(session.overlordId, { gitBranch: nextBranch });
-        } else if (nextBranch) {
-          session.gitBranch = nextBranch;
-        }
-
-        if (session.gitBranch) {
-          const sessionPr = this.prCache.get(room.cwd, session.gitBranch);
-          if (sessionPr) session.pullRequest = sessionPr;
-        }
-      }
     }
     this.gitWatcher.retain(activeCwds);
     this.prCache.retain(activeCwds);
+    const _t3 = Date.now();
 
+    if (_t3 - _t0 > 100) {
+      console.log(`[perf] getSnapshot stages: plansByOvr=${_t1 - _t0}ms compose=${_t2 - _t1}ms gitAttrib=${_t3 - _t2}ms total=${_t3 - _t0}ms sessions=${rooms.reduce((a, r) => a + r.sessions.length, 0)}`);
+    }
     return {
       rooms,
       updatedAt: new Date().toISOString(),
@@ -2091,6 +2068,52 @@ export class StateManager {
 
   getSession(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /** Live, non-replaced sessions. Cheap iterator for hot paths that previously
+   *  built the full snapshot just to walk sessions (e.g. find-by-pid, clone-name
+   *  uniqueness scan). No sessionStore projection / git / plan I/O. */
+  listLiveSessions(): Session[] {
+    const out: Session[] = [];
+    for (const s of this.sessions.values()) {
+      if (s.replacedBy) continue;
+      out.push(s);
+    }
+    return out;
+  }
+
+  /** Find the first live session matching a pid. O(N) over live sessions but
+   *  N is small and there is no per-session I/O. Replaces snapshot walks in
+   *  `terminal:kill` etc. */
+  findLiveSessionByPid(pid: number): Session | undefined {
+    for (const s of this.sessions.values()) {
+      if (s.replacedBy) continue;
+      if (s.pid === pid) return s;
+    }
+    return undefined;
+  }
+
+  /** Drift-proof projected proposedName for a single session — sessionStore
+   *  wins over live, mirroring `composeSession`. Used by hot paths that need
+   *  the wire-format name without rebuilding the snapshot. */
+  getProjectedProposedName(session: Session): string | undefined {
+    return sessionStore.getByOverlordId(session.overlordId)?.proposedName ?? session.proposedName;
+  }
+
+  /** Is this cwd surfaced as a room by `getSnapshot()`? Mirrors the snapshot's
+   *  room-discovery logic (live sessions ∪ persisted records ∪ configured
+   *  slugs) without building the full snapshot. Used by API endpoints that
+   *  gate on "known cwd" to prevent arbitrary path probing. */
+  isKnownRoomCwd(cwd: string): boolean {
+    for (const s of this.sessions.values()) {
+      if (s.replacedBy) continue;
+      if (s.cwd === cwd) return true;
+    }
+    for (const rec of sessionStore.listAll()) {
+      if (rec.cwd === cwd) return true;
+    }
+    const slug = slugForCwd(cwd);
+    return listConfiguredRoomSlugs().includes(slug);
   }
 
   /** Per-snapshot plan index. Built once at the top of `getSnapshot()` and passed
@@ -2124,7 +2147,7 @@ export class StateManager {
    *  clients see the truth from disk.
    *
    *  Persistent fields routed through sessionStore: proposedName, color, slug,
-   *  model, intent, gitBranch, sessionType, provider, providerSessionId,
+   *  model, intent, sessionType, provider, providerSessionId,
    *  resumedFrom, replacedBy, bridgePipeName, bridgeMarker, historyOnly,
    *  userAccepted, completionHint, completionHintByUser, manuallyDone,
    *  acknowledged. (lastActivity / lastMessage stay live — transcript-derived.)
@@ -2154,7 +2177,6 @@ export class StateManager {
       out.slug = overlord.slug ?? session.slug;
       out.model = overlord.model ?? session.model;
       out.intent = overlord.intent ?? session.intent;
-      out.gitBranch = overlord.gitBranch ?? session.gitBranch;
       out.sessionType = overlord.sessionType ?? session.sessionType;
       out.provider = overlord.provider ?? session.provider;
       out.providerSessionId = overlord.providerSessionId ?? session.providerSessionId;

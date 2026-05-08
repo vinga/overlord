@@ -140,10 +140,14 @@ function findShadowTranscript(sessionId: string): string | null {
 }
 
 export function cwdToSlug(cwd: string): string {
-  // Replace \, :, / with -
-  const slug = cwd.replace(/[\\:/]/g, '-');
-  // Strip leading dashes
-  return slug.replace(/^-+/, '');
+  // Match Claude's actual project-dir scheme exactly: replace \, :, / with -
+  // and PRESERVE the leading dash. Claude writes its transcripts under
+  // ~/.claude/projects/-Users-foo-bar/<sessionId>.jsonl (with leading dash);
+  // stripping it caused findTranscriptPath to miss the canonical file and
+  // fall through to the (potentially stale) shadow copy, which made the UI
+  // appear frozen for sessions whose canonical was being updated externally
+  // (e.g. a user-driven `claude --resume` not spawned via auto-resume).
+  return cwd.replace(/[\\:/]/g, '-');
 }
 
 export function findTranscriptPath(cwd: string, sessionId: string): string | null {

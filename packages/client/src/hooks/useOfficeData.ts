@@ -50,6 +50,11 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
             everConnectedRef.current = true;
             setConnecting(false);
           }
+          // Send current visibility so the server can gate background polling
+          // (PR cache, etc.) when the tab is hidden at connect time.
+          try {
+            ws.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState !== 'hidden' }));
+          } catch { /* ignore */ }
         }
       };
 
@@ -112,8 +117,18 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
 
     connect();
 
+    const onVisibilityChange = (): void => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        ws.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState !== 'hidden' }));
+      } catch { /* ignore */ }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
     return () => {
       mountedRef.current = false;
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       if (reconnectTimer.current !== null) {
         clearTimeout(reconnectTimer.current);
       }

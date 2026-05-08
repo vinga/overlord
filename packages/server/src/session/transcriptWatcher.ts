@@ -226,9 +226,23 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
     .on('change', handleTranscriptFile);
 
   // Periodic state refresh — re-evaluate all session states every 3s
-  // (smallest state threshold is 3s, so polling must be at least that frequent)
+  // (smallest state threshold is 3s, so polling must be at least that frequent).
+  // Yields the event loop between sessions via setTimeout(0) so a 46-session
+  // sweep doesn't block PUT /api/sessions/:id/color, WS broadcasts, etc. for
+  // ~1.5s straight. Total CPU is unchanged; latency for concurrent requests
+  // drops from "wait for whole poll" to "wait for one session step".
+  let pollInFlight = false;
   setInterval(() => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    void (async () => {
+    const t0 = Date.now();
+    let processed = 0;
     for (const sessionId of ctx.stateManager.getAllSessionIds()) {
+      // Yield so the timer phase runs other expired timers (snapshot broadcast
+      // throttle, etc.) and pending HTTP/WS requests get serviced.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+      const s0 = Date.now();
       const session = ctx.stateManager.getSession(sessionId);
       if (session?.state === 'closed') continue;
       const { becameWaiting, lastMessage, becameWorking, leftWorking, transcriptStale } = ctx.stateManager.refreshTranscript(sessionId);
@@ -286,7 +300,14 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       if (currentSession && !currentSession.isWorker) {
         ctx.intentSummarizer.maybeRefreshIntent(sessionId, currentSession.cwd);
       }
+      processed++;
+      const sd = Date.now() - s0;
+      if (sd > 50) console.log(`[perf] poll session ${sessionId.slice(0,8)}: ${sd}ms`);
     }
+    const td = Date.now() - t0;
+    if (td > 200) console.log(`[perf] poll total: ${td}ms across ${processed} sessions`);
+    pollInFlight = false;
+    })();
   }, 3_000);
 
   // Periodic cleanup of leaked PTY entries (every 60s)

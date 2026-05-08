@@ -73,9 +73,7 @@ export function registerApiRoutes(
   app.get('/api/git/status', async (req, res) => {
     const cwd = String(req.query.cwd ?? '');
     if (!cwd) return res.status(400).json({ error: 'cwd required' });
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) return res.status(404).json({ error: 'unknown cwd' });
+    if (!stateManager.isKnownRoomCwd(cwd)) return res.status(404).json({ error: 'unknown cwd' });
     const status = await readGitStatus(cwd, stateManager.getPrCache());
     if (!status) return res.status(404).json({ error: 'not a git repo' });
     res.json(status);
@@ -88,9 +86,7 @@ export function registerApiRoutes(
     const cwd = String(req.query.cwd ?? '');
     const branch = String(req.query.branch ?? '');
     if (!cwd || !branch) return res.status(400).json({ error: 'cwd and branch required' });
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) return res.status(404).json({ error: 'unknown cwd' });
+    if (!stateManager.isKnownRoomCwd(cwd)) return res.status(404).json({ error: 'unknown cwd' });
     const full = await stateManager.getPrCache().getOrFetchFull(cwd, branch);
     res.json(full);
   });
@@ -517,9 +513,7 @@ export function registerApiRoutes(
   app.get('/api/room-config', (req, res) => {
     const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     res.json(readRoomConfig(cwd));
   });
 
@@ -538,9 +532,7 @@ export function registerApiRoutes(
       res.status(400).json({ error: 'lastProvider must be claude|opencode' });
       return;
     }
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     const current = readRoomConfig(cwd);
     writeRoomConfig(cwd, {
       prefix: prefix !== undefined ? prefix : current.prefix,
@@ -556,9 +548,7 @@ export function registerApiRoutes(
   app.get('/api/brain', (req, res) => {
     const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     try {
       const context = getBrainContext(cwd);
       res.json(context);
@@ -574,9 +564,7 @@ export function registerApiRoutes(
     const filePath = typeof req.query.path === 'string' ? req.query.path : '';
     if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
     if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     const resolved = resolve(filePath);
     const homeDir = resolve(os.homedir(), '.claude');
     const cwdResolved = resolve(cwd);
@@ -605,9 +593,7 @@ export function registerApiRoutes(
     if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
     if (!filePath || typeof filePath !== 'string') { res.status(400).json({ error: 'path required' }); return; }
     if (typeof content !== 'string') { res.status(400).json({ error: 'content must be a string' }); return; }
-    const snap = stateManager.getSnapshot();
-    const known = snap.rooms.some(r => r.cwd === cwd);
-    if (!known) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     const resolved = resolve(filePath);
     const homeDir = resolve(os.homedir(), '.claude');
     const cwdResolved = resolve(cwd);
@@ -1030,28 +1016,26 @@ export function registerApiRoutes(
       stateManager.remove(sessionId);
       await new Promise<void>(resolve => setImmediate(resolve));
 
-      // Slow reads: git status (subprocess) + transcript head for last-message metadata.
-      // These populate archive-entry fields but don't affect what the client renders now.
-      let gitBranch: string | undefined;
-      let pullRequest: { number: number; url: string; title: string; state: string; isDraft: boolean } | undefined;
-      try {
-        const git = await readGitStatus(capturedCwd, stateManager.getPrCache());
-        if (git?.branch) gitBranch = git.branch;
-        const cachedPr = stateManager.getPrCache().get(capturedCwd, git?.branch ?? undefined);
-        if (cachedPr) pullRequest = cachedPr;
-      } catch { /* ignore */ }
+      // Respond NOW. Heavy work (git subprocess, transcript read, transcript copy,
+      // process kill, file cleanup) runs in the background — the room is already
+      // empty in the broadcast snapshot, and `archive:added` populates the archive
+      // list when the work finishes.
+      res.json({ ok: true, pending: true, sessionId });
 
-      let lastMessage: string | undefined;
-      let lastActivity: string | undefined;
-      let model: string | undefined;
-      if (sourceTranscript && fs.existsSync(sourceTranscript)) {
-        try {
-          const state = readTranscriptState(sourceTranscript);
-          lastMessage = state.lastMessage;
-          lastActivity = state.lastActivity;
-          model = state.model;
-        } catch { /* ignore */ }
-      }
+      // Run git status + transcript read in parallel — they're independent.
+      const [gitResult, transcriptResult] = await Promise.all([
+        (async () => {
+          try {
+            const git = await readGitStatus(capturedCwd, stateManager.getPrCache());
+            const cachedPr = stateManager.getPrCache().get(capturedCwd, git?.branch ?? undefined);
+            return { branch: git?.branch, pr: cachedPr };
+          } catch { return { branch: undefined, pr: undefined }; }
+        })(),
+        (async () => {
+          if (!sourceTranscript || !fs.existsSync(sourceTranscript)) return undefined;
+          try { return readTranscriptState(sourceTranscript); } catch { return undefined; }
+        })(),
+      ]);
 
       const archiveParams = {
         sessionId,
@@ -1063,19 +1047,18 @@ export function registerApiRoutes(
         sessionType: capturedSessionType,
         startedAt: capturedStartedAt,
         color: capturedColor,
-        gitBranch,
-        pullRequest,
-        lastMessage: lastMessage ?? capturedLastMessage,
-        lastActivity: lastActivity ?? capturedLastActivity,
-        model: model ?? capturedModel,
+        gitBranch: gitResult.branch ?? undefined,
+        pullRequest: gitResult.pr ?? undefined,
+        lastMessage: transcriptResult?.lastMessage ?? capturedLastMessage,
+        lastActivity: transcriptResult?.lastActivity ?? capturedLastActivity,
+        model: transcriptResult?.model ?? capturedModel,
       };
 
       // Heavy work: transcript copy + process kill + file cleanup
       const entry = archiveManager.archive(archiveParams);
       if (!entry) {
-        // Archive failed — still run deleteSession to clean up the now-removed session
         deleteSession(sessionId, pidToKill, 'archive-failed');
-        res.status(500).json({ error: 'failed to archive (transcript missing)' });
+        log('session:killed', 'Session archive failed (transcript missing)', { sessionId });
         return;
       }
       deleteSession(sessionId, pidToKill, 'archive');
@@ -1083,7 +1066,6 @@ export function registerApiRoutes(
         broadcastRaw({ type: 'archive:added', entry });
       }
       log('session:killed', 'Session archived', { sessionId, sessionName: entry.name });
-      res.json({ ok: true, entry });
     })();
   });
 

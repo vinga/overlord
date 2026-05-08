@@ -120,8 +120,6 @@ interface Session {
   archivedAt?: string;            // ISO timestamp of archival (only when isArchived)
   archivedGitBranch?: string;     // snapshot of branch at archive time
   archivedPullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
-  gitBranch?: string;             // current branch attributed to this session (live)
-  pullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
 }
 
 interface Room {

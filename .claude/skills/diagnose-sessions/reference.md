@@ -8,6 +8,24 @@ Architecture diagrams, known issues, and quick symptom lookup for session diagno
 
 ## Known Issues & Patterns
 
+### Session frozen in UI, real conversation still progressing — slug mismatch (FIXED)
+**Symptom:** A session shows in the UI but its `lastActivity`, `lastMessage`, and `activityFeed` are stuck in the past. The user's actual `claude` process is alive and writing to the transcript; you can confirm by `tail -f`'ing the canonical jsonl. Especially common for sessions the user launched outside Overlord (IntelliJ terminal `claude --resume`, etc.) — i.e. sessions where Overlord did NOT spawn the PTY and so isn't mirroring writes to the shadow transcript.
+
+**Root cause:** `transcriptReader.cwdToSlug` was stripping the leading `-` from cwd-derived slugs. Claude's actual project dirs PRESERVE the leading dash (`~/.claude/projects/-Users-foo-bar/<sid>.jsonl`). With the strip, `findTranscriptPath(cwd, sessionId)` would miss canonical and fall through to `findShadowTranscript(sessionId)` — which, for sessions Overlord doesn't drive, returns a frozen copy from the last time Overlord touched it.
+
+**How to identify:**
+- `/api/debug/state` for the session shows `transcriptPath` under `~/.claude/overlord/transcripts/<ovrId>/...` (the SHADOW), not under `~/.claude/projects/-Users-...`.
+- The canonical file mtime is recent; the shadow file mtime is old (often the boot time or the last time Overlord-spawned PTY ran for that lineage).
+- `lastActivity` in the snapshot equals shadow mtime, not canonical mtime.
+- Sessions that Overlord auto-resumed appear fine; sessions where the user ran `claude --resume` themselves are stuck.
+
+**Diagnostic steps:**
+1. Get the sessionId and cwd from `/api/debug/state`.
+2. `ls -lt ~/.claude/projects/-${cwd//\//-}/<sid>.jsonl` (canonical) vs `ls -lt ~/.claude/overlord/transcripts/<ovrId>/<sid>.jsonl` (shadow). If canonical is fresh and shadow is stale and the snapshot reads stale, this is the case.
+3. Check the snapshot's `transcriptPath` — does it start with `/Users/.../.claude/projects/-` (canonical) or `/Users/.../.claude/overlord/transcripts/` (shadow)? Shadow = bug active.
+
+**Fix:** `transcriptReader.cwdToSlug` must NOT strip leading dashes. Match Claude's pattern exactly (`replace(/[\\:/]/g, '-')`, no further stripping). Other slug helpers (archive dirs, room IDs in `stateManager.ts`) intentionally strip — leave those alone; they're for Overlord-controlled paths, not for finding Claude's data.
+
 ### Stuck session: empty conversation but live PTY (stale PID binding)
 **Symptom:** DetailPanel shows no conversation / empty activity feed, but the Terminal PTY tab works fine. Session state (e.g. `working`) and `lastActivity` are frozen in the past while the transcript file on disk keeps growing.
 
