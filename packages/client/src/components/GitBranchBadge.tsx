@@ -150,7 +150,7 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest, gitAhead 
         title={gitWarning ?? undefined}
       >
         <BranchIcon className={styles.icon}/>
-        <span className={styles.branchText}>{branch}</span>
+        <span className={styles.branchText} title={branch}>{branch}</span>
         {(gitAhead ?? 0) > 0 && (
           <span className={styles.aheadPill} title={`${gitAhead} unpushed commit${gitAhead === 1 ? '' : 's'}`}>+{gitAhead}</span>
         )}

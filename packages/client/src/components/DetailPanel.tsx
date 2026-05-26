@@ -564,7 +564,7 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
 
-  const isDone = state === 'waiting' && completionHint === 'done';
+  const isDone = (state === 'waiting' || state === 'closed') && completionHint === 'done';
   const isAckedWaiting = state === 'waiting' && !!acknowledged && !isDone;
   const color = isDone
     ? (userAccepted ? '#22c55e' : '#f59e0b')
@@ -1406,6 +1406,10 @@ export function DetailPanel({
   const [showIdleSubagents, setShowIdleSubagents] = useState(false);
   const [panelSearchQuery, setPanelSearchQuery] = useState('');
   const [hasMore, setHasMore] = useState(false);
+  // Extra feed items loaded from server when scrollTarget is near the top of the trimmed feed,
+  // or lazily fetched for closed sessions (server drops their activityFeed from snapshots).
+  // Declared up here so useTranscriptScroll can re-fire auto-scroll when extraFeed lands.
+  const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [internalScrollTarget, setInternalScrollTarget] = useState<string | undefined>();
   const [internalScrollQuery, setInternalScrollQuery] = useState<string | undefined>();
@@ -1478,6 +1482,7 @@ const currentDisplayName =
     recomputeJump,
   } = useTranscriptScroll({
     feed: selectedSession?.activityFeed,
+    extraFeed,
     subagentFeed: selectedSubagent?.activityFeed,
     activeTab,
     sendCount: localSent.length,
@@ -1802,6 +1807,16 @@ const currentDisplayName =
     (selectedSession.sessionType === 'embedded' && selectedSession.ptyAlive === false)
   );
 
+  useEffect(() => {
+    if (resuming && !needsResume) setResuming(false);
+  }, [resuming, needsResume]);
+
+  useEffect(() => {
+    if (!resuming) return;
+    const t = setTimeout(() => setResuming(false), 15000);
+    return () => clearTimeout(t);
+  }, [resuming]);
+
 
   // Clear stale pending messages after 30s (safety net — count-based clearing handles normal flow)
   useEffect(() => {
@@ -1832,11 +1847,10 @@ const currentDisplayName =
   // Confirmed when: (a) feed has more user messages than at send time (short sessions), OR
   // (b) the most recent user message in the feed has a timestamp >= our send time (long sessions
   //     where the feed is at max capacity and user-count stays flat).
-  // Extra feed items loaded from server when scrollTarget is near the top of the trimmed feed
-  const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
 
   const rawFeed = selectedSession?.activityFeed;
-  const realFeed = rawFeed ?? [];
+  // Stable reference when rawFeed is undefined — prevents downstream memos from busting every render.
+  const realFeed = useMemo<ActivityItem[]>(() => rawFeed ?? [], [rawFeed]);
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
   // activityFeed is oldest-first — find the NEWEST user message by searching from the end
@@ -1879,7 +1893,7 @@ const currentDisplayName =
   const stateBarActiveSubagents = selectedSession
     ? selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking')
     : [];
-  const stateBarIsDone = selectedSession?.state === 'waiting' && selectedSession?.completionHint === 'done';
+  const stateBarIsDone = (selectedSession?.state === 'waiting' || selectedSession?.state === 'closed') && selectedSession?.completionHint === 'done';
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
   const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion;
   const isCompacting = selectedSession?.isCompacting === true;
@@ -2765,7 +2779,7 @@ const currentDisplayName =
                             )}
                           </div>
                           <textarea
-                            className={`${styles.sendTextarea} ${needsResume ? styles.sendTextareaClosed : ''}`}
+                            className={`${styles.sendTextarea} ${needsResume ? styles.sendTextareaClosed : ''} ${resuming ? styles.sendTextareaResuming : ''}`}
                             value={sendInput2}
                             disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
                             onChange={e => setSendInput2(e.target.value)}
@@ -2826,7 +2840,7 @@ const currentDisplayName =
                               };
                               reader.readAsDataURL(blob);
                             }}
-                            placeholder={selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (needsResume ? (selectedSession.state === 'closed' ? 'Session exited — click to resume' : 'PTY disconnected — click to resume') : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected'))}
+                            placeholder={resuming ? 'Resuming session…' : (selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (needsResume ? (selectedSession.state === 'closed' ? 'Session exited — click to resume' : 'PTY disconnected — click to resume') : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected')))}
                             rows={2}
                           />
                           <button

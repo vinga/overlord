@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { OfficeSnapshot, Session, Room, ArchiveEntry, ActivityItem } from '../types';
 import { searchFeed, BoldExcerpt, type SearchMatch } from '../lib/search';
+import { useJiraMeta } from '../hooks/useJiraMeta';
 import styles from './AdvancedSearchPopup.module.css';
 
 interface AdvancedSearchPopupProps {
@@ -76,6 +77,7 @@ export function AdvancedSearchPopup({
   const [menuOpen, setMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const menuWrapRef = useRef<HTMLDivElement>(null);
+  const jiraMeta = useJiraMeta();
 
   useEffect(() => {
     try { localStorage.setItem(INCLUDE_ARCHIVED_KEY, includeArchived ? '1' : '0'); } catch { /* ignore */ }
@@ -144,7 +146,15 @@ export function AdvancedSearchPopup({
     for (const room of snapshot.rooms) {
       const sessionResults: SessionResult[] = [];
       for (const session of room.sessions) {
-        const matches = searchFeed(session.activityFeed ?? [], q);
+        const jiraItems: ActivityItem[] = (session.jiraKeys ?? []).map(k => {
+          const title = jiraMeta[k]?.title;
+          return {
+            kind: 'tool',
+            toolName: 'JIRA',
+            content: title ? `${k} — ${title}` : k,
+          };
+        });
+        const matches = searchFeed([...jiraItems, ...(session.activityFeed ?? [])], q);
         if (matches.length > 0) {
           sessionResults.push({
             key: session.sessionId,
@@ -176,7 +186,7 @@ export function AdvancedSearchPopup({
       }
     }
     return out.sort((a, b) => b.totalMatches - a.totalMatches);
-  }, [query, snapshot, customNames]);
+  }, [query, snapshot, customNames, jiraMeta]);
 
   const qTrimmed = query.trim();
 

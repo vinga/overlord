@@ -49,6 +49,11 @@ function entryKey(cwd: string, branch: string): string {
 const HIT_TTL_MS = 15 * 60 * 1000;        // re-check existing PR every 15 min
 const MISS_TTL_MS = 30 * 60 * 1000;       // re-check absent PR every 30 min
 const RATE_LIMIT_TTL_MS = 30 * 60 * 1000; // back off 30 min when GitHub rate-limits us
+// A user click is explicit intent for fresh data. We only dedupe rapid
+// double-clicks within this window; otherwise every tooltip open re-fetches the
+// cheap PR REST lookup (core quota pool). This is what makes a just-created PR —
+// or a just-merged one — appear without waiting out the background MISS/HIT TTL.
+const CLICK_FRESH_MS = 10 * 1000;
 
 function isRateLimitError(msg: string): boolean {
   const lower = msg.toLowerCase();
@@ -108,7 +113,7 @@ export class PrCache {
     const key = entryKey(cwd, branch);
     const existing = this.entries.get(key);
     const fresh = existing
-      && Date.now() - existing.fetchedAt <= (existing.value ? HIT_TTL_MS : MISS_TTL_MS)
+      && Date.now() - existing.fetchedAt <= CLICK_FRESH_MS
       && !existing.rateLimited;
     if (!fresh) this.scheduleRefresh(cwd, branch, true);
     const entry = this.entries.get(key);

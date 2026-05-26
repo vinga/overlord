@@ -810,19 +810,16 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
     }
   }
 
-  const idlePriority = (s: Session) => {
-    if (s.state !== 'closed') return 0;
-    const mins = (Date.now() - new Date(s.lastActivity).getTime()) / 60000;
-    if (mins > 15) return 2;
-    if (mins > 5) return 1;
-    return 0;
-  };
-
   // Build sorted sessions list respecting custom order.
   // Ordering is keyed by overlordId (stable across /clear and --resume) so
   // resuming a session doesn't reshuffle its slot. Falls back to sessionId
   // for any session without an overlordId.
   const orderKey = (s: Session): string => s.overlordId ?? s.sessionId;
+  // Stable fallback when no custom order exists: oldest startedAt first.
+  // Idle time is intentionally NOT used — workers must not reshuffle as
+  // closed sessions age past arbitrary thresholds.
+  const byStartedAt = (a: Session, b: Session): number =>
+    a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
   // Dedup by overlordId: a single lineage (same overlordId across resumes)
   // should render as one worker. Prefer an active session over closed, then
   // most recent by startedAt.
@@ -854,10 +851,10 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
       .sort((a, b) => (orderedMap.get(orderKey(a)) ?? 0) - (orderedMap.get(orderKey(b)) ?? 0));
     const notInOrder = allSessions
       .filter(s => !orderedMap.has(orderKey(s)))
-      .sort((a, b) => idlePriority(a) - idlePriority(b));
+      .sort(byStartedAt);
     sortedSessions = [...inOrder, ...notInOrder];
   } else {
-    sortedSessions = [...allSessions].sort((a, b) => idlePriority(a) - idlePriority(b));
+    sortedSessions = [...allSessions].sort(byStartedAt);
   }
 
   const handleDrop = (targetId: string) => {

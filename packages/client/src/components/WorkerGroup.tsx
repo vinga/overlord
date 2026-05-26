@@ -3,6 +3,7 @@ import type { Session, WorkerState, Subagent } from '../types';
 import { Worker } from './Worker';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import { useRoomPrefix } from '../hooks/useRoomPrefix';
+import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import styles from './WorkerGroup.module.css';
 
 function lightenHsl(color: string, amount: number): string {
@@ -76,6 +77,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
   const [overflowExpanded, setOverflowExpanded] = useState(false);
   const notesMap = useNotesSummaries();
   const roomPrefix = useRoomPrefix(session.cwd);
+  const jiraBaseUrl = useJiraBaseUrl();
 
   const allRecentSubagents = session.subagents.filter(s =>
     s.state === 'working' || s.state === 'thinking' ||
@@ -109,6 +111,8 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           notesSummary={notesMap.get(session.sessionId)}
           intent={session.intent}
           activeMonitors={session.activeMonitors}
+          jiraKeys={session.jiraKeys}
+          jiraBaseUrl={jiraBaseUrl}
           onClick={() => onSelectSession(session)}
           onRename={onRename ? (name) => onRename(session.sessionId, name) : undefined}
           roomPrefix={roomPrefix}

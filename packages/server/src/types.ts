@@ -110,6 +110,10 @@ export interface Session {
   permissionModeLockedUntil?: number;  // timestamp ms — screen-detected mode, blocks transcript overwrite
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
+  /** JIRA-shaped ticket keys mined from this session's transcript. Union-merged
+   *  across reads — keys seen earlier in the conversation but no longer in the
+   *  tail window persist here. Wiped on /clear (transcriptTruncated). */
+  jiraKeys?: string[];
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
@@ -224,6 +228,12 @@ export interface OverlordSession {
   intentTurnCount?: number;
   intentUpdatedAt?: number;
   notes?: string;
+  /** Persisted JIRA-shaped ticket keys (union across transcript reads). Wiped on /clear. */
+  jiraKeys?: string[];
+  /** Keys the user explicitly dismissed via the chip × button. The transcript
+   *  scanner will keep finding them; mergeJiraKeys filters this set out so
+   *  dismissed keys don't reappear on the next read. Cap 50, recent-first. */
+  jiraKeysDismissed?: string[];
 
   /** Pending --resume targeting this lineage from `cwd` started at `at` (epoch ms).
    *  Replaces the legacy ~/.claude/overlord/pending-resumes.json file. Cleared
@@ -280,6 +290,7 @@ export interface LiveSession {
   permissionModeLockedUntil?: number;
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
+  jiraKeys?: string[];
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
   providerSessionId?: string;
@@ -313,6 +324,21 @@ export interface Room {
 
 export interface GlobalSettings {
   disableBackgroundLLM: boolean;
+  jiraBaseUrl?: string;
+  jiraProjects?: string;
+  jiraEmail?: string;
+  /** Token is server-internal; the /api/settings GET response returns the
+   *  literal "***" when set or "" when unset (never the raw value). */
+  jiraApiToken?: string;
+}
+
+/** Resolved metadata for a single Jira issue key. All fields optional — a key
+ *  may resolve a summary but not a type/status, or vice-versa. */
+export interface JiraIssueMeta {
+  title?: string;          // issue summary
+  type?: string;           // issuetype.name: "Bug" | "Story" | "Epic" | "Task" | …
+  status?: string;         // status.name: "In Progress" | "Done" | …
+  statusCategory?: string; // status.statusCategory.key: "new" | "indeterminate" | "done"
 }
 
 export interface OfficeSnapshot {
@@ -321,4 +347,8 @@ export interface OfficeSnapshot {
   bridgePath?: string;
   platform: string;  // process.platform: 'darwin' | 'win32' | 'linux'
   settings: GlobalSettings;
+  /** Map of Jira issue key → resolved metadata. Built from jiraTitleCache; only
+   *  contains entries the server has successfully resolved. Missing keys → chip
+   *  falls back to "Open KEY in JIRA". */
+  jiraMeta?: Record<string, JiraIssueMeta>;
 }

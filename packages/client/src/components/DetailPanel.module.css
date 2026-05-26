@@ -2642,6 +2642,26 @@
   color: rgba(255, 123, 114, 0.6);
 }
 
+.sendTextareaResuming {
+  border-color: rgba(96, 165, 250, 0.55) !important;
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18), inset 0 0 12px rgba(96, 165, 250, 0.06) !important;
+  animation: sendTextareaResumingPulse 1.2s ease-in-out infinite;
+  cursor: wait !important;
+}
+
+.sendTextareaResuming::placeholder {
+  color: rgba(96, 165, 250, 0.75);
+}
+
+@keyframes sendTextareaResumingPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.18), inset 0 0 12px rgba(96, 165, 250, 0.06);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.35), inset 0 0 18px rgba(96, 165, 250, 0.12);
+  }
+}
+
 .convoResumeOverlay {
   display: flex;
   align-items: center;

@@ -14,6 +14,7 @@ interface StateManagerDep {
   isBridge: (sessionId: string) => boolean;
   markDeleted: (sessionId: string) => void;
   remove: (sessionId: string) => void;
+  purgeOvrId: (ovrId: string) => string[];
   setBridgeActive: (sessionId: string, active: boolean) => void;
 }
 
@@ -53,9 +54,15 @@ export function deleteSession(
   const wasBridge = stateManager.isBridge(sessionId);
 
   // FAST PATH — in-memory state updates that drive the snapshot broadcast.
-  stateManager.markDeleted(sessionId);
-  stateManager.remove(sessionId);
-  console.log(`[deleteSession] removed ${sessionId} from state`);
+  // Sweep every Session sharing this ovrId — predecessors from
+  // transferSessionState (compaction / resume sid changes) linger as
+  // replacedBy ghosts and would re-surface as closed once the live sid is gone.
+  const purgedSids = ovrId ? stateManager.purgeOvrId(ovrId) : [];
+  if (!purgedSids.includes(sessionId)) {
+    stateManager.markDeleted(sessionId);
+    stateManager.remove(sessionId);
+  }
+  console.log(`[deleteSession] removed ${sessionId} from state (purged sids: ${purgedSids.join(',') || sessionId})`);
 
   if (ptyId && ovrId) {
     ovrToPty.delete(ovrId);
@@ -99,13 +106,26 @@ export function deleteSession(
       console.warn(`[deleteSession] failed to delete file for ${sessionId}:`, (err as Error).message);
     }
 
-    const transcriptFile = findTranscriptPathAnywhere(sessionId);
-    if (transcriptFile) {
-      try {
-        fs.unlinkSync(transcriptFile);
-        console.log(`[deleteSession] deleted transcript ${transcriptFile}`);
-      } catch (err) {
-        console.warn(`[deleteSession] failed to delete transcript for ${sessionId}:`, (err as Error).message);
+    // Walk every sid in the OverlordSession's lineage and unlink each canonical
+    // transcript. Without this, historical sids (resumed/forked/post-/clear)
+    // remain as orphan .jsonl files in ~/.claude/projects/<slug>/ and are
+    // re-imported as fresh closed sessions on next boot by
+    // loadClosedSessionsFromTranscripts.
+    const storeRec = sessionStore.getBySessionId(sessionId);
+    const sidsToWipe = new Set<string>([sessionId, ...purgedSids]);
+    if (storeRec?.lineage) {
+      sidsToWipe.add(storeRec.lineage.currentSessionId);
+      for (const h of storeRec.lineage.history) sidsToWipe.add(h.sessionId);
+    }
+    for (const sid of sidsToWipe) {
+      const transcriptFile = findTranscriptPathAnywhere(sid);
+      if (transcriptFile) {
+        try {
+          fs.unlinkSync(transcriptFile);
+          console.log(`[deleteSession] deleted transcript ${transcriptFile}`);
+        } catch (err) {
+          console.warn(`[deleteSession] failed to delete transcript for ${sid}:`, (err as Error).message);
+        }
       }
     }
 
@@ -145,7 +165,6 @@ export function deleteSession(
 
     // Drop the OverlordSession record unless it was just archived
     // (archive must survive deleteSession).
-    const storeRec = sessionStore.getBySessionId(sessionId);
     if (!storeRec?.archive) sessionStore.removeBySessionId(sessionId);
   });
 }

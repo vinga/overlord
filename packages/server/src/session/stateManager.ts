@@ -2,18 +2,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
-import { sessionStore } from './sessionStore.js';
+import { sessionStore, scrubReplacedBy } from './sessionStore.js';
 import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
+import { getCachedJiraMeta } from './jiraTitleCache.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
@@ -131,6 +132,34 @@ function trimSubagentFeeds(subs: Subagent[] | undefined): Subagent[] | undefined
     }
   }
   return changed ? out : subs;
+}
+
+const JIRA_KEYS_MAX = 5;
+const JIRA_DISMISSED_MAX = 50;
+/** Union-merge two ordered key lists (existing first, then new), de-duplicated,
+ *  capped, and with any user-dismissed keys filtered out. */
+function mergeJiraKeys(
+  existing: string[] | undefined,
+  fresh: string[] | undefined,
+  dismissed?: string[],
+): string[] | undefined {
+  if (!existing?.length && !fresh?.length) return undefined;
+  const blocked = dismissed && dismissed.length > 0 ? new Set(dismissed) : null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const k of existing ?? []) {
+    if (seen.has(k) || (blocked && blocked.has(k))) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= JIRA_KEYS_MAX) return out;
+  }
+  for (const k of fresh ?? []) {
+    if (seen.has(k) || (blocked && blocked.has(k))) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= JIRA_KEYS_MAX) break;
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
@@ -252,6 +281,12 @@ export class StateManager {
     // migratePendingResumes(); // in-progress — symbol not imported, crashes boot
     migrateDeletedSessions();
     this.hydrateAllActiveSessions();
+    // Clear stale replacedBy pointers (self-ref + orphan-successor). Both
+    // would otherwise permanently hide an active session from the snapshot.
+    const scrub = scrubReplacedBy();
+    if (scrub.selfRef.length + scrub.orphanSuccessor.length > 0) {
+      console.log(`[boot] scrubReplacedBy: self-ref=${scrub.selfRef.length} orphan-successor=${scrub.orphanSuccessor.length}`);
+    }
     this.refreshProcessSnapshot(); // one OS call, populates parentPidCache for all processes
     this.migrateLegacyBridgeRegistry();
     this.hydratePendingResumesFromSessionStore();
@@ -785,6 +820,11 @@ export class StateManager {
       permissionApprovedAt: existingSession?.permissionApprovedAt,
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
       activeMonitors: transcript?.activeMonitors,
+      jiraKeys: mergeJiraKeys(
+        existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
+        transcript?.jiraKeys,
+        sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
+      ),
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       completionHintByUser: state === 'waiting' ? (existingSession?.completionHintByUser ?? (isNew ? loadCompletionHintByUser(sessionId) : false)) : false,
       manuallyDone: state === 'waiting' ? (existingSession?.manuallyDone ?? (isNew ? loadManuallyDone(sessionId) : false)) : false,
@@ -860,6 +900,24 @@ export class StateManager {
       clearSessionCaches(sessionId, existing.transcriptPath, existing.cwd);
       this.onChange();
     }
+  }
+
+  /** Sweep every in-memory Session sharing this ovrId. transferSessionState
+   *  (compaction / resume sid changes) leaves the predecessor in this.sessions
+   *  with replacedBy set so the snapshot hides it. If the successor is later
+   *  deleted, that hidden predecessor re-surfaces as a closed orphan. Returns
+   *  the list of sids that were purged. */
+  purgeOvrId(ovrId: string): string[] {
+    if (!ovrId) return [];
+    const sids: string[] = [];
+    for (const s of this.sessions.values()) {
+      if (s.overlordId === ovrId) sids.push(s.sessionId);
+    }
+    for (const sid of sids) {
+      this.markDeleted(sid);
+      this.remove(sid);
+    }
+    return sids;
   }
 
   /**
@@ -1317,11 +1375,22 @@ export class StateManager {
       clearCompletionHint(sessionId);
       session.acknowledged = false;
       saveAck(sessionId, false);
+      session.jiraKeys = undefined;
+      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined });
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
       });
     }
+
+    const dismissedKeys = session.overlordId
+      ? sessionStore.getByOverlordId(session.overlordId)?.jiraKeysDismissed
+      : undefined;
+    const mergedJiraKeys = result.transcriptTruncated
+      ? (result.jiraKeys && result.jiraKeys.length > 0
+          ? result.jiraKeys.filter(k => !dismissedKeys?.includes(k)).slice(0, JIRA_KEYS_MAX)
+          : undefined)
+      : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys);
 
     let changed =
       session.state !== result.state ||
@@ -1335,6 +1404,7 @@ export class StateManager {
       session.needsPermission !== result.needsPermission ||
       session.slug !== slug ||
       session.proposedName !== proposedName ||
+      !shallowArrayEquals(session.jiraKeys, mergedJiraKeys) ||
       !shallowArrayEquals(session.subagents, subagents);
 
     if (changed) {
@@ -1485,6 +1555,10 @@ export class StateManager {
       this.applyTitleSentinelIfPresent(sessionId, result.lastMessage);
       session.subagents = subagents;
       session.transcriptPath = transcriptPath;
+      if (!shallowArrayEquals(session.jiraKeys, mergedJiraKeys)) {
+        session.jiraKeys = mergedJiraKeys;
+        if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: mergedJiraKeys });
+      }
     }
 
     // Clear manuallyDone when session is no longer in waiting state
@@ -1552,6 +1626,28 @@ export class StateManager {
     if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: true });
     this.acceptedSessions.add(sessionId);
     this.saveAccepted();
+    this.onChange();
+    return true;
+  }
+
+  /** User clicked × on a Jira chip. Drop it from live + persisted jiraKeys and
+   *  remember it under jiraKeysDismissed so the next transcript scan can't
+   *  re-add it via mergeJiraKeys. Idempotent. */
+  dismissJiraKey(sessionId: string, key: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.overlordId) return false;
+    const rec = sessionStore.getByOverlordId(session.overlordId);
+    if (!rec) return false;
+    const nextKeys = (session.jiraKeys ?? []).filter(k => k !== key);
+    const prevDismissed = rec.jiraKeysDismissed ?? [];
+    const nextDismissed = prevDismissed.includes(key)
+      ? prevDismissed
+      : [key, ...prevDismissed].slice(0, JIRA_DISMISSED_MAX);
+    session.jiraKeys = nextKeys.length > 0 ? nextKeys : undefined;
+    sessionStore.patch(session.overlordId, {
+      jiraKeys: nextKeys.length > 0 ? nextKeys : undefined,
+      jiraKeysDismissed: nextDismissed,
+    });
     this.onChange();
     return true;
   }
@@ -1968,14 +2064,24 @@ export class StateManager {
     // store's `lineage.currentSessionId`. After a resume the in-memory map
     // can hold both the old sid (closed) and the new sid (waiting) for the
     // same ovr; rendering both produces duplicate room cards.
+    //
+    // Also derive replacedOvrIds in the same walk: an ovr record can carry
+    // `replacedBy` while its in-memory Session.replacedBy is undefined (the
+    // `addOrUpdate` literal at :760 rebuilds Session without preserving
+    // persistent fields). The raw-map filter at line below would let that
+    // record through; the Set check catches it. Self-referential replacedBy
+    // is a known stale-state pattern (see composeSession :2238) — ignore.
     const liveSidByOvr = new Map<string, string>();
-    for (const s of this.sessions.values()) {
-      if (!s.overlordId || s.overlordId.startsWith('raw-')) continue;
-      const rec = sessionStore.getByOverlordId(s.overlordId);
-      if (rec?.lineage?.currentSessionId) liveSidByOvr.set(s.overlordId, rec.lineage.currentSessionId);
+    const replacedOvrIds = new Set<string>();
+    for (const rec of sessionStore.listActive()) {
+      if (rec.lineage?.currentSessionId) liveSidByOvr.set(rec.overlordId, rec.lineage.currentSessionId);
+      if (rec.replacedBy && rec.replacedBy !== rec.lineage?.currentSessionId) {
+        replacedOvrIds.add(rec.overlordId);
+      }
     }
     for (const session of this.sessions.values()) {
       if (session.replacedBy) continue;
+      if (session.overlordId && replacedOvrIds.has(session.overlordId)) continue;
       const liveSid = session.overlordId ? liveSidByOvr.get(session.overlordId) : undefined;
       if (liveSid && liveSid !== session.sessionId) continue;
       // Color is lineage-scoped; `setSessionColor` updates every live session
@@ -2057,17 +2163,52 @@ export class StateManager {
     if (_t3 - _t0 > 100) {
       console.log(`[perf] getSnapshot stages: plansByOvr=${_t1 - _t0}ms compose=${_t2 - _t1}ms gitAttrib=${_t3 - _t2}ms total=${_t3 - _t0}ms sessions=${rooms.reduce((a, r) => a + r.sessions.length, 0)}`);
     }
+    const allKeys = new Set<string>();
+    for (const room of rooms) {
+      for (const s of room.sessions) {
+        if (s.jiraKeys) for (const k of s.jiraKeys) allKeys.add(k);
+      }
+    }
+    let jiraMeta: Record<string, JiraIssueMeta> | undefined;
+    if (allKeys.size > 0) {
+      const out: Record<string, JiraIssueMeta> = {};
+      for (const k of allKeys) {
+        const m = getCachedJiraMeta(k);
+        if (m && (m.title || m.type || m.status)) out[k] = m;
+      }
+      if (Object.keys(out).length > 0) jiraMeta = out;
+    }
+
+    const settings = globalSettingsStore.get();
     return {
       rooms,
       updatedAt: new Date().toISOString(),
       bridgePath: this.bridgePath,
       platform: process.platform,
-      settings: globalSettingsStore.get(),
+      settings: {
+        ...settings,
+        // Never expose the raw token to clients — same redaction as /api/settings.
+        jiraApiToken: settings.jiraApiToken ? '***' : '',
+      },
+      jiraMeta,
     };
   }
 
   getSession(sessionId: string): Session | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  /** True iff this Session is replaced — either via its own in-memory flag OR
+   *  via a non-self-referential `replacedBy` on its ovr record. The raw-map
+   *  flag drifts (the addOrUpdate literal at :760 rebuilds Session without
+   *  preserving persistent fields), so callers outside getSnapshot's hot
+   *  path consult sessionStore as the canonical signal. One hashmap probe
+   *  per call — fine for event-driven callers, NOT for per-tick loops. */
+  private isReplacedOvr(s: Session): boolean {
+    if (s.replacedBy) return true;
+    if (!s.overlordId) return false;
+    const rec = sessionStore.getByOverlordId(s.overlordId);
+    return !!rec?.replacedBy && rec.replacedBy !== s.sessionId;
   }
 
   /** Live, non-replaced sessions. Cheap iterator for hot paths that previously
@@ -2076,7 +2217,7 @@ export class StateManager {
   listLiveSessions(): Session[] {
     const out: Session[] = [];
     for (const s of this.sessions.values()) {
-      if (s.replacedBy) continue;
+      if (this.isReplacedOvr(s)) continue;
       out.push(s);
     }
     return out;
@@ -2087,7 +2228,7 @@ export class StateManager {
    *  `terminal:kill` etc. */
   findLiveSessionByPid(pid: number): Session | undefined {
     for (const s of this.sessions.values()) {
-      if (s.replacedBy) continue;
+      if (this.isReplacedOvr(s)) continue;
       if (s.pid === pid) return s;
     }
     return undefined;
@@ -2106,7 +2247,7 @@ export class StateManager {
    *  gate on "known cwd" to prevent arbitrary path probing. */
   isKnownRoomCwd(cwd: string): boolean {
     for (const s of this.sessions.values()) {
-      if (s.replacedBy) continue;
+      if (this.isReplacedOvr(s)) continue;
       if (s.cwd === cwd) return true;
     }
     for (const rec of sessionStore.listAll()) {
@@ -2194,6 +2335,7 @@ export class StateManager {
       out.completionHintByUser = overlord.completionHintByUser ?? session.completionHintByUser;
       out.manuallyDone = overlord.manuallyDone ?? session.manuallyDone;
       out.acknowledged = overlord.acknowledged ?? session.acknowledged;
+      out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
     }
     if (latestPlan) out.latestPlan = latestPlan;
     if (needsPty) out.ptyAlive = this.hasLivePtyFn(session.overlordId);
@@ -2513,8 +2655,12 @@ export class StateManager {
       bridgeMarker: rec.bridgeMarker,
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
+      jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed),
       acknowledged: rec.acknowledged,
       userAccepted: rec.userAccepted,
+      completionHint: rec.completionHint,
+      completionHintByUser: rec.completionHintByUser,
+      manuallyDone: rec.manuallyDone,
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),
     };

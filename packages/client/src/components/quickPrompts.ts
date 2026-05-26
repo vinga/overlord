@@ -250,7 +250,7 @@ const WHY_REFACTOR = [
 ].join("\n");
 
 export const QUICK_PROMPTS: QuickPrompt[] = [
-  { id: 'remind',         label: 'Remind me where we left off', body: REMIND },
+  { id: 'remind',         label: 'Summarize this conversation', body: REMIND },
   { id: 'cut-fluff',      label: 'Cut the fluff',               body: CUT_FLUFF },
   { id: 'propose-title',  label: 'Generate a title',            body: PROPOSE_TITLE },
   { id: 'pr-review',      label: 'Handle PR Review Comments',   body: PR_REVIEW },

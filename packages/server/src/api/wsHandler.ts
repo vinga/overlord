@@ -150,9 +150,13 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     // client sees, leaving the UI blank during the PTY spawn-storm.
     if (!autoResumeTriggered) {
       autoResumeTriggered = true;
-      setImmediate(() => {
-        autoResumePtySessions().catch(err => console.warn('[auto-resume] error:', err));
-      });
+      if (process.env.OVERLORD_AUTO_RESUME === '1') {
+        setImmediate(() => {
+          autoResumePtySessions().catch(err => console.warn('[auto-resume] error:', err));
+        });
+      } else {
+        console.log('[auto-resume] disabled (set OVERLORD_AUTO_RESUME=1 to enable)');
+      }
     }
 
     // Register this client in the session map

@@ -109,6 +109,7 @@ interface Session {
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
+  jiraKeys?: string[];
   completionHint?: 'done' | 'awaiting';
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
@@ -169,6 +170,19 @@ interface ArchiveEntry {
 
 interface GlobalSettings {
   disableBackgroundLLM: boolean;
+  jiraBaseUrl?: string;
+  jiraProjects?: string;
+  jiraEmail?: string;
+  /** Masked from the server: "" when unset, "***" when set. */
+  jiraApiToken?: string;
+}
+
+/** Resolved metadata for a single Jira issue key. All fields optional. */
+export interface JiraIssueMeta {
+  title?: string;          // issue summary
+  type?: string;           // issuetype.name: "Bug" | "Story" | "Epic" | "Task" | …
+  status?: string;         // status.name: "In Progress" | "Done" | …
+  statusCategory?: string; // status.statusCategory.key: "new" | "indeterminate" | "done"
 }
 
 interface OfficeSnapshot {
@@ -177,6 +191,9 @@ interface OfficeSnapshot {
   bridgePath?: string;
   platform: string;  // 'darwin' | 'win32' | 'linux'
   settings: GlobalSettings;
+  /** Map of Jira key → resolved metadata. Server fills it from jiraTitleCache
+   *  when credentials are configured; absent or empty otherwise. */
+  jiraMeta?: Record<string, JiraIssueMeta>;
 }
 
 // Terminal message types (server → client)

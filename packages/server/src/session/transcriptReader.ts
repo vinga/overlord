@@ -4,6 +4,82 @@ import * as os from 'os';
 import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor } from '../types.js';
 import { sessionStore } from './sessionStore.js';
 import { shadowPathFor } from './transcriptShadow.js';
+import { globalSettingsStore } from './globalSettingsStore.js';
+
+const JIRA_MAX_KEYS = 5;
+
+function getJiraProjectRegex(): RegExp | null {
+  const raw = globalSettingsStore.get().jiraProjects;
+  if (!raw) return null;
+  const tokens = raw
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
+  if (tokens.length === 0) return null;
+  // One alternation matched anywhere in the line, e.g. /\b(PROJ|BACKEND|API)-(\d{1,6})\b/g
+  return new RegExp(String.raw`\b(${tokens.join('|')})-(\d{1,6})\b`, 'g');
+}
+
+/**
+ * Walk last30 transcript JSONL lines and return only text segments where a
+ * JIRA reference would be intentional:
+ *   - user text content (NOT tool_result blocks, which are typically file/cmd output)
+ *   - assistant text blocks
+ * Excludes tool_use input (file paths and skill-doc slugs cause false positives,
+ * e.g. a Read of pr-start/SKILL.md picking up "BACKEND-2099-composer-integration"),
+ * tool_result content, thinking blocks, system events.
+ */
+function gatherJiraScanText(last30: string[]): string[] {
+  const out: string[] = [];
+  for (const line of last30) {
+    if (!line) continue;
+    let parsed: { type?: string; message?: { content?: unknown } };
+    try { parsed = JSON.parse(line) as typeof parsed; } catch { continue; }
+    if (parsed.type === 'user') {
+      const c = parsed.message?.content;
+      if (typeof c === 'string') {
+        out.push(c);
+      } else if (Array.isArray(c)) {
+        for (const block of c as Array<{ type?: string; text?: string }>) {
+          if (block.type === 'text' && typeof block.text === 'string') out.push(block.text);
+          // skip tool_result
+        }
+      }
+    } else if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
+      for (const block of parsed.message!.content as Array<{ type?: string; text?: string }>) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          out.push(block.text);
+        }
+        // skip tool_use input and thinking
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract JIRA ticket keys whose project prefix is in the configured allowlist.
+ * Returns empty when no allowlist is set — chips are opt-in.
+ * - First-occurrence order, de-duplicated, capped at JIRA_MAX_KEYS.
+ */
+export function extractJiraKeys(segments: string[], projectRegex: RegExp | null): string[] {
+  if (!projectRegex) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (!segment || segment.length < 4) continue;
+    projectRegex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = projectRegex.exec(segment)) !== null) {
+      const key = `${m[1]}-${m[2]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+      if (out.length >= JIRA_MAX_KEYS) return out;
+    }
+  }
+  return out;
+}
 
 interface TranscriptCache {
   mtimeMs: number;
@@ -566,6 +642,8 @@ export function readTranscriptState(filePath: string): {
   detectedPlans?: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }>;
   // In-flight Monitor tool_use blocks — present while streaming (no tool_result yet).
   activeMonitors?: ActiveMonitor[];
+  // JIRA-shaped ticket keys mined from the transcript tail. Capped at 5.
+  jiraKeys?: string[];
 } {
   if (isCodexTranscript(filePath)) {
     return readCodexTranscriptState(filePath);
@@ -951,6 +1029,8 @@ export function readTranscriptState(filePath: string): {
       state = 'thinking';
     }
 
+    const jiraKeys = extractJiraKeys(gatherJiraScanText(last30), getJiraProjectRegex());
+
     const result = {
       state,
       lastActivity,
@@ -969,6 +1049,7 @@ export function readTranscriptState(filePath: string): {
       transcriptTruncated: transcriptTruncated || undefined,
       detectedPlans: detectedPlans.length > 0 ? detectedPlans : undefined,
       activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
+      jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;
@@ -994,6 +1075,7 @@ function readCodexTranscriptState(filePath: string): {
   lastUserIsDone?: boolean;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
+  jiraKeys?: string[];
 } {
   try {
     const now = Date.now();
@@ -1169,6 +1251,8 @@ function readCodexTranscriptState(filePath: string): {
       }
     }
 
+    const jiraKeys = extractJiraKeys(gatherJiraScanText(last30), getJiraProjectRegex());
+
     const result = {
       state,
       lastActivity: new Date(fileModifiedMs).toISOString(),
@@ -1177,6 +1261,7 @@ function readCodexTranscriptState(filePath: string): {
       model,
       inputTokens,
       lastUserIsDone: lastUserIsDone || undefined,
+      jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     return result;

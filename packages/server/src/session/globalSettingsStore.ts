@@ -4,6 +4,18 @@ import * as path from 'path';
 
 export interface GlobalSettings {
   disableBackgroundLLM: boolean;
+  /** Root URL of the JIRA instance, e.g. "https://hypatos.atlassian.net".
+   *  Used to build chip links: `${jiraBaseUrl}/browse/PROJ-123`. */
+  jiraBaseUrl?: string;
+  /** Comma-separated allowlist of project key prefixes (e.g. "PROJ,PE,API").
+   *  When empty, every regex match is kept (after marker / denylist filters). */
+  jiraProjects?: string;
+  /** Atlassian account email — paired with jiraApiToken for Basic auth.
+   *  When set, the server fetches issue summaries for the keys it shows. */
+  jiraEmail?: string;
+  /** Atlassian API token. Never returned in /api/settings — clients see "***"
+   *  when set, "" when unset. PATCHing "***" leaves the value untouched. */
+  jiraApiToken?: string;
 }
 
 const DEFAULTS: GlobalSettings = {
@@ -71,11 +83,31 @@ class GlobalSettingsStore {
 function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   const out: Partial<GlobalSettings> = {};
   if (typeof input.disableBackgroundLLM === 'boolean') out.disableBackgroundLLM = input.disableBackgroundLLM;
+  if (typeof input.jiraBaseUrl === 'string') {
+    const trimmed = input.jiraBaseUrl.trim().replace(/\/+$/, '');
+    if (trimmed === '' || /^https?:\/\//i.test(trimmed)) {
+      out.jiraBaseUrl = trimmed;
+    }
+    // non-http(s) values silently dropped
+  }
+  if (typeof input.jiraProjects === 'string') {
+    out.jiraProjects = input.jiraProjects.trim();
+  }
+  if (typeof input.jiraEmail === 'string') {
+    out.jiraEmail = input.jiraEmail.trim();
+  }
+  if (typeof input.jiraApiToken === 'string') {
+    out.jiraApiToken = input.jiraApiToken.trim();
+  }
   return out;
 }
 
 function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
-  return a.disableBackgroundLLM === b.disableBackgroundLLM;
+  return a.disableBackgroundLLM === b.disableBackgroundLLM
+    && (a.jiraBaseUrl ?? '') === (b.jiraBaseUrl ?? '')
+    && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
+    && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')
+    && (a.jiraApiToken ?? '') === (b.jiraApiToken ?? '');
 }
 
 export const globalSettingsStore = new GlobalSettingsStore();

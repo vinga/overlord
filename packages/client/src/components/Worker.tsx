@@ -3,6 +3,7 @@ import type { WorkerState, Session, ActiveMonitor } from '../types';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { MonitoringPill } from './MonitoringPill';
+import { JiraChips } from './JiraChips';
 import { selectAfterPrefix } from '../hooks/useRoomPrefix';
 
 interface WorkerProps {
@@ -27,6 +28,8 @@ interface WorkerProps {
   notesSummary?: string;
   intent?: string;
   activeMonitors?: ActiveMonitor[];
+  jiraKeys?: string[];
+  jiraBaseUrl?: string;
   onClick: () => void;
   onRename?: (newName: string) => void;
   roomPrefix?: string;
@@ -64,7 +67,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -104,7 +107,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
     setIsEditing(true);
   }, [onRename, isSubagent, label]);
 
-  const isDone = state === 'waiting' && completionHint === 'done';
+  const isDone = (state === 'waiting' || state === 'closed') && completionHint === 'done';
   const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}`;
 
   const latestPlan = isSubagent ? null : (latestPlanProp ?? null);
@@ -125,7 +128,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
-      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && userAccepted)) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission) && (
+      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && (userAccepted || completionHint === 'done'))) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission) && (
         <div
           className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
@@ -155,8 +158,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
                   styles={styles}
                 />
               )}
-              {state === 'closed' && userAccepted && (
-                <span className={styles.bubbleDone}>closed · done</span>
+              {state === 'closed' && (userAccepted || completionHint === 'done') && (
+                <span className={userAccepted ? styles.bubbleDone : styles.bubbleDonePending}>closed · {userAccepted ? 'done' : 'review'}</span>
               )}
             </>
           )}
@@ -261,6 +264,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           planStatus={latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
           timestamp={latestPlan.updatedAt}
         />
+      )}
+      {!minimal && !isSubagent && jiraKeys && jiraKeys.length > 0 && (
+        <JiraChips keys={jiraKeys} baseUrl={jiraBaseUrl} sessionId={sessionId} />
       )}
       {!minimal && !isSubagent && activeMonitors && activeMonitors.length > 0 && (
         <MonitoringPill monitors={activeMonitors} />

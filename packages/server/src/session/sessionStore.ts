@@ -165,6 +165,28 @@ export class SessionStore {
 
     loadDir(this.activeDir, this.active);
     loadDir(this.archiveDir, this.archived);
+
+    // One-shot migration: when the JIRA-key extractor switched from bare-text
+    // matching to URL-only matching, previously-persisted keys that came from
+    // branch names or commit messages need to be cleared. Records re-populate
+    // on the next transcript poll using the new (URL-only) extractor.
+    const migrationMarker = path.join(path.dirname(this.activeDir), '.jira-keys-url-migration-v1');
+    if (!fs.existsSync(migrationMarker)) {
+      let scrubbed = 0;
+      for (const [ovrId, rec] of this.active) {
+        if (rec.jiraKeys && rec.jiraKeys.length > 0) {
+          rec.jiraKeys = undefined;
+          this.dirty.add(ovrId);
+          this.scheduleFlush(ovrId);
+          scrubbed++;
+        }
+      }
+      for (const rec of this.archived.values()) {
+        if (rec.jiraKeys) rec.jiraKeys = undefined;
+      }
+      try { fs.writeFileSync(migrationMarker, new Date().toISOString()); } catch { /* best-effort */ }
+      if (scrubbed > 0) console.log(`[sessionStore] cleared bare-text jiraKeys on ${scrubbed} record(s) (URL-only migration)`);
+    }
   }
 
   // ── lookups ───────────────────────────────────────────────────────────────
@@ -340,6 +362,7 @@ export class SessionStore {
       lastActivity: live.lastActivity,
       lastMessage: live.lastMessage,
       intent: live.intent,
+      jiraKeys: live.jiraKeys,
     };
     this.upsertActive(seed);
     if (live.transcriptPath) ensureShadow(ovrId, live.sessionId, live.transcriptPath);
@@ -484,3 +507,43 @@ export class SessionStore {
 }
 
 export const sessionStore = new SessionStore();
+
+/**
+ * Scrub stale `replacedBy` pointers on active OverlordSession records.
+ *
+ * Two failure modes:
+ *  - **self-referential** — `replacedBy === lineage.currentSessionId`. A
+ *    record claims it was replaced by its own active sid. Typically a stale
+ *    write from an old transferSessionState. `getSnapshot`'s replacedBy
+ *    filter would otherwise hide the session forever.
+ *  - **orphan-successor** — `replacedBy = sid-X` but `sid-X` does not appear
+ *    in ANY active record's `lineage.history`. The successor was promoted
+ *    elsewhere (different ovrId) and the old pointer was never cleared, or
+ *    the successor was deleted. Without this scrub the record stays hidden
+ *    while its sid runs as a live process (the "PS-A Vorin twin" repro).
+ *
+ * Safe to call repeatedly. One walk over active records plus one Set build.
+ * Endpoint- and boot-triggered, NOT per-tick.
+ */
+export function scrubReplacedBy(): { selfRef: string[]; orphanSuccessor: string[] } {
+  const active = sessionStore.listActive();
+  const selfRef: string[] = [];
+  const orphanSuccessor: string[] = [];
+  const allHistorySids = new Set<string>();
+  for (const r of active) {
+    for (const h of r.lineage?.history ?? []) allHistorySids.add(h.sessionId);
+  }
+  for (const rec of active) {
+    if (!rec.replacedBy) continue;
+    if (rec.replacedBy === rec.lineage?.currentSessionId) {
+      sessionStore.patch(rec.overlordId, { replacedBy: undefined });
+      selfRef.push(rec.overlordId);
+      continue;
+    }
+    if (!allHistorySids.has(rec.replacedBy)) {
+      sessionStore.patch(rec.overlordId, { replacedBy: undefined });
+      orphanSuccessor.push(rec.overlordId);
+    }
+  }
+  return { selfRef, orphanSuccessor };
+}

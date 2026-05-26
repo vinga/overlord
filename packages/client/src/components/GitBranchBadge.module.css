@@ -19,10 +19,16 @@
   background: rgba(255, 255, 255, 0.02);
   cursor: pointer;
   max-width: 360px;
-  min-width: 0;
+  min-width: 80px;
   overflow: hidden;
   white-space: nowrap;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.branchText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .badge:hover {

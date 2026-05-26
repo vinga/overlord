@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { sessionStore } from '../session/sessionStore.js';
+import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
+import { getCachedJiraTitle } from '../session/jiraTitleCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -56,7 +57,11 @@ export function registerApiRoutes(
   });
 
   app.get('/api/settings', (_req, res) => {
-    res.json(globalSettingsStore.get());
+    const s = globalSettingsStore.get();
+    res.json({
+      ...s,
+      jiraApiToken: s.jiraApiToken ? '***' : '',
+    });
   });
 
   app.patch('/api/settings', express.json(), (req, res) => {
@@ -65,7 +70,24 @@ export function registerApiRoutes(
     if (typeof body.disableBackgroundLLM === 'boolean') {
       partial.disableBackgroundLLM = body.disableBackgroundLLM;
     }
-    res.json(globalSettingsStore.patch(partial));
+    if (typeof body.jiraBaseUrl === 'string') {
+      partial.jiraBaseUrl = body.jiraBaseUrl;
+    }
+    if (typeof body.jiraProjects === 'string') {
+      partial.jiraProjects = body.jiraProjects;
+    }
+    if (typeof body.jiraEmail === 'string') {
+      partial.jiraEmail = body.jiraEmail;
+    }
+    // "***" is the sentinel we return from GET — treat it as "leave unchanged".
+    if (typeof body.jiraApiToken === 'string' && body.jiraApiToken !== '***') {
+      partial.jiraApiToken = body.jiraApiToken;
+    }
+    const next = globalSettingsStore.patch(partial);
+    res.json({
+      ...next,
+      jiraApiToken: next.jiraApiToken ? '***' : '',
+    });
   });
 
   // Git status for a room cwd. Only allowed for cwds matching a known room
@@ -173,14 +195,8 @@ export function registerApiRoutes(
   });
 
   app.post('/api/debug/heal-replaced-by', (_req, res) => {
-    const fixed: string[] = [];
-    for (const rec of sessionStore.listActive()) {
-      if (rec.replacedBy && rec.replacedBy === rec.lineage?.currentSessionId) {
-        sessionStore.patch(rec.overlordId, { replacedBy: undefined });
-        fixed.push(rec.overlordId);
-      }
-    }
-    res.json({ fixed, count: fixed.length });
+    const result = scrubReplacedBy();
+    res.json({ ...result, count: result.selfRef.length + result.orphanSuccessor.length });
   });
 
   // Debug endpoint: dump raw PTY buffer tail for a session (hex + stripped),
@@ -452,6 +468,23 @@ export function registerApiRoutes(
     const next = stateManager.toggleAckByUser(sessionId);
     if (next === null) { res.status(404).json({ error: 'session not found or closed' }); return; }
     res.json({ acknowledged: next });
+  });
+
+  // Dismiss a Jira ticket chip — drops the key from the session and remembers
+  // it under jiraKeysDismissed so the next transcript scan won't re-add it.
+  app.delete('/api/sessions/:sessionId/jira-keys/:key', (req, res) => {
+    const { sessionId, key } = req.params;
+    // Validate against the configured project allowlist regex — prevents
+    // arbitrary strings being written to disk via this endpoint.
+    const raw = globalSettingsStore.get().jiraProjects;
+    if (!raw) { res.status(400).json({ error: 'JIRA project allowlist not configured' }); return; }
+    const tokens = raw.split(',').map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
+    if (tokens.length === 0) { res.status(400).json({ error: 'JIRA project allowlist not configured' }); return; }
+    const re = new RegExp(String.raw`^(${tokens.join('|')})-(\d{1,6})$`);
+    if (!re.test(key)) { res.status(400).json({ error: 'Invalid JIRA key' }); return; }
+    const ok = stateManager.dismissJiraKey(sessionId, key);
+    if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
+    res.json({ ok: true });
   });
 
   // Accept a done session (user reviewed and confirmed result)
@@ -936,30 +969,48 @@ export function registerApiRoutes(
 
     for (const entry of archiveManager.list()) {
       if (total >= limit) { truncated = true; break; }
-      if (!fs.existsSync(entry.transcriptPath)) continue;
-      let feed;
-      try {
-        feed = readTranscriptState(entry.transcriptPath).activityFeed ?? [];
-      } catch { continue; }
       const matches: unknown[] = [];
-      for (const item of feed) {
+
+      // Synthetic JIRA items from the persisted record's jiraKeys (with title
+      // when the server-side cache has it). Matches each "KEY — Title" line.
+      const jiraKeys = sessionStore.getByOverlordId(entry.overlordId)?.jiraKeys ?? [];
+      for (const key of jiraKeys) {
         if (total + matches.length >= limit) { truncated = true; break; }
-        const corpus = buildCorpus(item);
-        if (!corpus.toLowerCase().includes(qLower)) continue;
-        const { text, start, end } = makeExcerpt(corpus);
+        const title = getCachedJiraTitle(key);
+        const content = title ? `${key} — ${title}` : key;
+        if (!content.toLowerCase().includes(qLower)) continue;
+        const { text, start, end } = makeExcerpt(content);
         matches.push({
-          item: {
-            kind: item.kind,
-            role: item.role,
-            toolName: item.toolName,
-            timestamp: item.timestamp,
-            content: (item.content ?? '').slice(0, TRUNC),
-            inputJson: item.inputJson ? item.inputJson.slice(0, TRUNC) : undefined,
-            isRedacted: item.isRedacted,
-          },
+          item: { kind: 'tool', toolName: 'JIRA', content: content.slice(0, TRUNC) },
           excerpt: text,
           boldRanges: start >= 0 ? [[start, end]] : [],
         });
+      }
+
+      if (fs.existsSync(entry.transcriptPath)) {
+        let feed: NonNullable<ReturnType<typeof readTranscriptState>['activityFeed']> = [];
+        try {
+          feed = readTranscriptState(entry.transcriptPath).activityFeed ?? [];
+        } catch { feed = []; }
+        for (const item of feed) {
+          if (total + matches.length >= limit) { truncated = true; break; }
+          const corpus = buildCorpus(item);
+          if (!corpus.toLowerCase().includes(qLower)) continue;
+          const { text, start, end } = makeExcerpt(corpus);
+          matches.push({
+            item: {
+              kind: item.kind,
+              role: item.role,
+              toolName: item.toolName,
+              timestamp: item.timestamp,
+              content: (item.content ?? '').slice(0, TRUNC),
+              inputJson: item.inputJson ? item.inputJson.slice(0, TRUNC) : undefined,
+              isRedacted: item.isRedacted,
+            },
+            excerpt: text,
+            boldRanges: start >= 0 ? [[start, end]] : [],
+          });
+        }
       }
       if (matches.length > 0) {
         entries.push({ entry, matches });

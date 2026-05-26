@@ -52,23 +52,30 @@
 
 .presets {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 5px;
   margin-bottom: 14px;
 }
 
 .presetsThree {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  display: flex;
   gap: 8px;
   margin-bottom: 14px;
-  justify-items: center;
+  justify-content: flex-start;
 }
 
 .presetsFive {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   gap: 8px;
+  margin-bottom: 14px;
+  justify-items: center;
+}
+
+.presetsSix {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
   margin-bottom: 14px;
   justify-items: center;
 }

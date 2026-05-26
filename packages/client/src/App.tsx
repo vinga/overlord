@@ -3,6 +3,8 @@ import { useOfficeData } from './hooks/useOfficeData';
 import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
 import { useRoomOrder } from './hooks/useRoomOrder';
+import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
+import { setJiraMeta } from './hooks/useJiraMeta';
 
 import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
@@ -70,7 +72,7 @@ export function App() {
   const [archivedSession, setArchivedSession] = useState<Session | null>(null);
   const [dirPickerSuggestedName, setDirPickerSuggestedName] = useState('');
   const [pendingSpawns, setPendingSpawns] = useState<Array<{ id: string; cwd: string; fullName: string; startedAt: number }>>([]);
-  const { rename, migrateSession: migrateNames } = useCustomNames();
+  const { rename, migrateSession: migrateNames, pendingRenames, reconcilePendingRenames } = useCustomNames();
   const { migrateSession: migrateRoomOrder } = useRoomOrder();
 
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -96,6 +98,14 @@ export function App() {
   const { snapshot, connected, connecting, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
   const terminal = useTerminal(sendMessage, (id) => setActivePtySessionId(id));
 
+  useEffect(() => {
+    setJiraBaseUrl(snapshot?.settings?.jiraBaseUrl);
+  }, [snapshot?.settings?.jiraBaseUrl]);
+
+  useEffect(() => {
+    setJiraMeta(snapshot?.jiraMeta);
+  }, [snapshot?.jiraMeta]);
+
   const snapshotBridgeIds = useMemo(() => {
     const ids = new Set<string>();
     for (const room of snapshot?.rooms ?? []) {
@@ -111,19 +121,45 @@ export function App() {
     [terminal, snapshotBridgeIds]
   );
 
-  // Display names come from OverlordSession.proposedName via the snapshot.
-  // Renames PATCH the server; no client-side override layer.
+  // Display names come from OverlordSession.proposedName via the snapshot,
+  // with a short-lived optimistic overlay (`pendingRenames`) so the title
+  // doesn't flicker back to the old name between the PUT and the next snapshot.
+  // Empty pending value = the user cleared the name; we override with slug/
+  // shortId so the stale proposedName fallback doesn't briefly resurface.
   const displayNames = useMemo(() => {
     const names: Record<string, string> = {};
+    const sessionById: Record<string, { slug?: string; sessionId: string }> = {};
     if (snapshot) {
       for (const room of snapshot.rooms) {
         for (const s of room.sessions) {
           if (s.proposedName) names[s.sessionId] = s.proposedName;
+          sessionById[s.sessionId] = s;
         }
       }
     }
+    for (const [sid, name] of Object.entries(pendingRenames)) {
+      if (name) {
+        names[sid] = name;
+      } else {
+        const s = sessionById[sid];
+        names[sid] = s?.slug ?? sid.slice(0, 8);
+      }
+    }
     return names;
-  }, [snapshot]);
+  }, [snapshot, pendingRenames]);
+
+  // Clear optimistic rename entries once the snapshot reflects the new name.
+  useEffect(() => {
+    if (!snapshot) return;
+    if (Object.keys(pendingRenames).length === 0) return;
+    const live: Record<string, string | undefined> = {};
+    for (const room of snapshot.rooms) {
+      for (const s of room.sessions) {
+        live[s.sessionId] = s.proposedName;
+      }
+    }
+    reconcilePendingRenames(live);
+  }, [snapshot, pendingRenames, reconcilePendingRenames]);
 
   // Sync state → URL hash
   const suppressHashChange = useRef(false);

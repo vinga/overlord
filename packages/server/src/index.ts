@@ -27,6 +27,7 @@ import { IntentSummarizer } from './ai/intentSummary.js';
 import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
 import { globalSettingsStore } from './session/globalSettingsStore.js';
+import { clearJiraTitleCache } from './session/jiraTitleCache.js';
 import { artifactStore } from './artifacts/artifactStore.js';
 import { ArtifactWatcher } from './artifacts/artifactWatcher.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
@@ -590,6 +591,11 @@ globalSettingsStore.onChange((next, prev) => {
   if (next.disableBackgroundLLM && !prev.disableBackgroundLLM) {
     killClaudeWorker();
   }
+  const credsChanged =
+    (next.jiraBaseUrl ?? '') !== (prev.jiraBaseUrl ?? '') ||
+    (next.jiraEmail ?? '') !== (prev.jiraEmail ?? '') ||
+    (next.jiraApiToken ?? '') !== (prev.jiraApiToken ?? '');
+  if (credsChanged) clearJiraTitleCache();
   broadcast(stateManager.getSnapshot());
 });
 

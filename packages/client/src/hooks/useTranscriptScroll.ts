@@ -6,6 +6,9 @@ type JumpAction = { label: string; depth: number; run: () => void };
 interface UseTranscriptScrollArgs {
   // Re-runs auto-scroll on feed change
   feed: unknown;
+  // Extra (lazily-fetched) feed prepended for closed sessions; included so
+  // auto-scroll fires when the async history arrives after session switch.
+  extraFeed?: unknown;
   subagentFeed: unknown;
   activeTab: string;
   // Triggers force-scroll-to-bottom (user sent a message)
@@ -17,6 +20,7 @@ interface UseTranscriptScrollArgs {
 
 export function useTranscriptScroll({
   feed,
+  extraFeed,
   subagentFeed,
   activeTab,
   sendCount,
@@ -208,7 +212,7 @@ export function useTranscriptScroll({
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [feed, subagentFeed, activeTab]);
+  }, [feed, extraFeed, subagentFeed, activeTab]);
 
   // Force scroll to bottom when user sends a message
   useEffect(() => {

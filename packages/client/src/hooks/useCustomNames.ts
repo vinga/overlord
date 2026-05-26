@@ -18,15 +18,48 @@ function saveAuto(names: Record<string, string>): void {
 
 export function useCustomNames() {
   const [autoNames, setAutoNames] = useState<Record<string, string>>(loadAuto);
+  // Optimistic overlay so the title doesn't flicker back to proposedName
+  // between the PUT and the next snapshot broadcast.
+  const [pendingRenames, setPendingRenames] = useState<Record<string, string>>({});
 
+  // Empty-string value = the user cleared the name; treated specially so the
+  // overlay can suppress the now-stale proposedName until the snapshot catches up.
   const rename = useCallback((sessionId: string, name: string) => {
+    const trimmed = name.trim();
+    setPendingRenames(prev => ({ ...prev, [sessionId]: trimmed }));
     fetch(`/api/sessions/${encodeURIComponent(sessionId)}/name`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
     })
       .then(() => window.dispatchEvent(new CustomEvent('archive:changed', { detail: {} })))
-      .catch(err => console.error('rename failed', err));
+      .catch(err => {
+        console.error('rename failed', err);
+        setPendingRenames(prev => {
+          if (!(sessionId in prev)) return prev;
+          const { [sessionId]: _, ...rest } = prev;
+          return rest;
+        });
+      });
+  }, []);
+
+  // Drop pending entries whose value now matches the live snapshot. Called
+  // from App.tsx whenever the snapshot changes. Empty-string pending entries
+  // resolve once the live proposedName is gone.
+  const reconcilePendingRenames = useCallback((liveNames: Record<string, string | undefined>) => {
+    setPendingRenames(prev => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (const [sid, name] of Object.entries(prev)) {
+        const live = liveNames[sid];
+        if (name === '' ? live === undefined : live === name) {
+          changed = true;
+          continue;
+        }
+        next[sid] = name;
+      }
+      return changed ? next : prev;
+    });
   }, []);
 
   // One-shot migration: upload legacy localStorage renames to the server, then
@@ -77,5 +110,5 @@ export function useCustomNames() {
     });
   }, []);
 
-  return { autoNames, rename, ensureAutoName, migrateSession };
+  return { autoNames, rename, ensureAutoName, migrateSession, pendingRenames, reconcilePendingRenames };
 }

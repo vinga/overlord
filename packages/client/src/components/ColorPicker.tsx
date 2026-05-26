@@ -2,24 +2,24 @@ import React, { useEffect, useRef, useState } from 'react';
 import { WorkerAvatar } from './WorkerAvatar';
 import styles from './ColorPicker.module.css';
 
-const HUE_PRESETS: { label: string; h: number }[] = [
+const HUE_PRESETS: { label: string; h: number; s?: number }[] = [
   { label: 'Red', h: 0 },
   { label: 'Orange', h: 30 },
+  { label: 'Green', h: 130 },
   { label: 'Teal', h: 175 },
   { label: 'Blue', h: 210 },
   { label: 'Purple', h: 280 },
   { label: 'Pink', h: 340 },
+  { label: 'Grey', h: 0, s: 0 },
 ];
 
 const LIGHT_PRESETS: { label: string; l: number }[] = [
-  { label: 'Darkest', l: 30 },
-  { label: 'Dark', l: 45 },
+  { label: 'Dark', l: 35 },
   { label: 'Medium', l: 58 },
-  { label: 'Light', l: 70 },
-  { label: 'Lightest', l: 82 },
+  { label: 'Light', l: 80 },
 ];
 
-const DEFAULT_COLOR = `hsl(30, 75%, ${LIGHT_PRESETS[2].l}%)`;
+const DEFAULT_COLOR = `hsl(30, 75%, 58%)`;
 
 function parseHsl(color: string): { h: number; s: number; l: number } {
   const m = color.match(/hsl\(\s*([\d.]+)[,\s]+([\d.]+)%[,\s]+([\d.]+)%/);
@@ -98,14 +98,16 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
           <div className={styles.label}>Hue</div>
           <div className={styles.presets}>
             {HUE_PRESETS.map((p) => {
-              const swatch = `hsl(${p.h}, 75%, ${lightness}%)`;
+              const sat = p.s ?? 75;
+              const swatch = `hsl(${p.h}, ${sat}%, ${lightness}%)`;
+              const isSelected = p.h === hue && (p.s ?? 75) === saturation;
               return (
                 <button
                   key={p.label}
                   type="button"
-                  className={`${styles.preset} ${p.h === hue ? styles.selected : ''}`}
+                  className={`${styles.preset} ${isSelected ? styles.selected : ''}`}
                   style={{ background: swatch }}
-                  onClick={() => emit(p.h, saturation, lightness)}
+                  onClick={() => emit(p.h, sat, lightness)}
                   title={p.label}
                 />
               );
@@ -125,7 +127,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
             />
           </div>
           <div className={styles.label}>Lightness</div>
-          <div className={styles.presetsFive}>
+          <div className={styles.presetsThree}>
             {LIGHT_PRESETS.map((p) => {
               const swatch = `hsl(${hue}, ${saturation}%, ${p.l}%)`;
               return (
