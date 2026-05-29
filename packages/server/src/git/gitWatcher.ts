@@ -68,20 +68,25 @@ export class GitWatcher {
 }
 
 function resolveHeadPath(cwd: string): string | undefined {
-  const dotGit = path.join(cwd, '.git');
-  try {
-    const stat = fs.statSync(dotGit);
-    if (stat.isDirectory()) return path.join(dotGit, 'HEAD');
-    if (stat.isFile()) {
-      const content = fs.readFileSync(dotGit, 'utf8');
-      const m = content.match(/^gitdir:\s*(.+)$/m);
-      if (!m) return undefined;
-      const rel = m[1].trim();
-      const gitDir = path.isAbsolute(rel) ? rel : path.resolve(cwd, rel);
-      return path.join(gitDir, 'HEAD');
-    }
-  } catch { /* not a repo */ }
-  return undefined;
+  let dir = cwd;
+  while (true) {
+    const dotGit = path.join(dir, '.git');
+    try {
+      const stat = fs.statSync(dotGit);
+      if (stat.isDirectory()) return path.join(dotGit, 'HEAD');
+      if (stat.isFile()) {
+        const content = fs.readFileSync(dotGit, 'utf8');
+        const m = content.match(/^gitdir:\s*(.+)$/m);
+        if (!m) return undefined;
+        const rel = m[1].trim();
+        const gitDir = path.isAbsolute(rel) ? rel : path.resolve(dir, rel);
+        return path.join(gitDir, 'HEAD');
+      }
+    } catch { /* not here, try parent */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
 }
 
 function readBranchFromHead(headPath: string): string | undefined {

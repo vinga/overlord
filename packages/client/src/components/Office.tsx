@@ -25,6 +25,7 @@ interface OfficeProps {
   terminalSpawnCwd?: string | null;
   onTerminalSpawnCommit?: (name: string | null) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
   onOpenArchive?: (entry: import('../types').ArchiveEntry) => void;
   onRenameSession?: (sessionId: string, name: string) => void;
@@ -39,7 +40,7 @@ interface OfficeProps {
   platform?: string;
 }
 
-function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void }) {
+function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onToggleActiveOnly }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void; activeOnly: boolean; onToggleActiveOnly: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -72,6 +73,26 @@ function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSessio
       </button>
       {open && (
         <div className={styles.headerMenuDropdown} role="menu">
+          <button
+            className={styles.headerMenuItem}
+            onClick={() => { setOpen(false); onToggleActiveOnly(); }}
+            role="menuitemcheckbox"
+            aria-checked={activeOnly}
+          >
+            <span className={styles.headerMenuItemIcon}>
+              {activeOnly ? (
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 8.5 6.5 12 13 4" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="8" cy="8" r="3" fill="currentColor" />
+                </svg>
+              )}
+            </span>
+            <span className={styles.headerMenuItemLabel}>Active only</span>
+            <span className={styles.headerMenuItemHint}>{activeOnly ? 'On' : 'Off'}</span>
+          </button>
           {onNewSession && (
             <button
               className={styles.headerMenuItem}
@@ -148,11 +169,23 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
+
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeOnly, setActiveOnly] = useState<boolean>(() => {
+    try { return localStorage.getItem(ACTIVE_ONLY_STORAGE_KEY) === '1'; } catch { return false; }
+  });
+  const toggleActiveOnly = useCallback(() => {
+    setActiveOnly(prev => {
+      const next = !prev;
+      try { localStorage.setItem(ACTIVE_ONLY_STORAGE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
   const sessionMatches = useCallback((s: Session, q: string): boolean => {
     const displayName = customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? '';
@@ -168,6 +201,14 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   const visibleRooms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     let filtered = rooms.filter(room => room.sessions.length > 0);
+    if (activeOnly) {
+      filtered = filtered
+        .map(room => {
+          const sessions = room.sessions.filter(s => s.state !== 'closed');
+          return sessions.length > 0 ? { ...room, sessions } : null;
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+    }
     if (q) {
       filtered = filtered
         .map(room => {
@@ -185,7 +226,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         .filter((r): r is NonNullable<typeof r> => r !== null);
     }
     return sortRooms(filtered);
-  }, [rooms, sortRooms, searchQuery, sessionMatches]);
+  }, [rooms, sortRooms, searchQuery, sessionMatches, activeOnly]);
 
   // Register any room IDs not yet in persisted order (side-effect free from render)
   useEffect(() => {
@@ -259,6 +300,8 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onLogs={onLogsClick}
           onSettings={onSettingsClick}
           onStats={onStatsClick}
+          activeOnly={activeOnly}
+          onToggleActiveOnly={toggleActiveOnly}
         />
       </header>
       <div className={styles.content}>
@@ -301,6 +344,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                   terminalSpawnCwd={terminalSpawnCwd}
                   onTerminalSpawnCommit={onTerminalSpawnCommit}
                   onDeleteSession={onDeleteSession}
+                  onCloseSession={onCloseSession}
                   onArchiveSession={onArchiveSession}
                   onOpenArchive={onOpenArchive}
                   onRenameSession={onRenameSession}

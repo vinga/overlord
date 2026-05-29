@@ -483,6 +483,7 @@ interface RoomProps {
   onSpawnNameChange?: (name: string) => void;
   onSpawnCommit?: (name: string | null) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
   onOpenArchive?: (entry: ArchiveEntry) => void;
   onRenameSession?: (sessionId: string, newName: string) => void;
@@ -535,7 +536,7 @@ function SpawningDesk({ name }: { name: string }) {
   );
 }
 
-function DeskMenu({ onDelete, onClone, onClear, onArchive }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void }) {
+function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
 
@@ -597,6 +598,18 @@ function DeskMenu({ onDelete, onClone, onClear, onArchive }: { onDelete: () => v
               onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(251,146,60,0.1)'; e.currentTarget.style.color = '#fb923c'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
             >Clear</button>
+          )}
+          {onClose && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpen(false); onClose(); }}
+              style={{
+                display: 'block', width: '100%', padding: '8px 14px',
+                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+            >Close</button>
           )}
           {onArchive && (
             <button
@@ -689,7 +702,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -1102,6 +1115,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                       setClearToast(r.ok ? 'sent' : 'error');
                     }).catch(() => setClearToast('error'));
                   } : undefined}
+                  onClose={onCloseSession && session.state !== 'closed' ? () => onCloseSession(session.sessionId) : undefined}
                   onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
                 />
               )}

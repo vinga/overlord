@@ -3,7 +3,7 @@ import * as os from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
-import { getCachedJiraTitle } from '../session/jiraTitleCache.js';
+import { getCachedJiraTitle, getJiraCacheStats } from '../session/jiraTitleCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -146,6 +146,11 @@ export function registerApiRoutes(
       linkageTracker.dropCloneInfo(ptySessionId);
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  // Debug endpoint: Jira title cache internals
+  app.get('/api/debug/jira', (_req, res) => {
+    res.json(getJiraCacheStats());
   });
 
   // Debug endpoint: dump current state snapshot

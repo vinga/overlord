@@ -60,6 +60,7 @@ async function fetchOne(key: string): Promise<void> {
       return;
     }
     if (!res.ok) {
+      console.warn(`[jiraTitleCache] non-OK ${res.status} for key ${key}`);
       cache.set(key, { meta: null, fetchedAt: Date.now() });
       return;
     }
@@ -80,11 +81,44 @@ async function fetchOne(key: string): Promise<void> {
     // Treat a row with no usable field as a miss (shorter TTL, keeps retrying).
     const usable = meta.title || meta.type || meta.status;
     cache.set(key, { meta: usable ? meta : null, fetchedAt: Date.now() });
-  } catch {
+  } catch (err) {
+    const e = err as { name?: string; message?: string };
+    console.warn(`[jiraTitleCache] fetch error for ${key}: ${e?.name ?? 'Error'} ${e?.message ?? ''}`);
     cache.set(key, { meta: null, fetchedAt: Date.now() });
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Debug stats for the in-process Jira title cache. */
+export function getJiraCacheStats(): {
+  cacheSize: number;
+  cacheHits: number;
+  cacheMisses: number;
+  queueLength: number;
+  inflightSize: number;
+  activeFetches: number;
+  credsReady: boolean;
+  sample: { key: string; hasMeta: boolean; ageMs: number }[];
+} {
+  let hits = 0;
+  let misses = 0;
+  const now = Date.now();
+  const sample: { key: string; hasMeta: boolean; ageMs: number }[] = [];
+  for (const [k, v] of cache) {
+    if (v.meta) hits++; else misses++;
+    if (sample.length < 10) sample.push({ key: k, hasMeta: !!v.meta, ageMs: now - v.fetchedAt });
+  }
+  return {
+    cacheSize: cache.size,
+    cacheHits: hits,
+    cacheMisses: misses,
+    queueLength: queue.length,
+    inflightSize: inflight.size,
+    activeFetches,
+    credsReady: !!credsReady(),
+    sample,
+  };
 }
 
 function drainQueue(): void {

@@ -378,6 +378,10 @@ export function App() {
     sendMessage({ type: 'session:delete', sessionId });
   }
 
+  function handleCloseSession(sessionId: string) {
+    sendMessage({ type: 'session:close', sessionId });
+  }
+
   function handleCloneSession(sessionId: string) {
     sendMessage({ type: 'session:clone', sessionId, cols: 120, rows: 30 });
   }
@@ -484,6 +488,7 @@ export function App() {
         onTerminalSpawnCommit={handleTerminalSpawnCommit}
         onDeleteSession={handleDeleteSession}
         onCloneSession={handleCloneSession}
+        onCloseSession={handleCloseSession}
         onArchiveSession={handleArchiveSession}
         onOpenArchive={handleOpenArchive}
         onRenameSession={rename}

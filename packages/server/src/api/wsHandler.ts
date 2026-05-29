@@ -871,6 +871,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         return;
       }
 
+      if (type === 'session:close') {
+        const sessionId = String(msg.sessionId ?? '');
+        stateManager.markClosed(sessionId);
+        return;
+      }
+
       if (type === 'session:clone') {
         const sessionId = String(msg.sessionId ?? '');
         const cols = Number(msg.cols ?? 80);
