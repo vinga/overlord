@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { PrHistoryStore } from './prHistoryStore.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -68,9 +69,11 @@ export class PrCache {
   // GitHub GraphQL quota on data nobody is looking at. User-triggered fetches
   // (getOrFetchFull) bypass this gate.
   private pollingEnabled = true;
+  private historyStore: PrHistoryStore | undefined;
 
-  constructor(onUpdate: () => void) {
+  constructor(onUpdate: () => void, historyStore?: PrHistoryStore) {
     this.onUpdate = onUpdate;
+    this.historyStore = historyStore;
   }
 
   setPollingEnabled(enabled: boolean): void {
@@ -188,6 +191,12 @@ export class PrCache {
         rateLimited: !!result.error && isRateLimitError(result.error),
         fetchedAt: Date.now(),
       });
+      // PR-observation chokepoint — every successful fetch flows through here,
+      // so recording in this single spot covers background polls + click
+      // force-refreshes uniformly.
+      if (result.pullRequest && this.historyStore) {
+        this.historyStore.record(cwd, branch, result.pullRequest);
+      }
       this.onUpdate();
     }).catch(err => {
       const msg = err instanceof Error ? err.message : String(err);

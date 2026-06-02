@@ -401,6 +401,18 @@ export function App() {
     }
   }
 
+  async function handleDeleteArchived(sessionId: string) {
+    try {
+      const res = await fetch(`/api/archive/${sessionId}`, { method: 'DELETE' });
+      if (!res.ok) { console.error('delete archive failed', await res.text()); return; }
+      setArchivedSession(prev => prev && prev.sessionId === sessionId ? null : prev);
+      window.dispatchEvent(new CustomEvent('archive:changed', { detail: {} }));
+      handleClose();
+    } catch (err) {
+      console.error('delete archive error', err);
+    }
+  }
+
   async function handleCloneArchived(sessionId: string, _cwd: string) {
     try {
       const res = await fetch(`/api/archive/${sessionId}/clone-prepare`, { method: 'POST' });
@@ -586,6 +598,7 @@ export function App() {
           },
           onResumeArchived: handleResumeArchived,
           onCloneArchived: handleCloneArchived,
+          onDeleteArchived: handleDeleteArchived,
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),
           onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),

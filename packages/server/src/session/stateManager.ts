@@ -6,6 +6,7 @@ import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSess
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
+import { PrHistoryStore } from '../git/prHistoryStore.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
@@ -247,6 +248,7 @@ export class StateManager {
   readonly bridgePath: string;
   private gitWatcher: GitWatcher;
   private prCache: PrCache;
+  private prHistoryStore: PrHistoryStore;
   private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
   /** Injected from index.ts after construction — reports whether an ovrId has a live PTY in `ovrToPty`.
@@ -273,7 +275,8 @@ export class StateManager {
     this.bridgePath = getBridgePath();
     this.onChangeCallback = onChange;
     this.gitWatcher = new GitWatcher(() => this.onChange());
-    this.prCache = new PrCache(() => this.onChange());
+    this.prHistoryStore = new PrHistoryStore();
+    this.prCache = new PrCache(() => this.onChange(), this.prHistoryStore);
     this.gitAheadTimer = setInterval(() => this.refreshGitAheadCache(), 15_000);
     this.loadAccepted();
     this.migrateLegacyColors();
@@ -2352,6 +2355,10 @@ export class StateManager {
   /** Exposed so on-demand git-status endpoint can share the single PR cache. */
   getPrCache(): PrCache {
     return this.prCache;
+  }
+
+  getPrHistoryStore(): PrHistoryStore {
+    return this.prHistoryStore;
   }
 
   /**

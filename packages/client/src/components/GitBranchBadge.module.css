@@ -762,6 +762,73 @@ a.checkName:hover {
   padding: 4px 2px;
 }
 
+.recentPrList {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.recentPrItem {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.78);
+  text-decoration: none;
+  padding: 2px 0;
+}
+
+.recentPrItem:hover .recentPrTitle {
+  color: #d4af37;
+}
+
+.recentPrItem:hover .recentPrNumber {
+  color: #d4af37;
+}
+
+.recentPrTitle {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.recentPrNumber {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10.5px;
+  color: rgba(212, 175, 55, 0.75);
+  flex-shrink: 0;
+}
+
+.recentPrBranch {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recentPrTime {
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+
 .shimmerBlock {
   height: 12px;
   border-radius: 4px;

@@ -25,6 +25,10 @@ interface PrInfo { number: number; url: string; title: string; state: string; is
 type CheckState = 'SUCCESS' | 'FAILURE' | 'PENDING' | 'SKIPPED' | 'CANCELLED' | 'NEUTRAL';
 interface Check { name: string; state: CheckState; url?: string; elapsed?: string }
 interface PrData { pullRequest: PrInfo | null; checks: Check[]; mergeable: string | null; error: string | null }
+interface PrHistoryEntry {
+  number: number; url: string; title: string; state: string; isDraft: boolean;
+  branch: string; firstSeenAt: number; lastSeenAt: number;
+}
 
 interface Props {
   branch: string;
@@ -45,6 +49,7 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest, gitAhead 
   const [prData, setPrData] = useState<PrData | null>(null);
   const [prLoading, setPrLoading] = useState(false);
   const [prError, setPrError] = useState<string | null>(null);
+  const [history, setHistory] = useState<PrHistoryEntry[]>([]);
   const spanRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const fetchIdRef = useRef(0);
@@ -109,6 +114,15 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest, gitAhead 
         setPrError(err.message);
         setPrLoading(false);
       });
+
+    // PR history is best-effort: silent failure is fine, the section just hides.
+    fetch(`/api/git/pr-history?cwd=${encodeURIComponent(cwd)}`)
+      .then(async r => (r.ok ? r.json() : { entries: [] }))
+      .then((data: { entries?: PrHistoryEntry[] }) => {
+        if (id !== fetchIdRef.current) return;
+        setHistory(Array.isArray(data.entries) ? data.entries : []);
+      })
+      .catch(() => { /* swallow */ });
   }, [open, cwd, branch]);
 
   const handleBadgeClick = (e: React.MouseEvent<HTMLSpanElement>) => {
@@ -192,6 +206,7 @@ export function GitBranchBadge({ branch, cwd, gitWarning, pullRequest, gitAhead 
             prData={prData}
             prLoading={prLoading}
             prError={prError}
+            history={history}
           />
         </div>,
         document.body
@@ -243,7 +258,7 @@ function prStateClass(pr: { state: string; isDraft: boolean }): string {
   return styles.pillPrOpen;
 }
 
-function TooltipBody({ branch, status, loading, error, gitWarning, prResolved, prData, prLoading, prError }: { branch: string; status: GitStatus | null; loading: boolean; error: string | null; gitWarning?: string; prResolved?: boolean; prData: PrData | null; prLoading: boolean; prError: string | null }) {
+function TooltipBody({ branch, status, loading, error, gitWarning, prResolved, prData, prLoading, prError, history }: { branch: string; status: GitStatus | null; loading: boolean; error: string | null; gitWarning?: string; prResolved?: boolean; prData: PrData | null; prLoading: boolean; prError: string | null; history: PrHistoryEntry[] }) {
   if (error) {
     return (
       <>
@@ -279,6 +294,7 @@ function TooltipBody({ branch, status, loading, error, gitWarning, prResolved, p
         )}
       </div>
       <PrBlock prData={prData} prLoading={prLoading} prError={prError} />
+      <RecentPrsSection history={history} currentPrNumber={prData?.pullRequest?.number ?? null} />
       {status.branchCommits.length > 0 && (
         <CommitsSection commits={status.branchCommits} />
       )}
@@ -477,6 +493,61 @@ function branchSync(upstream: string | null, ahead: number, behind: number): { l
   if (ahead > 0) return { label: 'Ahead', cls: styles.branchSyncAhead, title: `${ahead} commit${ahead === 1 ? '' : 's'} ahead of upstream` };
   if (behind > 0) return { label: 'Behind', cls: styles.branchSyncBehind, title: `${behind} commit${behind === 1 ? '' : 's'} behind upstream` };
   return { label: 'Synced', cls: styles.branchSyncSynced, title: 'In sync with upstream' };
+}
+
+function RecentPrsSection({ history, currentPrNumber }: { history: PrHistoryEntry[]; currentPrNumber: number | null }) {
+  // Filter out the currently-shown PR (already rendered above by PrBlock) so the
+  // section adds signal — past PRs the user wouldn't otherwise see.
+  const filtered = history.filter(h => h.number !== currentPrNumber);
+  if (filtered.length === 0) return null;
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <PullRequestIcon className={styles.sectionIcon}/>
+        <span className={styles.sectionLabel}>Recent PRs</span>
+        <span className={styles.sectionCount}>{filtered.length}</span>
+      </div>
+      <ul className={styles.recentPrList}>
+        {filtered.map(h => (
+          <li key={h.number}>
+            <a className={styles.recentPrItem} href={h.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>
+              <span className={`${styles.prState} ${recentPrStateClass(h)}`}>{recentPrStateLabel(h)}</span>
+              <span className={styles.recentPrNumber}>#{h.number}</span>
+              <span className={styles.recentPrTitle} title={h.title}>{h.title}</span>
+              <span className={styles.recentPrBranch} title={h.branch}>{h.branch}</span>
+              <span className={styles.recentPrTime}>{relativeTime(h.lastSeenAt)}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function recentPrStateClass(h: PrHistoryEntry): string {
+  if (h.isDraft) return styles.prStateDraft;
+  if (h.state === 'MERGED') return styles.prStateMerged;
+  if (h.state === 'CLOSED') return styles.prStateClosed;
+  return styles.prStateOpen;
+}
+
+function recentPrStateLabel(h: PrHistoryEntry): string {
+  if (h.isDraft) return 'Draft';
+  return h.state.charAt(0) + h.state.slice(1).toLowerCase();
+}
+
+function relativeTime(ts: number): string {
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `${mo}mo ago`;
+  return `${Math.floor(mo / 12)}y ago`;
 }
 
 function CommitsSection({ commits }: { commits: GitStatus['branchCommits'] }) {

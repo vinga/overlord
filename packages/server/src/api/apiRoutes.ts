@@ -113,6 +113,17 @@ export function registerApiRoutes(
     res.json(full);
   });
 
+  // Per-room PR history (last 10 observed). Populated lazily by prCache as it
+  // observes PRs during background polls + user clicks; persisted to disk so
+  // history survives restarts.
+  app.get('/api/git/pr-history', (req, res) => {
+    const cwd = String(req.query.cwd ?? '');
+    if (!cwd) return res.status(400).json({ error: 'cwd required' });
+    if (!stateManager.isKnownRoomCwd(cwd)) return res.status(404).json({ error: 'unknown cwd' });
+    const entries = stateManager.getPrHistoryStore().list(cwd);
+    res.json({ entries });
+  });
+
   // Debug endpoint: spawn a test session
   app.post('/api/debug/spawn', express.json(), (req, res) => {
     const cwd = String(req.body?.cwd ?? process.cwd());
@@ -1140,6 +1151,19 @@ export function registerApiRoutes(
     if (broadcastRaw) broadcastRaw({ type: 'archive:removed', sessionId, roomId: entry.roomId });
     log('info', 'Session unarchived', { sessionId, sessionName: entry.name });
     res.json({ ok: true, sessionId, cwd: entry.cwd, name: entry.name });
+  });
+
+  // Archive: delete — permanently remove an archived session (transcripts +
+  // record). Does NOT restore the transcript. No going back.
+  app.delete('/api/archive/:sessionId', (req, res) => {
+    const { sessionId } = req.params;
+    const entry = archiveManager.get(sessionId);
+    if (!entry) { res.status(404).json({ error: 'archive entry not found' }); return; }
+    const ok = archiveManager.deleteArchive(sessionId);
+    if (!ok) { res.status(500).json({ error: 'failed to delete archive' }); return; }
+    if (broadcastRaw) broadcastRaw({ type: 'archive:removed', sessionId, roomId: entry.roomId });
+    log('session:killed', 'Archived session deleted', { sessionId, sessionName: entry.name });
+    res.json({ ok: true, sessionId, roomId: entry.roomId });
   });
 
   // Archive: clone-prepare — restore transcript into ~/.claude/projects but keep archive entry

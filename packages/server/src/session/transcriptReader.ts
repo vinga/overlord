@@ -28,14 +28,21 @@ function getJiraProjectRegex(): RegExp | null {
  * Excludes tool_use input (file paths and skill-doc slugs cause false positives,
  * e.g. a Read of pr-start/SKILL.md picking up "BACKEND-2099-composer-integration"),
  * tool_result content, thinking blocks, system events.
+ *
+ * Also excludes `isMeta` user messages: these are slash-command / skill-body
+ * expansions injected by the harness (e.g. the full /pr-start or /jira skill doc),
+ * which carry example ticket IDs and curl payloads with related-issue links —
+ * a major source of over-eager chips. The real command invocation (and its
+ * `<command-args>` ticket) is a plain, non-meta user message and is kept.
  */
 function gatherJiraScanText(last30: string[]): string[] {
   const out: string[] = [];
   for (const line of last30) {
     if (!line) continue;
-    let parsed: { type?: string; message?: { content?: unknown } };
+    let parsed: { type?: string; isMeta?: boolean; message?: { content?: unknown } };
     try { parsed = JSON.parse(line) as typeof parsed; } catch { continue; }
     if (parsed.type === 'user') {
+      if (parsed.isMeta === true) continue;
       const c = parsed.message?.content;
       if (typeof c === 'string') {
         out.push(c);

@@ -221,6 +221,26 @@ export class ArchiveManager {
     sessionStore.unarchive(rec.overlordId);
     return true;
   }
+
+  /**
+   * Permanently delete an archived overlord: unlink the archived transcript
+   * copies, remove the per-overlord archive dir, and drop the OverlordSession
+   * record entirely (index + JSON file + shadow dir). Unlike `remove`
+   * (unarchive), the record does NOT survive and the transcript is NOT restored
+   * into ~/.claude/projects. Idempotent — returns false if not archived.
+   */
+  deleteArchive(sessionId: string): boolean {
+    const rec = sessionStore.getBySessionId(sessionId);
+    if (!rec?.archive) return false;
+    for (const t of rec.archive.transcripts) {
+      try { if (fs.existsSync(t.path)) fs.unlinkSync(t.path); } catch { /* ignore */ }
+    }
+    const slug = rec.archive.roomId;
+    const overlordArchiveDir = path.join(ARCHIVE_BASE, slug, rec.overlordId);
+    try { fs.rmdirSync(overlordArchiveDir); } catch { /* not empty or missing — ignore */ }
+    sessionStore.remove(rec.overlordId);
+    return true;
+  }
 }
 
 export const archiveManager = new ArchiveManager();

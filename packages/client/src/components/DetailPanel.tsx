@@ -265,6 +265,7 @@ interface SessionActions {
   onResumeSession?: (sessionId: string, cwd: string) => void;
   onResumeArchived?: (sessionId: string, cwd: string) => void;
   onCloneArchived?: (sessionId: string, cwd: string) => void;
+  onDeleteArchived?: (sessionId: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
   onFocusBridge?: (sessionId: string) => void;
@@ -1310,7 +1311,7 @@ export function DetailPanel({
   onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -1453,6 +1454,7 @@ export function DetailPanel({
   const prevSessionIdRef = useRef<string | undefined>(undefined);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDeleteArchive, setConfirmDeleteArchive] = useState(false);
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
@@ -1700,6 +1702,7 @@ const currentDisplayName =
     // Restore draft for the new session
     setSendInput2(newId ? (draftPerSession.current.get(newId) ?? '') : '');
     setConfirmDelete(false);
+    setConfirmDeleteArchive(false);
     setPastedImage(null);
     setKilling(false);
     setConfirmKill(false);
@@ -2282,6 +2285,27 @@ const currentDisplayName =
                             Resume as clone
                           </button>
                         )}
+                        {onDeleteArchived && (confirmDeleteArchive ? (
+                          <>
+                            <span className={styles.deleteConfirmInline} style={{ marginLeft: 6 }}>Delete permanently?</span>
+                            <button
+                              className={styles.deleteConfirmBtn}
+                              onClick={() => { setConfirmDeleteArchive(false); onDeleteArchived(selectedSession.sessionId); }}
+                            >
+                              Yes
+                            </button>
+                            <button className={styles.deleteCancelBtn} onClick={() => setConfirmDeleteArchive(false)}>No</button>
+                          </>
+                        ) : (
+                          <button
+                            className={styles.resumeBtn}
+                            style={{ marginLeft: 6, background: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.35)', color: '#f87171' }}
+                            onClick={() => setConfirmDeleteArchive(true)}
+                            title="Permanently delete this archived session and its transcripts. Cannot be undone."
+                          >
+                            Delete
+                          </button>
+                        ))}
                       </>
                     ) : (<>
                     <StateBadge
