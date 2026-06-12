@@ -60,6 +60,7 @@ export function App() {
   });
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string; query?: string } | null>(null);
+  const [selectionNonce, setSelectionNonce] = useState(0);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
@@ -312,6 +313,7 @@ export function App() {
     setSelectedSessionId(id);
     setSelectedSubagentId(subagentId);
     setScrollTarget(timestamp ? { sessionId: id, timestamp, query } : null);
+    setSelectionNonce(n => n + 1);
   }
 
   function handleRoomClick(roomId: string) {
@@ -491,6 +493,7 @@ export function App() {
         onOpenAdvancedSearch={() => setShowAdvancedSearch(true)}
 
         selectedSessionId={selectedSessionId}
+        selectionNonce={selectionNonce}
         rightOffset={panelWidth}
         onRoomClick={handleRoomClick}
         spawnCwd={spawnCwd}

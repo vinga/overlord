@@ -1072,6 +1072,8 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
           return (
             <div
               key={session.sessionId}
+              data-desk-ovr={session.overlordId ?? undefined}
+              data-desk-sid={session.sessionId}
               className={[
                 styles.desk,
                 isSelected ? styles.deskSelected : '',

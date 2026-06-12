@@ -17,6 +17,7 @@ interface OfficeProps {
   onNewTerminalSession?: (cwd: string) => void;
 
   selectedSessionId?: string | null;
+  selectionNonce?: number;
   rightOffset?: number;
   onRoomClick?: (roomId: string) => void;
   spawnCwd?: string | null;
@@ -171,7 +172,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -232,6 +233,31 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   useEffect(() => {
     registerRooms(visibleRooms.map(r => r.id));
   }, [visibleRooms, registerRooms]);
+
+  // Scroll the selected worker's desk into view whenever selection changes
+  // (e.g. clicking an agent icon in the DetailPanel, search, or task list).
+  // Rooms are read via a ref so snapshot ticks don't re-trigger the scroll.
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const scrollToDesk = () => {
+      const sel = CSS.escape(selectedSessionId);
+      let el = document.querySelector(`[data-desk-ovr="${sel}"], [data-desk-sid="${sel}"]`);
+      if (!el) {
+        // Desk hidden (collapsed room) — scroll to the room card instead
+        const room = roomsRef.current.find(r =>
+          r.sessions.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId)
+        );
+        if (room) el = document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`);
+      }
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    const raf = requestAnimationFrame(scrollToDesk);
+    // The detail panel's 200ms width transition reflows the grid — scroll again after it settles
+    const timer = setTimeout(scrollToDesk, 260);
+    return () => { cancelAnimationFrame(raf); clearTimeout(timer); };
+  }, [selectedSessionId, selectionNonce]);
 
   const hasRooms = visibleRooms.length > 0;
 
