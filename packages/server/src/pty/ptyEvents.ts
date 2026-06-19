@@ -4,6 +4,37 @@ import type { StateManager } from '../session/stateManager.js';
 import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
 import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
 import { detectModeFromText } from '../session/modeDetect.js';
+import { scheduleInject, shouldUseExtraEnter } from './injectScheduler.js';
+
+// Delay after the freshly spawned PTY's first output before injecting a queued
+// initial prompt — gives the Claude TUI time to render its input box. The
+// startup-output stream begins well before the prompt box is interactive, so
+// firing on the very first chunk would drop the text. See open enter-injection
+// timing notes; this is a conservative fixed delay, may need an output-gated
+// readiness signal later.
+const INITIAL_PROMPT_READY_DELAY_MS = 1500;
+
+function fireInitialPrompt(ctx: PtyEventsContext, ptySessionId: string, text: string): void {
+  const extraEnter = shouldUseExtraEnter(text);
+  console.log(`[spawn:inject] queued initial prompt for pty=${ptySessionId.slice(0, 16)} delay=${INITIAL_PROMPT_READY_DELAY_MS}ms len=${text.length}`);
+  setTimeout(() => {
+    if (!ctx.ptyManager.has(ptySessionId)) {
+      console.warn(`[spawn:inject] pty gone before inject pty=${ptySessionId.slice(0, 16)}`);
+      return;
+    }
+    console.log(`[spawn:inject] writing initial prompt to pty=${ptySessionId.slice(0, 16)}`);
+    const write = (data: string): boolean => {
+      try { return ctx.ptyManager.write(ptySessionId, data); } catch { return false; }
+    };
+    scheduleInject(
+      write,
+      () => ctx.ptyManager.has(ptySessionId),
+      () => console.warn(`[spawn:inject] initial prompt write failed pty=${ptySessionId.slice(0, 12)}`),
+      text,
+      extraEnter,
+    );
+  }, INITIAL_PROMPT_READY_DELAY_MS);
+}
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -96,6 +127,12 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
   ctx.ptyManager.on('output', (ptySessionId: string, data: string) => {
     // Resolve ovrId for this PTY (set after linking; fall back to ptyId before link)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
+
+    // Fire a queued initial prompt once the freshly spawned PTY produces output
+    // (TUI started rendering). takePendingInitialPrompt is one-shot, so this
+    // runs at most once per spawn; common case is a cheap empty-map lookup.
+    const initialPrompt = ctx.stateManager.takePendingInitialPrompt(ptySessionId);
+    if (initialPrompt) fireInitialPrompt(ctx, ptySessionId, initialPrompt);
 
     // Buffer output under ptySessionId while alive; migrated to ovrId on exit
     let buf = ctx.ptyOutputBuffer.get(ptySessionId);
@@ -195,14 +232,25 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
 
     // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
+    // Has a DIFFERENT pty already taken over this ovr? On a re-resume of a live
+    // session the handler spawns a new pty (ovrToPty[ovr] = newPty) and then
+    // kills the old claude to free the session lock. The old pty's exit then
+    // resolves to the same ovrId — but the ovr is alive on the new pty.
+    // Broadcasting terminal:exit for the ovr here would make the client mark it
+    // "ended" even though the new PTY is running → "session working but Terminal
+    // PTY ended". Suppress only when a different pty demonstrably owns the ovr;
+    // an undefined mapping means this is the last/only pty (genuine exit).
+    const currentPtyForOvr = ctx.ovrToPty.get(ovrId);
+    const superseded = currentPtyForOvr !== undefined && currentPtyForOvr !== ptySessionId;
     ctx.ptyToOvr.delete(ptySessionId);
-    if (ctx.ovrToPty.get(ovrId) === ptySessionId) {
+    if (currentPtyForOvr === ptySessionId) {
       ctx.ovrToPty.delete(ovrId);
     }
 
     // Migrate output buffer from ptyId → ovrId so the last repaint stays
     // accessible after the PTY mapping is cleaned up (terminal:replay for closed sessions).
-    if (ovrId !== ptySessionId) {
+    // A superseded pty must not overwrite the live new pty's scrollback.
+    if (ovrId !== ptySessionId && !superseded) {
       const buf = ctx.ptyOutputBuffer.get(ptySessionId);
       if (buf && buf.length > 0) {
         ctx.ptyOutputBuffer.set(ovrId, buf);
@@ -210,15 +258,23 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     }
     ctx.ptyOutputBuffer.delete(ptySessionId);
 
+    // Always clean up this pty's wsSessionMap entry. Only drop the ovrId entry
+    // when no live pty owns it (else we'd unsubscribe the live new pty).
+    for (const [, sessions] of ctx.wsSessionMap) {
+      sessions.delete(ptySessionId);
+      if (!superseded) sessions.delete(ovrId);
+    }
+
+    if (superseded) {
+      // Replaced by a newer resume — clean up silently, do not signal exit/close
+      // for an ovr that is alive on its new pty.
+      console.log(`[pty:exit] ptyId=${ptySessionId.slice(0, 12)} ovrId=${ovrId} code=${code} (superseded — exit suppressed)`);
+      return;
+    }
+
     // Broadcast exit to all clients so any tab can update its state
     ctx.broadcastRaw({ type: 'terminal:exit', sessionId: ovrId, code });
     console.log(`[pty:exit] ptyId=${ptySessionId.slice(0, 12)} ovrId=${ovrId} code=${code}`);
-
-    // Clean up wsSessionMap entries
-    for (const [, sessions] of ctx.wsSessionMap) {
-      sessions.delete(ptySessionId);
-      sessions.delete(ovrId);
-    }
 
     // Raw shell sessions: mark as historyOnly closed so the user can still view
     // the scrollback and click "Restart shell". Log file on disk is the source

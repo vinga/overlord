@@ -506,6 +506,7 @@ export function App() {
         onCloseSession={handleCloseSession}
         onArchiveSession={handleArchiveSession}
         onOpenArchive={handleOpenArchive}
+        onDeleteArchive={handleDeleteArchived}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
         pendingSpawns={pendingSpawns}

@@ -82,6 +82,23 @@ export function useTerminal(
         next.add(msg.sessionId);
         return next;
       });
+      // A (re)spawn means this session is alive again — clear any stale exited
+      // flag so the terminal embed stops showing "Session exited". On resume the
+      // server pre-sets ovrToPty, so the marker-link path is skipped and
+      // terminal:linked (which also clears this) never fires — without clearing
+      // here the worker reads as working while its Terminal PTY shows ended.
+      setExitedSessions((prev) => {
+        if (!prev.has(msg.sessionId)) return prev;
+        const next = new Set(prev);
+        next.delete(msg.sessionId);
+        return next;
+      });
+      setSessionErrors((prev) => {
+        if (!prev.has(msg.sessionId)) return prev;
+        const next = new Map(prev);
+        next.delete(msg.sessionId);
+        return next;
+      });
       // If this client originated a spawn, fire onSpawned now so the UI can
       // redirect to the new ovrId immediately. terminal:linked still fires
       // later (idempotent re-select).

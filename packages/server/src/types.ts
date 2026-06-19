@@ -109,6 +109,10 @@ export interface Session {
   permissionMode?: string;
   permissionModeLockedUntil?: number;  // timestamp ms — screen-detected mode, blocks transcript overwrite
   pendingQuestion?: PendingQuestionSet;
+  // A pending AskUserQuestion detected from the live PTY screen (not the transcript —
+  // Claude only writes the tool_use to the transcript after it's answered). Used as the
+  // pendingQuestion fallback so a live TUI question still surfaces in the UI.
+  screenQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
   /** JIRA-shaped ticket keys mined from this session's transcript. Union-merged
    *  across reads — keys seen earlier in the conversation but no longer in the

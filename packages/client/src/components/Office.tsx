@@ -29,6 +29,7 @@ interface OfficeProps {
   onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
   onOpenArchive?: (entry: import('../types').ArchiveEntry) => void;
+  onDeleteArchive?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, name: string) => void;
   onCloneSession?: (sessionId: string) => void;
   isPtySession?: (sessionId: string) => boolean;
@@ -172,7 +173,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -373,6 +374,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                   onCloseSession={onCloseSession}
                   onArchiveSession={onArchiveSession}
                   onOpenArchive={onOpenArchive}
+                  onDeleteArchive={onDeleteArchive}
                   onRenameSession={onRenameSession}
                   onCloneSession={onCloneSession}
                   isPtySession={isPtySession}

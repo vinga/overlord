@@ -501,6 +501,13 @@ function detectCompactionIncremental(filePath: string, fileSize: number): { comp
 function describeInput(input: unknown): string {
   if (!input || typeof input !== 'object') return '';
   const obj = input as Record<string, unknown>;
+  // AskUserQuestion: surface the actual question(s) so the feed row isn't blank.
+  if (Array.isArray(obj.questions)) {
+    const qs = (obj.questions as Array<{ question?: unknown }>)
+      .map(q => (typeof q?.question === 'string' ? q.question : ''))
+      .filter(Boolean);
+    if (qs.length > 0) return qs.join(' · ').slice(0, 200);
+  }
   const val = obj.file_path ?? obj.description ?? obj.command ?? obj.pattern ?? obj.prompt ?? obj.query ?? '';
   return String(val).slice(0, 100);
 }

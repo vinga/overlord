@@ -65,6 +65,17 @@ export class PtyResumeTracker {
     return entry.resumeSessionId;
   }
 
+  /** Non-consuming marker lookup (TTL-filtered). Used by the skip-interim guard
+   *  so a resume's interim UUID can be correlated to ITS OWN ___OVR:<marker>,
+   *  never to another session's resume sharing the cwd (marker-keyed, per
+   *  CLAUDE.md — cwd-keyed mis-skips legitimate resumes in crowded rooms). */
+  peekResumeByMarker(ptyId: string): string | undefined {
+    const entry = this.pendingResumesByMarker.get(ptyId);
+    if (!entry) return undefined;
+    if (Date.now() - entry.timestamp > RESUME_TTL_MS) return undefined;
+    return entry.resumeSessionId;
+  }
+
   hasResume(cwd: string): boolean {
     const entry = this.pendingResumes.get(normalizePath(cwd));
     return entry != null && Date.now() - entry.timestamp < RESUME_TTL_MS;

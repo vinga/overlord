@@ -32,6 +32,31 @@ function resolveClaude(): string {
 
 const CLAUDE_BIN = resolveClaude();
 
+// Env vars the Claude Code harness injects into its OWN child processes. If the
+// Overlord server was itself launched from inside a Claude Code session (e.g.
+// `npm run dev` run from the CLI, or a restart triggered via the Bash tool),
+// these leak into process.env and would be inherited by every PTY-spawned
+// claude. CLAUDE_CODE_CHILD_SESSION=1 in particular makes the spawned claude
+// run as a non-persisting CHILD session — it writes no ~/.claude/projects
+// transcript and no {pid}.json, so Overlord can never link it and the worker is
+// stuck "Waiting for Claude to initialize" forever. Strip them so every spawn
+// is a clean top-level session regardless of how the server was started.
+const PARENT_SESSION_ENV_VARS = [
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'AI_AGENT',
+  'CLAUDE_EFFORT',
+];
+
+function sanitizedSpawnEnv(): Record<string, string> {
+  const env = { ...process.env, TERM: 'xterm-color' } as Record<string, string>;
+  for (const key of PARENT_SESSION_ENV_VARS) delete env[key];
+  return env;
+}
+
 export class PtyManager extends EventEmitter {
   private sessions = new Map<string, import('node-pty').IPty>();
 
@@ -50,7 +75,7 @@ export class PtyManager extends EventEmitter {
       cols,
       rows,
       cwd,
-      env: { ...process.env, TERM: 'xterm-color' } as Record<string, string>,
+      env: sanitizedSpawnEnv(),
     });
     this.sessions.set(sessionId, ptyProcess);
     this.emit('pid-ready', sessionId, ptyProcess.pid);

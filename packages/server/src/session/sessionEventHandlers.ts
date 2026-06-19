@@ -101,13 +101,23 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
 
   sessionWatcher.on('added', (raw) => {
     // Skip interim session: claude --resume creates a temp UUID first, then settles to target ID.
-    // If there's a pending PTY resume for this CWD and this is NOT the target ID, skip it —
-    // but only if the interim has no transcript (safety: don't discard sessions with real data).
-    const pendingResumeTarget = ctx.stateManager.getPendingResumeTarget(raw.cwd);
+    // The interim's {pid}.json carries the SAME ___OVR:<marker> as the resume that
+    // spawned it, so correlate by marker — never by cwd. The old cwd-keyed lookup
+    // mis-skipped legitimate resumes of OTHER sessions sharing a crowded room's cwd
+    // (e.g. overlord, 56 sessions), leaving them unregistered with no transcript on
+    // disk — which later forced ancestor-fallback resumes onto the wrong ovr. See
+    // CLAUDE.md "Pending resume is marker-keyed, not cwd-keyed". Only skip when the
+    // interim has no transcript yet (safety: don't discard sessions with real data).
+    const interimMarker = raw.name?.includes('___OVR:')
+      ? (raw.name.split('___OVR:')[1] ?? '').split('___BRG:')[0] || undefined
+      : undefined;
+    const pendingResumeTarget = interimMarker
+      ? ctx.stateManager.peekPendingResumeByMarker(interimMarker)
+      : undefined;
     if (pendingResumeTarget && raw.sessionId !== pendingResumeTarget && ctx.linkageTracker.hasResume(pendingResumeTarget)) {
       const interimTranscript = findTranscriptPathAnywhere(raw.sessionId);
       if (!interimTranscript) {
-        console.log(`[session:skip-interim] ${raw.sessionId.slice(0, 8)} is interim for resume target ${pendingResumeTarget.slice(0, 8)}, skipping (no transcript)`);
+        console.log(`[session:skip-interim] ${raw.sessionId.slice(0, 8)} is interim for resume target ${pendingResumeTarget.slice(0, 8)} (marker ${interimMarker?.slice(0, 12)}), skipping (no transcript)`);
         return;
       }
     }

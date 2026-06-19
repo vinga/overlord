@@ -18,6 +18,7 @@ import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { detectModeFromText } from '../session/modeDetect.js';
 import { injectViaMac } from '../pty/macInjector.js';
+import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
@@ -135,6 +136,28 @@ export function registerApiRoutes(
       ptyManager.spawn(ptySessionId, cwd, 80, 24, args);
       log('pty:started', 'PTY test spawn', { sessionId: ptySessionId });
       res.json({ ok: true, ptySessionId });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Spawn a new Claude session in a target workspace, optionally with an
+  // initial prompt injected once the TUI is ready. Used by the overlord-spawn
+  // skill for cross-workspace, programmatic session creation.
+  app.post('/api/sessions/spawn', express.json(), (req, res) => {
+    const cwd = req.body?.cwd ? String(req.body.cwd) : '';
+    if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
+    if (!broadcastRaw) { res.status(500).json({ error: 'broadcast unavailable' }); return; }
+    const name = req.body?.name ? String(req.body.name) : undefined;
+    const prompt = req.body?.prompt ? String(req.body.prompt) : undefined;
+    const cols = req.body?.cols ? Number(req.body.cols) : undefined;
+    const rows = req.body?.rows ? Number(req.body.rows) : undefined;
+    try {
+      const { ovrId, ptySessionId } = spawnClaudeSession(
+        { ptyManager, stateManager, ovrToPty, ptyToOvr, broadcastRaw },
+        { cwd, name, prompt, cols, rows },
+      );
+      res.json({ ok: true, sessionId: ovrId, ptySessionId });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

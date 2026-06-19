@@ -1,5 +1,6 @@
 import * as os from 'os';
 import { detectModeFromText, SHIFT_TAB_SENTINEL } from './modeDetect.js';
+import type { PendingQuestionSet } from '../types.js';
 
 // Only active on Windows
 const IS_WINDOWS = process.platform === 'win32';
@@ -42,6 +43,46 @@ function cleanText(text: string): string {
     .trim();
 }
 
+// AskUserQuestion interactive menu. Footer triad is its signature; it is NOT a
+// permission prompt ("do you want to"), and shows even in bypassPermissions mode.
+const ASK_FOOTER = [/enter to select/i, /to navigate/i, /esc to cancel/i];
+// Built-in trailing options the AskUserQuestion TUI appends after the real choices.
+const ASK_BUILTIN_OPTION = /^(type something|chat about this|let me (?:type|answer)|none of the above)\b/i;
+
+function looksLikeAskUserQuestion(text: string): boolean {
+  if (PRIMARY_PATTERN.test(text)) return false;          // it's a permission prompt
+  if (!ASK_FOOTER.every(p => p.test(text))) return false; // missing the menu footer
+  // Require at least one numbered option line so a bare footer echo doesn't trigger.
+  return /^\s*\d+\.\s+\S/m.test(text);
+}
+
+// Best-effort parse of the question + ordered real option labels from the menu screen.
+// Screen text is partial/space-mangled, so this is presentation only; injection relies
+// on option ORDER (index), not label text.
+function parseScreenQuestion(text: string): PendingQuestionSet | null {
+  const lines = text.split('\n').map(l => l.replace(/[^\x20-\x7E]/g, '').trim());
+  const footerIdx = lines.findIndex(l => /enter to select/i.test(l));
+  if (footerIdx < 0) return null;
+  const options: { label: string }[] = [];
+  let firstOptionIdx = -1;
+  for (let i = 0; i < footerIdx; i++) {
+    const m = lines[i].match(/^\d+\.\s+(.+)$/);
+    if (m) {
+      if (firstOptionIdx < 0) firstOptionIdx = i;
+      const label = m[1].trim();
+      if (ASK_BUILTIN_OPTION.test(label)) continue; // drop "Type something" / "Chat about this"
+      options.push({ label: label.slice(0, 120) });
+    }
+  }
+  // Question text: the last non-empty line(s) above the first option.
+  let question = '';
+  for (let i = (firstOptionIdx < 0 ? footerIdx : firstOptionIdx) - 1; i >= 0; i--) {
+    if (lines[i]) { question = lines[i]; break; }
+  }
+  if (!question && options.length === 0) return null;
+  return { questions: [{ question: question.slice(0, 300), multiSelect: false, options }] };
+}
+
 // Rate-limit prompt: Claude CLI blocks on Enter when the usage limit is hit
 const RATE_LIMIT_PATTERN = /you'?ve hit your limit/i;
 
@@ -60,6 +101,7 @@ export interface PermissionCheckable {
   getSession(id: string): { pid: number; state: string; permissionMode?: string; permissionModeLockedUntil?: number } | undefined;
   setNeedsPermission(sessionId: string, value: boolean, promptText?: string, isLimitPrompt?: boolean): void;
   setPermissionMode(sessionId: string, mode: string | undefined): void;
+  setScreenQuestion(sessionId: string, question: PendingQuestionSet | null): void;
 }
 
 export function startPermissionChecker(
@@ -83,6 +125,8 @@ export function startPermissionChecker(
 
   // Hysteresis: only clear needsPermission after 3 consecutive misses
   const missCount = new Map<string, number>();
+  // Separate hysteresis for screen-detected AskUserQuestion prompts
+  const questionMissCount = new Map<string, number>();
 
   let stopped = false;
 
@@ -98,6 +142,9 @@ export function startPermissionChecker(
     // Remove stale entries from missCount for sessions no longer tracked
     for (const id of missCount.keys()) {
       if (!ids.includes(id)) missCount.delete(id);
+    }
+    for (const id of questionMissCount.keys()) {
+      if (!ids.includes(id)) questionMissCount.delete(id);
     }
 
     for (const id of ids) {
@@ -130,6 +177,19 @@ export function startPermissionChecker(
             // Not already flagged as a normal permission prompt — flag as limit prompt
             stateManager.setNeedsPermission(id, true, cleanText(extractPromptBlock(text)), true);
           }
+        }
+        // AskUserQuestion (interactive, shows even in bypass): surface the live TUI
+        // question so it appears inline in the conversation. Clear after 3 misses.
+        if (text && !hasPrompt && looksLikeAskUserQuestion(text)) {
+          const parsed = parseScreenQuestion(text);
+          if (parsed) {
+            questionMissCount.set(id, 0);
+            stateManager.setScreenQuestion(id, parsed);
+          }
+        } else {
+          const misses = (questionMissCount.get(id) ?? 0) + 1;
+          questionMissCount.set(id, misses);
+          if (misses >= 3) stateManager.setScreenQuestion(id, null);
         }
         // Detect permission mode from status bar
         if (text) {

@@ -11,6 +11,7 @@ import { injectViaMac } from '../pty/macInjector.js';
 import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
+import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
@@ -254,38 +255,20 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           return;
         }
 
-        // Internal PTY id (used as ptyManager key, marker, and ptyOutputBuffer key).
-        const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        // Pre-mint the ovrId reserved against this PTY's marker. Adopted by
-        // addOrUpdate when the live Claude session lands. The client sees only
-        // ovrId — pty- never appears in its selection state.
-        const ovrId = stateManager.mintReservedOvrId(ptySessionId);
-        ovrToPty.set(ovrId, ptySessionId);
-        ptyToOvr.set(ptySessionId, ovrId);
-
-        // Pass the ptyId so stateManager can flag this as a fresh spawn and
-        // skip the cwd-keyed pendingResumes lookup in addOrUpdate (which
-        // would otherwise contaminate this fresh session with a stale
-        // resume entry from another PTY in the same cwd).
-        stateManager.trackPendingPtySpawn(cwd, ptySessionId);
-
-        const sessions = wsSessionMap.get(ws);
-        if (sessions) { sessions.add(ovrId); sessions.add(ptySessionId); }
-
-        broadcastRaw({ type: 'terminal:spawned', sessionId: ovrId, pid: 0 });
-        // Spawn after notifying client of ovrId (pid will be 0 until we have it)
+        // Optional initial prompt — injected once the TUI is ready.
+        const initialPrompt = msg.prompt ? String(msg.prompt) : undefined;
         try {
-          // Embed ptySessionId as hidden marker in session name for reliable PTY linking
-          // (ConPTY on Windows may give a wrapper PID that doesn't match claude.exe PID)
-          // If the user provided a name, prepend it before the marker.
-          const sessionName = name ? `${name}___OVR:${ptySessionId}` : `___OVR:${ptySessionId}`;
-          ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--name', sessionName]);
-          log('pty:started', 'PTY session started', { sessionId: ovrId, sessionName: name ?? ptySessionId.slice(0, 8) });
+          // Shared fresh-spawn path (mints ovrId, wires maps, queues the
+          // initial prompt, broadcasts terminal:spawned, spawns the PTY).
+          spawnClaudeSession(
+            { ptyManager, stateManager, ovrToPty, ptyToOvr, broadcastRaw },
+            { cwd, name, cols, rows, prompt: initialPrompt, sessions: wsSessionMap.get(ws) },
+          );
           // pid-ready event handler populates pendingPtyByPid asynchronously
         } catch (err) {
           sendToClient(ws, {
             type: 'terminal:error',
-            sessionId: ovrId,
+            sessionId: (err as { ovrId?: string }).ovrId,
             message: `Spawn failed: ${(err as Error).message}`,
           });
         }
@@ -421,6 +404,19 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', effectiveResumeId, '--name', `___OVR:${ptySessionId}`]);
           const resumePtyName = stateManager.getSession(resumeSessionId)?.proposedName ?? resumeSessionId.slice(0, 8);
           log('pty:started', 'PTY session started', { sessionId: ovrId, sessionName: resumePtyName });
+
+          // Immediately flip the closed session back to 'waiting'. The PTY is
+          // alive and linked (ovrToPty set above) — the worker is reachable now.
+          // We can't wait for the watcher: newer `claude --resume` does NOT write
+          // ~/.claude/sessions/{pid}.json for PTY children, so the old liveness
+          // signal never arrives, and the transcript is only mtime-touched (no new
+          // content) until the user sends a message. Without this the worker stays
+          // 'closed' → client reverts to "Session exited". Mirrors the opencode
+          // path's reviveManagedProviderSession and the bridge reconnect revive.
+          // The process-checker won't re-close it: pid is 0 (skipped) and the
+          // transcript mtime guard (120s) covers the freshly-touched jsonl.
+          stateManager.reviveClosedSession(resumeSessionId);
+          if (effectiveResumeId !== resumeSessionId) stateManager.reviveClosedSession(effectiveResumeId);
 
           linkageTracker.trackResume(effectiveResumeId, { ptySessionId, ws, timestamp: Date.now() });
         } catch (err) {
