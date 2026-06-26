@@ -23,8 +23,15 @@ function getJiraProjectRegex(): RegExp | null {
 /**
  * Walk last30 transcript JSONL lines and return only text segments where a
  * JIRA reference would be intentional:
- *   - user text content (NOT tool_result blocks, which are typically file/cmd output)
- *   - assistant text blocks
+ *   - non-meta user text content, including `<command-args>` carried inline in
+ *     the plain user string of a slash-command invocation
+ *
+ * Scans ONLY user-authored text. Assistant text blocks are deliberately NOT
+ * scanned: the model frequently *mentions* a ticket in prose — often to dismiss
+ * it ("a different ticket BACKEND-2279 — irrelevant") — and the raw regex has no
+ * notion of negation, so assistant prose was a major source of over-eager chips.
+ * Tickets the user actually works on appear in their own messages / command args.
+ *
  * Excludes tool_use input (file paths and skill-doc slugs cause false positives,
  * e.g. a Read of pr-start/SKILL.md picking up "BACKEND-2099-composer-integration"),
  * tool_result content, thinking blocks, system events.
@@ -52,14 +59,8 @@ function gatherJiraScanText(last30: string[]): string[] {
           // skip tool_result
         }
       }
-    } else if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
-      for (const block of parsed.message!.content as Array<{ type?: string; text?: string }>) {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          out.push(block.text);
-        }
-        // skip tool_use input and thinking
-      }
     }
+    // assistant text blocks are intentionally not scanned (see doc above)
   }
   return out;
 }
@@ -110,6 +111,50 @@ interface CompactCache {
   lastCompactTimestamp?: number;
 }
 const compactCountCache = new Map<string, CompactCache>();
+
+// Bound transcriptCache memory. Each entry holds a full activityFeed (up to 100
+// msgs x 10 KB + thinking + tool results) => 1-3 MB. Entries are self-rebuilding
+// from disk, so LRU + idle eviction is safe and acts as a backstop for entries
+// clearSessionCaches never reaches — notably subagent transcripts (keyed by their
+// own .jsonl path) and stale post-/clear sessionIds.
+const MAX_TRANSCRIPT_CACHE_ENTRIES = 300;
+const TRANSCRIPT_CACHE_IDLE_MS = 10 * 60_000; // drop entries untouched for 10 min
+const MAX_COMPACT_CACHE_ENTRIES = 1000; // tiny per-entry; cap by count only
+
+/**
+ * Backstop eviction for transcriptCache, called after each set(). Drops entries
+ * idle past TRANSCRIPT_CACHE_IDLE_MS, then, if still over the count cap, evicts
+ * the least-recently-read (oldest lastCheckedAt) until back under cap.
+ */
+function evictTranscriptCache(now: number): void {
+  for (const [key, entry] of transcriptCache) {
+    if (now - entry.lastCheckedAt > TRANSCRIPT_CACHE_IDLE_MS) transcriptCache.delete(key);
+  }
+  if (transcriptCache.size <= MAX_TRANSCRIPT_CACHE_ENTRIES) return;
+  const byAge = [...transcriptCache.entries()].sort((a, b) => a[1].lastCheckedAt - b[1].lastCheckedAt);
+  const overflow = transcriptCache.size - MAX_TRANSCRIPT_CACHE_ENTRIES;
+  for (let i = 0; i < overflow; i++) transcriptCache.delete(byAge[i][0]);
+}
+
+/** Test-only: current entry counts for the bounded caches. */
+export function _cacheSizesForTest(): { transcript: number; compact: number } {
+  return { transcript: transcriptCache.size, compact: compactCountCache.size };
+}
+
+/** Test-only: wipe the bounded caches so module-global state can't leak across tests. */
+export function _resetCachesForTest(): void {
+  transcriptCache.clear();
+  compactCountCache.clear();
+}
+
+/** Count-only cap for compactCountCache: drop oldest by Map insertion order. */
+function evictCompactCache(): void {
+  while (compactCountCache.size > MAX_COMPACT_CACHE_ENTRIES) {
+    const oldest = compactCountCache.keys().next().value;
+    if (oldest === undefined) break;
+    compactCountCache.delete(oldest);
+  }
+}
 
 interface SubagentsDirCache {
   mtimeMs: number;
@@ -493,6 +538,7 @@ function detectCompactionIncremental(filePath: string, fileSize: number): { comp
   }
 
   compactCountCache.set(filePath, { fileSize, compactCount, lastCompactTimestamp });
+  evictCompactCache();
 
   const isCompacting = lastCompactTimestamp !== undefined && now - lastCompactTimestamp < 5000;
   return { compactCount, isCompacting };
@@ -1066,6 +1112,7 @@ export function readTranscriptState(filePath: string): {
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
+    evictTranscriptCache(now);
     return result;
   } catch {
     return {
@@ -1278,6 +1325,7 @@ function readCodexTranscriptState(filePath: string): {
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
+    evictTranscriptCache(now);
     return result;
   } catch {
     return {

@@ -602,6 +602,7 @@ export function App() {
           },
           onResumeArchived: handleResumeArchived,
           onCloneArchived: handleCloneArchived,
+          onCloneSession: handleCloneSession,
           onDeleteArchived: handleDeleteArchived,
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),

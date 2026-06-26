@@ -265,6 +265,7 @@ interface SessionActions {
   onResumeSession?: (sessionId: string, cwd: string) => void;
   onResumeArchived?: (sessionId: string, cwd: string) => void;
   onCloneArchived?: (sessionId: string, cwd: string) => void;
+  onCloneSession?: (sessionId: string) => void;
   onDeleteArchived?: (sessionId: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
@@ -1450,7 +1451,7 @@ export function DetailPanel({
   onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -2655,6 +2656,18 @@ const currentDisplayName =
                         >
                           {copiedConv ? '✓ Copied' : 'Copy conversation'}
                         </button>
+                        {onCloneSession && !selectedSession.isArchived && mergedFeed.length > 0 && (
+                          <button
+                            className={styles.quickMenuItem}
+                            title="Spawn a new session forked from this conversation"
+                            onClick={() => {
+                              onCloneSession(selectedSession.sessionId);
+                              setShowConvMenu(false);
+                            }}
+                          >
+                            Clone conversation
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

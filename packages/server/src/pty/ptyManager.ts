@@ -117,6 +117,18 @@ export class PtyManager extends EventEmitter {
     return this.sessions.get(sessionId)?.pid;
   }
 
+  /**
+   * Find the ptySessionId (marker) of a live PTY by OS pid. Used to recognize a
+   * fork/clear that reuses the same PTY process under a new Claude sessionId
+   * (e.g. `--fork-session` clones). Linear scan over the small live-PTY map.
+   */
+  findByPid(pid: number): string | undefined {
+    for (const [sessionId, proc] of this.sessions) {
+      if (proc.pid === pid) return sessionId;
+    }
+    return undefined;
+  }
+
   has(sessionId: string): boolean {
     return this.sessions.has(sessionId);
   }

@@ -189,6 +189,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     });
   }, []);
 
+  const jiraMeta = snapshot?.jiraMeta;
   const sessionMatches = useCallback((s: Session, q: string): boolean => {
     const displayName = customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? '';
     const fields: (string | undefined)[] = [
@@ -196,9 +197,13 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       s.lastMessage,
       notesSummaries.get(s.sessionId),
       ...(s.subagents ?? []).flatMap(a => [a.agentType, a.description, a.lastActivity]),
+      ...(s.jiraKeys ?? []).flatMap(k => {
+        const meta = jiraMeta?.[k];
+        return [k, meta?.title, meta?.type, meta?.status];
+      }),
     ];
     return fields.some(f => typeof f === 'string' && f.toLowerCase().includes(q));
-  }, [customNames, notesSummaries]);
+  }, [customNames, notesSummaries, jiraMeta]);
 
   const visibleRooms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -303,7 +308,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         <input
           type="text"
           className={styles.searchInput}
-          placeholder="Search agents…"
+          placeholder="Search agents, JIRA tickets…"
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); } }}

@@ -2,7 +2,7 @@ import type { WebSocket } from 'ws';
 import type { StateManager } from './stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import type { AiClassifier } from '../ai/aiClassifier.js';
-import type { SessionSource } from './sessionWatcher.js';
+import type { SessionSource, RawSession } from './sessionWatcher.js';
 import type { PtyLinkageTracker } from './ptyLinkageTracker.js';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
 import { sessionStore } from './sessionStore.js';
@@ -73,6 +73,64 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
       }
       log('info', `Applied clone info: name="${info.name}", resumedFrom=${info.originalSessionId.slice(0, 8)} → ${claudeSessionId.slice(0, 8)}`);
     }
+  }
+
+  /**
+   * Relink a fork/clear that reuses an Overlord-owned PTY process under a new
+   * Claude sessionId. For embedded PTY sessions the OS pid is authoritative — we
+   * spawned the process — so a session whose pid matches a live PTY already
+   * linked to an ovrId is, by definition, that PTY's session continuing under a
+   * new UUID. This covers `--fork-session` clones, which rewrite `{pid}.json`
+   * with a new sessionId, a new startedAt, AND no `___OVR:` name marker — so
+   * neither the marker path nor the startedAt-gated /clear path catches them.
+   *
+   * Returns true when it claimed (and relinked) the session. No-op (false) when
+   * the pid isn't a PTY we own, the PTY isn't linked yet, or raw is already the
+   * PTY's active session — so it never disturbs external/non-PTY sessions.
+   */
+  function relinkForkByOwnedPid(raw: RawSession): boolean {
+    if (!raw.pid || raw.pid <= 0) return false;
+    const marker = ctx.ptyManager.findByPid(raw.pid);
+    if (!marker) return false;
+    const ownerOvr = ctx.ptyToOvr.get(marker);
+    if (!ownerOvr) return false;
+    const existing = ctx.stateManager.getActiveClaudeByOvr(ownerOvr);
+    if (!existing || existing.sessionId === raw.sessionId) return false;
+
+    // If the session being replaced was itself a clone/resume, its resumedFrom is
+    // the TRUE parent. transferSessionState would point the fork at `existing`
+    // (the ephemeral initial, which we delete below) — so capture the real parent
+    // now and restore it after, keeping transcript/history fallback intact.
+    const clonedParent = existing.resumedFrom;
+
+    ctx.stateManager.suppressBroadcast();
+    // Adopt the PTY's stable ovrId BEFORE transfer. The fork is unmarked, so
+    // addOrUpdate minted it a fresh ovrId; left as-is, transferSessionState would
+    // keep that fresh id and the swap would change the ovrId — breaking the
+    // client's ovrId-keyed selection (it assumes ovrId is stable across replace).
+    const throwawayOvr = ctx.stateManager.adoptOverlordId(raw.sessionId, ownerOvr);
+    ctx.stateManager.transferSessionState(existing.sessionId, raw.sessionId);
+    const inheritedOvrId = ctx.stateManager.getSession(raw.sessionId)?.overlordId ?? ownerOvr;
+    if (throwawayOvr && throwawayOvr !== ownerOvr) ctx.stateManager.dropOvrRecord(throwawayOvr);
+    if (clonedParent) {
+      const fork = ctx.stateManager.getSession(raw.sessionId);
+      if (fork) {
+        fork.resumedFrom = clonedParent;
+        sessionStore.patchBySessionId(raw.sessionId, { resumedFrom: clonedParent });
+      }
+    }
+    ctx.broadcastRaw({ type: 'session:replaced', oldSessionId: existing.sessionId, newSessionId: raw.sessionId, ovrId: inheritedOvrId });
+    closeOrRemoveReplaced(ctx, existing.sessionId);
+    linkPtyToOvr(ctx, inheritedOvrId, marker);
+    ctx.stateManager.setSessionType(raw.sessionId, 'embedded');
+    const ptyPid = ctx.ptyManager.getPid(marker);
+    if (ptyPid) ctx.stateManager.setPid(raw.sessionId, ptyPid);
+    // Apply not-yet-consumed clone name/resumedFrom to the FORK (the durable
+    // session future writes go to), not the ephemeral initial resume session.
+    applyPendingCloneInfo(marker, raw.sessionId);
+    ctx.stateManager.resumeBroadcast();
+    log('clear:detected', 'Fork/clear relinked via owned PTY pid', { sessionId: raw.sessionId, sessionName: raw.proposedName ?? raw.sessionId.slice(0, 8), extra: `ovrId=${inheritedOvrId} ${existing.sessionId.slice(0, 8)}→${raw.sessionId.slice(0, 8)} ptyId=${marker}` });
+    return true;
   }
 
   /** Broadcast terminal:linked and update wsSessionMap for a newly linked PTY. */
@@ -276,6 +334,14 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
       log('pty:linked', 'PTY linked via resumeId', { sessionId: raw.sessionId, sessionName: raw.sessionId.slice(0, 8), extra: `ovrId=${ovrId} ptyId=${entry.ptySessionId}` });
     }
 
+    // ── Relink a fork/clear that reuses an owned PTY under a new sessionId ──
+    // (e.g. --fork-session clones: new sid + new startedAt + no marker). Pid is
+    // authoritative for PTYs we own, so this catches what the startedAt-gated
+    // /clear path below misses.
+    if (!linkedToPty && relinkForkByOwnedPid(raw)) {
+      linkedToPty = true;
+    }
+
     // ── Detect session replacement: same PID, different UUID (e.g. Claude Code's /clear) ──
     // Skip if linked to PTY — it's a resume, not a /clear.
     // Skip during startup — known sessions from the initial scan are not /clear replacements.
@@ -387,6 +453,12 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
         }
       }
     }
+
+    // ── Relink a fork/clear that reuses an owned PTY under a new sessionId ──
+    // Catches what the marker path (no marker on a fork) and the startedAt-gated
+    // /clear path (fork bumps startedAt) above both miss. Pid is authoritative
+    // for PTYs we own. A no-op when the marker path already linked this tick.
+    if (relinkForkByOwnedPid(raw)) return;
 
     // ── Check for pending PTY resume link (ConPTY: session file settles to target ID) ──
     if (ctx.linkageTracker.hasResume(raw.sessionId)) {

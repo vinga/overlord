@@ -942,6 +942,19 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         try {
           ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
+          // Reserve the clone's ovrId against the child PID. `--fork-session`
+          // first writes an initial resume session (carrying the ___OVR marker,
+          // linked normally), then on the first turn rewrites {pid}.json with a
+          // NEW sid, a new startedAt, AND the marker dropped. PID is the only
+          // stable key across that fork, so reserve by it now — addOrUpdate's
+          // consumeReservedOvrIdForPid then re-attaches the fork to this clone's
+          // lineage instead of minting a fresh ovr (orphan worker). Mirrors
+          // autoResumeBootstrap's marker-dropped resume handling.
+          const clonePid = ptyManager.getPid(ptySessionId);
+          if (clonePid) stateManager.reserveOvrIdForPid(clonePid, ovrId);
+          else ptyManager.once('pid-ready', (sid: string, p: number) => {
+            if (sid === ptySessionId && p) stateManager.reserveOvrIdForPid(p, ovrId);
+          });
           log('pty:started', 'PTY clone started (fork-session)', {
             sessionId: ovrId,
             sessionName: cloneName,

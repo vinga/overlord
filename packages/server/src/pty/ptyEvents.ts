@@ -6,34 +6,71 @@ import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
 import { detectModeFromText } from '../session/modeDetect.js';
 import { scheduleInject, shouldUseExtraEnter } from './injectScheduler.js';
 
-// Delay after the freshly spawned PTY's first output before injecting a queued
-// initial prompt — gives the Claude TUI time to render its input box. The
-// startup-output stream begins well before the prompt box is interactive, so
-// firing on the very first chunk would drop the text. See open enter-injection
-// timing notes; this is a conservative fixed delay, may need an output-gated
-// readiness signal later.
-const INITIAL_PROMPT_READY_DELAY_MS = 1500;
+// Output-gated initial-prompt injection.
+//
+// A freshly spawned Claude TUI streams startup output well before its input
+// box is interactive; injecting on the first chunk drops the text. Rather than
+// wait a blind fixed delay, we ARM the queued prompt on first output and fire
+// it as soon as the input box actually renders — detected from the
+// `(shift+tab to cycle)` status-bar sentinel that paints together with the box
+// (see `sentinelFound` in the output handler below). A fallback timer caps the
+// wait so detection misses or exotic terminals never hang the prompt.
+const INITIAL_PROMPT_MAX_WAIT_MS = 1500; // fallback if the sentinel never appears (== legacy fixed delay)
+const INITIAL_PROMPT_SETTLE_MS = 150;    // brief settle after the box paints before writing
 
-function fireInitialPrompt(ctx: PtyEventsContext, ptySessionId: string, text: string): void {
+interface ArmedPrompt {
+  text: string;
+  extraEnter: boolean;
+  fallbackTimer: ReturnType<typeof setTimeout>;
+  fired: boolean;
+}
+
+// Armed-but-not-yet-fired initial prompts, keyed by ptySessionId. Entries exist
+// only during the brief spawn→first-render window, so the hot output path gates
+// every access on `armedInitialPrompts.size > 0` and stays a no-op afterwards.
+const armedInitialPrompts = new Map<string, ArmedPrompt>();
+
+function disarmInitialPrompt(ptySessionId: string): void {
+  const armed = armedInitialPrompts.get(ptySessionId);
+  if (!armed) return;
+  clearTimeout(armed.fallbackTimer);
+  armedInitialPrompts.delete(ptySessionId);
+}
+
+// Inject the armed prompt now. Idempotent via the `fired` guard so the
+// sentinel-triggered fire and the fallback timer can never double-inject.
+function injectArmedPrompt(ctx: PtyEventsContext, ptySessionId: string, reason: string): void {
+  const armed = armedInitialPrompts.get(ptySessionId);
+  if (!armed || armed.fired) return;
+  armed.fired = true;
+  clearTimeout(armed.fallbackTimer);
+  armedInitialPrompts.delete(ptySessionId);
+
+  if (!ctx.ptyManager.has(ptySessionId)) {
+    console.warn(`[spawn:inject] pty gone before inject pty=${ptySessionId.slice(0, 16)}`);
+    return;
+  }
+  console.log(`[spawn:inject] writing initial prompt to pty=${ptySessionId.slice(0, 16)} via=${reason}`);
+  const write = (data: string): boolean => {
+    try { return ctx.ptyManager.write(ptySessionId, data); } catch { return false; }
+  };
+  scheduleInject(
+    write,
+    () => ctx.ptyManager.has(ptySessionId),
+    () => console.warn(`[spawn:inject] initial prompt write failed pty=${ptySessionId.slice(0, 12)}`),
+    armed.text,
+    armed.extraEnter,
+  );
+}
+
+// Arm a queued prompt on the freshly spawned PTY's first output. Fires later
+// from the output handler when the input box renders, or from the fallback
+// timer at INITIAL_PROMPT_MAX_WAIT_MS — whichever comes first.
+function armInitialPrompt(ctx: PtyEventsContext, ptySessionId: string, text: string): void {
   const extraEnter = shouldUseExtraEnter(text);
-  console.log(`[spawn:inject] queued initial prompt for pty=${ptySessionId.slice(0, 16)} delay=${INITIAL_PROMPT_READY_DELAY_MS}ms len=${text.length}`);
-  setTimeout(() => {
-    if (!ctx.ptyManager.has(ptySessionId)) {
-      console.warn(`[spawn:inject] pty gone before inject pty=${ptySessionId.slice(0, 16)}`);
-      return;
-    }
-    console.log(`[spawn:inject] writing initial prompt to pty=${ptySessionId.slice(0, 16)}`);
-    const write = (data: string): boolean => {
-      try { return ctx.ptyManager.write(ptySessionId, data); } catch { return false; }
-    };
-    scheduleInject(
-      write,
-      () => ctx.ptyManager.has(ptySessionId),
-      () => console.warn(`[spawn:inject] initial prompt write failed pty=${ptySessionId.slice(0, 12)}`),
-      text,
-      extraEnter,
-    );
-  }, INITIAL_PROMPT_READY_DELAY_MS);
+  console.log(`[spawn:inject] armed initial prompt for pty=${ptySessionId.slice(0, 16)} maxWait=${INITIAL_PROMPT_MAX_WAIT_MS}ms len=${text.length}`);
+  const fallbackTimer = setTimeout(() => injectArmedPrompt(ctx, ptySessionId, 'fallback'), INITIAL_PROMPT_MAX_WAIT_MS);
+  armedInitialPrompts.set(ptySessionId, { text, extraEnter, fallbackTimer, fired: false });
 }
 
 export interface PtyEventsContext {
@@ -132,7 +169,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // (TUI started rendering). takePendingInitialPrompt is one-shot, so this
     // runs at most once per spawn; common case is a cheap empty-map lookup.
     const initialPrompt = ctx.stateManager.takePendingInitialPrompt(ptySessionId);
-    if (initialPrompt) fireInitialPrompt(ctx, ptySessionId, initialPrompt);
+    if (initialPrompt) armInitialPrompt(ctx, ptySessionId, initialPrompt);
 
     // Buffer output under ptySessionId while alive; migrated to ovrId on exit
     let buf = ctx.ptyOutputBuffer.get(ptySessionId);

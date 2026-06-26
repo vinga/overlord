@@ -271,6 +271,35 @@ export class StateManager {
     return claudeId ? this.sessions.get(claudeId) : undefined;
   }
 
+  /**
+   * Re-key a live session onto an existing overlordId, dropping its previous
+   * ovrId→sid mapping. Used when an unmarked `--fork-session` fork must adopt the
+   * PTY's stable ovrId so the client's ovrId-keyed selection survives the swap.
+   * Returns the ovrId the session previously held (caller may purge its throwaway
+   * OverlordSession record).
+   */
+  adoptOverlordId(sessionId: string, targetOvrId: string): string | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    const prev = s.overlordId;
+    if (prev === targetOvrId) return prev;
+    if (prev && this.sessionsByOvrId.get(prev) === sessionId) {
+      this.sessionsByOvrId.delete(prev);
+    }
+    s.overlordId = targetOvrId;
+    this.sessionsByOvrId.set(targetOvrId, sessionId);
+    return prev;
+  }
+
+  /** Drop a throwaway OverlordSession record (e.g. the fresh ovrId a fork minted
+   *  before it adopted the PTY's stable ovrId). No-op if still referenced. */
+  dropOvrRecord(ovrId: string): void {
+    for (const s of this.sessions.values()) {
+      if (s.overlordId === ovrId) return; // still in use — keep it
+    }
+    sessionStore.remove(ovrId);
+  }
+
   constructor(onChange: () => void) {
     this.bridgePath = getBridgePath();
     this.onChangeCallback = onChange;

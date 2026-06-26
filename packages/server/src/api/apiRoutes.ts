@@ -170,10 +170,18 @@ export function registerApiRoutes(
     if (!session) { res.status(404).json({ error: 'session not found' }); return; }
     const cloneName = String(req.body?.name ?? `Clone (test)`);
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ovrId = stateManager.mintReservedOvrId(ptySessionId);
     stateManager.trackPendingPtySpawn(session.cwd);
     linkageTracker.trackCloneInfo(ptySessionId, { name: cloneName, originalSessionId: sessionId });
     try {
       ptyManager.spawn(ptySessionId, session.cwd, 80, 24, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
+      // Reserve clone ovrId by child PID so the marker-dropped fork re-attaches
+      // to this lineage (see wsHandler session:clone for the full rationale).
+      const clonePid = ptyManager.getPid(ptySessionId);
+      if (clonePid) stateManager.reserveOvrIdForPid(clonePid, ovrId);
+      else ptyManager.once('pid-ready', (sid: string, p: number) => {
+        if (sid === ptySessionId && p) stateManager.reserveOvrIdForPid(p, ovrId);
+      });
       log('pty:started', 'PTY test clone', { sessionId: ptySessionId, sessionName: cloneName });
       res.json({ ok: true, ptySessionId, cloneName });
     } catch (err) {
