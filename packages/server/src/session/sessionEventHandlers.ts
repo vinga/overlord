@@ -46,7 +46,7 @@ export function closeOrRemoveReplaced(ctx: SessionEventContext, oldSessionId: st
  * If another ovrId previously owned this PTY, drop its stale ovrToPty entry so
  * the two maps stay consistent (one-PTY-per-ovrId invariant on the reverse map).
  */
-function linkPtyToOvr(ctx: SessionEventContext, ovrId: string, ptySessionId: string): void {
+export function linkPtyToOvr(ctx: SessionEventContext, ovrId: string, ptySessionId: string): void {
   const previousOvr = ctx.ptyToOvr.get(ptySessionId);
   if (previousOvr && previousOvr !== ovrId && ctx.ovrToPty.get(previousOvr) === ptySessionId) {
     ctx.ovrToPty.delete(previousOvr);

@@ -79,6 +79,38 @@ function getAllProcessInfo(): Map<number, { parentPid: number; name: string }> {
   } catch { /* ignore — process checks are best-effort */ }
   return procMap;
 }
+
+/**
+ * Pure selection for the hourly archived-PR refresh. Given the set of currently
+ * active room cwds, the universe of known cwds, and a per-cwd PR-history lookup,
+ * returns the (cwd, branch) worklist to refresh: archived/closed rooms only
+ * (active excluded — they already poll on the live TTL) and only entries whose
+ * last-known state is not MERGED (terminal). Deduped by cwd+branch. Extracted
+ * from StateManager so it can be unit-tested without booting the server.
+ */
+export function selectArchivedPrTargets(
+  activeCwds: Set<string>,
+  allCwds: Iterable<string>,
+  historyFor: (cwd: string) => Array<{ state: string; branch: string }>,
+): Array<{ cwd: string; branch: string }> {
+  const candidateCwds = new Set<string>();
+  for (const cwd of allCwds) {
+    if (cwd && !activeCwds.has(cwd)) candidateCwds.add(cwd);
+  }
+  const seen = new Set<string>();
+  const targets: Array<{ cwd: string; branch: string }> = [];
+  for (const cwd of candidateCwds) {
+    for (const entry of historyFor(cwd)) {
+      if (entry.state === 'MERGED') continue; // terminal — never re-poll
+      if (!entry.branch) continue;
+      const key = `${cwd}\n${entry.branch}`; // newline: safe vs spaces in mac paths
+      if (seen.has(key)) continue;
+      seen.add(key);
+      targets.push({ cwd, branch: entry.branch });
+    }
+  }
+  return targets;
+}
 import {
   findTranscriptPath,
   findTranscriptPathAnywhere,
@@ -251,6 +283,8 @@ export class StateManager {
   private prHistoryStore: PrHistoryStore;
   private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
+  private archivePrTimer: ReturnType<typeof setInterval> | null = null;
+  private archivePrBootTimer: ReturnType<typeof setTimeout> | null = null;
   /** Injected from index.ts after construction — reports whether an ovrId has a live PTY in `ovrToPty`.
    *  Stamped into every snapshot so the client can tell "embedded + live" from "embedded + orphan". */
   private hasLivePtyFn: (ovrId: string) => boolean = () => false;
@@ -278,6 +312,15 @@ export class StateManager {
     this.prHistoryStore = new PrHistoryStore();
     this.prCache = new PrCache(() => this.onChange(), this.prHistoryStore);
     this.gitAheadTimer = setInterval(() => this.refreshGitAheadCache(), 15_000);
+    // Hourly background refresh of PR state for archived/closed rooms (live
+    // rooms already poll on the 15-min HIT TTL). Non-destructive + REST-only +
+    // gated by env, so default-ON is acceptable. First run is delayed off boot.
+    if (process.env.OVERLORD_ARCHIVE_PR_REFRESH !== '0' && process.env.OVERLORD_ARCHIVE_PR_REFRESH !== 'false') {
+      this.archivePrBootTimer = setTimeout(() => { void this.refreshArchivedPrs(); }, 90_000);
+      this.archivePrBootTimer.unref?.();
+      this.archivePrTimer = setInterval(() => { void this.refreshArchivedPrs(); }, 60 * 60 * 1000);
+      this.archivePrTimer.unref?.();
+    }
     this.loadAccepted();
     this.migrateLegacyColors();
     migrateKnownSessions();
@@ -317,6 +360,49 @@ export class StateManager {
       } catch {
         // ignore — stale cache entry stays
       }
+    }
+  }
+
+  /** Distinct cwds with a live/hydrated session — i.e. the rooms the snapshot
+   *  surfaces and `prCache` keeps fresh on the 15-min TTL. Used to exclude
+   *  active rooms from the archived-PR refresh so we never double-poll. */
+  private activeRoomCwds(): Set<string> {
+    const out = new Set<string>();
+    for (const session of this.sessions.values()) {
+      if (session.cwd) out.add(session.cwd);
+    }
+    return out;
+  }
+
+  /** Build the archived-PR refresh worklist: every (cwd, branch) from
+   *  pr-history whose room is NOT currently active and whose last-known state
+   *  is not yet MERGED (terminal). Deduped by cwd+branch. Pure — no I/O beyond
+   *  the in-memory/disk-backed stores it reads. Extracted for unit testing. */
+  computeArchivedPrRefreshTargets(): Array<{ cwd: string; branch: string }> {
+    const allCwds = new Set<string>();
+    for (const rec of sessionStore.listAll()) {
+      if (rec.cwd) allCwds.add(rec.cwd);
+    }
+    return selectArchivedPrTargets(
+      this.activeRoomCwds(),
+      allCwds,
+      cwd => this.prHistoryStore.list(cwd),
+    );
+  }
+
+  /** Hourly job: refresh PR state for archived/closed rooms whose PR is not yet
+   *  merged. Sequenced with a small gap so we never burst `gh` forks on a
+   *  loaded machine. Each refresh records fresh state into prHistoryStore. */
+  private async refreshArchivedPrs(): Promise<void> {
+    const targets = this.computeArchivedPrRefreshTargets();
+    if (targets.length === 0) return;
+    for (const { cwd, branch } of targets) {
+      try {
+        await this.prCache.refreshForHistory(cwd, branch);
+      } catch {
+        // ignore — error is cached on the entry; next hour retries
+      }
+      await new Promise<void>(r => setTimeout(r, 250)); // throttle gh forks
     }
   }
 
@@ -1084,6 +1170,12 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (session && session.state === 'closed') {
       session.state = 'waiting';
+      // While closed, the 3s poll and refreshTranscript both early-return
+      // (state === 'closed'), so the conversation feed froze at its pre-close
+      // state. Force a re-read now that we're 'waiting' so the Conversation tab
+      // catches up to the live transcript immediately instead of staying out of
+      // sync with the PTY until the next user turn lands.
+      this.refreshTranscript(sessionId);
       this.onChange();
       console.log(`[stateManager] revived closed session ${sessionId.slice(0, 8)} → waiting`);
     }

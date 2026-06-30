@@ -8,7 +8,7 @@ import type { AiClassifier } from '../ai/aiClassifier.js';
 import type { IntentSummarizer } from '../ai/intentSummary.js';
 import type { SessionEventContext } from './sessionEventHandlers.js';
 import { markTranscriptDirty } from './transcriptReader.js';
-import { closeOrRemoveReplaced } from './sessionEventHandlers.js';
+import { closeOrRemoveReplaced, linkPtyToOvr } from './sessionEventHandlers.js';
 import { log } from '../logger.js';
 
 export interface TranscriptWatcherContext {
@@ -47,6 +47,43 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
     // Mark dirty immediately so the next poll knows to re-read the file
     markTranscriptDirty(filePath);
     const { sessionId, isSubagent } = parsed;
+
+    // ── Resume relink via transcript (no {pid}.json) ──
+    // Newer claude does NOT write ~/.claude/sessions/{pid}.json on --resume, so the
+    // sessionWatcher-driven 'changed' handler that normally consumes the resume link
+    // never fires. The resumed claude DOES append to its transcript, so this watcher
+    // is the only signal. When a pending PTY resume exists for this sid, link the PTY
+    // and revive the closed session here — mirrors sessionEventHandlers 'changed'.
+    if (!isSubagent && ctx.linkageTracker.hasResume(sessionId)) {
+      const entry = ctx.linkageTracker.byResumeId.get(sessionId)!;
+      if (ctx.ptyManager.has(entry.ptySessionId)) {
+        ctx.linkageTracker.consumeResume(sessionId);
+        const sCtx = ctx.sessionCtx;
+        const ovrId = ctx.stateManager.getSession(sessionId)?.overlordId ?? sessionId;
+        linkPtyToOvr(sCtx, ovrId, entry.ptySessionId);
+        sCtx.ptyOutputBuffer.delete(entry.ptySessionId);
+        ctx.stateManager.setSessionType(sessionId, 'embedded');
+        const ptyPid = ctx.ptyManager.getPid(entry.ptySessionId);
+        if (ptyPid) ctx.stateManager.setPid(sessionId, ptyPid);
+        ctx.stateManager.reviveClosedSession(sessionId);
+        // Broadcast the link. Targeted send to the originator (auto-selects the
+        // session in their tab); fall back to a replay broadcast if no originator ws.
+        const base = { type: 'terminal:linked' as const, ovrId, ptySessionId: entry.ptySessionId, claudeSessionId: sessionId };
+        if (entry.ws) {
+          const wsSessions = sCtx.wsSessionMap.get(entry.ws);
+          if (wsSessions) wsSessions.add(sessionId);
+          sCtx.sendToClient(entry.ws, base);
+        } else {
+          for (const sessions of sCtx.wsSessionMap.values()) {
+            sessions.add(entry.ptySessionId);
+            sessions.add(ovrId);
+          }
+          ctx.broadcastRaw({ ...base, replay: true });
+        }
+        log('pty:linked', 'PTY linked via resumeId (transcript)', { sessionId, sessionName: sessionId.slice(0, 8), extra: `ovrId=${ovrId} ptyId=${entry.ptySessionId}` });
+      }
+    }
+
     // Unknown non-subagent session changing — could be an orphan after server restart
     // (ignoreInitial:true means existing files don't fire 'add'). Run replacement detection.
     if (!isSubagent && !ctx.stateManager.getSession(sessionId)) {

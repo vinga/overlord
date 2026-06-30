@@ -3,6 +3,7 @@ import * as os from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
+import { readGridText } from '../pty/screenGrid.js';
 import { getCachedJiraTitle, getJiraCacheStats } from '../session/jiraTitleCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -524,7 +525,16 @@ export function registerApiRoutes(
       res.status(400).json({ error: 'Session is closed' });
       return;
     }
-    // Bridge sessions: serve from ptyOutputBuffer (ANSI-stripped)
+    // Prefer the headless VT grid (real rendered screen). Keyed by sessionId for
+    // bridge, by ptyId/ovrId for embedded. Falls back below if no grid yet.
+    const ovrId = session.overlordId ?? sessionId;
+    const gridKey = stateManager.isBridge(sessionId) ? sessionId : (ovrToPty.get(ovrId) ?? ovrId);
+    const gridText = readGridText(gridKey) ?? (gridKey !== ovrId ? readGridText(ovrId) : null);
+    if (gridText) {
+      res.json({ text: gridText, sessionId });
+      return;
+    }
+    // Bridge sessions: serve from ptyOutputBuffer (ANSI-stripped) as fallback
     if (stateManager.isBridge(sessionId)) {
       const chunks = ptyOutputBuffer.get(sessionId);
       if (!chunks || chunks.length === 0) {

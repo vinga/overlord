@@ -4,6 +4,7 @@ import type { StateManager } from '../session/stateManager.js';
 import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
 import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
 import { detectModeFromText } from '../session/modeDetect.js';
+import { feedGrid, migrateGrid, disposeGrid } from './screenGrid.js';
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -114,6 +115,10 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     buf.push(Buffer.from(data));
     if (buf.length > ctx.PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - ctx.PTY_BUFFER_MAX_CHUNKS);
 
+    // Feed the headless VT emulator so getScreenText can read a real rendered grid
+    // (in-memory only — no renderer; bounded scrollback; read happens off the 3s cycle).
+    feedGrid(ptySessionId, data);
+
     const encoded = Buffer.from(data).toString('base64');
     // Broadcast using ovrId as sessionId so clients keyed by ovrId receive it
     ctx.broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: encoded });
@@ -196,8 +201,26 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
     ctx.ptyToOvr.delete(ptySessionId);
-    if (ctx.ovrToPty.get(ovrId) === ptySessionId) {
+    const wasOwner = ctx.ovrToPty.get(ovrId) === ptySessionId;
+    if (wasOwner) {
       ctx.ovrToPty.delete(ovrId);
+    }
+    // Superseded: a DIFFERENT, still-live PTY already owns this ovr (concurrent
+    // --resume kills the old claude to free the session lock, then re-links; or
+    // compaction relinks the same ovr to a new PTY). The exiting PTY is stale —
+    // broadcasting terminal:exit for ovrId here would flip the client to
+    // "Session exited" even though the live PTY is fine, leaving the user unable
+    // to use a session whose backend is alive. Suppress the exit signal and the
+    // grid/buffer migration in that case; only tear down this PTY's own state.
+    const superseded = !wasOwner && ctx.ovrToPty.has(ovrId);
+
+    if (superseded) {
+      ctx.ptyOutputBuffer.delete(ptySessionId);
+      disposeGrid(ptySessionId);
+      console.log(`[pty:exit] ptyId=${ptySessionId.slice(0, 12)} ovrId=${ovrId} code=${code} (superseded — exit suppressed)`);
+      // Don't broadcast terminal:exit and don't touch the live owner's wsSessionMap entry.
+      for (const [, sessions] of ctx.wsSessionMap) sessions.delete(ptySessionId);
+      return;
     }
 
     // Migrate output buffer from ptyId → ovrId so the last repaint stays
@@ -209,6 +232,15 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       }
     }
     ctx.ptyOutputBuffer.delete(ptySessionId);
+
+    // Mirror for the screen grid: hand the final rendered screen to ovrId, then
+    // dispose it shortly after so a closed-session read still works briefly without
+    // leaking emulators. disposeGrid(ptySessionId) is a no-op once migrated.
+    migrateGrid(ptySessionId, ovrId);
+    disposeGrid(ptySessionId);
+    if (ovrId !== ptySessionId) {
+      setTimeout(() => disposeGrid(ovrId), 30_000).unref?.();
+    }
 
     // Broadcast exit to all clients so any tab can update its state
     ctx.broadcastRaw({ type: 'terminal:exit', sessionId: ovrId, code });

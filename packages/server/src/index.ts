@@ -36,6 +36,7 @@ import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
+import { readGridText } from './pty/screenGrid.js';
 import { feedCompactDetector, clearCompactDetector } from './pty/compactDetect.js';
 import { listAll as listShellHistoryLogs, sweep as sweepShellHistory, enforceTotalCap as enforceShellHistoryCap, startPeriodicSweep as startShellHistorySweep, deleteLog as deleteShellHistoryLog } from './pty/shellHistoryLog.js';
 import type { OfficeSnapshot } from './types.js';
@@ -605,18 +606,24 @@ function bufferToText(chunks: Buffer[]): string | null {
   return stripAnsi(Buffer.concat(chunks.slice(-50)).toString('utf8')).trim() || null;
 }
 
-// Screen text reader for permissionChecker — handles bridge, embedded PTY, and plain sessions
+// Screen text reader for permissionChecker — handles bridge, embedded PTY, and plain sessions.
+// Prefers the headless VT grid (real rendered screen — handles \r / cursor repaints that
+// in-place TUI menus like AskUserQuestion use); falls back to bufferToText if no grid yet.
 async function getScreenText(sessionId: string, pid: number): Promise<string | null> {
-  // Bridge sessions: use ptyOutputBuffer (reset at each repaint start, rebuilt from all chunks).
-  // This gives permissionChecker the most recent complete repaint frame.
+  // Bridge sessions: grid/buffer keyed by sessionId (== ovrId for bridge).
   if (stateManager.isBridge(sessionId)) {
-    return bufferToText(ptyOutputBuffer.get(sessionId) ?? []);
+    return readGridText(sessionId) ?? bufferToText(ptyOutputBuffer.get(sessionId) ?? []);
   }
   // Embedded PTY sessions: resolve ovrId from session, then ptyId
   const session = stateManager.getSession(sessionId);
-  const ptyId = session?.overlordId ? ovrToPty.get(session.overlordId) : undefined;
+  const ovrId = session?.overlordId;
+  const ptyId = ovrId ? ovrToPty.get(ovrId) : undefined;
   if (ptyId) {
-    return bufferToText(ptyOutputBuffer.get(ptyId) ?? ptyOutputBuffer.get(session!.overlordId) ?? []);
+    return (
+      readGridText(ptyId) ??
+      (ovrId ? readGridText(ovrId) : null) ??
+      bufferToText(ptyOutputBuffer.get(ptyId) ?? (ovrId ? ptyOutputBuffer.get(ovrId) : undefined) ?? [])
+    );
   }
   // Plain/IDE sessions: try Windows console API
   const { readScreen } = await import('./pty/consoleInjector.js');
