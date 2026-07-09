@@ -486,6 +486,7 @@ interface RoomProps {
   onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
   onOpenArchive?: (entry: ArchiveEntry) => void;
+  onDeleteArchive?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, newName: string) => void;
   onCloneSession?: (sessionId: string) => void;
   onNewTerminalSession?: (cwd: string, mode?: TerminalSpawnMode) => void;
@@ -702,7 +703,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -718,6 +719,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
   const [archiveExpanded, setArchiveExpanded] = useState(false);
+  const [confirmDeleteArchiveId, setConfirmDeleteArchiveId] = useState<string | null>(null);
 
   const fetchArchive = React.useCallback(() => {
     fetch(`/api/archive/by-room/${encodeURIComponent(room.id)}`)
@@ -1153,7 +1155,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                 const prLabel = entry.pullRequest ? `#${entry.pullRequest.number}` : null;
                 const branchLabel = entry.gitBranch ?? null;
                 return (
-                  <li key={entry.sessionId}>
+                  <li key={entry.sessionId} className={styles.archiveEntryRow}>
                     <button
                       type="button"
                       className={styles.archiveEntry}
@@ -1198,6 +1200,37 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                         )}
                       </div>
                     </button>
+                    {onDeleteArchive && (confirmDeleteArchiveId === entry.sessionId ? (
+                      <span className={styles.archiveDeleteConfirm}>
+                        <button
+                          type="button"
+                          className={styles.archiveDeleteConfirmBtn}
+                          title="Delete permanently — cannot be undone"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDeleteArchiveId(null);
+                            onDeleteArchive(entry.sessionId);
+                          }}
+                        >✓</button>
+                        <button
+                          type="button"
+                          className={styles.archiveDeleteCancelBtn}
+                          title="Cancel"
+                          onClick={(e) => { e.stopPropagation(); setConfirmDeleteArchiveId(null); }}
+                        >✕</button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className={styles.archiveDeleteBtn}
+                        title="Delete archived session permanently"
+                        onClick={(e) => { e.stopPropagation(); setConfirmDeleteArchiveId(entry.sessionId); }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2.5 4h11M6 4V2.7h4V4M5 4l.6 9a1 1 0 0 0 1 .95h2.8a1 1 0 0 0 1-.95L11 4M6.7 6.8v4.5M9.3 6.8v4.5" />
+                        </svg>
+                      </button>
+                    ))}
                   </li>
                 );
               })

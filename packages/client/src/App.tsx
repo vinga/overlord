@@ -409,7 +409,11 @@ export function App() {
       if (!res.ok) { console.error('delete archive failed', await res.text()); return; }
       setArchivedSession(prev => prev && prev.sessionId === sessionId ? null : prev);
       window.dispatchEvent(new CustomEvent('archive:changed', { detail: {} }));
-      handleClose();
+      // Called from two places: the archived detail panel and the per-entry delete
+      // in a room's archive list. Only tear the panel down when it is showing the
+      // session we just deleted — otherwise deleting a list entry would close an
+      // unrelated open session.
+      if (selectedSessionId === sessionId) handleClose();
     } catch (err) {
       console.error('delete archive error', err);
     }
@@ -506,6 +510,7 @@ export function App() {
         onCloseSession={handleCloseSession}
         onArchiveSession={handleArchiveSession}
         onOpenArchive={handleOpenArchive}
+        onDeleteArchive={handleDeleteArchived}
         onRenameSession={rename}
         isPtySession={terminal.isPtySession}
         pendingSpawns={pendingSpawns}
@@ -601,6 +606,7 @@ export function App() {
           },
           onResumeArchived: handleResumeArchived,
           onCloneArchived: handleCloneArchived,
+          onCloneSession: handleCloneSession,
           onDeleteArchived: handleDeleteArchived,
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),

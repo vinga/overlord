@@ -19,6 +19,7 @@ import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { detectModeFromText } from '../session/modeDetect.js';
 import { injectViaMac } from '../pty/macInjector.js';
+import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
@@ -141,6 +142,28 @@ export function registerApiRoutes(
     }
   });
 
+  // Spawn a new Claude session in a target workspace, optionally with an
+  // initial prompt injected once the TUI is ready. Used by the overlord-spawn
+  // skill for cross-workspace, programmatic session creation.
+  app.post('/api/sessions/spawn', express.json(), (req, res) => {
+    const cwd = req.body?.cwd ? String(req.body.cwd) : '';
+    if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
+    if (!broadcastRaw) { res.status(500).json({ error: 'broadcast unavailable' }); return; }
+    const name = req.body?.name ? String(req.body.name) : undefined;
+    const prompt = req.body?.prompt ? String(req.body.prompt) : undefined;
+    const cols = req.body?.cols ? Number(req.body.cols) : undefined;
+    const rows = req.body?.rows ? Number(req.body.rows) : undefined;
+    try {
+      const { ovrId, ptySessionId } = spawnClaudeSession(
+        { ptyManager, stateManager, ovrToPty, ptyToOvr, broadcastRaw },
+        { cwd, name, prompt, cols, rows },
+      );
+      res.json({ ok: true, sessionId: ovrId, ptySessionId });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Debug endpoint: clone a session
   app.post('/api/debug/clone', express.json(), (req, res) => {
     const sessionId = String(req.body?.sessionId ?? '');
@@ -148,10 +171,18 @@ export function registerApiRoutes(
     if (!session) { res.status(404).json({ error: 'session not found' }); return; }
     const cloneName = String(req.body?.name ?? `Clone (test)`);
     const ptySessionId = `pty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ovrId = stateManager.mintReservedOvrId(ptySessionId);
     stateManager.trackPendingPtySpawn(session.cwd);
     linkageTracker.trackCloneInfo(ptySessionId, { name: cloneName, originalSessionId: sessionId });
     try {
       ptyManager.spawn(ptySessionId, session.cwd, 80, 24, ['--resume', sessionId, '--fork-session', '--name', `${cloneName}___OVR:${ptySessionId}`]);
+      // Reserve clone ovrId by child PID so the marker-dropped fork re-attaches
+      // to this lineage (see wsHandler session:clone for the full rationale).
+      const clonePid = ptyManager.getPid(ptySessionId);
+      if (clonePid) stateManager.reserveOvrIdForPid(clonePid, ovrId);
+      else ptyManager.once('pid-ready', (sid: string, p: number) => {
+        if (sid === ptySessionId && p) stateManager.reserveOvrIdForPid(p, ovrId);
+      });
       log('pty:started', 'PTY test clone', { sessionId: ptySessionId, sessionName: cloneName });
       res.json({ ok: true, ptySessionId, cloneName });
     } catch (err) {

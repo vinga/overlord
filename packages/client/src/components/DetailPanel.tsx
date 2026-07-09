@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
-import type { Session, WorkerState, ActivityItem, Subagent } from '../types';
+import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
@@ -287,6 +287,7 @@ interface SessionActions {
   onResumeSession?: (sessionId: string, cwd: string) => void;
   onResumeArchived?: (sessionId: string, cwd: string) => void;
   onCloneArchived?: (sessionId: string, cwd: string) => void;
+  onCloneSession?: (sessionId: string) => void;
   onDeleteArchived?: (sessionId: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
@@ -650,6 +651,7 @@ type FeedSegment =
   | { type: 'message'; item: ActivityItem }
   | { type: 'toolGroup'; items: ActivityItem[] }
   | { type: 'thinking'; item: ActivityItem }
+  | { type: 'question'; item: ActivityItem }
   | { type: 'compact'; item: ActivityItem };
 
 function buildSegments(feed: ActivityItem[]): FeedSegment[] {
@@ -657,6 +659,9 @@ function buildSegments(feed: ActivityItem[]): FeedSegment[] {
   for (const item of feed) {
     if (item.kind === 'compact') {
       segments.push({ type: 'compact', item });
+    } else if (item.kind === 'tool' && item.toolName === 'AskUserQuestion') {
+      // AskUserQuestion is rendered as its own prominent Q&A block, never grouped
+      segments.push({ type: 'question', item });
     } else if (item.kind === 'tool') {
       const last = segments[segments.length - 1];
       if (last?.type === 'toolGroup' && item.toolName !== 'Agent') {
@@ -671,6 +676,116 @@ function buildSegments(feed: ActivityItem[]): FeedSegment[] {
     }
   }
   return segments;
+}
+
+// AskUserQuestion tool_result looks like: Your questions have been answered: "Q"="A". ...
+// Pull out the chosen answer label(s) so we can show them next to the question.
+function parseQuestionAnswers(resultJson?: string): string[] {
+  if (!resultJson) return [];
+  const out: string[] = [];
+  const re = /"[^"]*"\s*=\s*"([^"]*)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(resultJson)) !== null) out.push(m[1]);
+  return out;
+}
+
+interface ParsedQuestionOption { label: string; description?: string }
+interface ParsedQuestion { question: string; header?: string; options: ParsedQuestionOption[] }
+
+// Parse the full question(s) + all options from the tool input JSON (best-effort;
+// strings are truncated server-side to ~500 chars).
+function parseQuestionInput(inputJson?: string): ParsedQuestion[] {
+  if (!inputJson) return [];
+  try {
+    const parsed = JSON.parse(inputJson) as { questions?: Array<{ question?: string; header?: string; options?: Array<{ label?: string; description?: string }> }> };
+    return (parsed.questions ?? [])
+      .filter(q => q.question)
+      .map(q => ({
+        question: q.question!,
+        header: q.header,
+        options: (q.options ?? []).map(o => ({ label: o.label ?? '', description: o.description })).filter(o => o.label),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+// Build the PendingQuestionSet shape QuestionPrompt expects from the tool input JSON.
+function questionInputToSet(inputJson?: string): PendingQuestionSet | null {
+  if (!inputJson) return null;
+  try {
+    const parsed = JSON.parse(inputJson) as { questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string }> }> };
+    const questions = (parsed.questions ?? [])
+      .filter(q => q.question)
+      .map(q => ({
+        question: q.question!,
+        header: q.header,
+        multiSelect: q.multiSelect ?? false,
+        options: (q.options ?? []).map(o => ({ label: o.label ?? '', description: o.description, preview: o.preview })).filter(o => o.label),
+      }));
+    return questions.length > 0 ? { questions } : null;
+  } catch {
+    return null;
+  }
+}
+
+// Renders an AskUserQuestion entry inline in the conversation as a Q&A block,
+// with the full question + every option, chosen highlighted, expandable.
+function QuestionEntry({ item, styles }: { item: ActivityItem; styles: Record<string, string> }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const answers = parseQuestionAnswers(item.resultJson);
+  const parsed = parseQuestionInput(item.inputJson);
+  // Fallback to the flat content/answers when input JSON is unavailable.
+  const questions: ParsedQuestion[] = parsed.length > 0
+    ? parsed
+    : (item.content?.trim() ? item.content.trim().split(' · ').map(q => ({ question: q, options: [] })) : []);
+  // Skip the streaming artifact: an AskUserQuestion tool_use with no question and no answer.
+  if (questions.length === 0 && answers.length === 0) return null;
+  const pending = answers.length === 0;
+  const hasOptions = questions.some(q => q.options.length > 0);
+  return (
+    <div className={styles.qaEntry}>
+      <div className={styles.qaLabel}>
+        <span className={styles.qaIcon}>?</span>
+        Question{questions.length > 1 ? 's' : ''}
+        {pending && <span className={styles.qaPending}>awaiting answer</span>}
+        {hasOptions && (
+          <button className={styles.qaToggle} onClick={() => setExpanded(e => !e)}>
+            {expanded ? 'hide options' : 'show options'}
+          </button>
+        )}
+      </div>
+      {questions.length > 0 ? questions.map((q, i) => {
+        const chosen = answers[i];
+        return (
+          <div key={i} className={styles.qaRow}>
+            {q.header && <div className={styles.qaHeader}>{q.header}</div>}
+            <div className={styles.qaQuestion}>{q.question}</div>
+            {expanded && q.options.length > 0 ? (
+              <div className={styles.qaOptions}>
+                {q.options.map((opt, oi) => {
+                  const isChosen = chosen != null && opt.label === chosen;
+                  return (
+                    <div key={oi} className={`${styles.qaOption} ${isChosen ? styles.qaOptionChosen : ''}`}>
+                      <span className={styles.qaOptionMark}>{isChosen ? '✓' : ''}</span>
+                      <span className={styles.qaOptionBody}>
+                        <span className={styles.qaOptionLabel}>{opt.label}</span>
+                        {opt.description && <span className={styles.qaOptionDesc}>{opt.description}</span>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              chosen && <div className={styles.qaAnswer}>{chosen}</div>
+            )}
+          </div>
+        );
+      }) : answers.map((a, i) => (
+        <div key={i} className={styles.qaRow}><div className={styles.qaAnswer}>{a}</div></div>
+      ))}
+    </div>
+  );
 }
 
 function parseTaskNotification(content: string): { summary: string; status: string } | null {
@@ -861,9 +976,13 @@ interface FeedSegmentsProps {
   subagents?: Subagent[];
   onSelectSubagent?: (agentId: string) => void;
   scrollTargetTs?: string;
+  // When set, a pending (unanswered) AskUserQuestion in the feed renders as an
+  // interactive prompt that injects the choice into this session's TUI.
+  questionSessionId?: string;
+  questionStageRef?: React.MutableRefObject<Map<string, number>>;
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
 
@@ -907,6 +1026,27 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   return (
     <>
       {segments.map((seg, segIdx) => {
+        if (seg.type === 'question') {
+          // Pending (unanswered, live in the TUI) → interactive prompt that injects
+          // the choice. Answered → read-only Q&A block.
+          const isPending = !seg.item.resultJson;
+          const qSet = isPending ? questionInputToSet(seg.item.inputJson) : null;
+          if (isPending && qSet && questionSessionId && questionStageRef) {
+            return (
+              <div key={segIdx} data-ts={seg.item.timestamp} style={{ display: 'contents' }}>
+                <QuestionPrompt
+                  key={questionSessionId + '-q'}
+                  sessionId={questionSessionId}
+                  questionSet={qSet}
+                  initialStage={questionStageRef.current.get(questionSessionId) ?? 0}
+                  onStageChange={(s) => { questionStageRef.current.set(questionSessionId, s); }}
+                  styles={styles}
+                />
+              </div>
+            );
+          }
+          return <div key={segIdx} data-ts={seg.item.timestamp} style={{ display: 'contents' }}><QuestionEntry item={seg.item} styles={styles} /></div>;
+        }
         if (seg.type === 'compact') {
           const meta = seg.item.compactMeta;
           const tokens = meta?.preTokens ? meta.preTokens.toLocaleString() : null;
@@ -1333,7 +1473,7 @@ export function DetailPanel({
   onScrollTargetConsumed,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -1930,10 +2070,25 @@ const currentDisplayName =
     }
   }, [confirmed, localSent.length, selectedSession?.sessionId]);
 
+  // Render a pending (unanswered) AskUserQuestion as the last feed item so it flows
+  // inline and interactive (no floating overlay). Skip if the feed already ends with
+  // an unanswered AskUserQuestion (avoid double-showing).
+  const lastRealItem = realFeed[realFeed.length - 1];
+  const feedTrailsPendingQuestion = lastRealItem?.toolName === 'AskUserQuestion' && !lastRealItem.resultJson;
+  const pendingQuestionItem: ActivityItem | null = (selectedSession?.pendingQuestion && !feedTrailsPendingQuestion)
+    ? {
+        kind: 'tool',
+        toolName: 'AskUserQuestion',
+        content: selectedSession.pendingQuestion.questions.map(q => q.question).join(' · ').slice(0, 200),
+        inputJson: JSON.stringify({ questions: selectedSession.pendingQuestion.questions }),
+      }
+    : null;
+
   const mergedFeed: ActivityItem[] = [
     ...extraFeed,
     ...realFeed,
     ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
+    ...(pendingQuestionItem ? [pendingQuestionItem] : []),
   ];
 
   const panelSearchResults = useMemo(() => {
@@ -2554,6 +2709,18 @@ const currentDisplayName =
                         >
                           {copiedConv ? '✓ Copied' : 'Copy conversation'}
                         </button>
+                        {onCloneSession && !selectedSession.isArchived && mergedFeed.length > 0 && (
+                          <button
+                            className={styles.quickMenuItem}
+                            title="Spawn a new session forked from this conversation"
+                            onClick={() => {
+                              onCloneSession(selectedSession.sessionId);
+                              setShowConvMenu(false);
+                            }}
+                          >
+                            Clone conversation
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2686,6 +2853,8 @@ const currentDisplayName =
                                     subagents={selectedSession.subagents}
                                     onSelectSubagent={(agentId) => onSelectSession?.(selectedSession, agentId)}
                                     scrollTargetTs={effectiveScrollTarget ?? undefined}
+                                    questionSessionId={selectedSession.sessionId}
+                                    questionStageRef={questionStageRef}
                                   />
                                 </div>
                               ) : (
@@ -2797,16 +2966,8 @@ const currentDisplayName =
                               styles={styles}
                             />
                           )}
-                          {!stateBarNeedsApproval && selectedSession.pendingQuestion && (
-                            <QuestionPrompt
-                              key={selectedSession.sessionId + '-q'}
-                              sessionId={selectedSession.sessionId}
-                              questionSet={selectedSession.pendingQuestion}
-                              initialStage={questionStageRef.current.get(selectedSession.sessionId) ?? 0}
-                              onStageChange={(s) => { questionStageRef.current.set(selectedSession.sessionId, s); }}
-                              styles={styles}
-                            />
-                          )}
+                          {/* Pending AskUserQuestion now renders inline in the feed
+                              (see FeedSegments question segment), not as a floating overlay. */}
                         </>
                       )}
                       {selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded' && (

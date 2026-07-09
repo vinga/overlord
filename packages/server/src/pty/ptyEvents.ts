@@ -5,6 +5,74 @@ import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
 import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
 import { detectModeFromText } from '../session/modeDetect.js';
 import { feedGrid, migrateGrid, disposeGrid, readGridText } from './screenGrid.js';
+import { scheduleInject, shouldUseExtraEnter } from './injectScheduler.js';
+
+// Output-gated initial-prompt injection.
+//
+// A freshly spawned Claude TUI streams startup output well before its input
+// box is interactive; injecting on the first chunk drops the text. Rather than
+// wait a blind fixed delay, we ARM the queued prompt on first output and fire
+// it as soon as the input box actually renders — detected from the
+// `(shift+tab to cycle)` status-bar sentinel that paints together with the box
+// (see `sentinelFound` in the output handler below). A fallback timer caps the
+// wait so detection misses or exotic terminals never hang the prompt.
+const INITIAL_PROMPT_MAX_WAIT_MS = 1500; // fallback if the sentinel never appears (== legacy fixed delay)
+const INITIAL_PROMPT_SETTLE_MS = 150;    // brief settle after the box paints before writing
+
+interface ArmedPrompt {
+  text: string;
+  extraEnter: boolean;
+  fallbackTimer: ReturnType<typeof setTimeout>;
+  fired: boolean;
+}
+
+// Armed-but-not-yet-fired initial prompts, keyed by ptySessionId. Entries exist
+// only during the brief spawn→first-render window, so the hot output path gates
+// every access on `armedInitialPrompts.size > 0` and stays a no-op afterwards.
+const armedInitialPrompts = new Map<string, ArmedPrompt>();
+
+function disarmInitialPrompt(ptySessionId: string): void {
+  const armed = armedInitialPrompts.get(ptySessionId);
+  if (!armed) return;
+  clearTimeout(armed.fallbackTimer);
+  armedInitialPrompts.delete(ptySessionId);
+}
+
+// Inject the armed prompt now. Idempotent via the `fired` guard so the
+// sentinel-triggered fire and the fallback timer can never double-inject.
+function injectArmedPrompt(ctx: PtyEventsContext, ptySessionId: string, reason: string): void {
+  const armed = armedInitialPrompts.get(ptySessionId);
+  if (!armed || armed.fired) return;
+  armed.fired = true;
+  clearTimeout(armed.fallbackTimer);
+  armedInitialPrompts.delete(ptySessionId);
+
+  if (!ctx.ptyManager.has(ptySessionId)) {
+    console.warn(`[spawn:inject] pty gone before inject pty=${ptySessionId.slice(0, 16)}`);
+    return;
+  }
+  console.log(`[spawn:inject] writing initial prompt to pty=${ptySessionId.slice(0, 16)} via=${reason}`);
+  const write = (data: string): boolean => {
+    try { return ctx.ptyManager.write(ptySessionId, data); } catch { return false; }
+  };
+  scheduleInject(
+    write,
+    () => ctx.ptyManager.has(ptySessionId),
+    () => console.warn(`[spawn:inject] initial prompt write failed pty=${ptySessionId.slice(0, 12)}`),
+    armed.text,
+    armed.extraEnter,
+  );
+}
+
+// Arm a queued prompt on the freshly spawned PTY's first output. Fires later
+// from the output handler when the input box renders, or from the fallback
+// timer at INITIAL_PROMPT_MAX_WAIT_MS — whichever comes first.
+function armInitialPrompt(ctx: PtyEventsContext, ptySessionId: string, text: string): void {
+  const extraEnter = shouldUseExtraEnter(text);
+  console.log(`[spawn:inject] armed initial prompt for pty=${ptySessionId.slice(0, 16)} maxWait=${INITIAL_PROMPT_MAX_WAIT_MS}ms len=${text.length}`);
+  const fallbackTimer = setTimeout(() => injectArmedPrompt(ctx, ptySessionId, 'fallback'), INITIAL_PROMPT_MAX_WAIT_MS);
+  armedInitialPrompts.set(ptySessionId, { text, extraEnter, fallbackTimer, fired: false });
+}
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -103,6 +171,12 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
   ctx.ptyManager.on('output', (ptySessionId: string, data: string) => {
     // Resolve ovrId for this PTY (set after linking; fall back to ptyId before link)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;
+
+    // Fire a queued initial prompt once the freshly spawned PTY produces output
+    // (TUI started rendering). takePendingInitialPrompt is one-shot, so this
+    // runs at most once per spawn; common case is a cheap empty-map lookup.
+    const initialPrompt = ctx.stateManager.takePendingInitialPrompt(ptySessionId);
+    if (initialPrompt) armInitialPrompt(ctx, ptySessionId, initialPrompt);
 
     // Buffer output under ptySessionId while alive; migrated to ovrId on exit
     let buf = ctx.ptyOutputBuffer.get(ptySessionId);
@@ -204,6 +278,12 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
         // Shift+Tab rewrites the status bar but may not emit a BSU repaint marker,
         // so gating this on isRepaint alone delays the pill update by hundreds of ms.
         const { sentinelFound, mode } = detectModeFromText(combined);
+        // The status-bar sentinel paints together with the input box, so its first
+        // appearance is the earliest safe moment to write a queued initial prompt.
+        // injectArmedPrompt is idempotent, so later sentinels are cheap no-ops.
+        if (sentinelFound && armedInitialPrompts.size > 0 && armedInitialPrompts.has(ptySessionId)) {
+          setTimeout(() => injectArmedPrompt(ctx, ptySessionId, 'sentinel'), INITIAL_PROMPT_SETTLE_MS).unref?.();
+        }
         if (sentinelFound) {
           const resolvedMode = mode ?? 'default';
           const prevMode = lastDetectedMode.get(ptySessionId);
@@ -220,6 +300,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
   });
 
   ctx.ptyManager.on('exit', (ptySessionId: string, code: number) => {
+    disarmInitialPrompt(ptySessionId);
     ctx.linkageTracker.removePidEntriesByPty(ptySessionId);
     ctx.linkageTracker.removeResumeEntriesByPty(ptySessionId);
     clearCompactDetector(ptySessionId);
@@ -254,6 +335,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
 
     // Migrate output buffer from ptyId → ovrId so the last repaint stays
     // accessible after the PTY mapping is cleaned up (terminal:replay for closed sessions).
+    // A superseded pty must not overwrite the live new pty's scrollback.
     if (ovrId !== ptySessionId) {
       const buf = ctx.ptyOutputBuffer.get(ptySessionId);
       if (buf && buf.length > 0) {
@@ -274,12 +356,6 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // Broadcast exit to all clients so any tab can update its state
     ctx.broadcastRaw({ type: 'terminal:exit', sessionId: ovrId, code });
     console.log(`[pty:exit] ptyId=${ptySessionId.slice(0, 12)} ovrId=${ovrId} code=${code}`);
-
-    // Clean up wsSessionMap entries
-    for (const [, sessions] of ctx.wsSessionMap) {
-      sessions.delete(ptySessionId);
-      sessions.delete(ovrId);
-    }
 
     // Raw shell sessions: mark as historyOnly closed so the user can still view
     // the scrollback and click "Restart shell". Log file on disk is the source

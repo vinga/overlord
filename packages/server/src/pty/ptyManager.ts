@@ -42,15 +42,16 @@ const CLAUDE_BIN = resolveClaude();
 // spawn is a real top-level session. See project_spawn_env_poison.
 const PARENT_SESSION_ENV_VARS = [
   'CLAUDE_CODE_CHILD_SESSION',
-  'AI_AGENT',
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_SSE_PORT',
   'CLAUDE_CODE_EXECPATH',
   'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'AI_AGENT',
+  'CLAUDE_EFFORT',
 ];
 
-function sanitizedSpawnEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+function sanitizedSpawnEnv(): Record<string, string> {
+  const env = { ...process.env, TERM: 'xterm-color' } as Record<string, string>;
   for (const key of PARENT_SESSION_ENV_VARS) delete env[key];
   return env;
 }
@@ -73,7 +74,7 @@ export class PtyManager extends EventEmitter {
       cols,
       rows,
       cwd,
-      env: { ...sanitizedSpawnEnv(), TERM: 'xterm-color' } as Record<string, string>,
+      env: sanitizedSpawnEnv(),
     });
     this.sessions.set(sessionId, ptyProcess);
     this.emit('pid-ready', sessionId, ptyProcess.pid);
@@ -113,6 +114,18 @@ export class PtyManager extends EventEmitter {
 
   getPid(sessionId: string): number | undefined {
     return this.sessions.get(sessionId)?.pid;
+  }
+
+  /**
+   * Find the ptySessionId (marker) of a live PTY by OS pid. Used to recognize a
+   * fork/clear that reuses the same PTY process under a new Claude sessionId
+   * (e.g. `--fork-session` clones). Linear scan over the small live-PTY map.
+   */
+  findByPid(pid: number): string | undefined {
+    for (const [sessionId, proc] of this.sessions) {
+      if (proc.pid === pid) return sessionId;
+    }
+    return undefined;
   }
 
   has(sessionId: string): boolean {

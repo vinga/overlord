@@ -7,6 +7,7 @@ import { deleteLog as deleteShellHistoryLog } from '../pty/shellHistoryLog.js';
 import { sessionStore } from './sessionStore.js';
 import { bridgeManager } from '../pty/pipeInjector.js';
 import { log } from '../logger.js';
+import { appendDeletionAudit } from './deletionAudit.js';
 import type { Session } from '../types.js';
 
 interface StateManagerDep {
@@ -117,8 +118,24 @@ export function deleteSession(
       sidsToWipe.add(storeRec.lineage.currentSessionId);
       for (const h of storeRec.lineage.history) sidsToWipe.add(h.sessionId);
     }
-    for (const sid of sidsToWipe) {
-      const transcriptFile = findTranscriptPathAnywhere(sid);
+
+    // Resolve transcript paths first, then write the audit line BEFORE unlinking,
+    // so a vanished session is recoverable even if an unlink throws.
+    const sidTranscripts = [...sidsToWipe].map(
+      (sid) => [sid, findTranscriptPathAnywhere(sid)] as const,
+    );
+    appendDeletionAudit({
+      sessionId,
+      ovrId,
+      reason: caller,
+      pid,
+      purgedSids,
+      lineageSids: [...sidsToWipe],
+      transcriptPaths: sidTranscripts.map(([, p]) => p).filter((p): p is string => !!p),
+      proposedName: storeRec?.proposedName,
+    });
+
+    for (const [sid, transcriptFile] of sidTranscripts) {
       if (transcriptFile) {
         try {
           fs.unlinkSync(transcriptFile);

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -305,6 +305,35 @@ export class StateManager {
     return claudeId ? this.sessions.get(claudeId) : undefined;
   }
 
+  /**
+   * Re-key a live session onto an existing overlordId, dropping its previous
+   * ovrId→sid mapping. Used when an unmarked `--fork-session` fork must adopt the
+   * PTY's stable ovrId so the client's ovrId-keyed selection survives the swap.
+   * Returns the ovrId the session previously held (caller may purge its throwaway
+   * OverlordSession record).
+   */
+  adoptOverlordId(sessionId: string, targetOvrId: string): string | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    const prev = s.overlordId;
+    if (prev === targetOvrId) return prev;
+    if (prev && this.sessionsByOvrId.get(prev) === sessionId) {
+      this.sessionsByOvrId.delete(prev);
+    }
+    s.overlordId = targetOvrId;
+    this.sessionsByOvrId.set(targetOvrId, sessionId);
+    return prev;
+  }
+
+  /** Drop a throwaway OverlordSession record (e.g. the fresh ovrId a fork minted
+   *  before it adopted the PTY's stable ovrId). No-op if still referenced. */
+  dropOvrRecord(ovrId: string): void {
+    for (const s of this.sessions.values()) {
+      if (s.overlordId === ovrId) return; // still in use — keep it
+    }
+    sessionStore.remove(ovrId);
+  }
+
   constructor(onChange: () => void) {
     this.bridgePath = getBridgePath();
     this.onChangeCallback = onChange;
@@ -567,6 +596,31 @@ export class StateManager {
 
   consumePendingResumeByMarker(ptyId: string): string | undefined {
     return this.resumeTracker.consumeResumeByMarker(ptyId);
+  }
+
+  /** Non-consuming marker peek — used by the skip-interim guard. */
+  peekPendingResumeByMarker(ptyId: string): string | undefined {
+    return this.resumeTracker.peekResumeByMarker(ptyId);
+  }
+
+  // Initial prompt queued at spawn time, keyed by the PTY marker (never cwd —
+  // concurrent same-cwd spawns must not collide). Fired once the freshly
+  // spawned PTY produces output (ptyEvents output handler).
+  private pendingInitialPromptByMarker = new Map<string, { text: string; at: number }>();
+  private static readonly INITIAL_PROMPT_TTL_MS = 120_000;
+
+  trackPendingInitialPrompt(ptySessionId: string, text: string): void {
+    this.pendingInitialPromptByMarker.set(ptySessionId, { text, at: Date.now() });
+  }
+
+  /** One-shot read: returns the queued prompt and removes it. Stale entries
+   * (older than the TTL — spawn never produced output) are dropped, not fired. */
+  takePendingInitialPrompt(ptySessionId: string): string | undefined {
+    const e = this.pendingInitialPromptByMarker.get(ptySessionId);
+    if (!e) return undefined;
+    this.pendingInitialPromptByMarker.delete(ptySessionId);
+    if (Date.now() - e.at > StateManager.INITIAL_PROMPT_TTL_MS) return undefined;
+    return e.text;
   }
 
   hasPendingResume(cwd: string): boolean {
@@ -909,7 +963,9 @@ export class StateManager {
       })(),
       permissionModeLockedUntil: existingSession?.permissionModeLockedUntil,
       permissionApprovedAt: existingSession?.permissionApprovedAt,
-      pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion,
+      // Transcript wins; fall back to a live screen-detected question (the transcript
+      // lacks pending AskUserQuestion tool_uses until they're answered).
+      pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion ?? existingSession?.screenQuestion,
       activeMonitors: transcript?.activeMonitors,
       jiraKeys: mergeJiraKeys(
         existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
@@ -1857,6 +1913,24 @@ export class StateManager {
     if (!session || session.unknownCommand === undefined) return;
     session.unknownCommand = undefined;
     this.onChange();
+  }
+
+  /** Set/clear a pending AskUserQuestion detected from the live PTY screen.
+   *  Stored separately from transcript-derived pendingQuestion (which refreshTranscript
+   *  overwrites every tick); surfaced as the pendingQuestion fallback in getSnapshot. */
+  setScreenQuestion(sessionId: string, question: PendingQuestionSet | null): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const prev = session.screenQuestion;
+    if (question) {
+      // Only fire onChange when the question text actually changes (avoid churn).
+      const changed = !prev || JSON.stringify(prev) !== JSON.stringify(question);
+      session.screenQuestion = question;
+      if (changed) this.onChange();
+    } else if (prev) {
+      session.screenQuestion = undefined;
+      this.onChange();
+    }
   }
 
   /** Called when /clear is injected. Immediately wipes the activity feed and blocks
