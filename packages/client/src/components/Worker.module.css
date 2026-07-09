@@ -345,6 +345,34 @@
   border-color: rgba(249, 115, 22, 0.6) transparent transparent;
 }
 
+/* "Unknown command: /x" — a rejected slash command. Amber, distinct from the
+   orange permission bubble. Static (no pulse): it's an informational last-event,
+   not a call to action, and clears itself on the next real activity. */
+.bubbleUnknownCmd {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1.5px solid rgba(234, 179, 8, 0.55);
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #eab308;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(234, 179, 8, 0.18);
+}
+
+.bubbleUnknownCmd::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px 4px 0;
+  border-style: solid;
+  border-color: rgba(234, 179, 8, 0.55) transparent transparent;
+}
+
 /* Top badge for permission — shown above indicator */
 .permissionBadge {
   position: absolute;

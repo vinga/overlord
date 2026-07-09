@@ -106,6 +106,8 @@ interface Session {
   needsPermission?: boolean;
   permissionPromptText?: string;
   isLimitPrompt?: boolean;
+  /** Slash command Claude Code rejected ("Unknown command: /x"); transient, screen-derived. */
+  unknownCommand?: string;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];

@@ -4,7 +4,7 @@ import type { StateManager } from '../session/stateManager.js';
 import { feedCompactDetector, clearCompactDetector } from './compactDetect.js';
 import { appendOutput as appendShellHistory } from './shellHistoryLog.js';
 import { detectModeFromText } from '../session/modeDetect.js';
-import { feedGrid, migrateGrid, disposeGrid } from './screenGrid.js';
+import { feedGrid, migrateGrid, disposeGrid, readGridText } from './screenGrid.js';
 
 export interface PtyEventsContext {
   ptyManager: PtyManager;
@@ -25,6 +25,12 @@ const ACTIVE_DETECT_BUF_SIZE = 2048;
 // Last permission mode detected per ptySessionId. Used to clear the rolling buffer
 // on transition so stale status-bar bytes in the tail cannot re-win.
 const lastDetectedMode = new Map<string, string>();
+
+// Tiny raw-output tail per ptySessionId so the "Unknown command" substring gate
+// still fires when the phrase is split across two chunks. Sized > the sentinel.
+const unknownCmdCarry = new Map<string, string>();
+const UNKNOWN_CMD_SENTINEL = 'Unknown command';
+const UNKNOWN_CMD_CARRY = 24;
 
 // Single-pass ANSI/control strip. Replaces 5 sequential regex passes on every
 // PTY output chunk — those were dominating the event loop during streaming.
@@ -110,6 +116,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
       // detect buffer would combine with new chunks and cause false positives.
       clearCompactDetector(ptySessionId);
       activeDetectBuf.delete(ptySessionId);
+      unknownCmdCarry.delete(ptySessionId);
     }
 
     buf.push(Buffer.from(data));
@@ -118,6 +125,27 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     // Feed the headless VT emulator so getScreenText can read a real rendered grid
     // (in-memory only — no renderer; bounded scrollback; read happens off the 3s cycle).
     feedGrid(ptySessionId, data);
+
+    // Detect "Unknown command: /x" — Claude Code prints this only to the screen
+    // (never the transcript) when the user types a slash command / skill that
+    // doesn't exist, so a poll-free stream detector is the only way to catch it.
+    // Cheap substring gate on the raw chunk (+ tiny carry to survive a chunk
+    // split mid-phrase); only on a hit do we read the clean, ANSI-stripped grid
+    // (just written above) and extract the command. Rare event → the grid read
+    // essentially never runs on normal output.
+    {
+      const carry = unknownCmdCarry.get(ptySessionId) ?? '';
+      if ((carry + data).includes(UNKNOWN_CMD_SENTINEL)) {
+        const grid = readGridText(ptySessionId);
+        if (grid) {
+          const re = /Unknown command:\s*(\/\S+)/gi;
+          let cmd: string | undefined;
+          for (let m = re.exec(grid); m; m = re.exec(grid)) cmd = m[1]; // last match = most recent
+          if (cmd) ctx.stateManager.setUnknownCommand(ovrId, cmd);
+        }
+      }
+      unknownCmdCarry.set(ptySessionId, data.slice(-UNKNOWN_CMD_CARRY));
+    }
 
     const encoded = Buffer.from(data).toString('base64');
     // Broadcast using ovrId as sessionId so clients keyed by ovrId receive it
@@ -197,6 +225,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     clearCompactDetector(ptySessionId);
     activeDetectBuf.delete(ptySessionId);
     lastDetectedMode.delete(ptySessionId);
+    unknownCmdCarry.delete(ptySessionId);
 
     // Resolve ovrId before cleaning maps (client tracks by ovrId, not pty ID)
     const ovrId = ctx.ptyToOvr.get(ptySessionId) ?? ptySessionId;

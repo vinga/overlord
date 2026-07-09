@@ -28,10 +28,8 @@
 }
 
 .popover {
-  position: absolute;
-  top: calc(100% + 10px);
-  left: 0;
-  z-index: 100;
+  position: fixed;
+  z-index: 1000;
   background: #1a1a28;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 10px;

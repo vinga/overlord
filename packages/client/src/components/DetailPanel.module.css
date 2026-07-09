@@ -2557,6 +2557,12 @@
   color: #f9fafb;
 }
 
+.quickMenuDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .convMenuAnchor {
   position: relative;
   flex-shrink: 0;

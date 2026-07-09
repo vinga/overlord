@@ -19,6 +19,7 @@ interface WorkerProps {
   userAccepted?: boolean;
   acknowledged?: boolean;
   needsPermission?: boolean;
+  unknownCommand?: string;
   isCompacting?: boolean;
   bridgeDead?: boolean;
   latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
@@ -41,10 +42,11 @@ interface WaitingIndicatorProps {
   userAccepted?: boolean;
   acknowledged?: boolean;
   needsPermission?: boolean;
+  unknownCommand?: string;
   styles: Record<string, string>;
 }
 
-function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledged, needsPermission, styles }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, styles }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
   if (userAccepted) {
     return <span className={styles.bubbleDone}>done</span>;
@@ -53,6 +55,8 @@ function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledg
     return <span className={styles.bubbleDonePending}>review</span>;
   }
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
+  // Fresh event — show it even if the "waiting" bubble was acknowledged.
+  if (unknownCommand) return <span className={styles.bubbleUnknownCmd}>⚠ {unknownCommand} not a command</span>;
   if (acknowledged) return null;
   return <span className={styles.bubble}>waiting</span>;
 }
@@ -67,7 +71,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
@@ -128,7 +132,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
-      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && (userAccepted || completionHint === 'done'))) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission) && (
+      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && (userAccepted || completionHint === 'done'))) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission && !unknownCommand) && (
         <div
           className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
@@ -155,6 +159,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
                   userAccepted={userAccepted}
                   acknowledged={acknowledged}
                   needsPermission={needsPermission}
+                  unknownCommand={unknownCommand}
                   styles={styles}
                 />
               )}

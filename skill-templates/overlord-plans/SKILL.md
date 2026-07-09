@@ -52,6 +52,14 @@ else:
 Create a new plan. Title comes from args; body is optional (use `''` if absent).
 If no title is provided in args, ask the user before posting.
 
+**Use the full plan body — never a shortcut summary.** If a fuller plan already exists for this
+work (e.g. a `/pr-start` plan at `~/.claude/PLANS/<TICKET>/<service>.md`, or a plan already written
+out in this conversation), the Overlord `body` MUST be that content **verbatim** — read the file and
+paste it whole. Do NOT hand-write a condensed/re-summarized version. If no such plan exists yet,
+write a complete plan first (TL;DR / Summary, Boundaries, Behavior change, Risks, Out of scope,
+Detailed plan with files + implementation steps + testing) — the same structure `/pr-start` uses —
+and post that. A thin summary body is not acceptable.
+
 **Always create as `draft` first**, then ask the user for explicit approval before
 flipping to `active`. Do not skip the draft step. Do not implement before approval.
 
@@ -110,6 +118,7 @@ print(p['body'])
 - Set `OVERLORD_BASE` at the start of every invocation; never hardcode a host.
 - For `create`, ask for title if not provided in args.
 - For `create`, always POST as `status=draft` first, paste the body, then wait for explicit user approval before flipping to `active`. Never go straight to `active`.
+- For `create`, the `body` must be the **full** plan — if a `/pr-start` `PLANS/*.md` (or an already-written plan) exists, paste it **verbatim**, never a condensed re-summary.
 - For `delete`, always confirm with the user before calling DELETE.
 - For `update`, include only the fields the user specified in the PATCH JSON.
 - If any curl returns a non-2xx status, surface the error body verbatim.

@@ -897,6 +897,8 @@ export class StateManager {
       })(),
       permissionPromptText: transcript?.permissionPromptText || existingSession?.permissionPromptText,
       isLimitPrompt: existingSession?.isLimitPrompt,
+      // Screen-grid derived, transient/live-only — carry across rebuilds (mirrors needsPermission).
+      unknownCommand: existingSession?.unknownCommand,
       permissionMode: (() => {
         // If a shift+tab / cycle-endpoint detection has locked the mode, honor the lock.
         // Otherwise fall back to transcript (fresh session) or prior in-memory value.
@@ -1505,6 +1507,8 @@ export class StateManager {
     if (changed) {
       // Clear completionHint when leaving waiting state
       if (prevState === 'waiting' && result.state !== 'waiting') {
+        // Leaving waiting = a real turn started; drop any stale unknown-command bubble.
+        session.unknownCommand = undefined;
         session.completionHint = undefined;
         session.completionHintByUser = false;
         clearCompletionHint(sessionId);
@@ -1834,6 +1838,27 @@ export class StateManager {
     }
   }
 
+  /** Record an "Unknown command: /x" the PTY stream detector saw. Screen-grid derived,
+   *  never in the transcript. Transient/live-only (not persisted). Cleared by the next
+   *  real activity (worker goes active, transcript advances, or /clear). Accepts a Claude
+   *  sessionId or an ovrId — the PTY path only knows ovrId. */
+  setUnknownCommand(sessionId: string, cmd: string): void {
+    const claudeId = this.toClaudeId(sessionId);
+    const session = this.sessions.get(claudeId);
+    if (!session) return;
+    if (session.unknownCommand === cmd) return;
+    session.unknownCommand = cmd;
+    this.onChange();
+  }
+
+  /** Clear the unknown-command bubble once the worker does something real. */
+  private clearUnknownCommand(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.unknownCommand === undefined) return;
+    session.unknownCommand = undefined;
+    this.onChange();
+  }
+
   /** Called when /clear is injected. Immediately wipes the activity feed and blocks
    *  refreshTranscript from re-reading the old transcript until replacement is detected. */
   clearActivityFeed(sessionId: string): void {
@@ -1843,6 +1868,7 @@ export class StateManager {
     session.activityFeed = [];
     session.pendingQuestion = undefined;
     session.lastMessage = undefined;
+    session.unknownCommand = undefined;
     this.onChange();
   }
 
@@ -1944,6 +1970,8 @@ export class StateManager {
     if (active) {
       this.bridgeActiveOverride.add(claudeId);
       this.promoteToWorkingIfWaiting(claudeId);
+      // The worker started doing real work — supersede any stale unknown-command bubble.
+      this.clearUnknownCommand(claudeId);
     } else {
       this.bridgeActiveOverride.delete(claudeId);
     }

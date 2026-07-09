@@ -358,7 +358,10 @@ function readSkillsFrom(root: string, source: BrainSkill['source']): BrainSkill[
     entries = fs.readdirSync(root, { withFileTypes: true });
   } catch { return []; }
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (!entry.isDirectory()) continue;
+    // Skill dirs are often symlinks (e.g. ~/.claude/skills entries linked into a repo).
+    // isDirectory() is false for a symlink, so accept symlinks too and let existsFile
+    // resolve the target's SKILL.md.
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
     const skillMd = path.join(root, entry.name, 'SKILL.md');
     if (!existsFile(skillMd)) continue;
     const raw = readFileSafe(skillMd) ?? '';

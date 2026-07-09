@@ -153,6 +153,20 @@ export class PrCache {
     };
   }
 
+  /** Force a one-off REST refresh for a branch that is NOT currently surfaced
+   *  in the snapshot (archived/closed room). Records fresh state into
+   *  prHistoryStore via the shared fetch chokepoint. Resolves when the
+   *  fetch+record completes so callers can sequence calls and avoid bursting
+   *  `gh` forks. The transient live-cache entry it creates is evicted by the
+   *  next `retain()` (the cwd isn't in `activeCwds`). */
+  async refreshForHistory(cwd: string, branch: string): Promise<void> {
+    this.scheduleRefresh(cwd, branch, true);
+    const inFlight = this.entries.get(entryKey(cwd, branch))?.inFlight;
+    if (inFlight) {
+      try { await inFlight; } catch { /* ignore — error already cached */ }
+    }
+  }
+
   retain(activeCwds: Set<string>): void {
     for (const [key, entry] of this.entries) {
       if (!activeCwds.has(entry.cwd)) this.entries.delete(key);
@@ -224,24 +238,28 @@ export class PrCache {
 }
 
 // repoIdent (owner/name) is derived once per cwd from `git remote get-url
-// origin`. No API call. Cached for the process lifetime — origin URLs don't
-// change in practice, and cache is dropped on `retain()` when cwd disappears.
-const repoIdentCache = new Map<string, { owner: string; repo: string } | null>();
+// origin`. No API call. ONLY successful resolutions are cached — origin URLs
+// don't change in practice, so a positive result is good for the process
+// lifetime (dropped on `retain()` when cwd disappears). Failures are NOT
+// cached: a transient `git` timeout during the boot spawn-storm (the event
+// loop is blocked, so the 5s timer can fire) must not poison the cwd forever
+// and silently blank every PR lookup for it. Uncached → the next poll retries.
+const repoIdentCache = new Map<string, { owner: string; repo: string }>();
 
 async function getRepoIdent(cwd: string): Promise<{ owner: string; repo: string } | null> {
   const cached = repoIdentCache.get(cwd);
   if (cached !== undefined) return cached;
   try {
-    const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd, timeout: 2000 });
+    const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd, timeout: 5000 });
     const url = stdout.trim();
     // Match git@host:owner/repo(.git)? or https://host/owner/repo(.git)?
     const m = url.match(/[:/]([^/:]+)\/([^/]+?)(?:\.git)?$/);
-    if (!m) { repoIdentCache.set(cwd, null); return null; }
+    if (!m) return null; // unparseable remote — don't cache, remote may change
     const ident = { owner: m[1], repo: m[2] };
     repoIdentCache.set(cwd, ident);
     return ident;
   } catch {
-    repoIdentCache.set(cwd, null);
+    // git missing/timed out/no origin — transient. Don't cache; retry next poll.
     return null;
   }
 }

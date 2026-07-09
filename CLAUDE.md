@@ -87,6 +87,10 @@ Delegate to subagents whenever independent work parallelizes. Prefer parallel to
 - Auto-jobs that delete data must default to OFF. Enable via explicit toggle (env var, settings flag, or CLAUDE.md-documented manual invocation). No `setTimeout(destructiveFn, 30s)` on boot.
 - Cross-check freshness against a second source (transcript mtime, not `lastActivity`).
 
+## Background Jobs (env toggles)
+
+- `OVERLORD_ARCHIVE_PR_REFRESH` (default ON; set `0`/`false` to disable): hourly REST refresh of PR state for archived/closed rooms only, non-MERGED entries only. Live rooms already poll on the 15-min TTL. Non-destructive (records into `prHistoryStore`); kill switch exists for perf-sensitive machines. See `stateManager.refreshArchivedPrs` / `selectArchivedPrTargets`.
+
 ## Interrupts
 
 When the user sends a message mid-tool-call, finish the in-flight call only if it's a read. For writes/destructive actions, stop, re-read the latest user message, confirm before continuing.

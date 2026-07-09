@@ -38,7 +38,8 @@ const CUT_FLUFF = [
 ].join("\n");
 
 const PR_REVIEW = [
-  "Check if all CI/review runs are finished for this PR. If not, wait until they complete before proceeding.",
+  "Do NOT wait for long-running integration tests before addressing review comments — start on the CR feedback immediately.",
+  "Only fast lint / static-review runs are worth waiting on; let integration/e2e suites run in the background and re-check them at the end.",
   "",
   "Fetch all review comments from the PR. Present a numbered summary table:",
   "",

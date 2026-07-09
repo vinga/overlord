@@ -15,6 +15,7 @@ import { searchFeed, BoldExcerpt } from '../lib/search';
 import { FileEditorOverlay } from './FileEditorOverlay';
 import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
+import { SkillPickerPopup } from './SkillPickerPopup';
 import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
@@ -35,11 +36,31 @@ const MARKDOWN_CACHE_MAX = 500;
 const markdownCache = new Map<string, string>();
 // Matches absolute Unix paths (/a/b/c) and Windows paths (C:\a\b or C:/a/b) with optional :line or :line:col suffix.
 const PATH_REGEX = /(?:\/[\w.\-+@]+){2,}(?::\d+(?::\d+)?)?|[A-Za-z]:[\\/](?:[\w.\-+@]+[\\/]?)+(?::\d+(?::\d+)?)?/g;
-function linkifyPaths(html: string): string {
+function linkifyPaths(html: string, wrapFences = true): string {
   if (typeof DOMParser === 'undefined') return html;
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
   const root = doc.body.firstChild as HTMLElement | null;
   if (!root) return html;
+  // Wrap ```markdown / ```md fences with a per-fence "render" toggle so their
+  // content can be shown as real formatted markdown instead of grey source.
+  if (wrapFences) {
+    const fences = root.querySelectorAll('pre > code.language-markdown, pre > code.language-md');
+    fences.forEach((code) => {
+      const pre = code.parentElement as HTMLElement | null;
+      const parent = pre?.parentElement;
+      if (!pre || !parent) return;
+      const wrapper = doc.createElement('div');
+      wrapper.className = 'mdFence';
+      wrapper.setAttribute('data-md-src', encodeURIComponent(code.textContent ?? ''));
+      const btn = doc.createElement('button');
+      btn.className = 'mdFenceToggle';
+      btn.setAttribute('data-state', 'source');
+      btn.textContent = 'render';
+      parent.replaceChild(wrapper, pre);
+      wrapper.appendChild(btn);
+      wrapper.appendChild(pre);
+    });
+  }
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       let p = node.parentElement;
@@ -76,14 +97,15 @@ function linkifyPaths(html: string): string {
   }
   return root.innerHTML;
 }
-function renderMarkdown(text: string): string {
-  const cached = markdownCache.get(text);
+function renderMarkdown(text: string, wrapFences = true): string {
+  const cacheKey = wrapFences ? text : `@nofence@${text}`;
+  const cached = markdownCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  const result = linkifyPaths(marked.parse(text) as string);
+  const result = linkifyPaths(marked.parse(text) as string, wrapFences);
   if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
     markdownCache.delete(markdownCache.keys().next().value!);
   }
-  markdownCache.set(text, result);
+  markdownCache.set(cacheKey, result);
   return result;
 }
 
@@ -1330,6 +1352,35 @@ export function DetailPanel({
       if (detail?.path) setFileEditorPath(detail.path);
     };
     const clickHandler = (e: MouseEvent) => {
+      const fenceToggle = (e.target as HTMLElement | null)?.closest('.mdFenceToggle') as HTMLElement | null;
+      if (fenceToggle) {
+        e.preventDefault();
+        const wrapper = fenceToggle.closest('.mdFence') as HTMLElement | null;
+        const pre = wrapper?.querySelector('pre') as HTMLElement | null;
+        if (!wrapper || !pre) return;
+        if (fenceToggle.getAttribute('data-state') === 'source') {
+          const src = decodeURIComponent(wrapper.getAttribute('data-md-src') ?? '');
+          let rendered = wrapper.querySelector('.mdFenceRendered') as HTMLElement | null;
+          if (!rendered) {
+            rendered = document.createElement('div');
+            rendered.className = `mdFenceRendered ${styles.markdownContent}`;
+            rendered.innerHTML = renderMarkdown(src, false);
+            wrapper.appendChild(rendered);
+          } else {
+            rendered.style.display = '';
+          }
+          pre.style.display = 'none';
+          fenceToggle.setAttribute('data-state', 'rendered');
+          fenceToggle.textContent = 'source';
+        } else {
+          const rendered = wrapper.querySelector('.mdFenceRendered') as HTMLElement | null;
+          pre.style.display = '';
+          if (rendered) rendered.style.display = 'none';
+          fenceToggle.setAttribute('data-state', 'source');
+          fenceToggle.textContent = 'render';
+        }
+        return;
+      }
       const target = (e.target as HTMLElement | null)?.closest('[data-file-path]');
       if (target) {
         const path = target.getAttribute('data-file-path');
@@ -1424,6 +1475,8 @@ export function DetailPanel({
   const [sendInput2, setSendInput2] = useState('');
   const [showQuickMenu, setShowQuickMenu] = useState(false);
   const quickMenuRef = useRef<HTMLDivElement>(null);
+  const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const sendTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [showConvMenu, setShowConvMenu] = useState(false);
   const [copiedConv, setCopiedConv] = useState(false);
   const convMenuRef = useRef<HTMLDivElement>(null);
@@ -2799,10 +2852,22 @@ const currentDisplayName =
                                     {p.label}
                                   </button>
                                 ))}
+                                <div className={styles.quickMenuDivider} />
+                                <button
+                                  className={styles.quickMenuItem}
+                                  onMouseDown={e => {
+                                    e.preventDefault();
+                                    setShowQuickMenu(false);
+                                    setShowSkillPicker(true);
+                                  }}
+                                >
+                                  Skill…
+                                </button>
                               </div>
                             )}
                           </div>
                           <textarea
+                            ref={sendTextareaRef}
                             className={`${styles.sendTextarea} ${needsResume ? styles.sendTextareaClosed : ''} ${resuming ? styles.sendTextareaResuming : ''}`}
                             value={sendInput2}
                             disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
@@ -3333,6 +3398,20 @@ const currentDisplayName =
           path={fileEditorPath}
           cwd={selectedSession?.cwd}
           onClose={() => setFileEditorPath(null)}
+        />
+      )}
+      {showSkillPicker && selectedSession && (
+        <SkillPickerPopup
+          cwd={selectedSession.cwd}
+          onClose={() => setShowSkillPicker(false)}
+          onPick={cmd => {
+            setSendInput2(cmd);
+            setShowSkillPicker(false);
+            requestAnimationFrame(() => {
+              const el = sendTextareaRef.current;
+              if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+            });
+          }}
         />
       )}
       <SelectionMenu containerRef={transcriptRef} onExplain={handleExplain} />

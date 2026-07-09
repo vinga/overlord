@@ -1,6 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { WorkerAvatar } from './WorkerAvatar';
 import styles from './ColorPicker.module.css';
+
+const POPOVER_WIDTH = 264; // matches .popover min-width + padding
+const POPOVER_HEIGHT = 240; // approximate; used only for vertical flip
 
 const HUE_PRESETS: { label: string; h: number; s?: number }[] = [
   { label: 'Red', h: 0 },
@@ -38,18 +42,55 @@ interface Props {
 export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [draftHue, setDraftHue] = useState<number | null>(null);
   const latestHueRef = useRef<number | null>(null);
 
+  // Position the portaled popover relative to the avatar button, clamped to the
+  // viewport and flipped upward if there's no room below.
+  const reposition = () => {
+    const btn = buttonRef.current;
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const margin = 8;
+    let left = r.left;
+    left = Math.min(left, window.innerWidth - POPOVER_WIDTH - margin);
+    left = Math.max(margin, left);
+    let top = r.bottom + 10;
+    if (top + POPOVER_HEIGHT > window.innerHeight - margin) {
+      const above = r.top - 10 - POPOVER_HEIGHT;
+      if (above >= margin) top = above;
+    }
+    setPos({ top, left });
+  };
+
+  useLayoutEffect(() => {
+    if (open) reposition();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+    // Outside-click closes; the popover is portaled to <body>, so it lives
+    // outside wrapperRef — check both the toggle wrapper and the popover.
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (wrapperRef.current?.contains(t)) return;
+      if (popoverRef.current?.contains(t)) return;
+      setOpen(false);
     };
-    document.addEventListener('mousedown', onClick);
-    return () => document.removeEventListener('mousedown', onClick);
+    const onReflow = () => reposition();
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onReflow, true);
+    window.addEventListener('resize', onReflow);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onReflow, true);
+      window.removeEventListener('resize', onReflow);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
@@ -86,6 +127,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
   return (
     <div className={styles.wrapper} ref={wrapperRef}>
       <button
+        ref={buttonRef}
         type="button"
         className={styles.avatarButton}
         onClick={() => setOpen(v => !v)}
@@ -93,8 +135,14 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
       >
         <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} />
       </button>
-      {open && (
-        <div className={styles.popover} role="dialog" aria-label="Choose color">
+      {open && createPortal(
+        <div
+          ref={popoverRef}
+          className={styles.popover}
+          role="dialog"
+          aria-label="Choose color"
+          style={{ top: pos.top, left: pos.left }}
+        >
           <div className={styles.label}>Hue</div>
           <div className={styles.presets}>
             {HUE_PRESETS.map((p) => {
@@ -149,7 +197,8 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
           >
             Reset to default
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

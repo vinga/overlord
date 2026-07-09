@@ -79,3 +79,45 @@
   color: #e8c97c;
   border-bottom-color: rgba(232, 201, 124, 0.7);
 }
+
+/* Per-fence markdown toggle: a ```markdown block that can be rendered inline */
+.mdFence {
+  position: relative;
+}
+
+.mdFenceToggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.mdFence:hover .mdFenceToggle {
+  opacity: 1;
+}
+
+.mdFenceToggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Rendered-inline fence keeps a hint that it was a fenced markdown block */
+.mdFenceRendered {
+  border-left: 2px solid rgba(212, 175, 55, 0.35);
+  border-radius: 4px;
+  background: rgba(212, 175, 55, 0.04);
+  padding: 8px 12px;
+  margin: 8px 0;
+}

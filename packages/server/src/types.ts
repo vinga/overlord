@@ -105,6 +105,10 @@ export interface Session {
   needsPermission?: boolean;
   permissionPromptText?: string;
   isLimitPrompt?: boolean;
+  /** Slash command the user typed that Claude Code rejected ("Unknown command: /x").
+   *  Screen-grid derived (never in the transcript); transient/live-only, not persisted.
+   *  Cleared on the next real activity. */
+  unknownCommand?: string;
   permissionApprovedAt?: number;  // timestamp ms — suppress re-detection for 30s
   permissionMode?: string;
   permissionModeLockedUntil?: number;  // timestamp ms — screen-detected mode, blocks transcript overwrite
@@ -285,6 +289,7 @@ export interface LiveSession {
   needsPermission?: boolean;
   permissionPromptText?: string;
   isLimitPrompt?: boolean;
+  unknownCommand?: string;
   permissionApprovedAt?: number;
   permissionMode?: string;
   permissionModeLockedUntil?: number;
