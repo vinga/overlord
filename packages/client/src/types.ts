@@ -115,7 +115,8 @@ interface Session {
   completionHint?: 'done' | 'awaiting';
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
-  latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
+  latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   intent?: string;                // rolling Haiku-generated summary of what the session is doing
   isWorker?: boolean;
   ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter

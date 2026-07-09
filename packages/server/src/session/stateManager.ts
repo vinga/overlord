@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -248,6 +248,7 @@ export class StateManager {
   /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
   private processSnapshot = new Map<number, { parentPid: number; name: string }>();
   private processSnapshotAge = 0;
+  private gitAheadInFlight = false;
   private clearLifecycle = new ClearLifecycleManager();
   getPendingClearSessions(): string[] { return this.clearLifecycle.getInFlightSessions(); }
   /** Force-clear inFlight state for a session (recovery path when /clear got
@@ -340,7 +341,7 @@ export class StateManager {
     this.gitWatcher = new GitWatcher(() => this.onChange());
     this.prHistoryStore = new PrHistoryStore();
     this.prCache = new PrCache(() => this.onChange(), this.prHistoryStore);
-    this.gitAheadTimer = setInterval(() => this.refreshGitAheadCache(), 15_000);
+    this.gitAheadTimer = setInterval(() => { void this.refreshGitAheadCache(); }, 15_000);
     // Hourly background refresh of PR state for archived/closed rooms (live
     // rooms already poll on the 15-min HIT TTL). Non-destructive + REST-only +
     // gated by env, so default-ON is acceptable. First run is delayed off boot.
@@ -375,20 +376,37 @@ export class StateManager {
     this.processSnapshotAge = Date.now();
   }
 
+  /** Sweep `git status` across the rooms that have a live session, refreshing the
+   *  ahead-count cache. Serial by design — a parallel fan-out would spawn one git
+   *  per repo at once.
+   *
+   *  Re-entrancy guard: this is `async` but was driven by a bare 15s setInterval.
+   *  Each sweep spawns one `git status --untracked-files=all` per cwd (0.1–0.4s
+   *  each), so a slow sweep overran its own interval and the next one started on
+   *  top of it, stacking blocking `posix_spawn` calls on the event loop. Skip the
+   *  tick instead — the cache is advisory and the next tick is 15s away. */
   private async refreshGitAheadCache(): Promise<void> {
-    const cwds = new Set<string>();
-    for (const session of this.sessions.values()) {
-      if (session.cwd) cwds.add(session.cwd);
-    }
-    for (const cwd of cwds) {
-      try {
-        const status = await readGitStatus(cwd, this.prCache);
-        if (status) {
-          this.gitAheadCache.set(cwd, { ahead: status.ahead, cachedAt: Date.now() });
-        }
-      } catch {
-        // ignore — stale cache entry stays
+    if (this.gitAheadInFlight) return;
+    this.gitAheadInFlight = true;
+    try {
+      // Closed sessions don't need a live ahead-count on a 15s cadence, and they
+      // outnumber live ones ~20:1 on a long-running server. Sweep live rooms only.
+      const cwds = new Set<string>();
+      for (const session of this.sessions.values()) {
+        if (session.cwd && session.state !== 'closed') cwds.add(session.cwd);
       }
+      for (const cwd of cwds) {
+        try {
+          const status = await readGitStatus(cwd, this.prCache);
+          if (status) {
+            this.gitAheadCache.set(cwd, { ahead: status.ahead, cachedAt: Date.now() });
+          }
+        } catch {
+          // ignore — stale cache entry stays
+        }
+      }
+    } finally {
+      this.gitAheadInFlight = false;
     }
   }
 
@@ -2459,8 +2477,12 @@ export class StateManager {
    *  artifactStore scan per session. Pulled from `composeSession` rather than
    *  computing inline so other in-process consumers can build the wire-format
    *  Session shape without re-running the projection logic. */
-  private buildPlansByOvr(): Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }> {
-    const out = new Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }>();
+  /** Plan METADATA only — `body` is deliberately excluded. Plan bodies dominated the
+   *  snapshot (154KB of 350KB, most of it on closed sessions nobody was viewing) and
+   *  were re-serialized at 5Hz to every client. The client fetches the body on demand
+   *  via GET /api/artifacts/:artifactId when a plan pill is opened. */
+  private buildPlansByOvr(): Map<string, PlanSummary> {
+    const out = new Map<string, PlanSummary>();
     for (const a of artifactStore.list('plan')) {
       if (a.status === 'archived') continue;
       const cur = out.get(a.overlordId);
@@ -2468,7 +2490,6 @@ export class StateManager {
         out.set(a.overlordId, {
           artifactId: a.artifactId,
           title: a.title,
-          body: a.body,
           status: a.status,
           claudePlanToolUseId: a.claudePlanToolUseId,
           updatedAt: a.updatedAt,
@@ -2494,7 +2515,7 @@ export class StateManager {
    *  activityFeed to the tail visible without scrolling. */
   private composeSession(
     session: Session,
-    plansByOvr: Map<string, { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string }>,
+    plansByOvr: Map<string, PlanSummary>,
   ): Session {
     const overlord = sessionStore.getByOverlordId(session.overlordId);
     const latestPlan = plansByOvr.get(session.overlordId);

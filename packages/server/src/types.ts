@@ -72,6 +72,16 @@ export interface Task {
   planStatus?: 'approved' | 'rejected' | 'pending'; // only for kind='plan'
 }
 
+/** Plan metadata carried in the WS snapshot. The `body` is NOT included — it is
+ *  fetched on demand via GET /api/artifacts/:artifactId. See buildPlansByOvr. */
+export interface PlanSummary {
+  artifactId: string;
+  title: string;
+  status: string;
+  claudePlanToolUseId?: string;
+  updatedAt: string;
+}
+
 export interface Session {
   sessionId: string;
   overlordId: string;   // stable identifier across /clear and compaction; assigned once per lineage
@@ -127,7 +137,7 @@ export interface Session {
   manuallyDone?: boolean;
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
-  latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  latestPlan?: PlanSummary;
   /** Rolling Haiku-generated summary of what the session is working on. Replaces requestSummary and completionSummary on the worker card. */
   intent?: string;
   /** @deprecated Use Task.title instead. Kept for backwards-compat with aiClassifier. */

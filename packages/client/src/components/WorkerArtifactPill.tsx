@@ -18,8 +18,8 @@ type PlanStatus = 'draft' | 'active' | 'done' | 'archived';
 interface Props {
   artifactId: string;
   title: string;
-  planContent: string;
   planStatus: PlanStatus;
+  /** Doubles as the cache-busting key for the lazily fetched plan body. */
   timestamp: string;
 }
 
@@ -57,7 +57,15 @@ function statusPillClass(s: PlanStatus): string {
   return styles.statusPillDraft;
 }
 
-export function WorkerArtifactPill({ artifactId, title, planContent, planStatus, timestamp }: Props) {
+// Plan bodies are no longer carried in the WS snapshot (they were 44% of a 350KB
+// payload re-sent at 5Hz). Fetch on first open and cache by artifactId + updatedAt,
+// so a plan edit busts the entry while repeated opens cost nothing.
+const planBodyCache = new Map<string, string>();
+
+export function WorkerArtifactPill({ artifactId, title, planStatus, timestamp }: Props) {
+  const bodyKey = `${artifactId}@${timestamp}`;
+  const [planContent, setPlanContent] = useState<string | null>(() => planBodyCache.get(bodyKey) ?? null);
+  const [bodyError, setBodyError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(false);
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
@@ -91,6 +99,27 @@ export function WorkerArtifactPill({ artifactId, title, planContent, planStatus,
   };
 
   const open = pinned;
+
+  // Load the body the first time this pill is opened (or after the plan changed).
+  useEffect(() => {
+    if (!open) return;
+    const cached = planBodyCache.get(bodyKey);
+    if (cached !== undefined) { setPlanContent(cached); return; }
+    let cancelled = false;
+    setBodyError(null);
+    void (async () => {
+      try {
+        const r = await fetch(`/api/artifacts/${artifactId}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const body = ((await r.json()) as { artifact?: { body?: string } }).artifact?.body ?? '';
+        planBodyCache.set(bodyKey, body);
+        if (!cancelled) setPlanContent(body);
+      } catch (err) {
+        if (!cancelled) setBodyError(err instanceof Error ? err.message : 'failed to load plan');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, bodyKey, artifactId]);
 
   useEffect(() => {
     if (!pinned) return;
@@ -189,10 +218,16 @@ export function WorkerArtifactPill({ artifactId, title, planContent, planStatus,
             <span className={styles.popoverTitle}>{title}</span>
             <span className={styles.popoverTime}>{relativeTime(timestamp)}</span>
           </div>
-          <div
-            className={`${styles.popoverBody} ${styles.planBody}`}
-            dangerouslySetInnerHTML={{ __html: renderPlanMarkdown(planContent) }}
-          />
+          {planContent !== null ? (
+            <div
+              className={`${styles.popoverBody} ${styles.planBody}`}
+              dangerouslySetInnerHTML={{ __html: renderPlanMarkdown(planContent) }}
+            />
+          ) : (
+            <div className={`${styles.popoverBody} ${styles.planBody}`}>
+              {bodyError ? `Could not load plan: ${bodyError}` : 'Loading plan…'}
+            </div>
+          )}
         </div>,
         document.body
       )}

@@ -22,7 +22,8 @@ interface WorkerProps {
   unknownCommand?: string;
   isCompacting?: boolean;
   bridgeDead?: boolean;
-  latestPlan?: { artifactId: string; title: string; body: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
+  latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   isWorker?: boolean;
   isRaw?: boolean;
   ptyInputPendingSince?: number;
@@ -265,7 +266,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
         <WorkerArtifactPill
           artifactId={latestPlan.artifactId}
           title={latestPlan.title ?? 'Plan'}
-          planContent={latestPlan.body}
           planStatus={latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
           timestamp={latestPlan.updatedAt}
         />

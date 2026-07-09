@@ -511,19 +511,22 @@ function sendToClient(ws: WebSocket, msg: object): void {
   }
 }
 
-// Broadcast snapshot to all connected WS clients (wrapped with type field)
-function broadcast(snapshot: OfficeSnapshot): void {
-  broadcastRaw({ type: 'snapshot', ...snapshot });
+// Broadcast snapshot to all connected WS clients (wrapped with type field).
+// Returns the serialized byte count so the caller can log payload growth — the
+// snapshot is re-sent at 5Hz, so its size is the dominant event-loop cost.
+function broadcast(snapshot: OfficeSnapshot): number {
+  return broadcastRaw({ type: 'snapshot', ...snapshot });
 }
 
 // Broadcast an arbitrary typed message to all connected WS clients
-function broadcastRaw(msg: object): void {
+function broadcastRaw(msg: object): number {
   const payload = JSON.stringify(msg);
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
     }
   }
+  return payload.length;
 }
 
 // Wire up logger so it can broadcast log entries to all clients
@@ -573,9 +576,9 @@ const stateManager = new StateManager(() => {
   const t0 = Date.now();
   const snap = stateManager.getSnapshot();
   const t1 = Date.now();
-  broadcast(snap);
+  const bytes = broadcast(snap);
   const t2 = Date.now();
-  if (t2 - t0 > 100) console.log(`[perf] broadcast: getSnapshot=${t1 - t0}ms send=${t2 - t1}ms`);
+  if (t2 - t0 > 100) console.log(`[perf] broadcast: getSnapshot=${t1 - t0}ms send=${t2 - t1}ms bytes=${bytes} clients=${wss.clients.size}`);
 });
 // Inject ovrToPty-backed liveness probe so snapshots carry `ptyAlive` for embedded sessions.
 stateManager.setHasLivePtyFn((ovrId) => {
