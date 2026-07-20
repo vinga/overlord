@@ -794,6 +794,7 @@ export function readTranscriptState(filePath: string): {
           subtype?: string;
           timestamp?: string;
           compactMetadata?: { trigger?: string; preTokens?: number };
+          attachment?: { type?: string; prompt?: string; timestamp?: string; origin?: { kind?: string } };
           message?: {
             content?: string | Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
             model?: string;
@@ -954,6 +955,24 @@ export function readTranscriptState(filePath: string): {
 
           const messageCount = activityFeed.filter(x => x.kind === 'message').length;
           if (messageCount >= MAX_FEED_MESSAGES) { feedTruncated = true; break; }
+        }
+
+        // Queued (busy-typed) user messages are recorded only as attachment/queued_command,
+        // never as a `user` record. Surface them as user bubbles so they aren't "eaten".
+        if (parsed && parsed.type === 'attachment'
+          && parsed.attachment?.type === 'queued_command'
+          && parsed.attachment.origin?.kind === 'human') {
+          const prompt = parsed.attachment.prompt;
+          if (typeof prompt === 'string' && prompt.trim().length > 0) {
+            activityFeed.unshift({
+              kind: 'message',
+              role: 'user',
+              content: prompt.slice(0, MAX_CONTENT_LENGTH),
+              timestamp: parsed.attachment.timestamp ?? parsed.timestamp,
+            });
+            const messageCount = activityFeed.filter(x => x.kind === 'message').length;
+            if (messageCount >= MAX_FEED_MESSAGES) { feedTruncated = true; break; }
+          }
         }
       } catch {
         // skip
@@ -1651,12 +1670,21 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
       const parsed = JSON.parse(window[i]) as {
         type?: string;
         timestamp?: string;
+        attachment?: { type?: string; prompt?: string; timestamp?: string; origin?: { kind?: string } };
         message?: {
           content?: string | Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
         };
       };
 
-      if (parsed.type === 'user') {
+      if (parsed.type === 'attachment'
+        && parsed.attachment?.type === 'queued_command'
+        && parsed.attachment.origin?.kind === 'human') {
+        const prompt = parsed.attachment.prompt;
+        if (typeof prompt === 'string' && prompt.trim().length > 0) {
+          activityFeed.unshift({ kind: 'message', role: 'user', content: prompt.slice(0, MAX_CONTENT), timestamp: parsed.attachment.timestamp ?? parsed.timestamp });
+          messageCount++;
+        }
+      } else if (parsed.type === 'user') {
         const rawContent = parsed.message?.content;
         let text: string | undefined;
         if (typeof rawContent === 'string') text = rawContent;
