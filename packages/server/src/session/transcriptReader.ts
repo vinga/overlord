@@ -98,6 +98,13 @@ interface TranscriptCache {
   stateHint: 'tool_use' | 'ask_user_question' | 'assistant_text' | 'tool_result' | 'user_input' | 'none' | 'codex_reasoning';
   result: ReturnType<typeof readTranscriptState>;
   dirty: boolean; // set by markDirty() when chokidar fires
+  // Incremental-tail state (claude path only). parsedTailLines is exactly what
+  // readFileTail() last returned; parsedUpToBytes is the byte offset through which
+  // COMPLETE lines have been consumed (== fileSize when the file ended on a newline).
+  // On an append-only grow these let us read just the new bytes instead of
+  // re-parsing the whole multi-MB tail window every 3s poll.
+  parsedTailLines?: string[];
+  parsedUpToBytes?: number;
 }
 const transcriptCache = new Map<string, TranscriptCache>();
 
@@ -141,10 +148,16 @@ export function _cacheSizesForTest(): { transcript: number; compact: number } {
   return { transcript: transcriptCache.size, compact: compactCountCache.size };
 }
 
+/** Test-only: counts which tail-read branch ran, so tests can prove the append-only
+ *  fast path actually fired instead of silently falling back to a full read. */
+export const _tailReadStatsForTest = { full: 0, incremental: 0 };
+
 /** Test-only: wipe the bounded caches so module-global state can't leak across tests. */
 export function _resetCachesForTest(): void {
   transcriptCache.clear();
   compactCountCache.clear();
+  _tailReadStatsForTest.full = 0;
+  _tailReadStatsForTest.incremental = 0;
 }
 
 /** Count-only cap for compactCountCache: drop oldest by Map insertion order. */
@@ -491,6 +504,83 @@ function readFileTail(filePath: string, fileSize: number): string[] {
   }
 }
 
+/** Cheap 1-byte read: does the file end on a newline (a clean line boundary)? */
+function fileEndsWithNewline(filePath: string, fileSize: number): boolean {
+  if (fileSize <= 0) return false;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(1);
+    fs.readSync(fd, buf, 0, 1, fileSize - 1);
+    return buf[0] === 0x0a;
+  } catch {
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Append-only fast path for readFileTail: given the lines we last parsed and the
+ * byte offset we consumed up to, read ONLY the bytes appended since then, merge the
+ * new complete lines into the retained buffer, and trim the buffer back to the same
+ * INITIAL_TAIL_BYTES window readFileTail would use — so the returned lines are
+ * byte-for-byte what a fresh readFileTail() would produce.
+ *
+ * Returns null when the incremental assumptions don't hold (caller falls back to a
+ * full readFileTail): no prior buffer, file shrank/unchanged, the appended chunk
+ * would leave fewer than TARGET_LINES after trimming (giant-line case that
+ * readFileTail handles by expanding its window), or a read error.
+ *
+ * The parsed offset always sits just after a `\n` (a single ASCII byte, never part
+ * of a multi-byte UTF-8 sequence), so reading [fromBytes, fileSize) never splits a
+ * character. A trailing partial line (write in flight) is dropped and its bytes are
+ * NOT consumed — parsedUpToBytes stops before it so the next poll re-reads it.
+ */
+function readFileTailIncremental(
+  filePath: string,
+  fileSize: number,
+  prevLines: string[],
+  fromBytes: number,
+): { lines: string[]; parsedUpToBytes: number } | null {
+  if (fromBytes <= 0 || fileSize <= fromBytes) return null;
+  let raw: string;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const readSize = fileSize - fromBytes;
+    const buf = Buffer.alloc(readSize);
+    const bytesRead = fs.readSync(fd, buf, 0, readSize, fromBytes);
+    raw = buf.toString('utf-8', 0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
+  }
+
+  // A trailing partial line has no closing newline. Consume only up to the last one.
+  const endsWithNewline = raw.endsWith('\n');
+  const partialBytes = endsWithNewline ? 0 : Buffer.byteLength(raw.slice(raw.lastIndexOf('\n') + 1), 'utf-8');
+  const newLines = raw.split('\n').filter((l) => l.trim().length > 0);
+  const completeNew = endsWithNewline ? newLines : newLines.slice(0, -1);
+  if (completeNew.length === 0) return null;
+
+  const merged = prevLines.concat(completeNew);
+
+  // Trim from the front to match readFileTail's INITIAL_TAIL_BYTES window.
+  let budget = INITIAL_TAIL_BYTES;
+  let keepFrom = merged.length;
+  for (let i = merged.length - 1; i >= 0; i--) {
+    budget -= Buffer.byteLength(merged[i], 'utf-8') + 1; // +1 for the newline
+    if (budget < 0) break;
+    keepFrom = i;
+  }
+  const trimmed = keepFrom > 0 ? merged.slice(keepFrom) : merged;
+  // Giant-line case: readFileTail would have expanded its window past 2MB to reach
+  // TARGET_LINES. We can't reproduce that from the buffer alone — fall back.
+  if (keepFrom > 0 && trimmed.length < TARGET_LINES) return null;
+
+  return { lines: trimmed, parsedUpToBytes: fileSize - partialBytes };
+}
+
 /**
  * Incrementally scan for compact_boundary events.
  * Only reads new content since the last scan, caching the count.
@@ -752,8 +842,31 @@ export function readTranscriptState(filePath: string): {
     const MAX_FEED_MESSAGES = 100;
     const MAX_CONTENT_LENGTH = 10000;
 
-    // Read only the tail of the file — avoids reading entire multi-MB transcripts
-    const tailLines = readFileTail(filePath, stat.size);
+    // Read only the tail of the file — avoids reading entire multi-MB transcripts.
+    // Append-only fast path: if the file merely grew since the last full parse,
+    // read just the new bytes and merge, instead of re-parsing the whole 2MB window
+    // every 3s poll (the dominant cost for actively-writing large transcripts).
+    let tailLines: string[];
+    // parsedUpToBytes: the offset through which COMPLETE lines are consumed. Seeded
+    // only when the file ends on a clean newline boundary; otherwise left undefined
+    // so the next poll falls back to a full read instead of starting mid-torn-line.
+    let parsedUpToBytes: number | undefined;
+    const incremental = (cached && !cached.dirty && !transcriptTruncated
+      && cached.parsedTailLines !== undefined
+      && cached.parsedUpToBytes !== undefined
+      && cached.parsedUpToBytes === cached.fileSize
+      && stat.size > cached.parsedUpToBytes)
+      ? readFileTailIncremental(filePath, stat.size, cached.parsedTailLines, cached.parsedUpToBytes)
+      : null;
+    if (incremental) {
+      _tailReadStatsForTest.incremental++;
+      tailLines = incremental.lines;
+      parsedUpToBytes = incremental.parsedUpToBytes;
+    } else {
+      _tailReadStatsForTest.full++;
+      tailLines = readFileTail(filePath, stat.size);
+      parsedUpToBytes = fileEndsWithNewline(filePath, stat.size) ? stat.size : undefined;
+    }
     const last30 = tailLines.slice(-(MAX_FEED_MESSAGES * 20));
 
     // Find last event with type field
@@ -1130,7 +1243,7 @@ export function readTranscriptState(filePath: string): {
       activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
     };
-    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
+    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes });
     evictTranscriptCache(now);
     return result;
   } catch {
