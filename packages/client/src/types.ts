@@ -73,6 +73,9 @@ interface Task {
   planStatus?: 'approved' | 'rejected' | 'pending'; // only for kind='plan'
 }
 
+/** Avatar glyph for a worker. undefined = 'user' (default person glyph). */
+export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes';
+
 interface Session {
   sessionId: string;
   overlordId?: string;       // stable identity across /clear and compaction
@@ -91,6 +94,7 @@ interface Session {
   feedTruncated?: boolean;
   ideName?: string;
   color: string;          // e.g. "hsl(120, 65%, 55%)"
+  icon?: WorkerIcon;      // avatar glyph; undefined = 'user'
   subagents: Subagent[];
   model?: string;
   inputTokens?: number;
@@ -117,6 +121,7 @@ interface Session {
   userAccepted?: boolean;
   /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
+  lastUserMessageTs?: string;     // newest user-message ts from untrimmed feed; confirms optimistic echoes past the tail
   intent?: string;                // rolling Haiku-generated summary of what the session is doing
   isWorker?: boolean;
   ptyInputPendingSince?: number;  // ms epoch when pending terminal input started; cleared on Enter

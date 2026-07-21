@@ -1,14 +1,26 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { WorkerIcon } from '../types';
 import { WorkerAvatar } from './WorkerAvatar';
+import { WorkerGlyph } from './workerGlyphs';
 import styles from './ColorPicker.module.css';
 
 const POPOVER_WIDTH = 264; // matches .popover min-width + padding
-const POPOVER_HEIGHT = 240; // approximate; used only for vertical flip
+const POPOVER_HEIGHT = 300; // approximate; used only for vertical flip
+
+const ICON_PRESETS: { icon: WorkerIcon; label: string }[] = [
+  { icon: 'user', label: 'Worker' },
+  { icon: 'dashboard', label: 'Dashboard' },
+  { icon: 'ticket', label: 'Refining ticket' },
+  { icon: 'investigate', label: 'Investigating' },
+  { icon: 'teach', label: 'Teaching' },
+  { icon: 'notes', label: 'Pinned notes' },
+];
 
 const HUE_PRESETS: { label: string; h: number; s?: number }[] = [
   { label: 'Red', h: 0 },
   { label: 'Orange', h: 30 },
+  { label: 'Yellow', h: 52 },
   { label: 'Green', h: 130 },
   { label: 'Teal', h: 175 },
   { label: 'Blue', h: 210 },
@@ -36,10 +48,12 @@ interface Props {
   color: string;
   size?: number;
   isRaw?: boolean;
+  icon?: WorkerIcon;
   onChange: (color: string) => void;
+  onIconChange?: (icon: WorkerIcon) => void;
 }
 
-export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChange }: Props) {
+export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, onChange, onIconChange }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -133,7 +147,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
         onClick={() => setOpen(v => !v)}
         title="Change color"
       >
-        <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} />
+        <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} icon={icon} />
       </button>
       {open && createPortal(
         <div
@@ -143,6 +157,37 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, onChan
           aria-label="Choose color"
           style={{ top: pos.top, left: pos.left }}
         >
+          {onIconChange && (
+            <>
+              <div className={styles.label}>Icon</div>
+              <div className={styles.iconPresets}>
+                {ICON_PRESETS.map((p) => {
+                  const gradId = `grad-icon-preset-${sessionId}-${p.icon}`;
+                  const isSelected = (icon ?? 'user') === p.icon;
+                  return (
+                    <button
+                      key={p.icon}
+                      type="button"
+                      className={`${styles.iconPreset} ${isSelected ? styles.selected : ''}`}
+                      onClick={() => { onIconChange(p.icon); setOpen(false); }}
+                      data-label={p.label}
+                      aria-label={p.label}
+                    >
+                      <svg width="24" height="31" viewBox="0 0 40 52" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                          <linearGradient id={gradId} x1="0%" y1="0%" x2="60%" y2="100%">
+                            <stop offset="0%" stopColor={`hsl(${hue}, ${saturation}%, ${Math.min(100, lightness + 25)}%)`} />
+                            <stop offset="100%" stopColor={color} />
+                          </linearGradient>
+                        </defs>
+                        <WorkerGlyph icon={p.icon} gradientUrl={`url(#${gradId})`} color={color} />
+                      </svg>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
           <div className={styles.label}>Hue</div>
           <div className={styles.presets}>
             {HUE_PRESETS.map((p) => {

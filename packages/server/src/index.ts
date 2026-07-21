@@ -34,6 +34,7 @@ import { registerApiRoutes } from './api/apiRoutes.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
+import { wsVisible, wsTermSubs, wsSnapshotOptOut } from './api/wsClientState.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
 import { readGridText } from './pty/screenGrid.js';
@@ -335,7 +336,7 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
     // Broadcast under ovrId so client XtermTerminal (keyed by ovrId) receives the output.
     const broadcastId = stateManager.getSession(eid)?.overlordId ?? eid;
-    broadcastRaw({ type: 'terminal:output', sessionId: broadcastId, data: data.toString('base64') });
+    broadcastTerminalOutput(broadcastId, { type: 'terminal:output', sessionId: broadcastId, data: data.toString('base64') });
 
     // Detect "Compacting conversation" in bridge output — mirrors the PTY path so bridge
     // sessions also surface the compact state in the Conversation tab before the
@@ -511,11 +512,19 @@ function sendToClient(ws: WebSocket, msg: object): void {
   }
 }
 
-// Broadcast snapshot to all connected WS clients (wrapped with type field).
-// Returns the serialized byte count so the caller can log payload growth — the
-// snapshot is re-sent at 5Hz, so its size is the dominant event-loop cost.
+// Broadcast snapshot to WS clients (wrapped with type field). Skips hidden
+// tabs (wsVisible=false — they get a fresh snapshot on the visible flip) and
+// opted-out clients (LogsPage). A snapshot is 300–600 KB re-sent at up to 5Hz;
+// sending it to backgrounded tabs ratchets their renderer RSS by GBs/day.
+// Returns the serialized byte count so the caller can log payload growth.
 function broadcast(snapshot: OfficeSnapshot): number {
-  return broadcastRaw({ type: 'snapshot', ...snapshot });
+  const payload = JSON.stringify({ type: 'snapshot', ...snapshot });
+  for (const client of wss.clients) {
+    if (client.readyState !== WebSocket.OPEN) continue;
+    if (wsVisible.get(client) === false || wsSnapshotOptOut.has(client)) continue;
+    client.send(payload);
+  }
+  return payload.length;
 }
 
 // Broadcast an arbitrary typed message to all connected WS clients
@@ -525,6 +534,20 @@ function broadcastRaw(msg: object): number {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
     }
+  }
+  return payload.length;
+}
+
+// Send a terminal:output-style message only to clients subscribed to this
+// terminal (via terminal:replay / terminal:input / terminal:resize). Output
+// for unwatched sessions is never pushed — ptyOutputBuffer replays it when a
+// client mounts the terminal.
+function broadcastTerminalOutput(termId: string, msg: object): number {
+  const payload = JSON.stringify(msg);
+  for (const client of wss.clients) {
+    if (client.readyState !== WebSocket.OPEN) continue;
+    if (!wsTermSubs.get(client)?.has(termId)) continue;
+    client.send(payload);
   }
   return payload.length;
 }
@@ -761,6 +784,7 @@ wirePtyEvents({
   ptyOutputBuffer,
   PTY_BUFFER_MAX_CHUNKS,
   broadcastRaw,
+  broadcastTerminalOutput,
   sendToClient,
 });
 
@@ -781,7 +805,7 @@ bridgeManager.on('output', (sessionId: string, data: Buffer) => {
   if (buf.length > PTY_BUFFER_MAX_CHUNKS) buf.splice(0, buf.length - PTY_BUFFER_MAX_CHUNKS);
 
   const encoded = data.toString('base64');
-  broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: encoded });
+  broadcastTerminalOutput(ovrId, { type: 'terminal:output', sessionId: ovrId, data: encoded });
 });
 
 bridgeManager.on('disconnected', (sessionId: string) => {
@@ -810,6 +834,7 @@ setupWebSocketHandler(wss, {
   linkageTracker,
   ptyOutputBuffer,
   broadcastRaw,
+  broadcastTerminalOutput,
   sendToClient,
   deleteSession,
   openTerminalWindow,

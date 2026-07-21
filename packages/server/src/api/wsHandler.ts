@@ -14,6 +14,7 @@ import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js'
 import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
+import { wsVisible, wsSnapshotOptOut, wsTermSubs, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
 import { sessionStore } from '../session/sessionStore.js';
@@ -27,6 +28,7 @@ export interface WsHandlerContext {
   linkageTracker: import('../session/ptyLinkageTracker.js').PtyLinkageTracker;
   ptyOutputBuffer: Map<string, Buffer[]>;
   broadcastRaw: (msg: object) => void;
+  broadcastTerminalOutput: (termId: string, msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
   deleteSession: (sessionId: string, pid?: number, reason?: string) => void;
   openTerminalWindow: (cwd: string, command: string, title?: string, sessionId?: string, useBridge?: boolean) => Promise<void>;
@@ -123,6 +125,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     linkageTracker,
     ptyOutputBuffer,
     broadcastRaw,
+    broadcastTerminalOutput,
     sendToClient,
     deleteSession,
     openTerminalWindow,
@@ -132,10 +135,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
   let autoResumeTriggered = false;
 
-  // Track per-WS tab visibility so PR polling can pause when no client tab is
-  // visible. Default true on connect — clients explicitly send visibility:hidden
-  // when document.visibilityState becomes 'hidden'.
-  const wsVisible = new Map<WebSocket, boolean>();
+  // Per-WS visibility/subscription state lives in wsClientState.ts — shared
+  // with index.ts, whose broadcast() skips hidden clients and
+  // broadcastTerminalOutput() sends only to subscribed ones.
   const recomputePolling = (): void => {
     let anyVisible = false;
     for (const v of wsVisible.values()) {
@@ -205,8 +207,27 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
       if (type === 'visibility') {
         const visible = msg.visible !== false;
+        const wasVisible = wsVisible.get(ws) !== false;
         wsVisible.set(ws, visible);
         recomputePolling();
+        // Hidden tabs are skipped by snapshot broadcasts — push a fresh
+        // snapshot on the hidden→visible flip so the tab never shows stale state.
+        if (visible && !wasVisible && !wsSnapshotOptOut.has(ws)) {
+          sendToClient(ws, { type: 'snapshot', ...stateManager.getSnapshot() });
+        }
+        return;
+      }
+
+      // LogsPage socket: only consumes log:history/log:entry — never send it
+      // the 300–600 KB snapshot stream.
+      if (type === 'snapshot:optout') {
+        wsSnapshotOptOut.add(ws);
+        return;
+      }
+
+      // xterm unmounted on the client — stop pushing this terminal's output.
+      if (type === 'terminal:unsubscribe') {
+        wsTermSubs.get(ws)?.delete(String(msg.sessionId ?? ''));
         return;
       }
 
@@ -596,6 +617,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       if (type === 'terminal:input') {
         const ovrId = String(msg.sessionId ?? '');
         const data = String(msg.data ?? '');
+        // Typing into a terminal implies watching it — defensive subscribe in
+        // case the terminal:replay of the mount was lost (e.g. WS reconnect).
+        subscribeTerminal(ws, ovrId);
         // Resolve Claude session for bridge/PID info (fallback: treat ovrId as claudeId)
         const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
         const claudeSessionId = claudeSession?.sessionId ?? ovrId;
@@ -756,6 +780,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const ovrId = String(msg.sessionId ?? '');
         const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
         const claudeSessionId = claudeSession?.sessionId ?? ovrId;
+        // replay is sent whenever an xterm mounts — treat it as the output
+        // subscription. Subscribe both ids to cover emit sites that fall back
+        // to the claude sessionId when the overlordId lookup misses.
+        subscribeTerminal(ws, ovrId);
+        subscribeTerminal(ws, claudeSessionId);
 
         // Bridge sessions: send buffered output first for immediate display. Only replay
         // from the last BSU (\x1b[?2026h) chunk onward — that's a coherent frame boundary.

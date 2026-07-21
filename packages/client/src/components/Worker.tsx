@@ -1,5 +1,6 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
-import type { WorkerState, Session, ActiveMonitor } from '../types';
+import type { WorkerState, Session, ActiveMonitor, WorkerIcon } from '../types';
+import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { MonitoringPill } from './MonitoringPill';
@@ -26,6 +27,7 @@ interface WorkerProps {
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   isWorker?: boolean;
   isRaw?: boolean;
+  icon?: WorkerIcon;
   ptyInputPendingSince?: number;
   notesSummary?: string;
   intent?: string;
@@ -72,9 +74,11 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, ptyInputPendingSince, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
+  // An explicitly picked glyph overrides the raw terminal variant.
+  const glyph: WorkerIcon = icon ?? 'user';
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
 
   const [isEditing, setIsEditing] = useState(false);
@@ -171,7 +175,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           )}
         </div>
       )}
-      {isRaw ? (
+      {isRaw && glyph === 'user' ? (
         <svg
           width="48"
           height="63"
@@ -214,19 +218,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
               <stop offset="100%" stopColor={displayColor} />
             </linearGradient>
           </defs>
-          {/* Head */}
-          <circle cx="20" cy="12" r="10" fill={`url(#grad-${sessionId})`} />
-          {/* Eyes */}
-          <circle cx="16" cy="11" r="2" fill="rgba(0,0,0,0.5)" />
-          <circle cx="24" cy="11" r="2" fill="rgba(0,0,0,0.5)" />
-          {/* Body */}
-          <rect x="10" y="24" width="20" height="22" rx="3" fill={`url(#grad-${sessionId})`} />
-          {/* Arms */}
-          <rect x="2" y="24" width="7" height="14" rx="2" fill={displayColor} />
-          <rect x="31" y="24" width="7" height="14" rx="2" fill={displayColor} />
-          {/* Legs */}
-          <rect x="11" y="46" width="7" height="6" rx="2" fill={displayColor} />
-          <rect x="22" y="46" width="7" height="6" rx="2" fill={displayColor} />
+          <WorkerGlyph icon={glyph} gradientUrl={`url(#grad-${sessionId})`} color={displayColor} />
         </svg>
       )}
 

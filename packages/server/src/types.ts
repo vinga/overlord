@@ -82,6 +82,9 @@ export interface PlanSummary {
   updatedAt: string;
 }
 
+/** Avatar glyph for a worker. `undefined` means 'user' (default person glyph). */
+export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes';
+
 export interface Session {
   sessionId: string;
   overlordId: string;   // stable identifier across /clear and compaction; assigned once per lineage
@@ -110,6 +113,7 @@ export interface Session {
   sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
   replacedBy?: string;
   color: string;
+  icon?: WorkerIcon;
   subagents: Subagent[];
   resumedFrom?: string;
   needsPermission?: boolean;
@@ -138,6 +142,10 @@ export interface Session {
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
   latestPlan?: PlanSummary;
+  /** ISO timestamp of the newest user message in the UNTRIMMED activity feed.
+   *  Client uses it to confirm optimistic echoes even when the real message has
+   *  scrolled out of the 30-item snapshot tail. */
+  lastUserMessageTs?: string;
   /** Rolling Haiku-generated summary of what the session is working on. Replaces requestSummary and completionSummary on the worker card. */
   intent?: string;
   /** @deprecated Use Task.title instead. Kept for backwards-compat with aiClassifier. */
@@ -214,6 +222,7 @@ export interface OverlordSession {
   cwd: string;
   startedAt: number;
   color: string;
+  icon?: WorkerIcon;
   proposedName?: string;
 
   /** Atomic unit — currentSessionId and history must stay in sync. */

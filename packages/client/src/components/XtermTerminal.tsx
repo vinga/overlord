@@ -82,14 +82,6 @@ export function XtermTerminal({
     term.loadAddon(webLinksAddon);
     term.open(containerRef.current);
 
-    // WebGL renderer — dramatically faster than the default DOM renderer,
-    // especially with scrollback during streaming. Falls back silently if WebGL
-    // is unavailable (e.g. headless environments).
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch { /* WebGL unavailable — DOM renderer fallback is fine */ }
     // xterm.js grabs focus on open — prevent that from stealing OS focus
     term.blur();
 

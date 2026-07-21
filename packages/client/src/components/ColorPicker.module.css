@@ -50,9 +50,16 @@
 
 .presets {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 5px;
+  grid-template-columns: repeat(9, 1fr);
+  gap: 4px;
   margin-bottom: 14px;
+}
+
+/* 9 hue swatches must fit the fixed popover width — size to the grid track. */
+.presets .preset {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
 }
 
 .presetsThree {
@@ -76,6 +83,60 @@
   gap: 6px;
   margin-bottom: 14px;
   justify-items: center;
+}
+
+.iconPresets {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 5px;
+  margin-bottom: 14px;
+}
+
+.iconPreset {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.1s ease, border-color 0.1s ease, background 0.1s ease;
+}
+
+.iconPreset::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #2b2b3d;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 1;
+}
+
+.iconPreset:hover::after {
+  opacity: 1;
+}
+
+.iconPreset:hover {
+  transform: scale(1.06);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.iconPreset.selected {
+  border-color: rgba(255, 255, 255, 0.9);
 }
 
 .preset {

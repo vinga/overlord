@@ -1,10 +1,13 @@
 import React from 'react';
+import type { WorkerIcon } from '../types';
+import { WorkerGlyph } from './workerGlyphs';
 
 interface WorkerAvatarProps {
   sessionId: string;
   color: string;
   size?: number;
   isRaw?: boolean;
+  icon?: WorkerIcon;
 }
 
 function lightenHsl(color: string, amount: number): string {
@@ -16,13 +19,15 @@ function lightenHsl(color: string, amount: number): string {
   return `hsl(${h}, ${s}%, ${l}%)`;
 }
 
-export function WorkerAvatar({ sessionId, color, size = 36, isRaw = false }: WorkerAvatarProps) {
+export function WorkerAvatar({ sessionId, color, size = 36, isRaw = false, icon }: WorkerAvatarProps) {
   const highlightColor = lightenHsl(color, 25);
   const gradId = `grad-avatar-${sessionId}`;
   const height = size;
   const width = Math.round(size * (40 / 52));
+  // An explicitly picked glyph overrides the raw terminal variant.
+  const glyph: WorkerIcon = icon ?? 'user';
 
-  if (isRaw) {
+  if (isRaw && glyph === 'user') {
     const rawWidth = Math.round(size * (46 / 34));
     const rawHeight = size;
     return (
@@ -64,14 +69,7 @@ export function WorkerAvatar({ sessionId, color, size = 36, isRaw = false }: Wor
           <stop offset="100%" stopColor={color} />
         </linearGradient>
       </defs>
-      <circle cx="20" cy="12" r="10" fill={`url(#${gradId})`} />
-      <circle cx="16" cy="11" r="2" fill="rgba(0,0,0,0.5)" />
-      <circle cx="24" cy="11" r="2" fill="rgba(0,0,0,0.5)" />
-      <rect x="10" y="24" width="20" height="22" rx="3" fill={`url(#${gradId})`} />
-      <rect x="2" y="24" width="7" height="14" rx="2" fill={color} />
-      <rect x="31" y="24" width="7" height="14" rx="2" fill={color} />
-      <rect x="11" y="46" width="7" height="6" rx="2" fill={color} />
-      <rect x="22" y="46" width="7" height="6" rx="2" fill={color} />
+      <WorkerGlyph icon={glyph} gradientUrl={`url(#${gradId})`} color={color} />
     </svg>
   );
 }

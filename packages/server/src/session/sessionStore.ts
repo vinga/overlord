@@ -212,6 +212,20 @@ export class SessionStore {
     return this.sidIndexActive.get(sessionId) ?? this.sidIndexArchived.get(sessionId);
   }
 
+  /** Archived tier only — for archive routes (view/restore/unarchive/delete).
+   *  sidIndexArchived drops any sid an active record claims (active-wins), so a
+   *  live dupe minted after archiving (e.g. a failed resume) would shadow the
+   *  archive entry via getBySessionId; scan archived lineages directly instead. */
+  getArchivedBySessionId(sessionId: string): OverlordSession | undefined {
+    const ovr = this.sidIndexArchived.get(sessionId);
+    if (ovr) return this.archived.get(ovr);
+    for (const rec of this.archived.values()) {
+      if (rec.lineage.currentSessionId === sessionId) return rec;
+      if (rec.lineage.history.some(h => h.sessionId === sessionId)) return rec;
+    }
+    return undefined;
+  }
+
   listActive(): OverlordSession[] { return [...this.active.values()]; }
   listArchived(): OverlordSession[] { return [...this.archived.values()]; }
   listAll(): OverlordSession[] { return [...this.active.values(), ...this.archived.values()]; }
@@ -331,6 +345,7 @@ export class SessionStore {
       cwd: live.cwd,
       startedAt: live.startedAt,
       color: live.color,
+      icon: live.icon,
       proposedName: live.proposedName,
       lineage: {
         currentSessionId: live.sessionId,

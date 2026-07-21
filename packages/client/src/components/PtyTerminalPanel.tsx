@@ -173,11 +173,19 @@ export function PtyTerminalPanel({
             color={session.color}
             size={34}
             isRaw
+            icon={session.icon}
             onChange={(newColor) => {
               void fetch(`/api/sessions/${session.sessionId}/color`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ color: newColor }),
+              });
+            }}
+            onIconChange={(newIcon) => {
+              void fetch(`/api/sessions/${session.sessionId}/icon`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ icon: newIcon }),
               });
             }}
           />

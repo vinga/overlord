@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary, WorkerIcon } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -2533,6 +2533,7 @@ export class StateManager {
       // gaps between addOrUpdate and the first sessionStore.patch).
       out.proposedName = overlord.proposedName ?? session.proposedName;
       out.color = overlord.color ?? session.color;
+      out.icon = overlord.icon ?? session.icon;
       out.slug = overlord.slug ?? session.slug;
       out.model = overlord.model ?? session.model;
       out.intent = overlord.intent ?? session.intent;
@@ -2557,6 +2558,16 @@ export class StateManager {
     }
     if (latestPlan) out.latestPlan = latestPlan;
     if (needsPty) out.ptyAlive = this.hasLivePtyFn(session.overlordId);
+    // Newest user-message timestamp from the UNTRIMMED feed. The client confirms
+    // optimistic "queued" echoes against this — deriving it from the 30-item tail
+    // fails in long tool-heavy turns where the user message is evicted while its
+    // answer stays, leaving the echo stuck after the AskUserQuestion.
+    if (session.activityFeed) {
+      for (let i = session.activityFeed.length - 1; i >= 0; i--) {
+        const item = session.activityFeed[i];
+        if (item.role === 'user' && item.timestamp) { out.lastUserMessageTs = item.timestamp; break; }
+      }
+    }
     if (feedChanged) {
       out.activityFeed = trimmedFeed;
       if (session.activityFeed && (!trimmedFeed || trimmedFeed.length < session.activityFeed.length)) {
@@ -2630,6 +2641,22 @@ export class StateManager {
     // consistent without waiting for the next re-derivation tick.
     for (const s of this.sessions.values()) {
       if (s.overlordId === rec.overlordId) s.color = color;
+    }
+    this.onChange();
+    return true;
+  }
+
+  /** Set the avatar icon for a session (keyed by its ovrId) and persist to
+   *  OverlordSession. Pass 'user' to reset — stored as undefined (the default). */
+  setSessionIcon(sessionId: string, icon: WorkerIcon): boolean {
+    let rec = sessionStore.getBySessionId(sessionId);
+    const live = this.sessions.get(sessionId);
+    if (!rec && live) rec = sessionStore.ensureFromLive(live);
+    if (!rec) return false;
+    const next = icon === 'user' ? undefined : icon;
+    sessionStore.patch(rec.overlordId, { icon: next });
+    for (const s of this.sessions.values()) {
+      if (s.overlordId === rec.overlordId) s.icon = next;
     }
     this.onChange();
     return true;
@@ -2867,6 +2894,7 @@ export class StateManager {
       proposedName: rec.proposedName,
       sessionType: rec.sessionType,
       color: rec.color,
+      icon: rec.icon,
       subagents: [],
       resumedFrom: rec.resumedFrom,
       // Drop self-referential replacedBy — a record whose currentSessionId

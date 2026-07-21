@@ -899,6 +899,20 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
+  // Icon: PUT /api/sessions/:sessionId/icon — set avatar glyph for a session (persisted by ovrId)
+  app.put('/api/sessions/:sessionId/icon', express.json(), (req, res) => {
+    const { sessionId } = req.params;
+    const icon = req.body?.icon;
+    const validIcons = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes'];
+    if (!validIcons.includes(icon)) {
+      res.status(400).json({ error: `icon must be one of: ${validIcons.join(', ')}` });
+      return;
+    }
+    const ok = stateManager.setSessionIcon(sessionId, icon);
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true });
+  });
+
   app.put('/api/sessions/:sessionId/name', express.json(), (req, res) => {
     const { sessionId } = req.params;
     const name = typeof req.body?.name === 'string' ? req.body.name : '';

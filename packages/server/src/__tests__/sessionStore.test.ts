@@ -50,6 +50,25 @@ describe('SessionStore', () => {
     expect(store.resolveOverlordId('sid-b1')).toBe('ovr-b');
   });
 
+  it('icon persists through patch and survives reload; explicit undefined clears it', async () => {
+    store.upsertActive(baseRecord('ovr-icon', 'sid-icon'));
+    store.patch('ovr-icon', { icon: 'investigate' });
+    expect(store.getByOverlordId('ovr-icon')?.icon).toBe('investigate');
+
+    await store.flushAll();
+    const fresh = new SessionStore({ baseDir });
+    fresh.loadAll();
+    expect(fresh.getByOverlordId('ovr-icon')?.icon).toBe('investigate');
+
+    // Reset to default: setSessionIcon('user') patches icon: undefined.
+    store.patch('ovr-icon', { icon: undefined });
+    expect(store.getByOverlordId('ovr-icon')?.icon).toBeUndefined();
+    await store.flushAll();
+    const fresh2 = new SessionStore({ baseDir });
+    fresh2.loadAll();
+    expect(fresh2.getByOverlordId('ovr-icon')?.icon).toBeUndefined();
+  });
+
   it('attachSession appends to lineage and swaps currentSessionId', () => {
     store.upsertActive(baseRecord('ovr-c', 'sid-c1'));
     const updated = store.attachSession('ovr-c', { sessionId: 'sid-c2', attachedAt: 2000, reason: 'clear' });
@@ -98,6 +117,23 @@ describe('SessionStore', () => {
     expect(store.listActive()).toHaveLength(0);
     expect(store.listArchived()).toHaveLength(1);
     expect(store.getByOverlordId('ovr-arch')?.archive?.roomId).toBe('tmp-test');
+  });
+
+  it('getArchivedBySessionId finds the archive entry even when a live dupe claims the sid', () => {
+    // Archive a record, then mint a fresh ACTIVE record reusing the same sid
+    // (what a failed resume-from-archive does). Active-wins index shadows the
+    // archived mapping — the dedicated archived-tier lookup must still hit.
+    store.upsertActive(baseRecord('ovr-old', 'sid-shared'));
+    store.archive('ovr-old', { roomId: 'r', name: 'n', transcripts: [{ sessionId: 'sid-shared', path: '/x' }] });
+    store.upsertActive(baseRecord('ovr-dupe', 'sid-shared'));
+
+    expect(store.getBySessionId('sid-shared')?.overlordId).toBe('ovr-dupe');
+    expect(store.getArchivedBySessionId('sid-shared')?.overlordId).toBe('ovr-old');
+
+    // Survives reload (active dir loads first, archived sids get skipped in the index).
+    const fresh = new SessionStore({ baseDir });
+    fresh.loadAll();
+    expect(fresh.getArchivedBySessionId('sid-shared')?.overlordId).toBe('ovr-old');
   });
 
   it('unarchive moves file back and clears archive block', () => {

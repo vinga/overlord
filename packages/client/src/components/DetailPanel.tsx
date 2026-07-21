@@ -2052,8 +2052,15 @@ const currentDisplayName =
   // activityFeed is oldest-first — find the NEWEST user message by searching from the end
   const newestUserTs = [...realFeed].reverse().find(i => i.role === 'user')?.timestamp;
   const newestUserTsMs = newestUserTs ? new Date(newestUserTs).getTime() : 0;
+  // Server-provided newest user-message ts from the UNTRIMMED feed. Confirms the echo
+  // even in long tool-heavy turns where the user message is evicted from the 30-item
+  // tail (currentUserCount stays 0, newestUserTsMs degrades to 0). Without this the
+  // echo stays pinned after the AskUserQuestion until the 60s safety timer fires.
+  const serverUserTsMs = selectedSession?.lastUserMessageTs
+    ? new Date(selectedSession.lastUserMessageTs).getTime() : 0;
   const confirmed = currentUserCount > prevUserCount ||
-    (sendTimestampMs.current !== null && newestUserTsMs >= sendTimestampMs.current);
+    (sendTimestampMs.current !== null && newestUserTsMs >= sendTimestampMs.current) ||
+    (sendTimestampMs.current !== null && serverUserTsMs >= sendTimestampMs.current);
 
   // Clear pending messages via useEffect (not queueMicrotask during render) to avoid
   // a race where the session-switch effect saves stale localSent before the microtask fires.
@@ -2330,6 +2337,7 @@ const currentDisplayName =
                       sessionId={selectedSession.sessionId}
                       color={selectedSession.color}
                       size={44}
+                      icon={selectedSession.icon}
                       onChange={(newColor) => {
                         void fetch(`/api/sessions/${selectedSession.sessionId}/color`, {
                           method: 'PUT',
@@ -2338,6 +2346,15 @@ const currentDisplayName =
                         }).then(r => {
                           if (!r.ok) console.warn('[color] PUT failed', r.status, selectedSession.sessionId);
                         }).catch(e => console.warn('[color] PUT error', e));
+                      }}
+                      onIconChange={(newIcon) => {
+                        void fetch(`/api/sessions/${selectedSession.sessionId}/icon`, {
+                          method: 'PUT',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ icon: newIcon }),
+                        }).then(r => {
+                          if (!r.ok) console.warn('[icon] PUT failed', r.status, selectedSession.sessionId);
+                        }).catch(e => console.warn('[icon] PUT error', e));
                       }}
                     />
                   <div className={styles.headerMain}>

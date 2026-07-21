@@ -153,7 +153,7 @@ export class ArchiveManager {
   }
 
   get(sessionId: string): ArchiveEntry | null {
-    const rec = sessionStore.getBySessionId(sessionId);
+    const rec = sessionStore.getArchivedBySessionId(sessionId);
     return rec ? toEntry(rec) : null;
   }
 
@@ -171,7 +171,7 @@ export class ArchiveManager {
    * Other transcripts in the lineage are left under archive/.
    */
   restoreTranscript(sessionId: string): string | null {
-    const rec = sessionStore.getBySessionId(sessionId);
+    const rec = sessionStore.getArchivedBySessionId(sessionId);
     const archived = rec?.archive?.transcripts.find(t => t.sessionId === sessionId);
     if (!rec || !archived) return null;
     if (!fs.existsSync(archived.path)) return null;
@@ -209,7 +209,7 @@ export class ArchiveManager {
    * transcript copies. Idempotent.
    */
   remove(sessionId: string): boolean {
-    const rec = sessionStore.getBySessionId(sessionId);
+    const rec = sessionStore.getArchivedBySessionId(sessionId);
     if (!rec?.archive) return false;
     for (const t of rec.archive.transcripts) {
       try { if (fs.existsSync(t.path)) fs.unlinkSync(t.path); } catch { /* ignore */ }
@@ -230,7 +230,7 @@ export class ArchiveManager {
    * into ~/.claude/projects. Idempotent — returns false if not archived.
    */
   deleteArchive(sessionId: string): boolean {
-    const rec = sessionStore.getBySessionId(sessionId);
+    const rec = sessionStore.getArchivedBySessionId(sessionId);
     if (!rec?.archive) return false;
     for (const t of rec.archive.transcripts) {
       try { if (fs.existsSync(t.path)) fs.unlinkSync(t.path); } catch { /* ignore */ }

@@ -84,6 +84,7 @@ export interface PtyEventsContext {
   ptyOutputBuffer: Map<string, Buffer[]>;
   PTY_BUFFER_MAX_CHUNKS: number;
   broadcastRaw: (msg: object) => void;
+  broadcastTerminalOutput: (termId: string, msg: object) => void;
   sendToClient: (ws: WebSocket, msg: object) => void;
 }
 
@@ -222,8 +223,9 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     }
 
     const encoded = Buffer.from(data).toString('base64');
-    // Broadcast using ovrId as sessionId so clients keyed by ovrId receive it
-    ctx.broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: encoded });
+    // Send using ovrId as sessionId so clients keyed by ovrId receive it —
+    // only to clients subscribed to this terminal.
+    ctx.broadcastTerminalOutput(ovrId, { type: 'terminal:output', sessionId: ovrId, data: encoded });
     ctx.stateManager.setPtyActive(ovrId);
 
     // Tee raw-shell output to disk for history persistence across restarts.
