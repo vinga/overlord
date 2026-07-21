@@ -67,12 +67,17 @@ export function useTerminal(
           handler(new TextEncoder().encode(msg.data));
         }
       } else {
-        // Buffer until handler registers (e.g. during panel transition)
+        // Buffer until handler registers (e.g. during panel transition).
+        // Byte-capped at 2 MB per session — beyond that the oldest chunks are
+        // dropped; the server-side ptyOutputBuffer replay covers the gap.
         try {
           const bytes = decodeBase64(msg.data);
           const buf = outputBuffer.current.get(msg.sessionId) ?? [];
           buf.push(bytes);
-          if (buf.length > 4000) buf.splice(0, buf.length - 4000);
+          let total = buf.reduce((n, c) => n + c.byteLength, 0);
+          while (total > 2 * 1024 * 1024 && buf.length > 1) {
+            total -= buf.shift()!.byteLength;
+          }
           outputBuffer.current.set(msg.sessionId, buf);
         } catch { /* ignore */ }
       }
@@ -118,6 +123,7 @@ export function useTerminal(
         next.add(msg.sessionId);
         return next;
       });
+      outputBuffer.current.delete(msg.sessionId);
       const handler = exitHandlers.current.get(msg.sessionId);
       if (handler) handler();
     } else if (msg.type === 'terminal:error') {
@@ -278,10 +284,14 @@ export function useTerminal(
         for (const chunk of buf) handler(chunk);
         outputBuffer.current.delete(ovrId);
       }
-      // Request server-side buffer replay
+      // Request server-side buffer replay (also subscribes this WS client to
+      // the session's terminal:output stream on the server)
       sendMessage({ type: 'terminal:replay', sessionId: ovrId, ...(cols && rows ? { cols, rows } : {}) });
       return () => {
         outputHandlers.current.delete(ovrId);
+        // Stop the server streaming output for an unmounted terminal; the
+        // next mount's terminal:replay re-subscribes and backfills.
+        sendMessage({ type: 'terminal:unsubscribe', sessionId: ovrId });
       };
     },
     [sendMessage]

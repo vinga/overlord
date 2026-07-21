@@ -590,6 +590,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         ptyToOvr.set(ovrId, ovrId);
         const sessions = wsSessionMap.get(ws);
         if (sessions) { sessions.add(ovrId); }
+        // The restarting client is watching this terminal — ensure it gets the
+        // banner below even if its replay-time subscription was lost.
+        subscribeTerminal(ws, ovrId);
 
         try {
           ptyManager.spawn(ovrId, cwd, cols, rows, [], shell);
@@ -599,7 +602,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           log('pty:started', 'Raw shell restarted', { sessionId: ovrId, sessionName: session.proposedName ?? 'shell', extra: `shell=${shell} pid=${pid}` });
           // Dim separator banner before the new shell starts emitting output.
           const banner = `\r\n\x1b[2m── shell restarted · ${new Date().toISOString()} ──\x1b[0m\r\n`;
-          broadcastRaw({ type: 'terminal:output', sessionId: ovrId, data: Buffer.from(banner).toString('base64') });
+          broadcastTerminalOutput(ovrId, { type: 'terminal:output', sessionId: ovrId, data: Buffer.from(banner).toString('base64') });
           // replay=true so the client doesn't wipe the visible scrollback on link.
           broadcastRaw({ type: 'terminal:linked', ovrId, ptySessionId: ovrId, claudeSessionId: ovrId, replay: true });
         } catch (err) {
@@ -764,6 +767,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const ovrId = String(msg.sessionId ?? '');
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
+        // Resizing a terminal implies watching it — defensive subscribe.
+        subscribeTerminal(ws, ovrId);
         const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
         const claudeSessionId = claudeSession?.sessionId ?? ovrId;
         if (stateManager.isBridge(claudeSessionId)) {
@@ -1008,7 +1013,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       // Don't kill PTY sessions on WS close — they should survive tab refreshes
       // and be reconnectable from other tabs. Only clean up the session map.
       wsSessionMap.delete(ws);
-      wsVisible.delete(ws);
+      clearClientState(ws);
       recomputePolling();
     });
   });

@@ -93,6 +93,9 @@ export function LogsPage({ onBack }: LogsPageProps) {
 
       ws.onopen = () => {
         if (mountedRef.current) setConnected(true);
+        // This socket only consumes log:history/log:entry — skip the 300+ KB
+        // snapshot broadcasts entirely.
+        ws.send(JSON.stringify({ type: 'snapshot:optout' }));
       };
 
       ws.onmessage = (event: MessageEvent) => {
