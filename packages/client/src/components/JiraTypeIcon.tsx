@@ -50,8 +50,8 @@ export function JiraTypeIcon({ type }: { type?: string }) {
   const kind = classify(type);
   return (
     <svg
-      width="13"
-      height="13"
+      width="15"
+      height="15"
       viewBox="0 0 16 16"
       aria-hidden="true"
       focusable="false"

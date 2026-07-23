@@ -141,6 +141,8 @@ export function WorkerArtifactPill({ artifactId, title, planStatus, timestamp }:
     };
   }, [pinned]);
 
+  // Re-measure when the async-loaded body arrives — the popover is positioned
+  // while showing the tiny "Loading plan…" placeholder, then grows downward.
   useLayoutEffect(() => {
     if (!open || !anchor) return;
     const el = popoverRef.current;
@@ -153,11 +155,13 @@ export function WorkerArtifactPill({ artifactId, title, planStatus, timestamp }:
     let left = anchorCenter - width / 2;
     left = Math.max(margin, Math.min(left, vw - width - margin));
     const spaceBelow = vh - anchor.bottom;
-    const top = spaceBelow >= height + margin + 6 || spaceBelow >= vh / 2
+    let top = spaceBelow >= height + margin + 6
       ? anchor.bottom + 6
-      : Math.max(margin, anchor.top - height - 6);
+      : anchor.top - height - 6;
+    // Clamp so the popover never extends past the viewport bottom (or top).
+    top = Math.max(margin, Math.min(top, vh - height - margin));
     setPos({ left, top });
-  }, [open, anchor]);
+  }, [open, anchor, planContent]);
 
   const handleClick = (e: React.MouseEvent<HTMLSpanElement>) => {
     e.stopPropagation();
