@@ -74,6 +74,38 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
             />
           </div>
 
+          <div className={styles.row}>
+            <div className={styles.rowText}>
+              <div className={styles.rowLabel}>Auto-resume sessions after restart</div>
+              <div className={styles.rowHint}>
+                Respawn sessions that had a live terminal when the Overlord server stopped. Applies to clean restarts only; crashed servers don't record what was running.
+              </div>
+            </div>
+            <button
+              className={`${styles.toggle} ${settings.autoResumeOnRestart ? styles.toggleOn : ''}`}
+              onClick={() => onUpdate({ autoResumeOnRestart: !settings.autoResumeOnRestart })}
+              role="switch"
+              aria-checked={settings.autoResumeOnRestart}
+              aria-label="Auto-resume sessions after restart"
+            />
+          </div>
+
+          <div className={styles.row}>
+            <div className={styles.rowText}>
+              <div className={styles.rowLabel}>Auto-resume sessions after restart</div>
+              <div className={styles.rowHint}>
+                Respawns sessions that were active when the Overlord server stopped. Only clean restarts qualify — after a crash nothing is resumed.
+              </div>
+            </div>
+            <button
+              className={`${styles.toggle} ${settings.autoResumeOnRestart ? styles.toggleOn : ''}`}
+              onClick={() => onUpdate({ autoResumeOnRestart: !settings.autoResumeOnRestart })}
+              role="switch"
+              aria-checked={settings.autoResumeOnRestart}
+              aria-label="Auto-resume sessions after restart"
+            />
+          </div>
+
           <div className={styles.section}>
             <div className={styles.sectionHeader}>
               <h3 className={styles.sectionTitle}>JIRA</h3>

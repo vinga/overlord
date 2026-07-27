@@ -15,6 +15,8 @@ const ICON_PRESETS: { icon: WorkerIcon; label: string }[] = [
   { icon: 'investigate', label: 'Investigating' },
   { icon: 'teach', label: 'Teaching' },
   { icon: 'notes', label: 'Pinned notes' },
+  { icon: 'btw', label: 'By the way' },
+  { icon: 'release', label: 'Release' },
 ];
 
 const HUE_PRESETS: { label: string; h: number; s?: number }[] = [

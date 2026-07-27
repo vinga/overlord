@@ -3,6 +3,15 @@ import type { JiraIssueMeta } from '../types.js';
 
 const HIT_TTL_MS = 60 * 60 * 1000;   // 1h for successful fetches
 const MISS_TTL_MS = 5 * 60 * 1000;   // 5m for 401/403/404/network errors
+const HOT_TTL_MS = 5 * 60 * 1000;    // 5m for in-flight tickets on live sessions
+
+/** Statuses that still move while someone is working — worth polling often. */
+const LIVE_STATUSES = new Set(['todo', 'inprogress', 'inreview']);
+
+function isLiveStatus(status?: string): boolean {
+  if (!status) return false;
+  return LIVE_STATUSES.has(status.toLowerCase().replace(/[^a-z]/g, ''));
+}
 const FETCH_CONCURRENCY = 3;
 const FETCH_TIMEOUT_MS = 5000;
 
@@ -24,8 +33,10 @@ function credsReady(): { baseUrl: string; email: string; token: string } | null 
   return { baseUrl, email: s.jiraEmail, token: s.jiraApiToken };
 }
 
-function isFresh(entry: Entry): boolean {
-  const ttl = entry.meta === null ? MISS_TTL_MS : HIT_TTL_MS;
+function isFresh(entry: Entry, hot: boolean): boolean {
+  let ttl = HIT_TTL_MS;
+  if (entry.meta === null) ttl = MISS_TTL_MS;
+  else if (hot && isLiveStatus(entry.meta.status)) ttl = HOT_TTL_MS;
   return Date.now() - entry.fetchedAt < ttl;
 }
 
@@ -137,10 +148,14 @@ function drainQueue(): void {
 
 /** Return the cached metadata for `key`, or null if not yet fetched / fetch
  *  failed. When the entry is missing or stale, schedule a background fetch — the
- *  next caller (typically the next snapshot tick) will see the fresh value. */
-export function getCachedJiraMeta(key: string): JiraIssueMeta | null {
+ *  next caller (typically the next snapshot tick) will see the fresh value.
+ *
+ *  `hot` = the key belongs to at least one non-closed session. Combined with a
+ *  still-moving status (To Do / In Progress / In Review) it drops the TTL to 5m
+ *  so the lozenge tracks the board; everything else stays on the 1h TTL. */
+export function getCachedJiraMeta(key: string, hot = false): JiraIssueMeta | null {
   const entry = cache.get(key);
-  if (!entry || !isFresh(entry)) {
+  if (!entry || !isFresh(entry, hot)) {
     if (credsReady() && !inflight.has(key) && !queue.includes(key)) {
       queue.push(key);
       drainQueue();

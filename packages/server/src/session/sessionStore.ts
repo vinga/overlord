@@ -378,6 +378,7 @@ export class SessionStore {
       lastMessage: live.lastMessage,
       intent: live.intent,
       jiraKeys: live.jiraKeys,
+      skillsUsed: live.skillsUsed,
     };
     this.upsertActive(seed);
     if (live.transcriptPath) ensureShadow(ovrId, live.sessionId, live.transcriptPath);

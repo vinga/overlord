@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import type { OfficeSnapshot, Session, SessionProvider } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
+import { ScratchpadPopup } from './ScratchpadPopup';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './Office.module.css';
@@ -335,6 +336,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           activeOnly={activeOnly}
           onToggleActiveOnly={toggleActiveOnly}
         />
+        <ScratchpadPopup />
       </header>
       <div className={styles.content}>
         {!hasRooms ? (

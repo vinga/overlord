@@ -20,10 +20,11 @@ import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector
 import { detectModeFromText } from '../session/modeDetect.js';
 import { injectViaMac } from '../pty/macInjector.js';
 import { spawnClaudeSession } from '../pty/spawnSession.js';
-import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState } from '../session/transcriptReader.js';
+import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState, readScheduledWakeups } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { globalSettingsStore } from '../session/globalSettingsStore.js';
+import { scratchpadStore } from '../session/scratchpadStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache } from '../brain/brainContext.js';
@@ -72,6 +73,9 @@ export function registerApiRoutes(
     if (typeof body.disableBackgroundLLM === 'boolean') {
       partial.disableBackgroundLLM = body.disableBackgroundLLM;
     }
+    if (typeof body.autoResumeOnRestart === 'boolean') {
+      partial.autoResumeOnRestart = body.autoResumeOnRestart;
+    }
     if (typeof body.jiraBaseUrl === 'string') {
       partial.jiraBaseUrl = body.jiraBaseUrl;
     }
@@ -90,6 +94,20 @@ export function registerApiRoutes(
       ...next,
       jiraApiToken: next.jiraApiToken ? '***' : '',
     });
+  });
+
+  app.get('/api/scratchpad', (_req, res) => {
+    res.json(scratchpadStore.load());
+  });
+
+  app.put('/api/scratchpad', express.json({ limit: '1mb' }), (req, res) => {
+    const content = (req.body ?? {}).content;
+    if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
+    try {
+      res.json(scratchpadStore.save(content));
+    } catch (err) {
+      res.status(413).json({ error: (err as Error).message });
+    }
   });
 
   // Git status for a room cwd. Only allowed for cwds matching a known room
@@ -543,6 +561,23 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
+  // On-demand ScheduleWakeup history for the Detail panel (newest first, max 10).
+  // Deliberately NOT in the WS snapshot — fetched lazily when the user expands
+  // the wakeups stats row. The snapshot carries only the scheduledWakeupAt scalar.
+  app.get('/api/sessions/:sessionId/scheduled-wakeups', (req, res) => {
+    const { sessionId } = req.params;
+    const session = stateManager.getSession(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+    if (!session.transcriptPath) {
+      res.json({ wakeups: [] });
+      return;
+    }
+    res.json({ wakeups: readScheduledWakeups(session.transcriptPath) });
+  });
+
   // Screen buffer endpoint: reads the console screen buffer of a session's process.
   // For bridge sessions, returns the last portion of the pipe output buffer (ANSI-stripped).
   app.get('/api/sessions/:sessionId/screen', async (req, res) => {
@@ -903,7 +938,7 @@ export function registerApiRoutes(
   app.put('/api/sessions/:sessionId/icon', express.json(), (req, res) => {
     const { sessionId } = req.params;
     const icon = req.body?.icon;
-    const validIcons = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes'];
+    const validIcons = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes', 'btw', 'release'];
     if (!validIcons.includes(icon)) {
       res.status(400).json({ error: `icon must be one of: ${validIcons.join(', ')}` });
       return;

@@ -30,6 +30,61 @@
   display: block;
 }
 
+/* ── Layout shell ──────────────────────────────────────────
+   Default (subagents / minimal chips): icon stacked over text.
+   .horizontal (full workers): icon on the left, text column right. */
+.body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.iconWrap {
+  flex: 0 0 auto;
+}
+
+.worker.horizontal {
+  width: 224px;
+  align-items: stretch;
+}
+
+.horizontal .body {
+  flex-direction: row;
+  /* Title-only cards read best with the text centred against the glyph. */
+  align-items: center;
+  gap: 12px;
+}
+
+.horizontal .content {
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+  flex: 1 1 auto;
+  /* Clear the desk's absolutely-positioned options burger (22px @ top/right 4px). */
+  padding-right: 16px;
+}
+
+/* Children carry vertical-layout max-widths (163px); let them use the row width. */
+.horizontal .content > * {
+  max-width: 100%;
+}
+
+.horizontal .label {
+  text-align: left;
+  margin-top: 0;
+  padding-left: 0;
+}
+
 /* Working: no bounce */
 
 .labelRow {
@@ -253,6 +308,37 @@
 }
 
 .bubbleCompacting::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px 4px 0;
+  border-style: solid;
+  border-color: rgba(167, 139, 250, 0.6) transparent transparent;
+}
+
+/* Scheduled-input bubble — violet (same as working), shown while a
+   ScheduleWakeup is pending: the session is idle on purpose, not blocked.
+   Static (no pulse) — clock glyph + fire time, informational only. */
+.bubbleScheduled {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(167, 139, 250, 0.15);
+  border: 1.5px solid rgba(167, 139, 250, 0.6);
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #a78bfa;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  box-shadow: 0 0 12px rgba(167, 139, 250, 0.25);
+}
+
+.bubbleScheduled::after {
   content: '';
   position: absolute;
   bottom: -6px;
@@ -504,6 +590,8 @@
 .thinking { --glow-color: rgba(167, 139, 250, 0.45); }
 .waiting  { --glow-color: rgba(245, 158, 11, 0.4); }
 .done     { --glow-color: rgba(34, 197, 94, 0.4); }
+/* Pending ScheduleWakeup — violet like working. After .waiting so it wins. */
+.scheduled { --glow-color: rgba(167, 139, 250, 0.45); }
 
 /* Closed: desaturated, dimmed */
 .closed {

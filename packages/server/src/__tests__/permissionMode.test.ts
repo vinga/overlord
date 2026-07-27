@@ -23,6 +23,16 @@ async function freshStateManager(onChange: () => void = () => {}) {
   return new mod.StateManager(onChange);
 }
 
+/**
+ * StateManager.onChange() throttles broadcasts to 5Hz via a 200ms timer (and
+ * coalesces every call made inside that window into one). Waiting a single
+ * event-loop tick is not enough to observe a broadcast — wait past the window.
+ */
+const BROADCAST_THROTTLE_MS = 200;
+function flushBroadcast(): Promise<void> {
+  return new Promise(r => setTimeout(r, BROADCAST_THROTTLE_MS + 60));
+}
+
 describe('setPermissionMode — basic contract', () => {
   it('sets mode and activates the lock', async () => {
     const sm = await freshStateManager();
@@ -64,21 +74,21 @@ describe('setPermissionMode — basic contract', () => {
     const sm = await freshStateManager(() => { calls++; });
     sm.addOrUpdate({ sessionId: 'sid-1', pid: 100, cwd: '/tmp/a', startedAt: 1000 });
     // Flush the scheduled onChange from addOrUpdate before counting.
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     const baseline = calls;
 
     sm.setPermissionMode('sid-1', 'plan');
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     expect(calls).toBe(baseline + 1);
 
     // Same value — no new onChange fires.
     sm.setPermissionMode('sid-1', 'plan');
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     expect(calls).toBe(baseline + 1);
 
     // Different value — onChange fires again.
     sm.setPermissionMode('sid-1', 'default');
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     expect(calls).toBe(baseline + 2);
   });
 });
@@ -131,20 +141,22 @@ describe('cycle simulation — rapid setPermissionMode calls', () => {
     let snapshots = 0;
     const sm = await freshStateManager(() => { snapshots++; });
     sm.addOrUpdate({ sessionId: 'sid-1', pid: 100, cwd: '/tmp/a', startedAt: 1000 });
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     const baseline = snapshots;
 
-    // Simulate user clicking chip three times: default → acceptEdits → plan → default
+    // Simulate user clicking chip three times: default → acceptEdits → plan → default.
+    // Each click is flushed past the throttle window, so each gets its own broadcast
+    // (clicks made inside one 200ms window would legitimately coalesce into one).
     sm.setPermissionMode('sid-1', 'acceptEdits');
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     expect(sm.getSession('sid-1')?.permissionMode).toBe('acceptEdits');
 
     sm.setPermissionMode('sid-1', 'plan');
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     expect(sm.getSession('sid-1')?.permissionMode).toBe('plan');
 
     sm.setPermissionMode('sid-1', 'default');
-    await new Promise(r => setImmediate(r));
+    await flushBroadcast();
     expect(sm.getSession('sid-1')?.permissionMode).toBe('default');
 
     expect(snapshots).toBe(baseline + 3);

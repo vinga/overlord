@@ -18,6 +18,7 @@ import { wsVisible, wsSnapshotOptOut, wsTermSubs, subscribeTerminal, clearClient
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
 import { sessionStore } from '../session/sessionStore.js';
+import { globalSettingsStore } from '../session/globalSettingsStore.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -153,12 +154,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
     // client sees, leaving the UI blank during the PTY spawn-storm.
     if (!autoResumeTriggered) {
       autoResumeTriggered = true;
-      if (process.env.OVERLORD_AUTO_RESUME === '1') {
+      if (globalSettingsStore.get().autoResumeOnRestart || process.env.OVERLORD_AUTO_RESUME === '1') {
         setImmediate(() => {
           autoResumePtySessions().catch(err => console.warn('[auto-resume] error:', err));
         });
       } else {
-        console.log('[auto-resume] disabled (set OVERLORD_AUTO_RESUME=1 to enable)');
+        console.log('[auto-resume] disabled (enable in Settings, or set OVERLORD_AUTO_RESUME=1)');
       }
     }
 

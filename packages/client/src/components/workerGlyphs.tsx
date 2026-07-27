@@ -108,6 +108,37 @@ export function WorkerGlyph({ icon, gradientUrl, color }: GlyphProps & { icon: W
           <path d="M 20 24 L 20 42" stroke="rgba(255,255,255,0.75)" strokeWidth="2.2" strokeLinecap="round" />
         </g>
       );
+    case 'btw':
+      return (
+        <>
+          {/* Speech bubble */}
+          <rect x="2" y="5" width="36" height="29" rx="9" fill={gradientUrl} />
+          {/* Tail */}
+          <path d="M 11 32 L 8 45 L 22 34 Z" fill={gradientUrl} />
+          {/* Aside dots */}
+          <circle cx="12" cy="19.5" r="3" fill="rgba(255,255,255,0.92)" />
+          <circle cx="20" cy="19.5" r="3" fill="rgba(255,255,255,0.65)" />
+          <circle cx="28" cy="19.5" r="3" fill="rgba(255,255,255,0.4)" />
+        </>
+      );
+    case 'release':
+      return (
+        <>
+          {/* Rocket body */}
+          <path d="M 20 2 C 26.5 7.5 29 15 29 25 L 29 31 L 11 31 L 11 25 C 11 15 13.5 7.5 20 2 Z" fill={gradientUrl} />
+          {/* Fins */}
+          <path d="M 11 23 L 3.5 33.5 L 11 33.5 Z" fill={color} />
+          <path d="M 29 23 L 36.5 33.5 L 29 33.5 Z" fill={color} />
+          {/* Window */}
+          <circle cx="20" cy="15" r="4.4" fill="rgba(255,255,255,0.9)" />
+          <circle cx="20" cy="15" r="2.5" fill="rgba(0,0,0,0.5)" />
+          {/* Nozzle */}
+          <rect x="15.5" y="31" width="9" height="3.5" rx="1" fill="rgba(0,0,0,0.35)" />
+          {/* Flame */}
+          <path d="M 20 36 C 24 39.5 24.5 44 20 50 C 15.5 44 16 39.5 20 36 Z" fill={color} />
+          <path d="M 20 39 C 22 41.5 22 44 20 47.5 C 18 44 18 41.5 20 39 Z" fill="rgba(255,255,255,0.75)" />
+        </>
+      );
     default:
       return (
         <>

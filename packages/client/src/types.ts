@@ -74,7 +74,7 @@ interface Task {
 }
 
 /** Avatar glyph for a worker. undefined = 'user' (default person glyph). */
-export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes';
+export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes' | 'btw' | 'release';
 
 interface Session {
   sessionId: string;
@@ -115,7 +115,10 @@ interface Session {
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
+  scheduledWakeupAt?: number;  // epoch ms a pending ScheduleWakeup fires; present ⇒ show "scheduled" instead of "waiting"
+  scheduledWakeupReason?: string;  // why it's sleeping (the ScheduleWakeup `reason`)
   jiraKeys?: string[];
+  skillsUsed?: string[];         // skill/command names invoked in this session, accumulated server-side
   completionHint?: 'done' | 'awaiting';
   acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
   userAccepted?: boolean;
@@ -178,6 +181,7 @@ interface ArchiveEntry {
 
 interface GlobalSettings {
   disableBackgroundLLM: boolean;
+  autoResumeOnRestart: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
   jiraEmail?: string;

@@ -27,6 +27,7 @@ import { IntentSummarizer } from './ai/intentSummary.js';
 import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
 import { globalSettingsStore } from './session/globalSettingsStore.js';
+import { writeLiveAtShutdown, consumeLiveAtShutdown, type LiveAtShutdownEntry } from './session/liveAtShutdownStore.js';
 import { clearJiraTitleCache } from './session/jiraTitleCache.js';
 import { artifactStore } from './artifacts/artifactStore.js';
 import { ArtifactWatcher } from './artifacts/artifactWatcher.js';
@@ -731,8 +732,17 @@ try {
   console.warn('[startup] shell-history revival failed:', (err as Error).message);
 }
 
+// Consume the shutdown capture ONCE at boot, not when auto-resume runs: with
+// the toggle off the file would otherwise survive across boots, and a later
+// crash (which writes no capture) would resume a set from some much older
+// shutdown. One capture ⇒ exactly one boot.
+const liveAtShutdown = consumeLiveAtShutdown();
+console.log(liveAtShutdown === null
+  ? '[startup] no live-at-shutdown capture (crash or first run)'
+  : `[startup] live-at-shutdown capture: ${liveAtShutdown.length} session(s)`);
+
 function autoResumePtySessions(): Promise<void> {
-  return autoResumePtySessionsImpl({ stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker });
+  return autoResumePtySessionsImpl({ stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker, liveAtShutdown });
 }
 // auto-resume is now triggered on first client WebSocket connection (see wss.on('connection'))
 
@@ -884,6 +894,17 @@ async function shutdown(signal: string) {
   // 2c. Flush pending artifact writes and stop watcher
   try { await artifactStore.flushAll(); } catch { /* ignore */ }
   try { await artifactWatcher.stop(); } catch { /* ignore */ }
+  // 2d. Record which sessions have a live PTY right now — after killAll the
+  //     in-memory map is gone. Consumed once by auto-resume on next boot.
+  try {
+    const live: LiveAtShutdownEntry[] = [];
+    for (const ovrId of ovrToPty.keys()) {
+      const sid = sessionStore.getByOverlordId(ovrId)?.lineage.currentSessionId;
+      if (sid) live.push({ ovrId, sessionId: sid });
+    }
+    writeLiveAtShutdown(live);
+    console.log(`[shutdown] captured ${live.length} live PTY session(s) for auto-resume`);
+  } catch { /* ignore */ }
   // 3. Kill embedded PTY sessions gracefully (SIGTERM, not SIGKILL)
   //    so Claude CLI can clean up. Bridge sessions survive — they're external.
   ptyManager.killAll();

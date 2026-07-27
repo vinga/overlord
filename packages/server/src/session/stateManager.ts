@@ -195,6 +195,24 @@ function mergeJiraKeys(
   return out.length > 0 ? out : undefined;
 }
 
+const SKILLS_USED_MAX = 12;
+/** Union-merge for skill/command names — same shape as mergeJiraKeys, no dismissed list. */
+export function mergeSkillsUsed(
+  existing: string[] | undefined,
+  fresh: string[] | undefined,
+): string[] | undefined {
+  if (!existing?.length && !fresh?.length) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const k of [...(existing ?? []), ...(fresh ?? [])]) {
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= SKILLS_USED_MAX) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
 function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
   if (a === b) return true;
@@ -985,10 +1003,16 @@ export class StateManager {
       // lacks pending AskUserQuestion tool_uses until they're answered).
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion ?? existingSession?.screenQuestion,
       activeMonitors: transcript?.activeMonitors,
+      scheduledWakeupAt: transcript?.scheduledWakeupAt,
+      scheduledWakeupReason: transcript?.scheduledWakeupReason,
       jiraKeys: mergeJiraKeys(
         existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
         transcript?.jiraKeys,
         sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
+      ),
+      skillsUsed: mergeSkillsUsed(
+        existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
+        transcript?.skillsUsed,
       ),
       completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
       completionHintByUser: state === 'waiting' ? (existingSession?.completionHintByUser ?? (isNew ? loadCompletionHintByUser(sessionId) : false)) : false,
@@ -1547,7 +1571,8 @@ export class StateManager {
       session.acknowledged = false;
       saveAck(sessionId, false);
       session.jiraKeys = undefined;
-      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined });
+      session.skillsUsed = undefined;
+      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, skillsUsed: undefined });
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
@@ -1562,6 +1587,9 @@ export class StateManager {
           ? result.jiraKeys.filter(k => !dismissedKeys?.includes(k)).slice(0, JIRA_KEYS_MAX)
           : undefined)
       : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys);
+    const mergedSkillsUsed = result.transcriptTruncated
+      ? (result.skillsUsed && result.skillsUsed.length > 0 ? result.skillsUsed : undefined)
+      : mergeSkillsUsed(session.skillsUsed, result.skillsUsed);
 
     let changed =
       session.state !== result.state ||
@@ -1573,9 +1601,11 @@ export class StateManager {
       session.compactCount !== result.compactCount ||
       session.isCompacting !== result.isCompacting ||
       session.needsPermission !== result.needsPermission ||
+      session.scheduledWakeupAt !== result.scheduledWakeupAt ||
       session.slug !== slug ||
       session.proposedName !== proposedName ||
       !shallowArrayEquals(session.jiraKeys, mergedJiraKeys) ||
+      !shallowArrayEquals(session.skillsUsed, mergedSkillsUsed) ||
       !shallowArrayEquals(session.subagents, subagents);
 
     if (changed) {
@@ -1710,6 +1740,8 @@ export class StateManager {
       }
       // Update pendingQuestion: set when present, clear when gone
       session.pendingQuestion = result.pendingQuestion ?? undefined;
+      session.scheduledWakeupAt = result.scheduledWakeupAt;
+      session.scheduledWakeupReason = result.scheduledWakeupReason;
       if (session.slug !== slug) {
         session.slug = slug;
         if (session.overlordId && slug) {
@@ -1731,6 +1763,10 @@ export class StateManager {
       if (!shallowArrayEquals(session.jiraKeys, mergedJiraKeys)) {
         session.jiraKeys = mergedJiraKeys;
         if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: mergedJiraKeys });
+      }
+      if (!shallowArrayEquals(session.skillsUsed, mergedSkillsUsed)) {
+        session.skillsUsed = mergedSkillsUsed;
+        if (session.overlordId) sessionStore.patch(session.overlordId, { skillsUsed: mergedSkillsUsed });
       }
     }
 
@@ -2378,17 +2414,21 @@ export class StateManager {
     if (_t3 - _t0 > 100) {
       console.log(`[perf] getSnapshot stages: plansByOvr=${_t1 - _t0}ms compose=${_t2 - _t1}ms gitAttrib=${_t3 - _t2}ms total=${_t3 - _t0}ms sessions=${rooms.reduce((a, r) => a + r.sessions.length, 0)}`);
     }
-    const allKeys = new Set<string>();
+    // Value = "hot": at least one live (non-closed) session references the key.
+    // Hot keys with a still-moving status refresh on a 5m TTL instead of 1h.
+    const allKeys = new Map<string, boolean>();
     for (const room of rooms) {
       for (const s of room.sessions) {
-        if (s.jiraKeys) for (const k of s.jiraKeys) allKeys.add(k);
+        if (!s.jiraKeys) continue;
+        const live = s.state !== 'closed';
+        for (const k of s.jiraKeys) allKeys.set(k, (allKeys.get(k) ?? false) || live);
       }
     }
     let jiraMeta: Record<string, JiraIssueMeta> | undefined;
     if (allKeys.size > 0) {
       const out: Record<string, JiraIssueMeta> = {};
-      for (const k of allKeys) {
-        const m = getCachedJiraMeta(k);
+      for (const [k, hot] of allKeys) {
+        const m = getCachedJiraMeta(k, hot);
         if (m && (m.title || m.type || m.status)) out[k] = m;
       }
       if (Object.keys(out).length > 0) jiraMeta = out;
@@ -2555,9 +2595,18 @@ export class StateManager {
       out.manuallyDone = overlord.manuallyDone ?? session.manuallyDone;
       out.acknowledged = overlord.acknowledged ?? session.acknowledged;
       out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
+      out.skillsUsed = overlord.skillsUsed ?? session.skillsUsed;
     }
     if (latestPlan) out.latestPlan = latestPlan;
     if (needsPty) out.ptyAlive = this.hasLivePtyFn(session.overlordId);
+    // The transcript lacks pending AskUserQuestion tool_uses until they're
+    // answered (Claude writes the tool_use + answer together), so a live
+    // TUI question only exists in screenQuestion (set by permissionChecker).
+    // Surface it as pendingQuestion here — addOrUpdate's fallback never
+    // re-runs for embedded sessions with no raw record to poll.
+    if (!out.pendingQuestion && session.screenQuestion) {
+      out.pendingQuestion = session.screenQuestion;
+    }
     // Newest user-message timestamp from the UNTRIMMED feed. The client confirms
     // optimistic "queued" echoes against this — deriving it from the 30-item tail
     // fails in long tool-heavy turns where the user message is evicted while its

@@ -91,10 +91,13 @@ describe('session stealing — addOrUpdate pid guard', () => {
     sm.addOrUpdate({ sessionId, pid: 200, cwd, startedAt: 2000 });
 
     const after = sm.getSession(sessionId);
-    // Replacement allowed: pid/startedAt updated, lineage (ovrId) preserved.
+    // Replacement allowed: pid updated, lineage (ovrId) preserved.
     expect(after?.pid).toBe(200);
-    expect(after?.startedAt).toBe(2000);
     expect(after?.overlordId).toBe(ovr);
+    // startedAt is a LINEAGE property, pinned to the first-observed value — it is
+    // deliberately NOT advanced by a resume. Letting the new process's startedAt
+    // win would reorder rooms by recency on every restart / auto-resume.
+    expect(after?.startedAt).toBe(1000);
   });
 });
 

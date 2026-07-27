@@ -12,7 +12,7 @@ import { DetailPanel } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
-import { DirectoryPickerDialog } from './components/DirectoryPickerDialog';
+import { SpawnDialog } from './components/SpawnDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
 import { SettingsModal } from './components/SettingsModal';
 import type { GlobalSettings } from './types';
@@ -320,6 +320,16 @@ export function App() {
     setSelectedRoomId(prev => prev === roomId ? null : roomId);
   }
 
+  // Breadcrumb navigation from the detail panel header. Resolve cwd → room, scroll
+  // it into view on the left; `open` also opens the room detail panel.
+  function handleNavigateRoom(cwd: string, open: boolean) {
+    const room = snapshot?.rooms.find(r => r.cwd === cwd);
+    if (!room) return;
+    const el = document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (open) setSelectedRoomId(room.id);
+  }
+
   function handleRoomDetailClose() {
     setSelectedRoomId(null);
   }
@@ -550,7 +560,7 @@ export function App() {
           onClose={() => setShowAdvancedSearch(false)}
         />
       )}
-      <DirectoryPickerDialog
+      <SpawnDialog
         open={showDirectoryPicker}
         onClose={() => setShowDirectoryPicker(false)}
         onSpawn={handleNewFolderSpawn}
@@ -632,6 +642,7 @@ export function App() {
         scrollTarget={scrollTarget && (scrollTarget.sessionId === selectedSession?.overlordId || scrollTarget.sessionId === selectedSession?.sessionId) ? scrollTarget.timestamp : undefined}
         scrollQuery={scrollTarget && (scrollTarget.sessionId === selectedSession?.overlordId || scrollTarget.sessionId === selectedSession?.sessionId) ? scrollTarget.query : undefined}
         onScrollTargetConsumed={() => setScrollTarget(null)}
+        onNavigateRoom={handleNavigateRoom}
       />}
       {selectedRoom && (
         <TaskListPanel

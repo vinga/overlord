@@ -24,11 +24,15 @@
 
 .content {
   flex: 1;
-  padding: 28px 40px;
+  padding: 20px 24px;
   overflow: auto;
   scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
+  /* Own stacking context: caps card-level z-indexes (Options burgers, room
+     popups) below the sticky header and its dropdowns. Portaled menus escape. */
+  position: relative;
+  z-index: 1;
 }
 
 .grid {

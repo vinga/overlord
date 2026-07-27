@@ -83,7 +83,7 @@ export interface PlanSummary {
 }
 
 /** Avatar glyph for a worker. `undefined` means 'user' (default person glyph). */
-export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes';
+export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes' | 'btw' | 'release';
 
 export interface Session {
   sessionId: string;
@@ -132,10 +132,20 @@ export interface Session {
   // pendingQuestion fallback so a live TUI question still surfaces in the UI.
   screenQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
+  /** Epoch ms when a pending ScheduleWakeup fires. Present ⇒ the session is
+   *  idle on purpose (dynamic /loop pacing) — UI shows "scheduled" instead of
+   *  "waiting". Survives user interjections (the wakeup still fires); cleared
+   *  by a newer ScheduleWakeup (incl. stop) or expiry (fire time + 30s). */
+  scheduledWakeupAt?: number;
+  /** The `reason` string of that pending wakeup — one sentence, shown in the UI. */
+  scheduledWakeupReason?: string;
   /** JIRA-shaped ticket keys mined from this session's transcript. Union-merged
    *  across reads — keys seen earlier in the conversation but no longer in the
    *  tail window persist here. Wiped on /clear (transcriptTruncated). */
   jiraKeys?: string[];
+  /** Skill/command names invoked in this session (union across transcript reads).
+   *  Wiped on /clear (transcriptTruncated). */
+  skillsUsed?: string[];
   completionHint?: 'done' | 'awaiting';
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
@@ -261,6 +271,9 @@ export interface OverlordSession {
    *  scanner will keep finding them; mergeJiraKeys filters this set out so
    *  dismissed keys don't reappear on the next read. Cap 50, recent-first. */
   jiraKeysDismissed?: string[];
+  /** Persisted skill/command names invoked in this session (union across
+   *  transcript reads). Wiped on /clear. */
+  skillsUsed?: string[];
 
   /** Pending --resume targeting this lineage from `cwd` started at `at` (epoch ms).
    *  Replaces the legacy ~/.claude/overlord/pending-resumes.json file. Cleared
@@ -319,6 +332,7 @@ export interface LiveSession {
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
+  skillsUsed?: string[];
   completionHintByUser?: boolean;
   manuallyDone?: boolean;
   providerSessionId?: string;
@@ -352,6 +366,7 @@ export interface Room {
 
 export interface GlobalSettings {
   disableBackgroundLLM: boolean;
+  autoResumeOnRestart: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
   jiraEmail?: string;

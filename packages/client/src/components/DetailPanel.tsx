@@ -16,8 +16,10 @@ import { FileEditorOverlay } from './FileEditorOverlay';
 import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
+import { SkillChips } from './SkillChips';
 import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
+import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import { marked } from 'marked';
 
@@ -321,6 +323,8 @@ interface DetailPanelProps {
   /** Query that was searched — used to highlight matching text within the target item */
   scrollQuery?: string;
   onScrollTargetConsumed?: () => void;
+  /** Room breadcrumb navigation. `open` = also toggle the room detail panel. */
+  onNavigateRoom?: (cwd: string, open: boolean) => void;
 }
 
 function isFilePath(s: string): boolean {
@@ -1471,6 +1475,7 @@ export function DetailPanel({
   scrollTarget,
   scrollQuery,
   onScrollTargetConsumed,
+  onNavigateRoom,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
@@ -1931,6 +1936,34 @@ const currentDisplayName =
 
   const roomPrefix = useRoomPrefix(selectedSession?.cwd);
 
+  // Room breadcrumb for the header — the room's basename, same value Room.name
+  // carries. Derived, never stored: the session name itself is untouched.
+  const roomLabel = useMemo(() => {
+    const cwd = selectedSession?.cwd;
+    if (!cwd) return '';
+    return cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? '';
+  }, [selectedSession?.cwd]);
+
+  // Crumb click = scroll the room into view on the left; double-click = also open
+  // its detail panel. Debounce the single click so it doesn't fire mid-double-click.
+  const crumbClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (crumbClickTimer.current) clearTimeout(crumbClickTimer.current); }, []);
+  const handleCrumbClick = () => {
+    const cwd = selectedSession?.cwd;
+    if (!cwd) return;
+    if (crumbClickTimer.current) clearTimeout(crumbClickTimer.current);
+    crumbClickTimer.current = setTimeout(() => {
+      crumbClickTimer.current = null;
+      onNavigateRoom?.(cwd, false);
+    }, 220);
+  };
+  const handleCrumbDoubleClick = () => {
+    const cwd = selectedSession?.cwd;
+    if (!cwd) return;
+    if (crumbClickTimer.current) { clearTimeout(crumbClickTimer.current); crumbClickTimer.current = null; }
+    onNavigateRoom?.(cwd, true);
+  };
+
   useEffect(() => {
     if (isEditing && editInputRef.current) {
       selectAfterPrefix(editInputRef.current, roomPrefix);
@@ -2115,10 +2148,14 @@ const currentDisplayName =
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
   const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion;
   const isCompacting = selectedSession?.isCompacting === true;
+  const stateBarScheduledAt = selectedSession?.state === 'waiting' && !stateBarIsDone && !stateBarNeedsApproval && !stateBarHasQuestion
+    ? selectedSession.scheduledWakeupAt
+    : undefined;
   const stateBarLabel = isCompacting ? 'Compacting conversation…'
     : stateBarIsDone ? 'Task complete'
     : stateBarNeedsApproval ? 'Waiting for approval'
     : stateBarHasQuestion ? 'Question for you'
+    : stateBarScheduledAt ? new Date(stateBarScheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : selectedSession?.state === 'waiting' && stateBarActiveSubagents.length > 0 ? 'Delegated · waiting for subagent'
     : selectedSession?.state === 'waiting' ? 'Waiting for input'
     : selectedSession?.state === 'thinking' ? 'Thinking...'
@@ -2127,6 +2164,7 @@ const currentDisplayName =
     : stateBarIsDone ? styles.stateBarDone
     : stateBarNeedsApproval ? styles.stateBarPermission
     : stateBarHasQuestion ? styles.stateBarQuestion
+    : stateBarScheduledAt ? styles.stateBarScheduled
     : selectedSession?.state === 'waiting' ? styles.stateBarWaiting
     : selectedSession?.state === 'thinking' ? styles.stateBarThinking
     : styles.stateBarActive;
@@ -2382,6 +2420,20 @@ const currentDisplayName =
                       </>
                     ) : (
                       <>
+                        {roomLabel && (
+                          <span
+                            className={`${styles.roomCrumb} ${onNavigateRoom ? styles.roomCrumbClickable : ''}`}
+                            title={onNavigateRoom ? `${selectedSession.cwd}\n\nClick: scroll to room · Double-click: open room details` : selectedSession.cwd}
+                            role={onNavigateRoom ? 'button' : undefined}
+                            tabIndex={onNavigateRoom ? 0 : undefined}
+                            onClick={onNavigateRoom ? handleCrumbClick : undefined}
+                            onDoubleClick={onNavigateRoom ? handleCrumbDoubleClick : undefined}
+                            onKeyDown={onNavigateRoom ? (e) => { if (e.key === 'Enter') handleCrumbDoubleClick(); } : undefined}
+                          >
+                            {roomLabel}
+                            <span className={styles.roomCrumbSep} aria-hidden="true">›</span>
+                          </span>
+                        )}
                         <h2 className={styles.sessionName} onDoubleClick={startEdit} title="Double-click to rename">{currentDisplayName}</h2>
                         <button
                           className={styles.nameBtn}
@@ -2913,10 +2965,25 @@ const currentDisplayName =
                       {selectedSession && selectedSession.state !== 'closed' && !selectedSession.userAccepted && (
                         <>
                           <div className={`${styles.stateBar} ${stateBarClass}`}>
-                            <span className={styles.stateBarDot} />
+                            {stateBarScheduledAt ? (
+                              <svg className={styles.stateBarClock} width="13" height="13" viewBox="0 0 12 12" aria-hidden="true">
+                                <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                                <path d="M 6 3.2 L 6 6 L 8 7.4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            ) : (
+                              <span className={styles.stateBarDot} />
+                            )}
                             <span className={styles.stateBarLabel}>{stateBarLabel}</span>
-                            {elapsedSeconds > 2 && (
+                            {elapsedSeconds > 2 && !stateBarScheduledAt && (
                               <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
+                            )}
+                            {stateBarScheduledAt && selectedSession.scheduledWakeupReason && (
+                              <span
+                                className={styles.stateBarReason}
+                                title={selectedSession.scheduledWakeupReason}
+                              >
+                                {selectedSession.scheduledWakeupReason}
+                              </span>
                             )}
                             {stateBarActiveSubagents.length > 0 && (
                               <span className={styles.stateBarDelegate}>
@@ -3199,6 +3266,15 @@ const currentDisplayName =
                 {/* Tab: Details */}
                 {activeTab === 'details' && (
                   <div className={styles.scrollArea}>
+                    {selectedSession.scheduledWakeupAt != null && (
+                      <section className={styles.section}>
+                        <ScheduledWakeupsStats
+                          sessionId={selectedSession.sessionId}
+                          nextFireAt={selectedSession.scheduledWakeupAt}
+                          reason={selectedSession.scheduledWakeupReason}
+                        />
+                      </section>
+                    )}
                     <section className={styles.section}>
                       <div className={styles.field}>
                         <span className={styles.fieldLabel}>ID</span>
@@ -3366,6 +3442,14 @@ const currentDisplayName =
                           </div>
                         );
                       })()}
+                      {selectedSession.skillsUsed && selectedSession.skillsUsed.length > 0 && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Skills</span>
+                          <span className={styles.fieldValue}>
+                            <SkillChips skills={selectedSession.skillsUsed} />
+                          </span>
+                        </div>
+                      )}
 
 
                       {/* Resume / Connect section */}

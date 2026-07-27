@@ -46,10 +46,34 @@
   color: rgba(255, 255, 255, 0.92);
 }
 
-.chipSep {
+/* JIRA status lozenge — colored by statusCategory (new / indeterminate / done). */
+.chipStatus {
   flex-shrink: 0;
-  color: rgba(255, 255, 255, 0.3);
-  font-weight: 400;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chipStatus[data-cat='new'] {
+  color: #9db4d0;
+  background: rgba(157, 180, 208, 0.14);
+}
+
+.chipStatus[data-cat='indeterminate'] {
+  color: #6ba8f5;
+  background: rgba(107, 168, 245, 0.16);
+}
+
+.chipStatus[data-cat='done'] {
+  color: #4ec38a;
+  background: rgba(78, 195, 138, 0.16);
 }
 
 .chipTitle {

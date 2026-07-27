@@ -89,6 +89,91 @@ export function extractJiraKeys(segments: string[], projectRegex: RegExp | null)
   return out;
 }
 
+const SKILLS_USED_MAX = 12;
+// Built-in commands that aren't skills. Everything else arriving as a
+// <command-name> invocation is assumed to be a skill/workflow command.
+const IGNORED_COMMANDS = new Set([
+  'compact', 'clear', 'exit', 'login', 'logout', 'resume',
+  'status', 'model', 'help', 'cost', 'doctor',
+]);
+
+/**
+ * Extract skill/command names from slash-command invocations. Reuses the
+ * segments from gatherJiraScanText: the real invocation is a plain, non-meta
+ * user message whose content STARTS with the command tags (either
+ * `<command-name>` first or `<command-message>` first). Anchoring to the
+ * segment start is load-bearing: user prose (e.g. compaction summaries) can
+ * quote `<command-name>` tags mid-text and must not count as an invocation.
+ * First-occurrence order, de-duplicated, capped at SKILLS_USED_MAX.
+ */
+const COMMAND_INVOCATION_RE =
+  /^\s*(?:<command-message>[^<]*<\/command-message>\s*)?<command-name>\/([a-z0-9:_-]+)<\/command-name>/i;
+
+export function extractSkillsUsed(segments: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const segment of segments) {
+    if (!segment) continue;
+    const m = COMMAND_INVOCATION_RE.exec(segment);
+    if (!m) continue;
+    const name = m[1].toLowerCase();
+    if (IGNORED_COMMANDS.has(name) || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+    if (out.length >= SKILLS_USED_MAX) break;
+  }
+  return out;
+}
+
+/**
+ * Model-invoked skills: the assistant calls the `Skill` tool (input.skill) or
+ * `SlashCommand` tool (input.command) without the user ever typing a slash, so
+ * these never appear as `<command-name>` user entries.
+ *
+ * Sidechain (subagent) entries are skipped — a skill a subagent loads belongs to
+ * that subagent, not to this session's chip list.
+ */
+export function extractSkillToolUses(last30: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of last30) {
+    if (!line || !line.includes('tool_use')) continue;
+    let parsed: { type?: string; isSidechain?: boolean; message?: { content?: unknown } };
+    try { parsed = JSON.parse(line) as typeof parsed; } catch { continue; }
+    if (parsed.type !== 'assistant' || parsed.isSidechain === true) continue;
+    const content = parsed.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content as Array<{ type?: string; name?: string; input?: { skill?: string; command?: string } }>) {
+      if (block.type !== 'tool_use') continue;
+      let raw: string | undefined;
+      if (block.name === 'Skill') raw = block.input?.skill;
+      else if (block.name === 'SlashCommand') raw = block.input?.command;
+      if (typeof raw !== 'string') continue;
+      const name = raw.trim().split(/\s+/)[0].replace(/^\//, '').toLowerCase();
+      if (!name || IGNORED_COMMANDS.has(name) || seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+      if (out.length >= SKILLS_USED_MAX) return out;
+    }
+  }
+  return out;
+}
+
+/** First-occurrence union of skill-name lists, capped at SKILLS_USED_MAX. */
+export function unionSkillNames(...lists: string[][]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const name of list) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+      if (out.length >= SKILLS_USED_MAX) return out;
+    }
+  }
+  return out;
+}
+
 interface TranscriptCache {
   mtimeMs: number;
   fileSize: number;
@@ -221,6 +306,21 @@ function reEvalCompactingFromCache(filePath: string): true | undefined {
   const cc = compactCountCache.get(filePath);
   if (cc?.lastCompactTimestamp === undefined) return undefined;
   return Date.now() - cc.lastCompactTimestamp < 5000 ? true : undefined;
+}
+
+// Keep showing "scheduled" briefly past the fire time — the harness re-invoke
+// takes a few seconds; without grace the badge flaps to "waiting" right before
+// the wakeup lands. If the session died, the badge self-expires after this.
+const SCHEDULED_WAKEUP_GRACE_MS = 30_000;
+
+/**
+ * Time-only re-evaluation of a cached scheduledWakeupAt: keep it while the
+ * fire time (+ grace) is in the future, clear it once passed. Mirrors the
+ * reEvalCompactingFromCache pattern — the fast paths must not freeze this.
+ */
+function reEvalScheduledWakeup(prev: number | undefined): number | undefined {
+  if (prev === undefined) return undefined;
+  return Date.now() < prev + SCHEDULED_WAKEUP_GRACE_MS ? prev : undefined;
 }
 
 /**
@@ -736,6 +836,78 @@ function buildToolResults(lines: string[]): Map<string, { content: string; isErr
   return results;
 }
 
+/** One ScheduleWakeup call mined from the transcript tail — for the on-demand
+ *  Detail-panel stats endpoint. Not part of the WS snapshot. */
+export interface ScheduledWakeupInfo {
+  scheduledAt?: string;   // ISO timestamp of the tool_use
+  fireAt?: number;        // epoch ms (absent for stop calls)
+  delaySeconds?: number;  // raw input value (pre-clamp)
+  reason?: string;
+  prompt?: string;
+  status: 'pending' | 'fired' | 'stopped' | 'superseded' | 'unconfirmed';
+}
+
+const MAX_WAKEUP_HISTORY = 10;
+
+/**
+ * All ScheduleWakeup calls in the transcript tail, newest first (capped at 10).
+ * Only the newest entry can be 'pending' — every ScheduleWakeup call replaces
+ * the previous pending wakeup, so older ones are 'superseded' (or 'stopped').
+ * Reads the tail directly (no shared cache mutation) — this is an on-demand
+ * REST path, not the 3s poll.
+ */
+export function readScheduledWakeups(filePath: string): ScheduledWakeupInfo[] {
+  let lines: string[];
+  try {
+    const stat = fs.statSync(filePath);
+    lines = readFileTail(filePath, stat.size);
+  } catch {
+    return [];
+  }
+  const toolResults = buildToolResults(lines);
+  const out: ScheduledWakeupInfo[] = [];
+  for (let i = lines.length - 1; i >= 0 && out.length < MAX_WAKEUP_HISTORY; i--) {
+    let parsed: { type?: string; timestamp?: string; message?: { content?: unknown } };
+    try { parsed = JSON.parse(lines[i]) as typeof parsed; } catch { continue; }
+    if (parsed.type !== 'assistant' || !Array.isArray(parsed.message?.content)) continue;
+    const blocks = parsed.message!.content as Array<{ type?: string; name?: string; id?: string; input?: unknown }>;
+    for (let j = blocks.length - 1; j >= 0 && out.length < MAX_WAKEUP_HISTORY; j--) {
+      const block = blocks[j];
+      if (block.type !== 'tool_use' || block.name !== 'ScheduleWakeup') continue;
+      const inp = (block.input && typeof block.input === 'object') ? block.input as Record<string, unknown> : {};
+      const res = block.id ? toolResults.get(block.id) : undefined;
+      const isStop = inp.stop === true;
+      const delaySeconds = typeof inp.delaySeconds === 'number' ? inp.delaySeconds : undefined;
+      let fireAt: number | undefined;
+      if (!isStop && delaySeconds !== undefined && parsed.timestamp) {
+        const t = Date.parse(parsed.timestamp) + Math.min(3600, Math.max(60, delaySeconds)) * 1000;
+        if (Number.isFinite(t)) fireAt = t;
+      }
+      let status: ScheduledWakeupInfo['status'];
+      if (isStop) {
+        status = 'stopped';
+      } else if (!res || res.isError) {
+        status = 'unconfirmed';
+      } else if (out.length > 0) {
+        status = 'superseded';
+      } else if (fireAt !== undefined && Date.now() < fireAt + SCHEDULED_WAKEUP_GRACE_MS) {
+        status = 'pending';
+      } else {
+        status = 'fired';
+      }
+      out.push({
+        scheduledAt: parsed.timestamp,
+        fireAt,
+        delaySeconds,
+        reason: typeof inp.reason === 'string' ? inp.reason : undefined,
+        prompt: typeof inp.prompt === 'string' ? inp.prompt : undefined,
+        status,
+      });
+    }
+  }
+  return out;
+}
+
 function detectLastUserIsDone(last30: string[]): boolean {
   for (let i = last30.length - 1; i >= 0; i--) {
     try {
@@ -792,8 +964,14 @@ export function readTranscriptState(filePath: string): {
   detectedPlans?: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }>;
   // In-flight Monitor tool_use blocks — present while streaming (no tool_result yet).
   activeMonitors?: ActiveMonitor[];
+  // Epoch ms when a pending ScheduleWakeup fires — see the ScheduleWakeup block below.
+  scheduledWakeupAt?: number;
+  // The `reason` input of that pending call — one sentence, shown in the UI.
+  scheduledWakeupReason?: string;
   // JIRA-shaped ticket keys mined from the transcript tail. Capped at 5.
   jiraKeys?: string[];
+  // Skill/command names from slash-command invocations in the tail. Capped at 12.
+  skillsUsed?: string[];
 } {
   if (isCodexTranscript(filePath)) {
     return readCodexTranscriptState(filePath);
@@ -806,10 +984,12 @@ export function readTranscriptState(filePath: string): {
     if (cached && !cached.dirty && (now - cached.lastCheckedAt) < MIN_STAT_INTERVAL_MS) {
       const reEval = reEvalStateFromCache(cached);
       const isCompacting = reEvalCompactingFromCache(filePath);
+      const scheduledWakeupAt = reEvalScheduledWakeup(cached.result.scheduledWakeupAt);
       if (reEval.state !== cached.result.state
           || reEval.needsPermission !== cached.result.needsPermission
-          || isCompacting !== cached.result.isCompacting) {
-        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting };
+          || isCompacting !== cached.result.isCompacting
+          || scheduledWakeupAt !== cached.result.scheduledWakeupAt) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting, scheduledWakeupAt, scheduledWakeupReason: scheduledWakeupAt ? cached.result.scheduledWakeupReason : undefined };
       }
       return cached.result;
     }
@@ -829,10 +1009,12 @@ export function readTranscriptState(filePath: string): {
       cached.fileModifiedMs = fileModifiedMs;
       const reEval = reEvalStateFromCache(cached);
       const isCompacting = reEvalCompactingFromCache(filePath);
+      const scheduledWakeupAt = reEvalScheduledWakeup(cached.result.scheduledWakeupAt);
       if (reEval.state !== cached.result.state
           || reEval.needsPermission !== cached.result.needsPermission
-          || isCompacting !== cached.result.isCompacting) {
-        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting };
+          || isCompacting !== cached.result.isCompacting
+          || scheduledWakeupAt !== cached.result.scheduledWakeupAt) {
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting, scheduledWakeupAt, scheduledWakeupReason: scheduledWakeupAt ? cached.result.scheduledWakeupReason : undefined };
       }
       return cached.result;
     }
@@ -895,6 +1077,14 @@ export function readTranscriptState(filePath: string): {
     const detectedPlans: Array<{ planToolUseId: string; plan: string; timestamp?: string; planStatus: 'approved' | 'rejected' | 'pending' }> = [];
     const activeMonitors: ActiveMonitor[] = [];
     const seenMonitorIds = new Set<string>();
+    // ScheduleWakeup detection (backward scan): only the MOST RECENT call counts.
+    // User messages after the call do NOT invalidate — a pending wakeup survives
+    // user interjections and fires regardless. The fired case is covered by
+    // expiry (fireAt + grace) plus the state gate (session is working while it
+    // processes the fired prompt, and the badge only renders on 'waiting').
+    let scheduledWakeupAt: number | undefined;
+    let scheduledWakeupReason: string | undefined;
+    let scheduleWakeupChecked = false;
 
     // Extract model and inputTokens from the last assistant event
     let model: string | undefined;
@@ -1009,6 +1199,23 @@ export function readTranscriptState(filePath: string): {
                         || '';
                       const until = typeof inp.until === 'string' ? inp.until : undefined;
                       activeMonitors.push({ toolUseId, target: target as string, startedAt: parsed.timestamp, until });
+                    }
+                  }
+                  // Active ScheduleWakeup: most recent call, confirmed by a non-error
+                  // tool_result, not a stop, fire time (+ grace) still ahead.
+                  // delaySeconds clamped like the runtime.
+                  if (block.name === 'ScheduleWakeup' && !scheduleWakeupChecked) {
+                    scheduleWakeupChecked = true;
+                    const inp = (block.input && typeof block.input === 'object') ? block.input as Record<string, unknown> : {};
+                    const toolUseId = (block as Record<string, unknown>).id as string | undefined;
+                    const res = toolUseId ? toolResults.get(toolUseId) : undefined;
+                    if (inp.stop !== true && typeof inp.delaySeconds === 'number' && res && !res.isError && parsed.timestamp) {
+                      const clampedDelay = Math.min(3600, Math.max(60, inp.delaySeconds));
+                      const fireAt = Date.parse(parsed.timestamp) + clampedDelay * 1000;
+                      if (Number.isFinite(fireAt) && Date.now() < fireAt + SCHEDULED_WAKEUP_GRACE_MS) {
+                        scheduledWakeupAt = fireAt;
+                        scheduledWakeupReason = typeof inp.reason === 'string' ? inp.reason : undefined;
+                      }
                     }
                   }
                   if (block.input && typeof block.input === 'object') {
@@ -1221,7 +1428,9 @@ export function readTranscriptState(filePath: string): {
       state = 'thinking';
     }
 
-    const jiraKeys = extractJiraKeys(gatherJiraScanText(last30), getJiraProjectRegex());
+    const scanSegments = gatherJiraScanText(last30);
+    const jiraKeys = extractJiraKeys(scanSegments, getJiraProjectRegex());
+    const skillsUsed = unionSkillNames(extractSkillsUsed(scanSegments), extractSkillToolUses(last30));
 
     const result = {
       state,
@@ -1241,7 +1450,10 @@ export function readTranscriptState(filePath: string): {
       transcriptTruncated: transcriptTruncated || undefined,
       detectedPlans: detectedPlans.length > 0 ? detectedPlans : undefined,
       activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
+      scheduledWakeupAt,
+      scheduledWakeupReason,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
+      skillsUsed: skillsUsed.length > 0 ? skillsUsed : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes });
     evictTranscriptCache(now);

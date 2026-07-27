@@ -1,0 +1,326 @@
+.root {
+  position: relative;
+  margin-left: 4px;
+}
+
+.triggerBtn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.triggerBtn:hover,
+.triggerBtn[aria-expanded='true'] {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: rgba(212, 175, 55, 0.4);
+  color: #d4af37;
+}
+
+.popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(560px, calc(100vw - 48px));
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: #1e1e2e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  font-family: 'Inter', system-ui, sans-serif;
+  transition: width 0.15s ease;
+}
+
+.popupLarge {
+  /* Note: the sticky header's backdrop-filter makes it the containing block
+     for fixed descendants, so 100% here = header width (viewport minus the
+     open detail panel), not the full viewport. */
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  width: min(820px, calc(100% - 32px));
+  max-height: none;
+  height: calc(100vh - 96px);
+}
+
+.popupHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.popupTitle {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.saveError {
+  font-size: 11px;
+  color: #e06c75;
+}
+
+.headerIconBtn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.headerIconBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.loading {
+  padding: 16px 14px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+  padding-right: 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.toolBtn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.toolBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+.toolBtnActive,
+.toolBtnActive:hover {
+  background: rgba(212, 175, 55, 0.12);
+  color: #d4af37;
+}
+
+.hidden {
+  display: none;
+}
+
+.linkBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.linkInput {
+  flex: 1;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #e8e8e8;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.linkInput::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+.linkInput:focus {
+  border-color: rgba(212, 175, 55, 0.4);
+}
+
+.linkApply {
+  padding: 5px 10px;
+  background: rgba(212, 175, 55, 0.1);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 6px;
+  color: #d4af37;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.linkApply:hover {
+  background: rgba(212, 175, 55, 0.18);
+}
+
+.editorScroll {
+  flex: 1;
+  min-height: 320px;
+  overflow-y: auto;
+  cursor: text;
+  display: flex;
+  flex-direction: column;
+}
+
+.prose {
+  flex: 1;
+  padding: 12px 14px;
+  outline: none;
+  color: rgba(255, 255, 255, 0.88);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+  caret-color: #d4af37;
+  white-space: pre-wrap;
+}
+
+/* Placeholder (tiptap Placeholder extension) */
+.editorScroll :global(p.is-editor-empty:first-child)::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: rgba(255, 255, 255, 0.25);
+}
+
+/* Task lists (tiptap TaskList/TaskItem markup) */
+.editorScroll :global(ul[data-type='taskList']) {
+  list-style: none;
+  padding-left: 2px;
+}
+.editorScroll :global(ul[data-type='taskList'] li) {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.editorScroll :global(ul[data-type='taskList'] li > label) {
+  flex-shrink: 0;
+  user-select: none;
+}
+.editorScroll :global(ul[data-type='taskList'] li > div) {
+  flex: 1;
+}
+.editorScroll :global(ul[data-type='taskList'] li[data-checked='true'] > div) {
+  color: rgba(255, 255, 255, 0.45);
+  text-decoration: line-through;
+}
+
+.editorScroll :global(.ProseMirror-selectednode) {
+  outline: 2px solid rgba(212, 175, 55, 0.4);
+}
+
+.editorScroll :global(p) {
+  margin: 0 0 8px;
+}
+.editorScroll :global(ul),
+.editorScroll :global(ol) {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.editorScroll :global(li) {
+  margin: 2px 0;
+}
+.editorScroll :global(h1),
+.editorScroll :global(h2),
+.editorScroll :global(h3) {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.95);
+}
+.editorScroll :global(h1):first-child,
+.editorScroll :global(h2):first-child,
+.editorScroll :global(h3):first-child {
+  margin-top: 0;
+}
+.editorScroll :global(a) {
+  color: #7aa2f7;
+  text-decoration: none;
+  cursor: pointer;
+}
+.editorScroll :global(a):hover {
+  text-decoration: underline;
+}
+.editorScroll :global(code) {
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 12px;
+}
+.editorScroll :global(pre) {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.editorScroll :global(pre code) {
+  padding: 0;
+  background: none;
+}
+.editorScroll :global(table) {
+  margin: 0 0 8px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.editorScroll :global(th),
+.editorScroll :global(td) {
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: left;
+}
+.editorScroll :global(th) {
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+.editorScroll :global(tr):nth-child(even) :global(td) {
+  background: rgba(255, 255, 255, 0.02);
+}
+.editorScroll :global(blockquote) {
+  margin: 0 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid rgba(212, 175, 55, 0.5);
+  color: rgba(255, 255, 255, 0.6);
+}
+.editorScroll :global(hr) {
+  margin: 10px 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.editorScroll :global(input[type='checkbox']) {
+  margin-right: 6px;
+  accent-color: #d4af37;
+}

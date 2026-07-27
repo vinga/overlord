@@ -35,6 +35,16 @@ async function freshStateManager() {
   return new mod.StateManager(() => { /* noop */ });
 }
 
+/**
+ * The cwd-based fresh-spawn path additionally requires `isSpawnedByOverlord(pid)`
+ * on non-Windows platforms — a real process-tree walk. Test pids don't exist, so
+ * it always returns false and the cwd path can never fire. Stub it for the tests
+ * whose subject is the cwd + ovrId-reservation logic, not the process-tree guard.
+ */
+function stubSpawnedByOverlord(sm: unknown, value = true): void {
+  (sm as { isSpawnedByOverlord: (pid: number) => boolean }).isSpawnedByOverlord = () => value;
+}
+
 describe('OVR marker classification — server-restart scenario', () => {
   it('classifies a session with ___OVR: marker as embedded even with no fresh spawn in memory', async () => {
     // Simulates: server restarted, freshPtySpawns empty, no live PTY.
@@ -99,6 +109,7 @@ describe('OVR marker classification — server-restart scenario', () => {
     // When `added` fires: no ovrMarker, but trackPendingPtySpawn was called.
     // The session must still get the correct reserved ovrId and be embedded.
     const sm = await freshStateManager();
+    stubSpawnedByOverlord(sm);
     const cwd = '/tmp/parental-guard';
     const ptyId = 'pty-1777821503829-ecdw00';
 
@@ -152,6 +163,7 @@ describe('OVR marker classification — server-restart scenario', () => {
     // Full two-event cycle: added (name=NONE) then changed (name with marker).
     // Both calls must converge on the same ovrId and keep sessionType=embedded.
     const sm = await freshStateManager();
+    stubSpawnedByOverlord(sm);
     const cwd = '/tmp/two-event-project';
     const ptyId = 'pty-two-event-abc';
 

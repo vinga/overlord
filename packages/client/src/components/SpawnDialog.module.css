@@ -361,3 +361,92 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Collapsed directory row (room variant) */
+.dirCollapsed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 20px 4px;
+  background: #0a0a14;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.dirCollapsed:hover {
+  border-color: rgba(212, 175, 55, 0.3);
+}
+
+.dirCollapsedPath {
+  flex: 1;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dirChevron {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.3);
+  display: flex;
+  align-items: center;
+  transition: transform 0.2s;
+}
+.dirChevronOpen {
+  transform: rotate(180deg);
+}
+
+.sectionLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.25);
+  padding: 12px 20px 0;
+}
+
+/* Provider buttons */
+.providerBtn {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.65);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'Inter', system-ui, sans-serif;
+  transition: all 0.15s;
+}
+.providerBtn:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+}
+.providerBtnActive {
+  border-color: rgba(212, 175, 55, 0.45);
+  background: rgba(212, 175, 55, 0.08);
+  color: #d4af37;
+}
+.providerBtnActive:hover {
+  border-color: rgba(212, 175, 55, 0.45);
+  color: #d4af37;
+}
+
+.providerHint {
+  flex: 1;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+  line-height: 1.4;
+}
+
+.prefixInput {
+  flex: none;
+  width: 55px;
+  color: rgba(255, 255, 255, 0.4);
+}

@@ -4,6 +4,9 @@ import * as path from 'path';
 
 export interface GlobalSettings {
   disableBackgroundLLM: boolean;
+  /** When true, sessions with a live PTY at server shutdown are respawned
+   *  (`claude --resume`) on the first WS client connection after restart. */
+  autoResumeOnRestart: boolean;
   /** Root URL of the JIRA instance, e.g. "https://hypatos.atlassian.net".
    *  Used to build chip links: `${jiraBaseUrl}/browse/PROJ-123`. */
   jiraBaseUrl?: string;
@@ -20,6 +23,7 @@ export interface GlobalSettings {
 
 const DEFAULTS: GlobalSettings = {
   disableBackgroundLLM: false,
+  autoResumeOnRestart: false,
 };
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claude', 'overlord');
@@ -83,6 +87,7 @@ class GlobalSettingsStore {
 function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   const out: Partial<GlobalSettings> = {};
   if (typeof input.disableBackgroundLLM === 'boolean') out.disableBackgroundLLM = input.disableBackgroundLLM;
+  if (typeof input.autoResumeOnRestart === 'boolean') out.autoResumeOnRestart = input.autoResumeOnRestart;
   if (typeof input.jiraBaseUrl === 'string') {
     const trimmed = input.jiraBaseUrl.trim().replace(/\/+$/, '');
     if (trimmed === '' || /^https?:\/\//i.test(trimmed)) {
@@ -104,6 +109,7 @@ function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
 
 function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
   return a.disableBackgroundLLM === b.disableBackgroundLLM
+    && a.autoResumeOnRestart === b.autoResumeOnRestart
     && (a.jiraBaseUrl ?? '') === (b.jiraBaseUrl ?? '')
     && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
     && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')

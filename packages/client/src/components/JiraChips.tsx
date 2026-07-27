@@ -59,11 +59,11 @@ export function JiraChips({ keys, baseUrl, sessionId }: Props) {
           <>
             <JiraTypeIcon type={m?.type} />
             <span className={styles.chipKey}>{key}</span>
-            {title && (
-              <>
-                <span className={styles.chipSep}>—</span>
-                <span className={styles.chipTitle}>{title}</span>
-              </>
+            {title && <span className={styles.chipTitle}>{title}</span>}
+            {m?.status && (
+              <span className={styles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>
+                {m.status}
+              </span>
             )}
           </>
         );

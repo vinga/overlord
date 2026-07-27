@@ -67,7 +67,7 @@ export function spawnClaudeSession(
   // Queue the initial prompt BEFORE spawning. Marker-keyed (never cwd-keyed) so
   // concurrent same-cwd spawns each get their own prompt. The ptyEvents output
   // handler fires it once the TUI starts rendering.
-  if (opts.prompt && opts.prompt.trim()) {
+  if (opts.prompt?.trim()) {
     ctx.stateManager.trackPendingInitialPrompt(ptySessionId, opts.prompt);
   }
 

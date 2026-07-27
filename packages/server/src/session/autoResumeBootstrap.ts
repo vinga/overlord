@@ -5,6 +5,7 @@ import { resolveResumableSessionId } from './transcriptReader.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from './transcriptShadow.js';
 import { buildOpencodeResumeArgs } from './opencodeSession.js';
 import { sessionStore } from './sessionStore.js';
+import type { LiveAtShutdownEntry } from './liveAtShutdownStore.js';
 
 export interface AutoResumeDeps {
   stateManager: StateManager;
@@ -12,6 +13,9 @@ export interface AutoResumeDeps {
   ovrToPty: Map<string, string>;
   ptyToOvr: Map<string, string>;
   linkageTracker: PtyLinkageTracker;
+  /** Sessions that had a live PTY at the previous shutdown, consumed once at
+   *  boot. `null` = no capture (crash / kill -9) ⇒ resume nothing. */
+  liveAtShutdown: LiveAtShutdownEntry[] | null;
 }
 
 /**
@@ -28,13 +32,25 @@ export interface AutoResumeDeps {
  *    re-joins the original OverlordSession instead of splitting off.
  */
 export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void> {
-  const { stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker } = deps;
-  const sessions = stateManager.getPtySessionsToResume();
-  if (sessions.length === 0) {
-    console.log('[auto-resume] no embedded sessions to resume');
+  const { stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker, liveAtShutdown: captured } = deps;
+  // Only resume sessions that actually had a live PTY when the server shut
+  // down — getPtySessionsToResume() returns every closed embedded session
+  // ever, which would spawn a claude per stale card. The capture is written
+  // by shutdown() and consumed once at boot; no capture (crash, kill -9,
+  // pre-feature shutdown) means the live set is unknown, so resume nothing.
+  if (captured === null) {
+    console.log('[auto-resume] no shutdown capture found — skipping (only clean restarts auto-resume)');
     return;
   }
-  console.log(`[auto-resume] resuming ${sessions.length} embedded session(s)`);
+  const capturedSids = new Set(captured.map(e => e.sessionId));
+  const capturedOvrs = new Set(captured.map(e => e.ovrId));
+  const sessions = stateManager.getPtySessionsToResume().filter(({ sessionId }) =>
+    capturedSids.has(sessionId) || capturedOvrs.has(sessionStore.resolveOverlordId(sessionId) ?? ''));
+  if (sessions.length === 0) {
+    console.log('[auto-resume] no live-at-shutdown sessions to resume');
+    return;
+  }
+  console.log(`[auto-resume] resuming ${sessions.length} of ${captured.length} live-at-shutdown session(s)`);
   // Resume in parallel: the PTY child processes boot concurrently anyway, and
   // running the per-session setup work in parallel lets the sync filesystem
   // I/O (transcript shadow restore, sessionStore lookups) interleave via the

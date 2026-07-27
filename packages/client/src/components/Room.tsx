@@ -5,7 +5,7 @@ import { getLaunchInfo } from '../types';
 import { WorkerGroup } from './WorkerGroup';
 import { SessionCommands } from './SessionCommands';
 import styles from './Room.module.css';
-import dialogStyles from './DirectoryPickerDialog.module.css';
+import { SpawnDialog } from './SpawnDialog';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 import { GitBranchBadge } from './GitBranchBadge';
@@ -119,6 +119,17 @@ function lastActivityLabel(isoTimestamp: string): string {
   return `${diffHour}h`;
 }
 
+/** Tooltip for the desk age label — spells out what the "10h" / "18m" badge measures. */
+function lastActivityTooltip(isoTimestamp: string): string {
+  const d = new Date(isoTimestamp);
+  if (Number.isNaN(d.getTime())) return 'Time since last activity in this session';
+  const when = d.toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+  return `Time since last activity — last message at ${when}`;
+}
+
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
@@ -164,62 +175,7 @@ function groupArchiveByTime(entries: ArchiveEntry[]): Array<{ label: string; ent
   return order.filter(k => buckets[k].length > 0).map(label => ({ label, entries: buckets[label] }));
 }
 
-function InfoTooltip({ text }: { text: string }) {
-  const [visible, setVisible] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
 
-  return (
-    <span
-      ref={ref}
-      onMouseEnter={e => {
-        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        setPos({ x: r.left + r.width / 2, y: r.top - 8 });
-        setVisible(true);
-      }}
-      onMouseLeave={() => setVisible(false)}
-      style={{ display: 'inline-flex', alignItems: 'center', cursor: 'default', color: 'rgba(255,255,255,0.25)', flexShrink: 0 }}
-    >
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-        <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4"/>
-        <text x="8" y="12" textAnchor="middle" fill="currentColor" fontSize="9" fontFamily="Inter,system-ui,sans-serif" fontWeight="600">i</text>
-      </svg>
-      {visible && ReactDOM.createPortal(
-        <div style={{
-          position: 'fixed', left: pos.x, top: pos.y, transform: 'translate(-50%, -100%)',
-          background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.12)',
-          borderRadius: 7, padding: '8px 12px', maxWidth: 260,
-          fontFamily: "'Inter',system-ui,sans-serif", fontSize: 12, lineHeight: 1.5,
-          color: 'rgba(255,255,255,0.75)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-          zIndex: 9999, pointerEvents: 'none',
-        }}>{text}</div>,
-        document.body
-      )}
-    </span>
-  );
-}
-
-function CopyBtn({ text, onAfterCopy }: { text: string; onAfterCopy?: () => void }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={e => {
-        e.stopPropagation();
-        navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-        onAfterCopy?.();
-      }}
-      title="Copy"
-      style={{ flexShrink: 0, background: 'none', border: 'none', color: copied ? '#22c55e' : 'rgba(255,255,255,0.35)', cursor: 'pointer', padding: '2px 4px', borderRadius: 3, display: 'flex', alignItems: 'center', transition: 'color 0.15s' }}
-    >
-      {copied
-        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-        : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      }
-    </button>
-  );
-}
 
 function OverlordToast({ message, icon, accent, onDone }: { message: string; icon: React.ReactNode; accent: string; onDone: () => void }) {
   useEffect(() => {
@@ -259,216 +215,6 @@ function CommandCopiedToast({ onDone }: { onDone: () => void }) {
   );
 }
 
-function RoomSpawnDialog({ cwd, initialName, initialPrefix, onSpawn, onCancel, onCopyAndClose, onPrefixSaved }: {
-  cwd: string;
-  initialName: string;
-  initialPrefix: string;
-  onSpawn: (name: string, mode: TerminalSpawnMode, prefix: string, provider: SessionProvider) => void;
-  onCancel: () => void;
-  onCopyAndClose?: () => void;
-  onPrefixSaved?: (prefix: string) => void;
-}) {
-  const [name, setName] = useState(initialName);
-  const [prefix, setPrefix] = useState(initialPrefix);
-  const prefixSavedRef = useRef(initialPrefix);
-  const prefixDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (prefix === prefixSavedRef.current) return;
-    if (prefixDebounceRef.current) clearTimeout(prefixDebounceRef.current);
-    prefixDebounceRef.current = setTimeout(() => {
-      prefixDebounceRef.current = null;
-      const value = prefix;
-      fetch('/api/room-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd, prefix: value }),
-      }).then(r => {
-        if (r.ok) {
-          prefixSavedRef.current = value;
-          onPrefixSaved?.(value);
-        }
-      }).catch(() => {});
-    }, 500);
-    return () => {
-      if (prefixDebounceRef.current) {
-        clearTimeout(prefixDebounceRef.current);
-        prefixDebounceRef.current = null;
-      }
-    };
-  }, [prefix, cwd, onPrefixSaved]);
-  const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
-  const [provider, setProvider] = useState<SessionProvider>('claude');
-  const [bridgePath, setBridgePath] = useState<string>('overlord-bridge');
-  const nameRef = useRef<HTMLInputElement>(null);
-  const markerRef = useRef(Math.random().toString(36).slice(2, 10));
-
-  useEffect(() => {
-    setTimeout(() => { nameRef.current?.focus(); nameRef.current?.select(); }, 50);
-  }, []);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onCancel]);
-
-  useEffect(() => {
-    fetch('/api/info')
-      .then(r => r.json())
-      .then((info: { bridgePath?: string }) => { if (info.bridgePath) setBridgePath(info.bridgePath); })
-      .catch(() => {});
-  }, []);
-
-  const safeName = name.trim().replace(/["\s]/g, '-');
-  const marker = markerRef.current;
-  const availableModes: TerminalSpawnMode[] = provider === 'opencode' ? ['embedded'] : ['embedded', 'bridge', 'plain', 'raw'];
-  const effectiveMode = availableModes.includes(mode) ? mode : 'embedded';
-  const commands: Record<TerminalSpawnMode, string | null> = {
-    embedded: null,
-    bridge: provider === 'claude' ? `cd "${cwd}" && "${bridgePath}" --pipe overlord-${marker} -- claude --name ${safeName}___BRG:${marker}` : null,
-    plain: provider === 'claude' ? `cd "${cwd}" && claude --name "${name.trim()}"` : null,
-    raw: provider === 'claude' ? null : null,
-  };
-
-  const modeRows = [
-    { key: 'embedded', label: 'Overlord', tooltip: 'Spawns a PTY session managed entirely inside Overlord. No terminal window needed — inject messages, view output, and monitor state directly from the UI.' },
-    { key: 'bridge',   label: 'Bridge',   tooltip: 'Opens Terminal.app with a named-pipe relay. Overlord can inject messages and track the session while you keep full terminal control.' },
-    { key: 'plain',    label: 'Direct',   tooltip: 'Opens Terminal.app running claude directly. No relay — Overlord monitors via session files only. Use when bridge is not needed.' },
-    { key: 'raw',      label: 'Shell',    tooltip: 'Embedded terminal running a plain shell — no Claude, no LLM. Useful for manual tasks: git, file ops, running scripts.' },
-  ] as { key: TerminalSpawnMode; label: string; tooltip: string }[];
-  const visibleModeRows = modeRows.filter(row => availableModes.includes(row.key));
-
-  useEffect(() => {
-    if (!availableModes.includes(mode)) setMode('embedded');
-  }, [availableModes, mode]);
-
-  return ReactDOM.createPortal(
-    <div className={dialogStyles.backdrop} onClick={onCancel}>
-      <div className={dialogStyles.dialog} onClick={e => e.stopPropagation()}>
-        <div className={dialogStyles.header}>
-          <h2 className={dialogStyles.title}>New Session</h2>
-          <button className={dialogStyles.closeBtn} onClick={onCancel}>×</button>
-        </div>
-
-        {/* Fixed path */}
-        <div style={{ padding: '10px 20px 12px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-          <div style={{ fontFamily: "'Inter',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.25)', marginBottom: 6 }}>Directory</div>
-          <div style={{ fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: 12, color: 'rgba(255,255,255,0.45)', background: '#0a0a14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6, padding: '7px 12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cwd}</div>
-        </div>
-
-        {/* Name row with inline prefix */}
-        <div className={dialogStyles.config} style={{ paddingBottom: 0 }}>
-          <div className={dialogStyles.configRow}>
-            <label className={dialogStyles.label}>Name</label>
-            <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-              <input
-                className={dialogStyles.nameInput}
-                value={prefix}
-                onChange={e => setPrefix(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), effectiveMode, prefix, provider); }}
-                placeholder="prefix…"
-                spellCheck={false}
-                title="Session prefix — saved for this room"
-                style={{ flex: 'none', width: 55, color: 'rgba(255,255,255,0.4)', fontStyle: prefix ? 'normal' : 'italic' }}
-              />
-              <input
-                ref={nameRef}
-                className={dialogStyles.nameInput}
-                value={name}
-                onChange={e => setName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onSpawn(name.trim(), effectiveMode, prefix, provider); }}
-                placeholder="Session name…"
-                spellCheck={false}
-                style={{ flex: 1 }}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className={dialogStyles.config} style={{ paddingBottom: 0, paddingTop: 10 }}>
-          <div className={dialogStyles.configRow}>
-            <label className={dialogStyles.label}>Provider</label>
-            <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-              {([
-                { key: 'claude', label: 'Claude' },
-                { key: 'opencode', label: 'OpenCode' },
-              ] as const).map(option => (
-                <button
-                  key={option.key}
-                  type="button"
-                  onClick={() => setProvider(option.key)}
-                  style={{
-                    border: provider === option.key ? '1px solid rgba(212,175,55,0.45)' : '1px solid rgba(255,255,255,0.1)',
-                    background: provider === option.key ? 'rgba(212,175,55,0.08)' : 'rgba(255,255,255,0.03)',
-                    color: provider === option.key ? '#d4af37' : 'rgba(255,255,255,0.65)',
-                    borderRadius: 6,
-                    padding: '7px 14px',
-                    cursor: 'pointer',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    fontFamily: "'Inter', system-ui, sans-serif",
-                    transition: 'all 0.15s',
-                  }}
-                >{option.label}</button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Mode rows — each with optional command inline */}
-        <div style={{ padding: '10px 20px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {visibleModeRows.map(({ key, label, tooltip }) => {
-            const cmd = commands[key];
-            const active = effectiveMode === key;
-            return (
-              <div
-                key={key}
-                onClick={() => setMode(key)}
-                style={{
-                  display: 'flex', alignItems: 'flex-start', gap: 10,
-                  background: active ? 'rgba(255,255,255,0.05)' : 'transparent',
-                  border: '1px solid transparent',
-                  borderLeft: active ? '2px solid rgba(212,175,55,0.6)' : '2px solid transparent',
-                  borderRadius: 6, padding: '7px 10px', cursor: 'pointer',
-                  transition: 'all 0.12s',
-                }}
-              >
-                {/* Mode label + info tooltip */}
-                <span style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0, width: 72, alignSelf: 'center' }}>
-                  <span style={{
-                    fontFamily: "'Inter',system-ui,sans-serif", fontSize: 11, fontWeight: 600,
-                    color: active ? '#d4af37' : 'rgba(255,255,255,0.3)',
-                    transition: 'color 0.12s',
-                  }}>{label}</span>
-                  <InfoTooltip text={tooltip} />
-                </span>
-
-                {/* Command or description */}
-                {cmd && name.trim() ? (
-                  <>
-                    <code style={{ flex: 1, fontFamily: "'JetBrains Mono','Fira Code',monospace", fontSize: 10, color: active ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.3)', wordBreak: 'break-all', lineHeight: 1.5, minWidth: 0 }}>{cmd}</code>
-                    <CopyBtn text={cmd} onAfterCopy={() => { onCancel(); onCopyAndClose?.(); }} />
-                  </>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-
-        <div className={dialogStyles.actions}>
-          <button className={dialogStyles.cancelBtn} onClick={onCancel}>Cancel</button>
-          <button
-            className={dialogStyles.spawnBtn}
-            onClick={() => name.trim() && onSpawn(name.trim(), effectiveMode, prefix, provider)}
-            disabled={!name.trim()}
-          >Spawn</button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-}
 
 interface RoomProps {
   room: RoomType;
@@ -1027,11 +773,12 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
         )}
       </div>
       {showSpawnPanel && onSpawnDirect && (
-        <RoomSpawnDialog
-          cwd={room.cwd}
-          initialName={spawnPanelName}
+        <SpawnDialog
+          open
+          fixedCwd={room.cwd}
+          suggestedName={spawnPanelName}
           initialPrefix={namePrefix}
-          onSpawn={(name, mode, prefix, provider) => {
+          onSpawn={(cwd, fullName, mode, provider, prefix) => {
             fetch('/api/room-config', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1040,10 +787,10 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             setNamePrefix(prefix);
             setLastMode(mode);
             setLastProvider(provider);
-            onSpawnDirect(room.cwd, prefix + name, mode, provider);
+            onSpawnDirect(cwd, fullName, mode, provider);
             setShowSpawnPanel(false);
           }}
-          onCancel={() => setShowSpawnPanel(false)}
+          onClose={() => setShowSpawnPanel(false)}
           onCopyAndClose={() => setShowCopyToast(true)}
           onPrefixSaved={(p) => setNamePrefix(p)}
         />
@@ -1090,12 +837,19 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             >
               <span className={styles.dragHandle} aria-hidden="true">⠿</span>
               <div className={styles.deskInfo}>
-                <div className={styles.deskTimeLabel}>{lastActivityLabel(session.lastActivity)}</div>
+                <div className={styles.deskTimeLabel} title={lastActivityTooltip(session.lastActivity)}>
+                  {lastActivityLabel(session.lastActivity)}
+                </div>
                 {(() => {
                   const launch = getLaunchInfo(session, isPtySession?.(session.overlordId ?? session.sessionId));
+                  // Overlord-spawned is the default — no chip for it, only for other launch types.
+                  const showLaunchBadge = launch.category !== 'pty';
+                  if (!showLaunchBadge && session.provider !== 'codex' && session.provider !== 'opencode') return null;
                   return (
                     <div className={styles.deskLaunchRow}>
-                      <span className={styles.deskLaunchBadge} data-category={launch.category}>{launch.name}</span>
+                      {showLaunchBadge && (
+                        <span className={styles.deskLaunchBadge} data-category={launch.category}>{launch.name}</span>
+                      )}
                       {session.provider === 'codex' && (
                         <span className={styles.deskLaunchBadge} data-category="codex">Codex</span>
                       )}

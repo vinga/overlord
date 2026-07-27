@@ -3,10 +3,10 @@
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-left: 2px solid rgba(212, 175, 55, 0.2);
   border-radius: 12px;
-  padding: 24px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.3);
   transition: border-color 0.2s;
 }
@@ -204,7 +204,7 @@
 .desks {
   display: flex;
   flex-wrap: wrap;
-  gap: 20px;
+  gap: 14px;
   align-items: flex-start;
 }
 
@@ -212,12 +212,14 @@
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  padding: 18px 18px 14px;
+  padding: 14px 12px 10px;
   display: flex;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
   justify-content: center;
+  gap: 6px;
   min-width: 122px;
-  max-width: 176px;
+  max-width: 250px;
   position: relative;
   transition: background 0.15s, border-color 0.15s;
 }
@@ -245,23 +247,23 @@
 }
 
 
+/* Meta footer: age + launch chip. Sits below the worker (order 2) so the top of
+   the card is a single band — icon, title, burger — not a header row. */
 .deskInfo {
-  position: absolute;
-  top: 4px;
-  left: 8px;
+  order: 2;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
   z-index: 5;
 }
 
 .deskTimeLabel {
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.25);
-  pointer-events: none;
+  cursor: help;
   letter-spacing: 0.03em;
   line-height: 1.4;
   white-space: nowrap;
@@ -285,9 +287,9 @@
 
 .deskLaunchRow {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
   pointer-events: none;
   user-select: none;
 }
@@ -298,6 +300,9 @@
   font-weight: 600;
   letter-spacing: 0.05em;
   padding: 1px 5px;
+  /* Roughly double the intrinsic chip width so short labels ("IDE", "Shell") read as a pill. */
+  min-width: 78px;
+  text-align: center;
   border-radius: 3px;
   line-height: 1.4;
   white-space: nowrap;

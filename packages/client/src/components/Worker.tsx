@@ -29,6 +29,7 @@ interface WorkerProps {
   isRaw?: boolean;
   icon?: WorkerIcon;
   ptyInputPendingSince?: number;
+  scheduledWakeupAt?: number;
   notesSummary?: string;
   intent?: string;
   activeMonitors?: ActiveMonitor[];
@@ -46,10 +47,11 @@ interface WaitingIndicatorProps {
   acknowledged?: boolean;
   needsPermission?: boolean;
   unknownCommand?: string;
+  scheduledWakeupAt?: number;
   styles: Record<string, string>;
 }
 
-function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, styles }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, scheduledWakeupAt, styles }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
   if (userAccepted) {
     return <span className={styles.bubbleDone}>done</span>;
@@ -60,6 +62,21 @@ function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledg
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
   // Fresh event — show it even if the "waiting" bubble was acknowledged.
   if (unknownCommand) return <span className={styles.bubbleUnknownCmd}>⚠ {unknownCommand} not a command</span>;
+  // Self-scheduled wakeup pending — the session is idle on purpose, not blocked
+  // on the user. Static (no pulse): informational, not a call to action.
+  // Shown regardless of ack (replaces "waiting").
+  if (scheduledWakeupAt) {
+    const fireTime = new Date(scheduledWakeupAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return (
+      <span className={styles.bubbleScheduled} title={`Scheduled wakeup at ${fireTime}`}>
+        <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+          <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M 6 3.2 L 6 6 L 8 7.4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {fireTime}
+      </span>
+    );
+  }
   if (acknowledged) return null;
   return <span className={styles.bubble}>waiting</span>;
 }
@@ -74,7 +91,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, scheduledWakeupAt, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -117,13 +134,16 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
   }, [onRename, isSubagent, label]);
 
   const isDone = (state === 'waiting' || state === 'closed') && completionHint === 'done';
-  const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}`;
+  const isScheduled = state === 'waiting' && scheduledWakeupAt != null && !isDone && !needsPermission;
+  const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}${isScheduled ? ' ' + styles.scheduled : ''}`;
 
   const latestPlan = isSubagent ? null : (latestPlanProp ?? null);
+  // Full workers lay out icon-left / text-right; subagents and minimal chips stay stacked.
+  const horizontal = !minimal && !isSubagent;
 
   return (
     <div
-      className={`${styles.worker} ${stateClass}`}
+      className={`${styles.worker} ${horizontal ? styles.horizontal : ''} ${stateClass}`}
       style={{ '--agent-color': displayColor } as React.CSSProperties}
       onClick={onClick}
       role="button"
@@ -137,7 +157,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
-      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && (userAccepted || completionHint === 'done'))) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission && !unknownCommand) && (
+      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && (userAccepted || completionHint === 'done'))) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission && !unknownCommand && !scheduledWakeupAt) && (
         <div
           className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
@@ -165,6 +185,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
                   acknowledged={acknowledged}
                   needsPermission={needsPermission}
                   unknownCommand={unknownCommand}
+                  scheduledWakeupAt={scheduledWakeupAt}
                   styles={styles}
                 />
               )}
@@ -175,6 +196,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           )}
         </div>
       )}
+      <div className={styles.body}>
+      <div className={styles.iconWrap}>
       {isRaw && glyph === 'user' ? (
         <svg
           width="48"
@@ -221,7 +244,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           <WorkerGlyph icon={glyph} gradientUrl={`url(#grad-${sessionId})`} color={displayColor} />
         </svg>
       )}
+      </div>
 
+      <div className={styles.content}>
       {!minimal && (
         isEditing ? (
           <input
@@ -268,6 +293,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && !isSubagent && activeMonitors && activeMonitors.length > 0 && (
         <MonitoringPill monitors={activeMonitors} />
       )}
+      </div>
+      </div>
     </div>
   );
 });
