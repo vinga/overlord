@@ -64,7 +64,7 @@ async function makeCtx() {
     stateManager,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ptyManager: ptyManager as any,
-    aiClassifier: { classifyCompletion: async () => { /* noop */ } } as any,
+    aiClassifier: {} as any,
     wsSessionMap: new Map(),
     ovrToPty: new Map<string, string>(),
     ptyToOvr: new Map<string, string>(),

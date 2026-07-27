@@ -2,8 +2,10 @@ import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import type { OfficeSnapshot, Session, SessionProvider } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
+import { QueueRail } from './QueueRail';
 import { ScratchpadPopup } from './ScratchpadPopup';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
+import { expandRoom } from '../hooks/useRoomCollapsed';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './Office.module.css';
 
@@ -19,6 +21,10 @@ interface OfficeProps {
 
   selectedSessionId?: string | null;
   selectionNonce?: number;
+  /** False when the last selection came from the inbox rail — open, don't scroll. */
+  scrollOnSelect?: boolean;
+  /** Rail row click: select without scrolling the grid. */
+  onSelectSessionQuiet?: (session: Session) => void;
   rightOffset?: number;
   onRoomClick?: (roomId: string) => void;
   spawnCwd?: string | null;
@@ -29,6 +35,8 @@ interface OfficeProps {
   onDeleteSession?: (sessionId: string) => void;
   onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
+  /** Inbox-rail row actions — same endpoints the DetailPanel StateBadge uses. */
+  onToggleAck?: (sessionId: string) => void;
   onOpenArchive?: (entry: import('../types').ArchiveEntry) => void;
   onDeleteArchive?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, name: string) => void;
@@ -174,7 +182,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, scrollOnSelect = true, onSelectSessionQuiet, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onToggleAck, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -182,6 +190,9 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   const [activeOnly, setActiveOnly] = useState<boolean>(() => {
     try { return localStorage.getItem(ACTIVE_ONLY_STORAGE_KEY) === '1'; } catch { return false; }
   });
+  // Reported by QueueRail (34px collapsed strip / 288px open). The office pads
+  // itself by this so the fixed rail never overlaps the header or the grid.
+  const [railWidth, setRailWidth] = useState(34);
   const toggleActiveOnly = useCallback(() => {
     setActiveOnly(prev => {
       const next = !prev;
@@ -244,21 +255,29 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   // Scroll the selected worker's desk into view whenever selection changes
   // (e.g. clicking an agent icon in the DetailPanel, search, or task list).
   // Rooms are read via a ref so snapshot ticks don't re-trigger the scroll.
+  // The inbox rail selects quietly (scrollOnSelect=false) — it is its own list,
+  // so yanking the grid underneath it would be disorienting.
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
+  const scrollOnSelectRef = useRef(scrollOnSelect);
+  scrollOnSelectRef.current = scrollOnSelect;
   useEffect(() => {
     if (!selectedSessionId) return;
+    if (!scrollOnSelectRef.current) return;
     const scrollToDesk = () => {
       const sel = CSS.escape(selectedSessionId);
-      let el = document.querySelector(`[data-desk-ovr="${sel}"], [data-desk-sid="${sel}"]`);
-      if (!el) {
-        // Desk hidden (collapsed room) — scroll to the room card instead
-        const room = roomsRef.current.find(r =>
-          r.sessions.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId)
-        );
-        if (room) el = document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`);
-      }
-      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      const desk = document.querySelector(`[data-desk-ovr="${sel}"], [data-desk-sid="${sel}"]`);
+      if (desk) { desk.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return; }
+      // Desk not rendered — the room is collapsed. Expand it so the worker is
+      // actually reachable, then fall back to the room card for this pass; the
+      // 260ms retry below lands on the now-mounted desk.
+      const room = roomsRef.current.find(r =>
+        r.sessions.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId)
+      );
+      if (!room) return;
+      expandRoom(room.id);
+      document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     };
     const raf = requestAnimationFrame(scrollToDesk);
     // The detail panel's 200ms width transition reflows the grid — scroll again after it settles
@@ -303,7 +322,15 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   }, []);
 
   return (
-    <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
+    <div className={styles.office} style={{ paddingRight: rightOffset, paddingLeft: railWidth, transition: 'padding-right 200ms ease, padding-left 160ms ease' }}>
+      <QueueRail
+        snapshot={snapshot}
+        customNames={customNames}
+        onSelectSession={onSelectSessionQuiet ?? onSelectSession}
+        onToggleAck={onToggleAck}
+        selectedSessionId={selectedSessionId}
+        onWidthChange={setRailWidth}
+      />
       <header className={styles.header}>
         <OverlordLogo />
         <input

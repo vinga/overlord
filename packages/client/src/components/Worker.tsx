@@ -1,5 +1,6 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
-import type { WorkerState, Session, ActiveMonitor, WorkerIcon } from '../types';
+import type { WorkerState, Session, ActiveMonitor, BackgroundTask, WorkerIcon } from '../types';
+import { formatElapsed } from '../lib/queueBuckets';
 import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
@@ -16,8 +17,6 @@ interface WorkerProps {
   isSubagent?: boolean;
   minimal?: boolean;
   agentType?: string;
-  completionHint?: 'done' | 'awaiting';
-  userAccepted?: boolean;
   acknowledged?: boolean;
   needsPermission?: boolean;
   unknownCommand?: string;
@@ -30,6 +29,7 @@ interface WorkerProps {
   icon?: WorkerIcon;
   ptyInputPendingSince?: number;
   scheduledWakeupAt?: number;
+  backgroundTasks?: BackgroundTask[];
   notesSummary?: string;
   intent?: string;
   activeMonitors?: ActiveMonitor[];
@@ -42,23 +42,16 @@ interface WorkerProps {
 
 interface WaitingIndicatorProps {
   isSubagent: boolean;
-  completionHint?: 'done' | 'awaiting';
-  userAccepted?: boolean;
   acknowledged?: boolean;
   needsPermission?: boolean;
   unknownCommand?: string;
   scheduledWakeupAt?: number;
+  backgroundTasks?: BackgroundTask[];
   styles: Record<string, string>;
 }
 
-function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, scheduledWakeupAt, styles }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, acknowledged, needsPermission, unknownCommand, scheduledWakeupAt, backgroundTasks, styles }: WaitingIndicatorProps) {
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
-  if (userAccepted) {
-    return <span className={styles.bubbleDone}>done</span>;
-  }
-  if (completionHint === 'done') {
-    return <span className={styles.bubbleDonePending}>review</span>;
-  }
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
   // Fresh event — show it even if the "waiting" bubble was acknowledged.
   if (unknownCommand) return <span className={styles.bubbleUnknownCmd}>⚠ {unknownCommand} not a command</span>;
@@ -77,6 +70,23 @@ function WaitingIndicator({ isSubagent, completionHint, userAccepted, acknowledg
       </span>
     );
   }
+  // Background command still running — the harness re-invokes on exit, so this is
+  // a machine wait, not a user wait. No fire time exists: show elapsed instead.
+  // Same static treatment as scheduled, and likewise shown regardless of ack.
+  if (backgroundTasks && backgroundTasks.length > 0) {
+    const first = backgroundTasks[0];
+    const elapsed = formatElapsed(first.startedAt);
+    const extra = backgroundTasks.length > 1 ? ` +${backgroundTasks.length - 1}` : '';
+    const label = first.description ?? first.taskId;
+    return (
+      <span className={styles.bubbleBackground} title={`Running in background: ${label}${elapsed ? ` (${elapsed})` : ''}`}>
+        <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+          <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeDasharray="3.5 2.5" />
+        </svg>
+        {elapsed || 'running'}{extra}
+      </span>
+    );
+  }
   if (acknowledged) return null;
   return <span className={styles.bubble}>waiting</span>;
 }
@@ -91,7 +101,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, completionHint, userAccepted, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, scheduledWakeupAt, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, acknowledged, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, scheduledWakeupAt, backgroundTasks, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -133,9 +143,10 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
     setIsEditing(true);
   }, [onRename, isSubagent, label]);
 
-  const isDone = (state === 'waiting' || state === 'closed') && completionHint === 'done';
-  const isScheduled = state === 'waiting' && scheduledWakeupAt != null && !isDone && !needsPermission;
-  const stateClass = `${styles[state] ?? ''}${isDone ? ' ' + styles.done : ''}${isScheduled ? ' ' + styles.scheduled : ''}`;
+  const isScheduled = state === 'waiting' && scheduledWakeupAt != null && !needsPermission;
+  const hasBackgroundTasks = backgroundTasks != null && backgroundTasks.length > 0;
+  const isBackground = state === 'waiting' && hasBackgroundTasks && !isScheduled && !needsPermission;
+  const stateClass = `${styles[state] ?? ''}${isScheduled ? ' ' + styles.scheduled : ''}${isBackground ? ' ' + styles.background : ''}`;
 
   const latestPlan = isSubagent ? null : (latestPlanProp ?? null);
   // Full workers lay out icon-left / text-right; subagents and minimal chips stay stacked.
@@ -157,11 +168,11 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
       )}
-      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting' || (state === 'closed' && (userAccepted || completionHint === 'done'))) && !(!isCompacting && state === 'waiting' && acknowledged && !userAccepted && !needsPermission && !unknownCommand && !scheduledWakeupAt) && (
+      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting') && !(!isCompacting && state === 'waiting' && acknowledged && !needsPermission && !unknownCommand && !scheduledWakeupAt && !hasBackgroundTasks) && (
         <div
           className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
-          onClick={!isSubagent && !userAccepted && !needsPermission ? handleIndicatorClick : undefined}
-          style={!isSubagent && !userAccepted && !needsPermission ? { cursor: 'pointer' } : undefined}
+          onClick={!isSubagent && !needsPermission ? handleIndicatorClick : undefined}
+          style={!isSubagent && !needsPermission ? { cursor: 'pointer' } : undefined}
         >
           {isCompacting ? (
             <span className={styles.bubbleCompacting}>compacting</span>
@@ -180,17 +191,13 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
               {state === 'waiting' && (
                 <WaitingIndicator
                   isSubagent={!!isSubagent}
-                  completionHint={completionHint}
-                  userAccepted={userAccepted}
                   acknowledged={acknowledged}
                   needsPermission={needsPermission}
                   unknownCommand={unknownCommand}
                   scheduledWakeupAt={scheduledWakeupAt}
+                  backgroundTasks={backgroundTasks}
                   styles={styles}
                 />
-              )}
-              {state === 'closed' && (userAccepted || completionHint === 'done') && (
-                <span className={userAccepted ? styles.bubbleDone : styles.bubbleDonePending}>closed · {userAccepted ? 'done' : 'review'}</span>
               )}
             </>
           )}

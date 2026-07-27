@@ -27,11 +27,27 @@ import { globalSettingsStore } from '../session/globalSettingsStore.js';
 import { scratchpadStore } from '../session/scratchpadStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
-import { getBrainContext, invalidateBrainCache } from '../brain/brainContext.js';
+import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
 import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
+
+/** Brain file routes only ever touch ~/.claude/ or the room's own cwd — never arbitrary paths. */
+export function isInBrainScope(resolved: string, cwd: string): boolean {
+  const homeDir = resolve(os.homedir(), '.claude');
+  const cwdResolved = resolve(cwd);
+  return resolved.startsWith(homeDir + '/') || resolved === homeDir
+    || resolved.startsWith(cwdResolved + '/') || resolved === cwdResolved;
+}
+
+/** A per-project memory note: ~/.claude/projects/<slug>/memory/<name>.md */
+export function isMemoryFilePath(resolved: string): boolean {
+  const memoryRoot = resolve(os.homedir(), '.claude', 'projects');
+  return resolved.startsWith(memoryRoot + '/')
+    && resolved.endsWith('.md')
+    && resolved.split('/').includes('memory');
+}
 
 export interface PtyMaps {
   ovrToPty: Map<string, string>;     // ovrId → ptySessionId
@@ -520,15 +536,7 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
-  // Manually mark a session as done
-  app.post('/api/sessions/:sessionId/mark-done', (req, res) => {
-    const { sessionId } = req.params;
-    const ok = stateManager.markDoneByUser(sessionId);
-    if (!ok) { res.status(404).json({ error: 'session not found or idle' }); return; }
-    res.json({ ok: true });
-  });
-
-  // Toggle acknowledged — silences WAITING bubble without marking done
+  // Toggle acknowledged — silences the pulsing WAITING bubble
   app.post('/api/sessions/:sessionId/ack', (req, res) => {
     const { sessionId } = req.params;
     const next = stateManager.toggleAckByUser(sessionId);
@@ -550,14 +558,6 @@ export function registerApiRoutes(
     if (!re.test(key)) { res.status(400).json({ error: 'Invalid JIRA key' }); return; }
     const ok = stateManager.dismissJiraKey(sessionId, key);
     if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
-    res.json({ ok: true });
-  });
-
-  // Accept a done session (user reviewed and confirmed result)
-  app.post('/api/sessions/:sessionId/accept', (req, res) => {
-    const { sessionId } = req.params;
-    const ok = stateManager.acceptSession(sessionId);
-    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
     res.json({ ok: true });
   });
 
@@ -691,11 +691,7 @@ export function registerApiRoutes(
     if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
     if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     const resolved = resolve(filePath);
-    const homeDir = resolve(os.homedir(), '.claude');
-    const cwdResolved = resolve(cwd);
-    const allowed = resolved.startsWith(homeDir + '/') || resolved === homeDir
-      || resolved.startsWith(cwdResolved + '/') || resolved === cwdResolved;
-    if (!allowed) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
+    if (!isInBrainScope(resolved, cwd)) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
     try {
       if (!fs.existsSync(resolved)) { res.status(404).json({ error: 'file not found' }); return; }
       const stat = fs.statSync(resolved);
@@ -720,17 +716,9 @@ export function registerApiRoutes(
     if (typeof content !== 'string') { res.status(400).json({ error: 'content must be a string' }); return; }
     if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     const resolved = resolve(filePath);
-    const homeDir = resolve(os.homedir(), '.claude');
-    const cwdResolved = resolve(cwd);
-    const inScope = resolved.startsWith(homeDir + '/') || resolved === homeDir
-      || resolved.startsWith(cwdResolved + '/') || resolved === cwdResolved;
-    if (!inScope) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
+    if (!isInBrainScope(resolved, cwd)) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
     const isClaudeMd = basename(resolved) === 'CLAUDE.md';
-    const memoryRoot = resolve(os.homedir(), '.claude', 'projects');
-    const isMemoryFile = resolved.startsWith(memoryRoot + '/')
-      && resolved.endsWith('.md')
-      && resolved.split('/').includes('memory');
-    if (!isClaudeMd && !isMemoryFile) {
+    if (!isClaudeMd && !isMemoryFilePath(resolved)) {
       res.status(403).json({ error: 'path type not editable' });
       return;
     }
@@ -743,6 +731,45 @@ export function registerApiRoutes(
       invalidateBrainCache(cwd);
       const totalLines = content.length === 0 ? 0 : content.split('\n').length;
       res.json({ ok: true, path: resolved, totalLines });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Brain: delete a single memory file and drop its pointer line from MEMORY.md.
+  // Narrower than PUT — memory/*.md only. CLAUDE.md and the MEMORY.md index itself are never
+  // deletable, so a stray click can't wipe the identity file or orphan every remaining entry.
+  app.delete('/api/brain/file', express.json({ limit: '64kb' }), (req, res) => {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : (req.body?.cwd as string | undefined) ?? '';
+    const filePath = typeof req.query.path === 'string' ? req.query.path : (req.body?.path as string | undefined) ?? '';
+    if (!cwd) { res.status(400).json({ error: 'cwd required' }); return; }
+    if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
+    const resolved = resolve(filePath);
+    if (!isInBrainScope(resolved, cwd)) { res.status(403).json({ error: 'path outside allowed scope' }); return; }
+    if (!isMemoryFilePath(resolved)) { res.status(403).json({ error: 'only memory files are deletable' }); return; }
+    const name = basename(resolved);
+    if (name === 'MEMORY.md' || name === 'CLAUDE.md') {
+      res.status(403).json({ error: `${name} is not deletable` });
+      return;
+    }
+    try {
+      if (!fs.existsSync(resolved)) { res.status(404).json({ error: 'file not found' }); return; }
+      if (!fs.statSync(resolved).isFile()) { res.status(400).json({ error: 'not a file' }); return; }
+      fs.unlinkSync(resolved);
+
+      // Prune the index in the same request — a leftover pointer line would keep listing an
+      // entry whose file 404s on expand.
+      const memDir = dirname(resolved);
+      const indexPath = join(memDir, 'MEMORY.md');
+      let indexUpdated = false;
+      if (fs.existsSync(indexPath)) {
+        const pruned = pruneMemoryIndex(fs.readFileSync(indexPath, 'utf-8'), memDir, resolved);
+        if (pruned !== null) { fs.writeFileSync(indexPath, pruned, 'utf-8'); indexUpdated = true; }
+      }
+      invalidateBrainCache(cwd);
+      log('info', `brain: deleted memory ${resolved}`, { extra: `indexUpdated=${indexUpdated}` });
+      res.json({ ok: true, path: resolved, indexUpdated });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

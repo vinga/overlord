@@ -373,7 +373,6 @@ export class SessionStore {
       bridgeMarker: live.bridgeMarker,
       bridgePipeName: live.bridgePipeName,
       historyOnly: live.historyOnly,
-      userAccepted: live.userAccepted,
       lastActivity: live.lastActivity,
       lastMessage: live.lastMessage,
       intent: live.intent,

@@ -12,6 +12,7 @@ export interface ActivityItem {
   oldString?: string;            // for Edit tool calls
   newString?: string;            // for Edit tool calls
   isRedacted?: boolean;
+  contentTruncated?: boolean;    // content was cut at MAX_MESSAGE_LENGTH; full text only in transcript
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
   isError?: boolean;             // true if tool_result had is_error: true
@@ -54,6 +55,18 @@ export interface ActiveMonitor {
   target: string;        // best-effort: input.shellId ?? input.taskId ?? input.id ?? ''
   startedAt?: string;    // ISO timestamp of the tool_use
   until?: string;        // input.until regex, if any
+}
+
+/** A `Bash(run_in_background: true)` command that was launched and has not yet
+ *  reported a <task-notification>. Present ⇒ the session is idle on purpose:
+ *  the harness re-invokes it when the command exits. */
+export interface BackgroundTask {
+  toolUseId: string;      // Bash tool_use id — join key with <tool-use-id>
+  taskId: string;         // shell id, e.g. "bw5hy60h4"
+  description?: string;   // Bash `description` input — label for the bubble
+  startedAt?: string;     // ISO timestamp of the tool_use
+  outputFile?: string;    // …/tasks/<taskId>.output
+  lastOutputAt?: number;  // epoch ms — mtime of outputFile, liveness hint
 }
 
 export interface Task {
@@ -139,6 +152,10 @@ export interface Session {
   scheduledWakeupAt?: number;
   /** The `reason` string of that pending wakeup — one sentence, shown in the UI. */
   scheduledWakeupReason?: string;
+  /** In-flight `Bash(run_in_background: true)` commands. Present ⇒ the session is
+   *  waiting on the harness re-invoke, not on the user — UI shows "running"
+   *  instead of "waiting". Cleared by the matching <task-notification>. */
+  backgroundTasks?: BackgroundTask[];
   /** JIRA-shaped ticket keys mined from this session's transcript. Union-merged
    *  across reads — keys seen earlier in the conversation but no longer in the
    *  tail window persist here. Wiped on /clear (transcriptTruncated). */
@@ -146,11 +163,7 @@ export interface Session {
   /** Skill/command names invoked in this session (union across transcript reads).
    *  Wiped on /clear (transcriptTruncated). */
   skillsUsed?: string[];
-  completionHint?: 'done' | 'awaiting';
-  completionHintByUser?: boolean;
-  manuallyDone?: boolean;
-  acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
-  userAccepted?: boolean;
+  acknowledged?: boolean;  // user-set: silence the pulsing WAITING bubble
   latestPlan?: PlanSummary;
   /** ISO timestamp of the newest user message in the UNTRIMMED activity feed.
    *  Client uses it to confirm optimistic echoes even when the real message has
@@ -251,7 +264,6 @@ export interface OverlordSession {
   bridgeMarker?: string;
   bridgePipeName?: string;
   historyOnly?: boolean;
-  userAccepted?: boolean;
 
   lastActivity?: string;
   lastMessage?: string;
@@ -281,14 +293,6 @@ export interface OverlordSession {
   pendingResume?: { cwd: string; at: number };
   currentTask?: Task;
   completionSummaries?: Task[];
-  completionHint?: 'done' | 'awaiting';
-  /** True when completionHint was set by the user (DONE command) rather than by
-   *  Haiku auto-classification. Persisted so a manual mark survives restart. */
-  completionHintByUser?: boolean;
-  /** Explicit user mark via "I'm done" UI action. Distinct from completionHint
-   *  because manuallyDone outlives the waiting→working transitions that clear
-   *  the auto-classified hint. Persisted across restarts. */
-  manuallyDone?: boolean;
   acknowledged?: boolean;
 
   /** Presence = archived. Written when the record moves to the archive dir. */
@@ -333,8 +337,6 @@ export interface LiveSession {
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
   skillsUsed?: string[];
-  completionHintByUser?: boolean;
-  manuallyDone?: boolean;
   providerSessionId?: string;
   requestSummary?: string;
   isWorker?: boolean;

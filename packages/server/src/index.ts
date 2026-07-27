@@ -610,7 +610,7 @@ stateManager.setHasLivePtyFn((ovrId) => {
   return !!(ptyId && ptyManager.has(ptyId));
 });
 
-const aiClassifier = new AiClassifier(stateManager);
+const aiClassifier = new AiClassifier();
 const intentSummarizer = new IntentSummarizer(stateManager);
 
 // Rebroadcast snapshot (carries settings) + drain in-flight LLM queries

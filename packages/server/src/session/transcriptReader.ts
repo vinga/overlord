@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor } from '../types.js';
+import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor, BackgroundTask } from '../types.js';
 import { sessionStore } from './sessionStore.js';
 import { shadowPathFor } from './transcriptShadow.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
@@ -190,6 +190,11 @@ interface TranscriptCache {
   // re-parsing the whole multi-MB tail window every 3s poll.
   parsedTailLines?: string[];
   parsedUpToBytes?: number;
+  /** Pending `Bash(run_in_background: true)` commands, keyed by tool_use id.
+   *  Sticky across parses: a background command can outlive the tail window, so
+   *  entries are carried forward and dropped only on an observed
+   *  <task-notification>, on /clear, or by TTL. See BACKGROUND_TASK_TTL_MS. */
+  pendingBackgroundTasks?: Map<string, BackgroundTask>;
 }
 const transcriptCache = new Map<string, TranscriptCache>();
 
@@ -321,6 +326,45 @@ const SCHEDULED_WAKEUP_GRACE_MS = 30_000;
 function reEvalScheduledWakeup(prev: number | undefined): number | undefined {
   if (prev === undefined) return undefined;
   return Date.now() < prev + SCHEDULED_WAKEUP_GRACE_MS ? prev : undefined;
+}
+
+// Safety valve for the sticky pending-background-task map. A notification can be
+// missed (server down across the completion, or the whole exchange scrolls out of
+// the tail window before we ever parse it), and without a TTL such an entry would
+// pin a "running" bubble forever. 6h is well past any realistic background command.
+const BACKGROUND_TASK_TTL_MS = 6 * 60 * 60 * 1000;
+
+// The tool_result text the harness writes back for a backgrounded Bash. This — not
+// the `run_in_background` input — is the launch confirmation: it is the only place
+// carrying the shell id and the output path.
+// The path is matched greedily: `\S+?\.` would stop at the first dot and truncate
+// "…/bw5hy60h4.output" to "…/bw5hy60h4". Greedy + trailing `\.` backtracks to the
+// sentence-ending period instead.
+const BACKGROUND_LAUNCH_RE = /Command running in background with ID: ([^\s.]+)\. Output is being written to: (\S+)\./;
+
+// Completion arrives as a <task-notification> block on three separate lines
+// (queue-operation enqueue, queue-operation remove, attachment/queued_command).
+// Statuses seen in the wild: completed, failed, stopped — all terminal, so the
+// presence of a notification is the signal and <status> is not parsed at all.
+const TASK_NOTIFICATION_TOOL_USE_RE = /<tool-use-id>([^<]+)<\/tool-use-id>/;
+
+/**
+ * Extract the tool-use-id from any line shape carrying a <task-notification>.
+ * Returns undefined for every other line.
+ */
+function parseTaskNotificationToolUseId(parsed: {
+  type?: string;
+  content?: unknown;
+  attachment?: { commandMode?: string; prompt?: string };
+}): string | undefined {
+  let xml: string | undefined;
+  if (parsed.type === 'queue-operation' && typeof parsed.content === 'string') {
+    xml = parsed.content;
+  } else if (parsed.attachment?.commandMode === 'task-notification' && typeof parsed.attachment.prompt === 'string') {
+    xml = parsed.attachment.prompt;
+  }
+  if (!xml || !xml.includes('<task-notification>')) return undefined;
+  return TASK_NOTIFICATION_TOOL_USE_RE.exec(xml)?.[1];
 }
 
 /**
@@ -795,6 +839,18 @@ function buildToolDurations(lines: string[]): Map<string, number> {
 
 const MAX_RESULT_LENGTH = 3000;
 
+/** Cap for conversational message text. Deliberately higher than the 10k cap used
+ *  for tool fields: plans and specs routinely run past 10k, and the shared cap cut
+ *  them mid-word with no marker, so a partial message was indistinguishable from a
+ *  complete one. Anything still over this sets `contentTruncated` so the UI can say so. */
+const MAX_MESSAGE_LENGTH = 32000;
+
+function capMessage(t: string): { content: string; contentTruncated?: true } {
+  return t.length > MAX_MESSAGE_LENGTH
+    ? { content: t.slice(0, MAX_MESSAGE_LENGTH), contentTruncated: true }
+    : { content: t };
+}
+
 function buildToolResults(lines: string[]): Map<string, { content: string; isError: boolean }> {
   const results = new Map<string, { content: string; isError: boolean }>();
   for (const line of lines) {
@@ -908,38 +964,6 @@ export function readScheduledWakeups(filePath: string): ScheduledWakeupInfo[] {
   return out;
 }
 
-function detectLastUserIsDone(last30: string[]): boolean {
-  for (let i = last30.length - 1; i >= 0; i--) {
-    try {
-      const parsed = JSON.parse(last30[i]) as {
-        type?: string;
-        message?: { content?: unknown };
-      };
-      if (parsed.type !== 'user') continue;
-      const rawContent = parsed.message?.content;
-      const contentArr = Array.isArray(rawContent) ? rawContent as Array<{ type?: string; text?: string }> : null;
-      // Skip if this is purely tool_results (system-provided, not human)
-      const isToolResult = contentArr !== null && contentArr.length > 0 && contentArr[0]?.type === 'tool_result';
-      if (isToolResult) continue;
-      // Extract text
-      let text: string | undefined;
-      if (typeof rawContent === 'string') {
-        text = rawContent;
-      } else if (contentArr) {
-        const textBlock = contentArr.find((b) => b.type === 'text');
-        text = textBlock?.text;
-      }
-      if (text !== undefined) {
-        return text.trim().toLowerCase() === 'done';
-      }
-      break;
-    } catch {
-      // skip malformed lines
-    }
-  }
-  return false;
-}
-
 export function readTranscriptState(filePath: string): {
   state: WorkerState;
   lastActivity: string;
@@ -951,7 +975,6 @@ export function readTranscriptState(filePath: string): {
   isCompacting?: boolean;
   needsPermission?: boolean;
   permissionPromptText?: string;
-  lastUserIsDone?: boolean;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   // true iff the file on disk is smaller than the last cached size — a signal
@@ -968,6 +991,10 @@ export function readTranscriptState(filePath: string): {
   scheduledWakeupAt?: number;
   // The `reason` input of that pending call — one sentence, shown in the UI.
   scheduledWakeupReason?: string;
+  // Launched-but-unfinished `Bash(run_in_background: true)` commands. Sticky across
+  // reads (see TranscriptCache.pendingBackgroundTasks) — unlike scheduledWakeupAt
+  // these outlive the tail window, so they cannot be re-derived by a bounded scan.
+  backgroundTasks?: BackgroundTask[];
   // JIRA-shaped ticket keys mined from the transcript tail. Capped at 5.
   jiraKeys?: string[];
   // Skill/command names from slash-command invocations in the tail. Capped at 12.
@@ -1085,6 +1112,11 @@ export function readTranscriptState(filePath: string): {
     let scheduledWakeupAt: number | undefined;
     let scheduledWakeupReason: string | undefined;
     let scheduleWakeupChecked = false;
+    // Background-task tracking. Starts found in this window, plus the tool-use-ids
+    // whose <task-notification> appeared in it. Merged against the carried-forward
+    // pending map after the loop — see the merge block below.
+    const backgroundStarts = new Map<string, BackgroundTask>();
+    const terminatedToolUseIds = new Set<string>();
 
     // Extract model and inputTokens from the last assistant event
     let model: string | undefined;
@@ -1097,13 +1129,18 @@ export function readTranscriptState(filePath: string): {
           subtype?: string;
           timestamp?: string;
           compactMetadata?: { trigger?: string; preTokens?: number };
-          attachment?: { type?: string; prompt?: string; timestamp?: string; origin?: { kind?: string } };
+          content?: unknown;
+          attachment?: { type?: string; prompt?: string; timestamp?: string; origin?: { kind?: string }; commandMode?: string };
           message?: {
             content?: string | Array<{ type?: string; text?: string; name?: string; input?: unknown }>;
             model?: string;
             usage?: { input_tokens?: number; cache_read_input_tokens?: number };
           };
         };
+        // Background-task completion. Emitted three times per task (queue-operation
+        // enqueue + remove, then attachment/queued_command) — the Set dedupes.
+        const notifiedToolUseId = parseTaskNotificationToolUseId(parsed);
+        if (notifiedToolUseId) terminatedToolUseIds.add(notifiedToolUseId);
         if (parsed && parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
           activityFeed.unshift({
             kind: 'compact',
@@ -1139,7 +1176,7 @@ export function readTranscriptState(filePath: string): {
               text = textBlock?.text;
             }
             if (text) {
-              activityFeed.unshift({ kind: 'message', role: 'user', content: text.slice(0, MAX_CONTENT_LENGTH), timestamp: parsed.timestamp });
+              activityFeed.unshift({ kind: 'message', role: 'user', ...capMessage(text), timestamp: parsed.timestamp });
             }
           } else if (parsed.type === 'assistant') {
             // Assistant message: extract text and tool_use blocks
@@ -1148,8 +1185,12 @@ export function readTranscriptState(filePath: string): {
             if (typeof rawContent === 'string') {
               text = rawContent;
             } else if (contentBlocks) {
-              const textBlock = contentBlocks.find((b) => b.type === 'text');
-              text = textBlock?.text;
+              // Every text block, not just the first — a multi-block message would
+              // otherwise silently lose everything after block 0.
+              const texts = contentBlocks
+                .filter((b) => b.type === 'text' && typeof b.text === 'string')
+                .map((b) => b.text as string);
+              text = texts.length > 0 ? texts.join('\n\n') : undefined;
             }
 
             // Capture lastMessage from the most recent assistant text (first found scanning backwards)
@@ -1159,7 +1200,7 @@ export function readTranscriptState(filePath: string): {
 
             // Unshift text first (so after unshifting tools, tools appear before text in feed)
             if (text) {
-              activityFeed.unshift({ kind: 'message', role: 'assistant', content: text.slice(0, MAX_CONTENT_LENGTH), timestamp: parsed.timestamp });
+              activityFeed.unshift({ kind: 'message', role: 'assistant', ...capMessage(text), timestamp: parsed.timestamp });
             }
 
             // Then unshift tool_use blocks (they'll appear before the text in the final order)
@@ -1199,6 +1240,25 @@ export function readTranscriptState(filePath: string): {
                         || '';
                       const until = typeof inp.until === 'string' ? inp.until : undefined;
                       activeMonitors.push({ toolUseId, target: target as string, startedAt: parsed.timestamp, until });
+                    }
+                  }
+                  // Launched background Bash. The tool_result text is the confirmation
+                  // (a run_in_background input with no such result never started), and
+                  // it is the only source of the shell id + output path.
+                  if (block.name === 'Bash' && block.input && typeof block.input === 'object'
+                      && (block.input as Record<string, unknown>).run_in_background === true) {
+                    const toolUseId = (block as Record<string, unknown>).id as string | undefined;
+                    const res = toolUseId ? toolResults.get(toolUseId) : undefined;
+                    const m = res && !res.isError ? BACKGROUND_LAUNCH_RE.exec(res.content) : null;
+                    if (toolUseId && m && !backgroundStarts.has(toolUseId)) {
+                      const desc = (block.input as Record<string, unknown>).description;
+                      backgroundStarts.set(toolUseId, {
+                        toolUseId,
+                        taskId: m[1],
+                        description: typeof desc === 'string' ? desc : undefined,
+                        startedAt: parsed.timestamp ?? new Date(now).toISOString(),
+                        outputFile: m[2],
+                      });
                     }
                   }
                   // Active ScheduleWakeup: most recent call, confirmed by a non-error
@@ -1305,7 +1365,6 @@ export function readTranscriptState(filePath: string): {
     const lastActivity = new Date(fileModifiedMs).toISOString();
 
     // Detect "DONE" command: scan back for the most recent user message that is NOT a tool_result
-    const lastUserIsDone = detectLastUserIsDone(last30);
 
     // Detect permission mode from the most recent source:
     // 1. Dedicated `type: "permission-mode"` entries (written at session start)
@@ -1428,6 +1487,35 @@ export function readTranscriptState(filePath: string): {
       state = 'thinking';
     }
 
+    // Sticky merge for background tasks: carry the previous pending map forward,
+    // add starts seen in this window, drop everything the transcript reported as
+    // finished, then TTL the rest. A bounded scan cannot rebuild this — a command
+    // running for hours has its launch lines far outside the tail window.
+    const pendingBackgroundTasks = new Map<string, BackgroundTask>(
+      transcriptTruncated ? [] : (cached?.pendingBackgroundTasks ?? []),
+    );
+    for (const [id, task] of backgroundStarts) {
+      if (!pendingBackgroundTasks.has(id)) pendingBackgroundTasks.set(id, task);
+    }
+    for (const id of terminatedToolUseIds) pendingBackgroundTasks.delete(id);
+    for (const [id, task] of pendingBackgroundTasks) {
+      const startedMs = task.startedAt ? Date.parse(task.startedAt) : NaN;
+      if (!Number.isFinite(startedMs) || now - startedMs > BACKGROUND_TASK_TTL_MS) {
+        pendingBackgroundTasks.delete(id);
+        continue;
+      }
+      // Liveness hint: when the command last wrote. Mutated in place so the object
+      // identity stays stable across parses while the mtime is unchanged.
+      if (task.outputFile) {
+        try {
+          task.lastOutputAt = fs.statSync(task.outputFile).mtimeMs;
+        } catch {
+          // output file gone — keep the task, the notification is still authoritative
+        }
+      }
+    }
+    const backgroundTasks = Array.from(pendingBackgroundTasks.values());
+
     const scanSegments = gatherJiraScanText(last30);
     const jiraKeys = extractJiraKeys(scanSegments, getJiraProjectRegex());
     const skillsUsed = unionSkillNames(extractSkillsUsed(scanSegments), extractSkillToolUses(last30));
@@ -1444,7 +1532,6 @@ export function readTranscriptState(filePath: string): {
       isCompacting: isCompacting || undefined,
       needsPermission: needsPermission || undefined,
       permissionPromptText,
-      lastUserIsDone: lastUserIsDone || undefined,
       permissionMode,
       pendingQuestion,
       transcriptTruncated: transcriptTruncated || undefined,
@@ -1452,10 +1539,11 @@ export function readTranscriptState(filePath: string): {
       activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
       scheduledWakeupAt,
       scheduledWakeupReason,
+      backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
       skillsUsed: skillsUsed.length > 0 ? skillsUsed : undefined,
     };
-    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes });
+    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes, pendingBackgroundTasks });
     evictTranscriptCache(now);
     return result;
   } catch {
@@ -1477,7 +1565,6 @@ function readCodexTranscriptState(filePath: string): {
   isCompacting?: boolean;
   needsPermission?: boolean;
   permissionPromptText?: string;
-  lastUserIsDone?: boolean;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   jiraKeys?: string[];
@@ -1515,7 +1602,6 @@ function readCodexTranscriptState(filePath: string): {
     const activityFeed: ActivityItem[] = [];
     let model: string | undefined;
     let inputTokens: number | undefined;
-    let lastUserIsDone = false;
     let stateHint: TranscriptCache['stateHint'] = 'none';
     let state: WorkerState = 'waiting';
 
@@ -1578,11 +1664,10 @@ function readCodexTranscriptState(filePath: string): {
             .trim();
           if (!text) continue;
           if (role === 'assistant' && lastMessage === undefined) lastMessage = text.slice(0, 300);
-          if (role === 'user' && /^done[.!\s]*$/i.test(text.trim())) lastUserIsDone = true;
           activityFeed.unshift({
             kind: 'message',
             role: role as 'user' | 'assistant',
-            content: text.slice(0, MAX_CONTENT_LENGTH),
+            ...capMessage(text),
             timestamp: parsed.timestamp,
           });
         } else if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call' && parsed.payload.name) {
@@ -1665,7 +1750,6 @@ function readCodexTranscriptState(filePath: string): {
       activityFeed: activityFeed.length > 0 ? activityFeed : undefined,
       model,
       inputTokens,
-      lastUserIsDone: lastUserIsDone || undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });

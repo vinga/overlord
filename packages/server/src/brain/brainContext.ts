@@ -175,6 +175,26 @@ function parseFrontmatterType(raw: string): BrainMemoryEntry['type'] {
   return 'unknown';
 }
 
+/** A MEMORY.md pointer line: `- [Title](file.md) — hook`. Capture 2 is the filename. */
+const MEMORY_INDEX_LINE_RE = /^-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?:[—–-]\s*(.+))?$/;
+
+/**
+ * Drop the MEMORY.md pointer line(s) that reference `deletedFile`.
+ * Returns the rewritten index text, or null when no line matched (nothing to write).
+ * Non-entry lines (header, blanks, prose) are preserved byte-for-byte.
+ */
+export function pruneMemoryIndex(indexRaw: string, memDir: string, deletedFile: string): string | null {
+  const target = path.resolve(deletedFile);
+  const kept: string[] = [];
+  let removed = false;
+  for (const line of indexRaw.split('\n')) {
+    const m = line.match(MEMORY_INDEX_LINE_RE);
+    if (m && path.resolve(memDir, m[2].trim()) === target) { removed = true; continue; }
+    kept.push(line);
+  }
+  return removed ? kept.join('\n') : null;
+}
+
 function readMemory(cwd: string): BrainMemory {
   const home = os.homedir();
   const slug = encodeProjectSlug(cwd);
@@ -187,9 +207,8 @@ function readMemory(cwd: string): BrainMemory {
   if (!indexRaw) return { indexPath, entries: [] };
 
   const entries: BrainMemoryEntry[] = [];
-  const lineRe = /^-\s*\[([^\]]+)\]\(([^)]+)\)\s*(?:[—–-]\s*(.+))?$/;
   for (const line of indexRaw.split('\n')) {
-    const m = line.match(lineRe);
+    const m = line.match(MEMORY_INDEX_LINE_RE);
     if (!m) continue;
     const name = m[1].trim();
     const filename = m[2].trim();

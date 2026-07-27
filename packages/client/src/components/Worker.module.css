@@ -349,23 +349,26 @@
   border-color: rgba(167, 139, 250, 0.6) transparent transparent;
 }
 
-/* Done bubble — green, shown when completionHint === 'done' */
-.bubbleDone {
-  background: rgba(34, 197, 94, 0.12);
-  border: 1.5px solid rgba(34, 197, 94, 0.5);
+/* Background-command bubble — teal, distinct from the violet scheduled bubble.
+   Same static (non-pulsing) treatment: informational, not a call to action. */
+.bubbleBackground {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(45, 212, 191, 0.14);
+  border: 1.5px solid rgba(45, 212, 191, 0.55);
   border-radius: 20px;
   padding: 3px 10px;
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 11px;
   font-weight: 600;
-  color: #22c55e;
+  color: #2dd4bf;
   letter-spacing: 0.05em;
-  text-transform: uppercase;
   white-space: nowrap;
-  box-shadow: 0 0 10px rgba(34, 197, 94, 0.15);
+  box-shadow: 0 0 12px rgba(45, 212, 191, 0.22);
 }
 
-.bubbleDone::after {
+.bubbleBackground::after {
   content: '';
   position: absolute;
   bottom: -6px;
@@ -373,33 +376,16 @@
   transform: translateX(-50%);
   border-width: 5px 4px 0;
   border-style: solid;
-  border-color: rgba(34, 197, 94, 0.5) transparent transparent;
+  border-color: rgba(45, 212, 191, 0.55) transparent transparent;
 }
 
-.bubbleDonePending {
-  background: rgba(245, 158, 11, 0.12);
-  border: 1.5px solid rgba(245, 158, 11, 0.5);
-  border-radius: 20px;
-  padding: 3px 10px;
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 600;
-  color: #f59e0b;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  box-shadow: 0 0 10px rgba(245, 158, 11, 0.15);
+.bubbleBackground svg {
+  animation: bgTaskSpin 3s linear infinite;
+  transform-origin: 50% 50%;
 }
 
-.bubbleDonePending::after {
-  content: '';
-  position: absolute;
-  bottom: -6px;
-  left: 50%;
-  transform: translateX(-50%);
-  border-width: 5px 4px 0;
-  border-style: solid;
-  border-color: rgba(245, 158, 11, 0.5) transparent transparent;
+@keyframes bgTaskSpin {
+  to { transform: rotate(360deg); }
 }
 
 
@@ -589,9 +575,11 @@
 .working  { --glow-color: rgba(167, 139, 250, 0.45); }
 .thinking { --glow-color: rgba(167, 139, 250, 0.45); }
 .waiting  { --glow-color: rgba(245, 158, 11, 0.4); }
-.done     { --glow-color: rgba(34, 197, 94, 0.4); }
 /* Pending ScheduleWakeup — violet like working. After .waiting so it wins. */
 .scheduled { --glow-color: rgba(167, 139, 250, 0.45); }
+
+/* Waiting on a background command — teal glow, matches .bubbleBackground */
+.background { --glow-color: rgba(45, 212, 191, 0.4); }
 
 /* Closed: desaturated, dimmed */
 .closed {
@@ -658,36 +646,3 @@
   font-weight: 600;
 }
 
-/* Done menu popup */
-.doneMenu {
-  z-index: 9999;
-  background: #1a1a2e;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  padding: 4px;
-  min-width: 140px;
-}
-
-.doneMenuItem {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 7px 12px;
-  background: transparent;
-  border: none;
-  border-radius: 5px;
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 12px;
-  font-weight: 500;
-  color: #22c55e;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.12s ease;
-  text-align: left;
-}
-
-.doneMenuItem:hover {
-  background: rgba(34, 197, 94, 0.12);
-}

@@ -73,7 +73,6 @@ function cleanup(): void {
 //
 // StateManager hard-codes two file paths in its constructor:
 //   this.ptySessionsFile  → ~/.claude/overlord/pty-sessions.json
-//   this.acceptedFile     → ~/.claude/overlord-accepted.json           (private; write via acceptSession)
 //
 // All three are private readonly fields, so the cleanest way to redirect
 // them without modifying the production source is to subclass StateManager

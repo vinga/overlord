@@ -211,15 +211,42 @@ function useFileContents(cwd: string) {
     }));
   }, [cwd]);
 
-  return { files, load, save };
+  const remove = useCallback(async (filePath: string): Promise<void> => {
+    const res = await fetch(`/api/brain/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(filePath)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    setFiles(prev => {
+      if (!(filePath in prev)) return prev;
+      const next = { ...prev };
+      delete next[filePath];
+      return next;
+    });
+  }, [cwd]);
+
+  return { files, load, save, remove };
 }
 
 export function BrainTab({ cwd }: { cwd: string }) {
   const { data, loading, error, refresh } = useBrainContext(cwd);
   const { state: cardOpen, toggle } = useCardState(cwd);
-  const { files, load: loadFile, save: saveFile } = useFileContents(cwd);
+  const { files, load: loadFile, save: saveFile, remove: removeFile } = useFileContents(cwd);
   const [expandedFile, setExpandedFile] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
+
+  const deleteMemory = useCallback(async (filePath: string) => {
+    await removeFile(filePath);
+    setExpandedFile(prev => {
+      if (!(filePath in prev)) return prev;
+      const next = { ...prev };
+      delete next[filePath];
+      return next;
+    });
+    await refresh();
+  }, [removeFile, refresh]);
 
   const toggleFile = useCallback((filePath: string) => {
     setExpandedFile(prev => {
@@ -346,6 +373,7 @@ export function BrainTab({ cwd }: { cwd: string }) {
               editable
               asMarkdown
               onSave={content => saveFile(e.file, content)}
+              onDelete={() => deleteMemory(e.file)}
             />
           ))}
         </Card>
@@ -551,7 +579,7 @@ function EffortCard({ effort, open, onToggle }: {
   );
 }
 
-function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggle, fileState, editable, onSave, asMarkdown }: {
+function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggle, fileState, editable, onSave, onDelete, asMarkdown }: {
   path: string;
   name?: string;
   secondary?: string;
@@ -562,17 +590,23 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
   fileState: FileViewState | undefined;
   editable?: boolean;
   onSave?: (content: string) => Promise<void>;
+  onDelete?: () => Promise<void>;
   asMarkdown?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [armed, setArmed] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!expanded) {
       setEditing(false);
       setSaveError(null);
+      setArmed(false);
+      setDeleteError(null);
     }
   }, [expanded]);
 
@@ -605,6 +639,20 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
     }
   };
 
+  const commitDelete = async () => {
+    if (!onDelete) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete();
+    } catch (err) {
+      setDeleteError((err as Error).message);
+      setDeleting(false);
+      setArmed(false);
+    }
+    // On success the row unmounts with its parent list — no state reset needed.
+  };
+
   return (
     <>
       <div className={`${styles.row} ${styles.rowClickable}`} onClick={onToggle}>
@@ -621,9 +669,36 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
           {fileState?.error && <div className={styles.empty} style={{ color: '#ff8888' }}>Error: {fileState.error}</div>}
           {content !== null && !editing && (
             <>
-              {canEdit && (
+              {(canEdit || onDelete) && (
                 <div className={styles.editActions}>
-                  <button className={styles.refreshBtn} onClick={startEdit}>Edit</button>
+                  {deleteError && <span className={styles.editError}>Error: {deleteError}</span>}
+                  {canEdit && <button className={styles.refreshBtn} onClick={startEdit}>Edit</button>}
+                  {onDelete && (armed ? (
+                    <>
+                      <button
+                        className={styles.refreshBtn}
+                        onClick={e => { e.stopPropagation(); setArmed(false); }}
+                        disabled={deleting}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className={`${styles.deleteBtn} ${styles.deleteBtnArmed}`}
+                        onClick={e => { e.stopPropagation(); void commitDelete(); }}
+                        disabled={deleting}
+                      >
+                        {deleting ? 'Deleting…' : 'Delete permanently'}
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      className={styles.deleteBtn}
+                      title="Delete this memory and its MEMORY.md entry"
+                      onClick={e => { e.stopPropagation(); setDeleteError(null); setArmed(true); }}
+                    >
+                      Delete
+                    </button>
+                  ))}
                 </div>
               )}
               {asMarkdown ? (

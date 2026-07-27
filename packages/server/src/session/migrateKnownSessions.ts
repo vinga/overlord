@@ -17,7 +17,6 @@ interface LegacyEntry {
   startedAt?: number;
   pid?: number;
   resumedFrom?: string;
-  userAccepted?: boolean;
   bridgePipeName?: string;
   bridgeMarker?: string;
   transcriptPath?: string;
@@ -93,7 +92,6 @@ export function migrateKnownSessions(): void {
     if (!rec.providerSessionId && entry.providerSessionId) patch.providerSessionId = entry.providerSessionId;
     if (!rec.replacedBy && entry.replacedBy) patch.replacedBy = entry.replacedBy;
     if (!rec.resumedFrom && entry.resumedFrom) patch.resumedFrom = entry.resumedFrom;
-    if (rec.userAccepted === undefined && entry.userAccepted !== undefined) patch.userAccepted = entry.userAccepted;
     if (!rec.bridgePipeName && entry.bridgePipeName) patch.bridgePipeName = entry.bridgePipeName;
     if (!rec.bridgeMarker && entry.bridgeMarker) patch.bridgeMarker = entry.bridgeMarker;
     if (!rec.proposedName && entry.proposedName) patch.proposedName = entry.proposedName;

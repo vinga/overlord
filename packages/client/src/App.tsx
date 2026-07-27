@@ -5,6 +5,7 @@ import { useCustomNames } from './hooks/useCustomNames';
 import { useRoomOrder } from './hooks/useRoomOrder';
 import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
 import { setJiraMeta } from './hooks/useJiraMeta';
+import { expandRoom } from './hooks/useRoomCollapsed';
 
 import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
@@ -61,6 +62,7 @@ export function App() {
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string; query?: string } | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
+  const [selectionScroll, setSelectionScroll] = useState(true);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
@@ -313,6 +315,17 @@ export function App() {
     setSelectedSessionId(id);
     setSelectedSubagentId(subagentId);
     setScrollTarget(timestamp ? { sessionId: id, timestamp, query } : null);
+    setSelectionScroll(true);
+    setSelectionNonce(n => n + 1);
+  }
+
+  /** Inbox-rail selection: open the detail panel, leave the office grid alone. */
+  function handleSelectSessionQuiet(session: Session) {
+    const id = session.overlordId ?? session.sessionId;
+    setSelectedSessionId(id);
+    setSelectedSubagentId(undefined);
+    setScrollTarget(null);
+    setSelectionScroll(false);
     setSelectionNonce(n => n + 1);
   }
 
@@ -325,6 +338,8 @@ export function App() {
   function handleNavigateRoom(cwd: string, open: boolean) {
     const room = snapshot?.rooms.find(r => r.cwd === cwd);
     if (!room) return;
+    // Scrolling to a collapsed room shows only its header — expand it first.
+    expandRoom(room.id);
     const el = document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`);
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     if (open) setSelectedRoomId(room.id);
@@ -439,8 +454,8 @@ export function App() {
     }
   }
 
-  function handleAcceptSession(sessionId: string) {
-    fetch(`/api/sessions/${sessionId}/accept`, { method: 'POST' }).catch(console.error);
+  function handleToggleAck(sessionId: string) {
+    fetch(`/api/sessions/${sessionId}/ack`, { method: 'POST' }).catch(console.error);
   }
 
   function handleArchiveSession(sessionId: string) {
@@ -508,6 +523,8 @@ export function App() {
 
         selectedSessionId={selectedSessionId}
         selectionNonce={selectionNonce}
+        scrollOnSelect={selectionScroll}
+        onSelectSessionQuiet={handleSelectSessionQuiet}
         rightOffset={panelWidth}
         onRoomClick={handleRoomClick}
         spawnCwd={spawnCwd}
@@ -519,6 +536,7 @@ export function App() {
         onCloneSession={handleCloneSession}
         onCloseSession={handleCloseSession}
         onArchiveSession={handleArchiveSession}
+        onToggleAck={handleToggleAck}
         onOpenArchive={handleOpenArchive}
         onDeleteArchive={handleDeleteArchived}
         onRenameSession={rename}
@@ -621,8 +639,6 @@ export function App() {
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),
           onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),
-          onMarkDone: (sessionId) => { fetch(`/api/sessions/${sessionId}/mark-done`, { method: 'POST' }).catch(console.error); },
-          onAcceptSession: handleAcceptSession,
         }}
 
         panelWidth={panelWidth}

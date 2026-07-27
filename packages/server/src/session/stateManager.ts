@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary, WorkerIcon } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -122,7 +122,7 @@ import {
 } from './transcriptReader.js';
 import { ensureShadow } from './transcriptShadow.js';
 import type { RawSession } from './sessionWatcher.js';
-import { saveCompletionHint, loadCompletionHint, clearCompletionHint, saveAck, loadAck, saveCompletionHintByUser, saveManuallyDone, loadManuallyDone, loadCompletionHintByUser } from '../ai/taskStorage.js';
+import { saveAck, loadAck } from '../ai/taskStorage.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { ArtifactStatus } from '../artifacts/types.js';
 
@@ -224,6 +224,19 @@ function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined):
   return true;
 }
 
+/** Membership-only comparison of pending background tasks. `lastOutputAt` moves
+ *  every time the command writes a byte — comparing it would broadcast a snapshot
+ *  on every poll for any session tailing a chatty background job. */
+function backgroundTasksEqual(a: BackgroundTask[] | undefined, b: BackgroundTask[] | undefined): boolean {
+  if (a === b) return true;
+  if ((a?.length ?? 0) !== (b?.length ?? 0)) return false;
+  if (!a || !b) return true;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].toolUseId !== b[i].toolUseId) return false;
+  }
+  return true;
+}
+
 function resolveTranscriptPath(session: {
   cwd: string;
   sessionId: string;
@@ -253,8 +266,6 @@ export class StateManager {
   private onChangePending = false;
   private broadcastSuppressed = false;
   private resumeTracker = new PtyResumeTracker();
-  private acceptedSessions: Set<string> = new Set();
-  private readonly acceptedFile = path.join(os.homedir(), '.claude', 'overlord-accepted.json');
   /** Sid → expiry epoch ms. Defensive guard against the brief window between
    *  `markDeleted` (sync) and the deferred file unlinks in `deleteSession`.
    *  In-memory only — restart-survival is unnecessary because every backing
@@ -369,7 +380,6 @@ export class StateManager {
       this.archivePrTimer = setInterval(() => { void this.refreshArchivedPrs(); }, 60 * 60 * 1000);
       this.archivePrTimer.unref?.();
     }
-    this.loadAccepted();
     this.migrateLegacyColors();
     migrateKnownSessions();
     // migratePendingResumes(); // in-progress — symbol not imported, crashes boot
@@ -497,21 +507,6 @@ export class StateManager {
     this.onChange();
   }
 
-  private loadAccepted(): void {
-    try {
-      if (fs.existsSync(this.acceptedFile)) {
-        const ids = JSON.parse(fs.readFileSync(this.acceptedFile, 'utf-8')) as string[];
-        this.acceptedSessions = new Set(ids);
-      }
-    } catch { /* ignore */ }
-  }
-
-  private saveAccepted(): void {
-    try {
-      fs.writeFileSync(this.acceptedFile, JSON.stringify([...this.acceptedSessions]), 'utf-8');
-    } catch { /* ignore */ }
-  }
-
   /** Rebuild the in-memory pendingResumes map from sessionStore on boot.
    *  Source of truth is `OverlordSession.pendingResume`. Expired entries are
    *  cleared on the OverlordSession and skipped. */
@@ -608,16 +603,6 @@ export class StateManager {
     this.onChange();
   }
 
-  acceptSession(sessionId: string): boolean {
-    const session = this.sessions.get(sessionId);
-    if (!session) return false;
-    this.acceptedSessions.add(sessionId);
-    session.userAccepted = true;
-    if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: true });
-    this.saveAccepted();
-    this.onChange();
-    return true;
-  }
 
   trackPendingResume(cwd: string, resumeSessionId: string): void {
     const { key, ts } = this.resumeTracker.trackResume(cwd, resumeSessionId);
@@ -1005,6 +990,7 @@ export class StateManager {
       activeMonitors: transcript?.activeMonitors,
       scheduledWakeupAt: transcript?.scheduledWakeupAt,
       scheduledWakeupReason: transcript?.scheduledWakeupReason,
+      backgroundTasks: transcript?.backgroundTasks,
       jiraKeys: mergeJiraKeys(
         existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
         transcript?.jiraKeys,
@@ -1014,11 +1000,7 @@ export class StateManager {
         existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
         transcript?.skillsUsed,
       ),
-      completionHint: state === 'waiting' ? (existingSession?.completionHint ?? (isNew ? loadCompletionHint(sessionId) : undefined)) : undefined,
-      completionHintByUser: state === 'waiting' ? (existingSession?.completionHintByUser ?? (isNew ? loadCompletionHintByUser(sessionId) : false)) : false,
-      manuallyDone: state === 'waiting' ? (existingSession?.manuallyDone ?? (isNew ? loadManuallyDone(sessionId) : false)) : false,
       acknowledged: state === 'waiting' ? (existingSession?.acknowledged ?? (isNew ? loadAck(sessionId) : false)) : false,
-      userAccepted: this.acceptedSessions.has(sessionId) || existingSession?.userAccepted,
       isWorker: raw.kind === 'haiku-worker',
       bridgePipeName: existingSession?.bridgePipeName,
       bridgeMarker: existingSession?.bridgeMarker,
@@ -1565,9 +1547,6 @@ export class StateManager {
       session.needsPermission = undefined;
       session.permissionPromptText = undefined;
       session.isLimitPrompt = undefined;
-      session.completionHint = undefined;
-      session.completionHintByUser = false;
-      clearCompletionHint(sessionId);
       session.acknowledged = false;
       saveAck(sessionId, false);
       session.jiraKeys = undefined;
@@ -1602,6 +1581,7 @@ export class StateManager {
       session.isCompacting !== result.isCompacting ||
       session.needsPermission !== result.needsPermission ||
       session.scheduledWakeupAt !== result.scheduledWakeupAt ||
+      !backgroundTasksEqual(session.backgroundTasks, result.backgroundTasks) ||
       session.slug !== slug ||
       session.proposedName !== proposedName ||
       !shallowArrayEquals(session.jiraKeys, mergedJiraKeys) ||
@@ -1609,16 +1589,9 @@ export class StateManager {
       !shallowArrayEquals(session.subagents, subagents);
 
     if (changed) {
-      // Clear completionHint when leaving waiting state
       if (prevState === 'waiting' && result.state !== 'waiting') {
         // Leaving waiting = a real turn started; drop any stale unknown-command bubble.
         session.unknownCommand = undefined;
-        session.completionHint = undefined;
-        session.completionHintByUser = false;
-        clearCompletionHint(sessionId);
-        session.userAccepted = undefined;
-        if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: undefined });
-        this.acceptedSessions.delete(sessionId);
         if (session.acknowledged) {
           session.acknowledged = false;
           saveAck(sessionId, false);
@@ -1742,6 +1715,7 @@ export class StateManager {
       session.pendingQuestion = result.pendingQuestion ?? undefined;
       session.scheduledWakeupAt = result.scheduledWakeupAt;
       session.scheduledWakeupReason = result.scheduledWakeupReason;
+      session.backgroundTasks = result.backgroundTasks;
       if (session.slug !== slug) {
         session.slug = slug;
         if (session.overlordId && slug) {
@@ -1770,32 +1744,6 @@ export class StateManager {
       }
     }
 
-    // Clear manuallyDone when session is no longer in waiting state
-    if (session.manuallyDone && result.state !== 'waiting') {
-      session.manuallyDone = false;
-      session.completionHintByUser = false;
-      saveManuallyDone(sessionId, false);
-      saveCompletionHintByUser(sessionId, false);
-      changed = true;
-    }
-
-    // User "DONE" command: immediately mark as done without Haiku classification
-    if (result.lastUserIsDone) {
-      if (session.completionHint !== 'done' || !session.completionHintByUser) {
-        session.completionHint = 'done';
-        session.completionHintByUser = true;
-        saveCompletionHint(sessionId, 'done');
-        saveCompletionHintByUser(sessionId, true);
-        changed = true;
-      }
-    } else if (session.completionHintByUser && !session.manuallyDone) {
-      // User sent something other than DONE — clear the user-set hint
-      session.completionHint = undefined;
-      session.completionHintByUser = false;
-      clearCompletionHint(sessionId);
-      changed = true;
-    }
-
     if (changed) {
       this.onChange();
     }
@@ -1820,23 +1768,6 @@ export class StateManager {
     const becameWorking = (prevState !== 'working' && prevState !== 'thinking') && (result.state === 'working' || result.state === 'thinking');
     const leftWorking = (prevState === 'working' || prevState === 'thinking') && (result.state !== 'working' && result.state !== 'thinking');
     return { becameWaiting, lastMessage: becameWaiting ? result.lastMessage : undefined, becameWorking, leftWorking, transcriptStale };
-  }
-
-  markDoneByUser(sessionId: string): boolean {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.state === 'closed') return false;
-    session.completionHint = 'done';
-    session.completionHintByUser = true;
-    session.manuallyDone = true;
-    saveCompletionHint(sessionId, 'done');
-    saveCompletionHintByUser(sessionId, true);
-    saveManuallyDone(sessionId, true);
-    session.userAccepted = true;
-    if (session.overlordId) sessionStore.patch(session.overlordId, { userAccepted: true });
-    this.acceptedSessions.add(sessionId);
-    this.saveAccepted();
-    this.onChange();
-    return true;
   }
 
   /** User clicked × on a Jira chip. Drop it from live + persisted jiraKeys and
@@ -1876,15 +1807,6 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     let changed = false;
-    if (session.completionHint) {
-      session.completionHint = undefined;
-      session.completionHintByUser = false;
-      session.userAccepted = undefined;
-      this.acceptedSessions.delete(sessionId);
-      this.saveAccepted();
-      clearCompletionHint(sessionId);
-      changed = true;
-    }
     if (session.acknowledged) {
       session.acknowledged = false;
       saveAck(sessionId, false);
@@ -1898,24 +1820,6 @@ export class StateManager {
       changed = true;
     }
     if (changed) this.onChange();
-  }
-
-  setCompletionHint(sessionId: string, hint: 'done' | 'awaiting', forMessage: string): void {
-    const session = this.sessions.get(sessionId);
-    // Only apply if session is still waiting AND the last message hasn't changed
-    if (
-      session &&
-      session.state === 'waiting' &&
-      session.lastMessage === forMessage &&
-      session.completionHint !== hint &&
-      !session.completionHintByUser &&
-      !session.manuallyDone &&
-      !(session.completionHint === 'done' && hint === 'awaiting')
-    ) {
-      session.completionHint = hint;
-      if (hint === 'done') saveCompletionHint(sessionId, 'done');
-      this.onChange();
-    }
   }
 
   setNeedsPermission(sessionId: string, value: boolean, promptText?: string, isLimitPrompt?: boolean): void {
@@ -2118,8 +2022,6 @@ export class StateManager {
     if (session.state !== 'waiting') return;
     if (!session.activityFeed || session.activityFeed.length === 0) return;
     session.state = 'working';
-    session.completionHint = undefined;
-    session.completionHintByUser = false;
     this.onChange();
   }
 
@@ -2548,7 +2450,6 @@ export class StateManager {
    *  Persistent fields routed through sessionStore: proposedName, color, slug,
    *  model, intent, sessionType, provider, providerSessionId,
    *  resumedFrom, replacedBy, bridgePipeName, bridgeMarker, historyOnly,
-   *  userAccepted, completionHint, completionHintByUser, manuallyDone,
    *  acknowledged. (lastActivity / lastMessage stay live — transcript-derived.)
    *
    *  Also folds in latestPlan (per-snapshot memo), PTY-liveness, and trims
@@ -2589,10 +2490,6 @@ export class StateManager {
       out.bridgePipeName = overlord.bridgePipeName ?? session.bridgePipeName;
       out.bridgeMarker = overlord.bridgeMarker ?? session.bridgeMarker;
       out.historyOnly = overlord.historyOnly ?? session.historyOnly;
-      out.userAccepted = overlord.userAccepted ?? session.userAccepted;
-      out.completionHint = overlord.completionHint ?? session.completionHint;
-      out.completionHintByUser = overlord.completionHintByUser ?? session.completionHintByUser;
-      out.manuallyDone = overlord.manuallyDone ?? session.manuallyDone;
       out.acknowledged = overlord.acknowledged ?? session.acknowledged;
       out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
       out.skillsUsed = overlord.skillsUsed ?? session.skillsUsed;
@@ -2956,10 +2853,6 @@ export class StateManager {
       intent: rec.intent,
       jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed),
       acknowledged: rec.acknowledged,
-      userAccepted: rec.userAccepted,
-      completionHint: rec.completionHint,
-      completionHintByUser: rec.completionHintByUser,
-      manuallyDone: rec.manuallyDone,
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),
     };

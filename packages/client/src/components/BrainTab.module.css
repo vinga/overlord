@@ -532,6 +532,35 @@
   margin: 6px 0 8px;
 }
 
+.deleteBtn {
+  background: transparent;
+  border: 1px solid rgba(255, 120, 120, 0.22);
+  color: #e59a9a;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.deleteBtn:hover {
+  border-color: #ff8888;
+  color: #ff8888;
+  background: rgba(255, 100, 100, 0.06);
+}
+
+.deleteBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.deleteBtnArmed {
+  border-color: #ff8888;
+  color: #ffdcdc;
+  background: rgba(255, 80, 80, 0.16);
+  font-weight: 500;
+}
+
 .editError {
   color: #ff8888;
   font-size: 11px;

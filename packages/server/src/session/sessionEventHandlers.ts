@@ -179,8 +179,7 @@ export function registerSessionEventHandlers(sessionWatcher: SessionSource, ctx:
         return;
       }
     }
-    const { isNewWaiting, lastMessage } = ctx.stateManager.addOrUpdate(raw);
-    if (isNewWaiting && lastMessage && raw.kind !== 'haiku-worker') void ctx.aiClassifier.classifyCompletion(raw.sessionId, lastMessage);
+    ctx.stateManager.addOrUpdate(raw);
     // Log session creation
     const createdName = raw.proposedName ?? raw.sessionId.slice(0, 8);
     log('session:created', 'Session created', { sessionId: raw.sessionId, sessionName: createdName, extra: `PID ${raw.pid} name=${raw.name ?? 'NONE'}` });

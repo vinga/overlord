@@ -635,7 +635,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   // Compute state counts for collapsed summary.
   // Acknowledged waiting sessions are silenced — they don't contribute to the waiting chip.
   const stateCounts = room.sessions.reduce<Record<string, number>>((acc, s) => {
-    if (s.state === 'waiting' && s.acknowledged && s.completionHint !== 'done' && !s.userAccepted) return acc;
+    if (s.state === 'waiting' && s.acknowledged) return acc;
     acc[s.state] = (acc[s.state] ?? 0) + 1;
     return acc;
   }, {});

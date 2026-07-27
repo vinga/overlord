@@ -14,6 +14,7 @@ interface ActivityItem {
   oldString?: string;            // for kind='tool' + toolName='Edit' | 'Write' (Write sets '' to mean "new file")
   newString?: string;            // for kind='tool' + toolName='Edit' | 'Write'
   isRedacted?: boolean;          // for kind='thinking'
+  contentTruncated?: boolean;    // message text was cut at 32k; full text only in the transcript/pty
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
   isError?: boolean;             // true if tool_result had is_error: true
@@ -55,6 +56,17 @@ interface ActiveMonitor {
   target: string;
   startedAt?: string;
   until?: string;
+}
+
+/** A `Bash(run_in_background: true)` command still running — the session is idle
+ *  on purpose, waiting for the harness re-invoke when it exits. */
+export interface BackgroundTask {
+  toolUseId: string;
+  taskId: string;
+  description?: string;
+  startedAt?: string;
+  outputFile?: string;
+  lastOutputAt?: number;
 }
 
 interface Task {
@@ -117,11 +129,10 @@ interface Session {
   activeMonitors?: ActiveMonitor[];
   scheduledWakeupAt?: number;  // epoch ms a pending ScheduleWakeup fires; present ⇒ show "scheduled" instead of "waiting"
   scheduledWakeupReason?: string;  // why it's sleeping (the ScheduleWakeup `reason`)
+  backgroundTasks?: BackgroundTask[];  // in-flight background Bash commands; present ⇒ show "running" instead of "waiting"
   jiraKeys?: string[];
   skillsUsed?: string[];         // skill/command names invoked in this session, accumulated server-side
-  completionHint?: 'done' | 'awaiting';
-  acknowledged?: boolean;  // user-set: silence pulsing WAITING bubble without marking done
-  userAccepted?: boolean;
+  acknowledged?: boolean;  // user-set: silence the pulsing WAITING bubble
   /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   lastUserMessageTs?: string;     // newest user-message ts from untrimmed feed; confirms optimistic echoes past the tail

@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
+import { loadDraft, saveDraft, clearDraft } from '../hooks/draftStore';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
 import { getLaunchInfo } from '../types';
 import { XtermTerminal } from './XtermTerminal';
@@ -294,8 +295,6 @@ interface SessionActions {
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
   onFocusBridge?: (sessionId: string) => void;
-  onMarkDone?: (sessionId: string) => void;
-  onAcceptSession?: (sessionId: string) => void;
 }
 
 interface DetailPanelProps {
@@ -582,7 +581,7 @@ function TaskHistory({ summaries, styles }: { summaries: Array<{ summary: string
   );
 }
 
-function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, acknowledged, onMarkDone, onAccept, onToggleAck }: { state: WorkerState; activeSubagentCount?: number; completionHint?: 'done' | 'awaiting'; userAccepted?: boolean; acknowledged?: boolean; onMarkDone?: () => void; onAccept?: () => void; onToggleAck?: () => void }) {
+function StateBadge({ state, activeSubagentCount, acknowledged, onToggleAck }: { state: WorkerState; activeSubagentCount?: number; acknowledged?: boolean; onToggleAck?: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
@@ -592,54 +591,30 @@ function StateBadge({ state, activeSubagentCount, completionHint, userAccepted, 
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
 
-  const isDone = (state === 'waiting' || state === 'closed') && completionHint === 'done';
-  const isAckedWaiting = state === 'waiting' && !!acknowledged && !isDone;
-  const color = isDone
-    ? (userAccepted ? '#22c55e' : '#f59e0b')
-    : (isAckedWaiting ? '#94a3b8' : STATE_COLORS[state]);
-  const label = isDone
-    ? (userAccepted ? 'done ✓' : 'done · review')
-    : (isAckedWaiting ? 'ack' : state);
+  const isAckedWaiting = state === 'waiting' && !!acknowledged;
+  const color = isAckedWaiting ? '#94a3b8' : STATE_COLORS[state];
+  const label = isAckedWaiting ? 'ack' : state;
 
-  const canAck = state === 'waiting' && !isDone && !!onToggleAck;
-  const hasMenu = (isDone && !userAccepted && !!onAccept) || (!isDone && !!onMarkDone) || canAck;
+  const canAck = state === 'waiting' && !!onToggleAck;
 
   return (
     <>
       <div style={{ position: 'relative', display: 'inline-block' }}>
         <span
           className={styles.stateBadge}
-          style={{ background: color, color: '#1a1a2e', cursor: hasMenu ? 'pointer' : undefined }}
-          onClick={hasMenu ? () => setMenuOpen(v => !v) : undefined}
+          style={{ background: color, color: '#1a1a2e', cursor: canAck ? 'pointer' : undefined }}
+          onClick={canAck ? () => setMenuOpen(v => !v) : undefined}
         >
           {label}
         </span>
-        {menuOpen && hasMenu && (
+        {menuOpen && canAck && (
           <div className={styles.badgeDoneMenu} onMouseDown={e => e.stopPropagation()}>
-            {isDone && !userAccepted && onAccept && (
-              <button
-                className={styles.badgeDoneBtn}
-                onClick={() => { onAccept(); setMenuOpen(false); }}
-              >
-                ✓ Accept
-              </button>
-            )}
-            {!isDone && onMarkDone && (
-              <button
-                className={styles.badgeDoneBtn}
-                onClick={() => { onMarkDone(); setMenuOpen(false); }}
-              >
-                ✓ DONE
-              </button>
-            )}
-            {canAck && (
-              <button
-                className={styles.badgeDoneBtn}
-                onClick={() => { onToggleAck!(); setMenuOpen(false); }}
-              >
-                {acknowledged ? '↺ Un-ack' : '✓ ACK'}
-              </button>
-            )}
+            <button
+              className={styles.badgeDoneBtn}
+              onClick={() => { onToggleAck!(); setMenuOpen(false); }}
+            >
+              {acknowledged ? '↺ Un-ack' : '✓ ACK'}
+            </button>
           </div>
         )}
       </div>
@@ -1151,6 +1126,11 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                         dangerouslySetInnerHTML={{ __html: renderMarkdown(seg.item.content.trimEnd()) }}
                       />
                     )}
+                    {seg.item.contentTruncated && (
+                      <div className={styles.truncatedNotice}>
+                        message truncated — open the terminal for the full text
+                      </div>
+                    )}
                     <button
                       className={`${styles.rawToggle} ${styles.copyBubbleBtn}`}
                       onClick={() => {
@@ -1478,7 +1458,7 @@ export function DetailPanel({
   onNavigateRoom,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onMarkDone, onAcceptSession } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -1589,7 +1569,7 @@ export function DetailPanel({
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'artifacts'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   const [notesContent, setNotesContent] = useState('');
@@ -1849,8 +1829,10 @@ const currentDisplayName =
     const prevId = prevSessionIdRef.current;
     if (prevId && sendInput2.trim()) {
       draftPerSession.current.set(prevId, sendInput2);
+      saveDraft(prevId, sendInput2);
     } else if (prevId) {
       draftPerSession.current.delete(prevId);
+      clearDraft(prevId);
     }
     if (prevId) {
       if (localSent.length > 0) {
@@ -1898,7 +1880,8 @@ const currentDisplayName =
     realCountAtFirstSend.current = alreadyConfirmed ? null : savedRealCount;
     sendTimestampMs.current = alreadyConfirmed ? null : savedSendTs;
     // Restore draft for the new session
-    setSendInput2(newId ? (draftPerSession.current.get(newId) ?? '') : '');
+    // In-memory draft first; fall back to the durable localStorage copy (survives reload).
+    setSendInput2(newId ? (draftPerSession.current.get(newId) ?? loadDraft(newId)) : '');
     setConfirmDelete(false);
     setConfirmDeleteArchive(false);
     setPastedImage(null);
@@ -2007,7 +1990,10 @@ const currentDisplayName =
     const sent = sendText(full);
     if (!sent) return; // preserve input + image if WebSocket not connected
     setSendInput2('');
-    if (selectedSession) draftPerSession.current.delete(selectedSession.sessionId);
+    if (selectedSession) {
+      draftPerSession.current.delete(selectedSession.sessionId);
+      clearDraft(selectedSession.sessionId);
+    }
     setPastedImage(null);
   }
 
@@ -2144,27 +2130,32 @@ const currentDisplayName =
   const stateBarActiveSubagents = selectedSession
     ? selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking')
     : [];
-  const stateBarIsDone = (selectedSession?.state === 'waiting' || selectedSession?.state === 'closed') && selectedSession?.completionHint === 'done';
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
   const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion;
   const isCompacting = selectedSession?.isCompacting === true;
-  const stateBarScheduledAt = selectedSession?.state === 'waiting' && !stateBarIsDone && !stateBarNeedsApproval && !stateBarHasQuestion
+  const stateBarScheduledAt = selectedSession?.state === 'waiting' && !stateBarNeedsApproval && !stateBarHasQuestion
     ? selectedSession.scheduledWakeupAt
     : undefined;
+  // A waiting session with an in-flight background command is not user-blocked —
+  // the harness re-invokes it on exit. Scheduled wakeup wins if both are pending.
+  const stateBarBackgroundTask = selectedSession?.state === 'waiting'
+    && !stateBarNeedsApproval && !stateBarHasQuestion && !stateBarScheduledAt
+    ? selectedSession.backgroundTasks?.[0]
+    : undefined;
   const stateBarLabel = isCompacting ? 'Compacting conversation…'
-    : stateBarIsDone ? 'Task complete'
     : stateBarNeedsApproval ? 'Waiting for approval'
     : stateBarHasQuestion ? 'Question for you'
     : stateBarScheduledAt ? new Date(stateBarScheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : stateBarBackgroundTask ? 'Running in background'
     : selectedSession?.state === 'waiting' && stateBarActiveSubagents.length > 0 ? 'Delegated · waiting for subagent'
     : selectedSession?.state === 'waiting' ? 'Waiting for input'
     : selectedSession?.state === 'thinking' ? 'Thinking...'
     : 'Working...';
   const stateBarClass = isCompacting ? styles.stateBarCompacting
-    : stateBarIsDone ? styles.stateBarDone
     : stateBarNeedsApproval ? styles.stateBarPermission
     : stateBarHasQuestion ? styles.stateBarQuestion
     : stateBarScheduledAt ? styles.stateBarScheduled
+    : stateBarBackgroundTask ? styles.stateBarBackground
     : selectedSession?.state === 'waiting' ? styles.stateBarWaiting
     : selectedSession?.state === 'thinking' ? styles.stateBarThinking
     : styles.stateBarActive;
@@ -2588,18 +2579,8 @@ const currentDisplayName =
                     <StateBadge
                       state={selectedSession.state}
                       activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
-                      completionHint={selectedSession.completionHint}
-                      userAccepted={selectedSession.userAccepted}
                       acknowledged={selectedSession.acknowledged}
-                      onMarkDone={(() => {
-                        const canMarkDone = selectedSession.state !== 'closed' && selectedSession.completionHint !== 'done' && !!onMarkDone;
-                        return canMarkDone ? () => onMarkDone(selectedSession.sessionId) : undefined;
-                      })()}
-                      onAccept={(() => {
-                        const isDone = selectedSession.completionHint === 'done' && !selectedSession.userAccepted;
-                        return isDone && !!onAcceptSession ? () => onAcceptSession(selectedSession.sessionId) : undefined;
-                      })()}
-                      onToggleAck={selectedSession.state === 'waiting' && selectedSession.completionHint !== 'done'
+                      onToggleAck={selectedSession.state === 'waiting'
                         ? () => { void fetch(`/api/sessions/${selectedSession.sessionId}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); }
                         : undefined}
                     />
@@ -2681,14 +2662,6 @@ const currentDisplayName =
                   >
                     Details
                   </button>
-                  {!selectedSession.isArchived && (
-                  <button
-                    className={`${styles.tab} ${activeTab === 'notes' ? styles.tabActive : ''}`}
-                    onClick={() => setActiveTab('notes')}
-                  >
-                    Notes{notesContent.trim() && <span className={styles.tabNotesDot}>✱</span>}
-                  </button>
-                  )}
                   {!selectedSession.isArchived && (
                     <button
                       className={`${styles.tab} ${activeTab === 'artifacts' ? styles.tabActive : ''}`}
@@ -2962,7 +2935,7 @@ const currentDisplayName =
                           sessionType={selectedSession.sessionType}
                         />
                       )}
-                      {selectedSession && selectedSession.state !== 'closed' && !selectedSession.userAccepted && (
+                      {selectedSession && selectedSession.state !== 'closed' && (
                         <>
                           <div className={`${styles.stateBar} ${stateBarClass}`}>
                             {stateBarScheduledAt ? (
@@ -2970,12 +2943,36 @@ const currentDisplayName =
                                 <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
                                 <path d="M 6 3.2 L 6 6 L 8 7.4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
                               </svg>
+                            ) : stateBarBackgroundTask ? (
+                              <svg className={styles.stateBarClock} width="13" height="13" viewBox="0 0 12 12" aria-hidden="true">
+                                <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeDasharray="3.5 2.5" />
+                              </svg>
                             ) : (
                               <span className={styles.stateBarDot} />
                             )}
                             <span className={styles.stateBarLabel}>{stateBarLabel}</span>
-                            {elapsedSeconds > 2 && !stateBarScheduledAt && (
+                            {elapsedSeconds > 2 && !stateBarScheduledAt && !stateBarBackgroundTask && (
                               <span className={styles.stateBarElapsed}>{formatElapsed(elapsedSeconds)}</span>
+                            )}
+                            {stateBarBackgroundTask && (
+                              <>
+                                <span
+                                  className={styles.stateBarReason}
+                                  title={stateBarBackgroundTask.outputFile ?? stateBarBackgroundTask.taskId}
+                                >
+                                  {stateBarBackgroundTask.description ?? stateBarBackgroundTask.taskId}
+                                </span>
+                                {stateBarBackgroundTask.startedAt && (
+                                  <span className={styles.stateBarElapsed}>
+                                    {formatElapsed(Math.max(0, Math.floor((Date.now() - Date.parse(stateBarBackgroundTask.startedAt)) / 1000)))}
+                                  </span>
+                                )}
+                                {stateBarBackgroundTask.lastOutputAt != null && (
+                                  <span className={styles.stateBarElapsed}>
+                                    · last output {formatElapsed(Math.max(0, Math.floor((Date.now() - stateBarBackgroundTask.lastOutputAt) / 1000)))} ago
+                                  </span>
+                                )}
+                              </>
                             )}
                             {stateBarScheduledAt && selectedSession.scheduledWakeupReason && (
                               <span
@@ -2991,18 +2988,6 @@ const currentDisplayName =
                               </span>
                             )}
                             <div style={{flex: 1}} />
-                            {stateBarIsDone && !selectedSession.userAccepted && onAcceptSession && (
-                              <button
-                                className={styles.acceptBtn}
-                                onClick={() => onAcceptSession(selectedSession.sessionId)}
-                                title="Accept this completed session"
-                              >
-                                Accept
-                              </button>
-                            )}
-                            {stateBarIsDone && selectedSession.userAccepted && (
-                              <span className={styles.acceptedLabel}>Accepted ✓</span>
-                            )}
                             {(selectedSession.state === 'working' || selectedSession.state === 'thinking') && (
                               <>
                                 <button
@@ -3116,7 +3101,11 @@ const currentDisplayName =
                             className={`${styles.sendTextarea} ${needsResume ? styles.sendTextareaClosed : ''} ${resuming ? styles.sendTextareaResuming : ''}`}
                             value={sendInput2}
                             disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
-                            onChange={e => setSendInput2(e.target.value)}
+                            onChange={e => {
+                              setSendInput2(e.target.value);
+                              // Persist every keystroke so unsent text survives reload/crash.
+                              saveDraft(selectedSession.sessionId, e.target.value);
+                            }}
                             onClick={() => {
                               if (needsResume && onResumeSession && !resuming) {
                                 setResuming(true);
@@ -3133,6 +3122,7 @@ const currentDisplayName =
                               if (e.key === 'Escape') {
                                 e.preventDefault();
                                 setSendInput2('');
+                                clearDraft(selectedSession.sessionId);
                               } else if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 if (!connected) return;
@@ -3234,32 +3224,6 @@ const currentDisplayName =
                         Resume in new PTY
                       </button>
                     )}
-                  </div>
-                )}
-
-                {/* Tab: Notes */}
-                {activeTab === 'notes' && (
-                  <div className={styles.notesTab}>
-                    <textarea
-                      className={styles.notesTextarea}
-                      value={notesContent}
-                      placeholder="Add notes…"
-                      onChange={e => {
-                        const value = e.target.value;
-                        setNotesContent(value);
-                        if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
-                        const sessionId = selectedSession.sessionId;
-                        notesSaveTimerRef.current = setTimeout(() => {
-                          fetch(`/api/sessions/${sessionId}/notes`, {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ notes: value }),
-                          }).then(() => {
-                            updateNoteFirstLine(sessionId, value);
-                          }).catch(() => {});
-                        }, 500);
-                      }}
-                    />
                   </div>
                 )}
 

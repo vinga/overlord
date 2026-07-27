@@ -317,9 +317,6 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
         }
       }
       const sess = ctx.stateManager.getSession(sessionId);
-      if (becameWaiting && lastMessage && !sess?.isWorker) {
-        void ctx.aiClassifier.classifyCompletion(sessionId, lastMessage);
-      }
       if (becameWorking && !sess?.isWorker) {
         ctx.aiClassifier.cancelLabel(sessionId);
         ctx.aiClassifier.scheduleLabel(sessionId);
