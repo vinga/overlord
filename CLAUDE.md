@@ -91,6 +91,12 @@ Delegate to subagents whenever independent work parallelizes. Prefer parallel to
 
 - `OVERLORD_ARCHIVE_PR_REFRESH` (default ON; set `0`/`false` to disable): hourly REST refresh of PR state for archived/closed rooms only, non-MERGED entries only. Live rooms already poll on the 15-min TTL. Non-destructive (records into `prHistoryStore`); kill switch exists for perf-sensitive machines. See `stateManager.refreshArchivedPrs` / `selectArchivedPrTargets`.
 
+## Client Feature Flags (Vite env)
+
+Declared in `packages/client/src/config/featureFlags.ts`. Vite bakes these in — a change needs a **client restart**, not just a reload.
+
+- `VITE_OVERLORD_ROOM_PREFIX` (default OFF; set `1`/`true` to enable): per-room session name prefix. When off, the `prefix…` input in the room spawn dialog is hidden, no prefix is prepended to spawned names, and `useRoomPrefix` makes no `/api/room-config` request. The server still stores and returns the `prefix` field, so saved values return unchanged when the flag is turned back on.
+
 ## Interrupts
 
 When the user sends a message mid-tool-call, finish the in-flight call only if it's a read. For writes/destructive actions, stop, re-read the latest user message, confirm before continuing.

@@ -10,6 +10,7 @@ import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
+import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 
 // 300 distinctive names for new sessions — pick a random unused one
 export const SESSION_NAMES = [
@@ -530,7 +531,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
       .then(r => r.ok ? r.json() as Promise<{ prefix: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider }> : null)
       .then(cfg => {
         if (!cancelled && cfg) {
-          setNamePrefix(cfg.prefix ?? '');
+          setNamePrefix(ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '');
           if (cfg.lastMode) setLastMode(cfg.lastMode);
           setLastProvider(cfg.lastProvider === 'opencode' ? 'opencode' : 'claude');
         }
@@ -712,15 +713,15 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
               e.stopPropagation();
               if (showSpawnPanel) { setShowSpawnPanel(false); return; }
               const baseName = getNextName('');
-              let fresh = namePrefix;
-              try {
-                const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`);
-                if (r.ok) {
-                  const cfg = await r.json() as { prefix?: string };
-                  fresh = cfg.prefix ?? '';
-                  setNamePrefix(fresh);
-                }
-              } catch { /* fall back to cached namePrefix */ }
+              if (ROOM_PREFIX_ENABLED) {
+                try {
+                  const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`);
+                  if (r.ok) {
+                    const cfg = await r.json() as { prefix?: string };
+                    setNamePrefix(cfg.prefix ?? '');
+                  }
+                } catch { /* fall back to cached namePrefix */ }
+              }
               setSpawnPanelName(baseName);
               setShowSpawnPanel(true);
             }}
@@ -743,7 +744,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                 const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`);
                 if (r.ok) {
                   const cfg = await r.json() as { prefix?: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider };
-                  fresh = cfg.prefix ?? '';
+                  fresh = ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '';
                   setNamePrefix(fresh);
                   if (cfg.lastMode) { mode = cfg.lastMode; setLastMode(cfg.lastMode); }
                   provider = cfg.lastProvider === 'opencode' ? 'opencode' : 'claude';

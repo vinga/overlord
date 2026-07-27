@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import type { SessionProvider, TerminalSpawnMode } from '../types';
+import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 import styles from './SpawnDialog.module.css';
 
 /** UI-level provider — 'shell' maps to spawn mode 'raw' (no LLM), it never
@@ -98,6 +99,9 @@ const MODE_TOOLTIPS: Record<string, string> = {
  */
 export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose }: Props) {
   const isRoom = fixedCwd != null;
+  // Room prefix is behind VITE_OVERLORD_ROOM_PREFIX — off by default, so the
+  // input is hidden, nothing is saved, and no prefix reaches the spawned name.
+  const prefixEnabled = isRoom && ROOM_PREFIX_ENABLED;
   const [currentPath, setCurrentPath] = useState(fixedCwd || defaultPath || '');
   const [pathInput, setPathInput] = useState(fixedCwd || defaultPath || '');
   const [dirExpanded, setDirExpanded] = useState(!isRoom);
@@ -133,7 +137,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
 
   // Room variant: debounce-save the prefix to /api/room-config as it's typed.
   useEffect(() => {
-    if (!isRoom || !open) return;
+    if (!prefixEnabled || !open) return;
     if (prefix === prefixSavedRef.current) return;
     if (prefixDebounceRef.current) clearTimeout(prefixDebounceRef.current);
     prefixDebounceRef.current = setTimeout(() => {
@@ -156,7 +160,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
         prefixDebounceRef.current = null;
       }
     };
-  }, [prefix, isRoom, open, fixedCwd, onPrefixSaved]);
+  }, [prefix, prefixEnabled, open, fixedCwd, onPrefixSaved]);
 
   // Fetch directories only while the browser is expanded.
   useEffect(() => {
@@ -241,7 +245,8 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
     breadcrumbs.push({ label: segments[i], path: fullPath });
   }
 
-  const fullName = (prefix + sessionName).trim();
+  const effPrefix = prefixEnabled ? prefix : '';
+  const fullName = (effPrefix + sessionName).trim();
   const safeName = fullName.replace(/["\s]/g, '-');
   const effBridgePath = bridgePath ?? fetchedBridgePath;
   const bridgeBin = effBridgePath ? `"${effBridgePath}"` : 'overlord-bridge';
@@ -252,7 +257,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
     if (!currentPath || !sessionName.trim()) return;
     const spawnMode: TerminalSpawnMode = uiProvider === 'shell' ? 'raw' : effectiveMode;
     const provider: SessionProvider = uiProvider === 'opencode' ? 'opencode' : 'claude';
-    onSpawn(currentPath, prefix + sessionName.trim(), spawnMode, provider, prefix);
+    onSpawn(currentPath, effPrefix + sessionName.trim(), spawnMode, provider, effPrefix);
   };
 
   const modeRows = [
@@ -336,7 +341,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
           <div className={styles.configRow}>
             <label className={styles.label}>Name</label>
             <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-              {isRoom && (
+              {prefixEnabled && (
                 <input
                   className={`${styles.nameInput} ${styles.prefixInput}`}
                   value={prefix}
