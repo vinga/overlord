@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { WorkerIcon } from '../types';
+import { WORKER_ICONS, type WorkerIcon } from '../types';
 import { WorkerAvatar } from './WorkerAvatar';
 import { WorkerGlyph } from './workerGlyphs';
 import styles from './ColorPicker.module.css';
@@ -8,16 +8,21 @@ import styles from './ColorPicker.module.css';
 const POPOVER_WIDTH = 264; // matches .popover min-width + padding
 const POPOVER_HEIGHT = 300; // approximate; used only for vertical flip
 
-const ICON_PRESETS: { icon: WorkerIcon; label: string }[] = [
-  { icon: 'user', label: 'Worker' },
-  { icon: 'dashboard', label: 'Dashboard' },
-  { icon: 'ticket', label: 'Refining ticket' },
-  { icon: 'investigate', label: 'Investigating' },
-  { icon: 'teach', label: 'Teaching' },
-  { icon: 'notes', label: 'Pinned notes' },
-  { icon: 'btw', label: 'By the way' },
-  { icon: 'release', label: 'Release' },
-];
+// Keyed by WorkerIcon, so adding a glyph to WORKER_ICONS fails the build here
+// until it gets a label — the picker can never silently lag the icon list.
+const ICON_LABELS: Record<WorkerIcon, string> = {
+  user: 'Worker',
+  dashboard: 'Dashboard',
+  ticket: 'Refining ticket',
+  investigate: 'Investigating',
+  teach: 'Teaching',
+  notes: 'Pinned notes',
+  btw: 'By the way',
+  release: 'Release',
+};
+
+const ICON_PRESETS: { icon: WorkerIcon; label: string }[] =
+  WORKER_ICONS.map(icon => ({ icon, label: ICON_LABELS[icon] }));
 
 const HUE_PRESETS: { label: string; h: number; s?: number }[] = [
   { label: 'Red', h: 0 },

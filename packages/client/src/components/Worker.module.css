@@ -481,6 +481,24 @@
   white-space: nowrap;
 }
 
+/* Set aside on purpose — quiet slate, same slot as the other card badges. */
+.parkedBadge {
+  position: absolute;
+  top: -52px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(100, 116, 139, 0.16);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
 .rawBadge {
   position: absolute;
   top: -52px;

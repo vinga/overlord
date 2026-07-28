@@ -1,11 +1,23 @@
 import React from 'react';
 import type { PendingQuestionSet } from '../types';
 
-export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageChange, styles }: {
+// The AskUserQuestion TUI appends these two rows after the model-authored options.
+// The screen parser tags them when it sees them; transcript-derived question sets
+// only carry the model's own options, so we synthesize them at the same trailing
+// positions — arrow-key index still lines up with what the TUI renders.
+const BUILTIN_OPTIONS = [
+  { label: 'Type something', description: 'Dismiss the options and answer in the message box', builtin: true },
+  { label: 'Chat about this', description: 'Dismiss the options and reply in chat', builtin: true },
+];
+
+export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageChange, onDismissedToChat, styles }: {
   sessionId: string;
   questionSet: PendingQuestionSet;
   initialStage: number;
   onStageChange: (stage: number) => void;
+  /** Called after a built-in option is committed — the TUI is back at its normal
+   *  composer, so the panel focuses the message box for the free-text reply. */
+  onDismissedToChat?: () => void;
   styles: Record<string, string>;
 }) {
   const [stage, setStage] = React.useState(initialStage);
@@ -18,6 +30,9 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
   const question = questions[stage];
   if (!question) return null;
   const total = questions.length;
+  const options = question.options.some(o => o.builtin)
+    ? question.options
+    : [...question.options, ...BUILTIN_OPTIONS];
 
   // AskUserQuestion TUI uses arrow-key navigation.
   // We send arrows first, wait for the TUI to process them, then send Enter.
@@ -30,7 +45,7 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
     if (!r.ok) throw new Error(`inject failed: ${r.status}`);
   };
 
-  const respond = async (optionIndex: number, label: string) => {
+  const respond = async (optionIndex: number, label: string, builtin = false) => {
     setResponding(true);
     setSelected(label);
     setError(false);
@@ -41,6 +56,14 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
         await new Promise(r => setTimeout(r, 80));
       }
       await doInject('\r');
+      if (builtin) {
+        // "Type something" / "Chat about this" decline the whole question set and
+        // drop the TUI back to its normal composer — no review/submit step, and no
+        // further questions in this set. Hand the user straight to the message box.
+        onStageChange(0);
+        onDismissedToChat?.();
+        return;
+      }
       if (stage < total - 1) {
         // Advance to next question after a brief pause
         setTimeout(() => {
@@ -75,13 +98,13 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
         )}
       </div>
       <div className={styles.questionText}>{question.question}</div>
-      {question.options.length > 0 ? (
+      {options.length > 0 ? (
         <div className={styles.questionOptions}>
-          {question.options.map((opt, i) => (
+          {options.map((opt, i) => (
             <button
               key={i}
-              className={`${styles.questionOption} ${selected === opt.label ? styles.questionOptionSelected : ''} ${error ? styles.questionOptionError : ''}`}
-              onClick={() => void respond(i, opt.label)}
+              className={`${styles.questionOption} ${opt.builtin ? styles.questionOptionBuiltin : ''} ${selected === opt.label ? styles.questionOptionSelected : ''} ${error ? styles.questionOptionError : ''}`}
+              onClick={() => void respond(i, opt.label, opt.builtin === true)}
               disabled={responding}
             >
               <span className={styles.questionOptionNum}>{i + 1}</span>

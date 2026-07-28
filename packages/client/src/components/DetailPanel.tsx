@@ -3,8 +3,9 @@ import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
 import { loadDraft, saveDraft, clearDraft } from '../hooks/draftStore';
-import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet } from '../types';
+import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
 import { getLaunchInfo } from '../types';
+import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { ColorPicker } from './ColorPicker';
@@ -22,6 +23,7 @@ import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
 import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
+import { useStickyUserMessage, type StickyUserMessage } from '../hooks/useStickyUserMessage';
 import { marked } from 'marked';
 
 marked.setOptions({ breaks: true });
@@ -324,6 +326,8 @@ interface DetailPanelProps {
   onScrollTargetConsumed?: () => void;
   /** Room breadcrumb navigation. `open` = also toggle the room detail panel. */
   onNavigateRoom?: (cwd: string, open: boolean) => void;
+  /** Global setting: pin the governing user message atop the Conversation feed. */
+  showStickyUserMessage?: boolean;
 }
 
 function isFilePath(s: string): boolean {
@@ -429,6 +433,16 @@ function formatRelativeTime(isoTimestamp: string): string {
   } catch {
     return isoTimestamp;
   }
+}
+
+/** "4h ago" for the parked banner. Epoch-ms twin of formatRelativeTime. */
+function formatParkedAge(parkedAt: number): string {
+  const mins = Math.floor((Date.now() - parkedAt) / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function useElapsedSeconds(isoTimestamp: string | undefined): number {
@@ -581,40 +595,113 @@ function TaskHistory({ summaries, styles }: { summaries: Array<{ summary: string
   );
 }
 
-function StateBadge({ state, activeSubagentCount, acknowledged, onToggleAck }: { state: WorkerState; activeSubagentCount?: number; acknowledged?: boolean; onToggleAck?: () => void }) {
+interface StateBadgeProps {
+  state: WorkerState;
+  activeSubagentCount?: number;
+  review?: SessionReview;
+  parkReason?: string;
+  /** Absent ⇒ the badge is read-only (archived session). */
+  onSetReview?: (review: SessionReview | null, reason?: string) => void;
+}
+
+/**
+ * The state pill, doubling as the review menu.
+ *
+ * 'read' is a waiting-only silencer, so it's offered only while waiting. Park is
+ * offered in any non-closed state — setting aside a session that is still
+ * grinding is a legitimate "I'm done looking at this for now".
+ */
+function StateBadge({ state, activeSubagentCount, review, parkReason, onSetReview }: StateBadgeProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [parking, setParking] = useState(false);
+  const [reason, setReason] = useState('');
 
   useEffect(() => {
     if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
+    const close = () => { setMenuOpen(false); setParking(false); };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
 
-  const isAckedWaiting = state === 'waiting' && !!acknowledged;
-  const color = isAckedWaiting ? '#94a3b8' : STATE_COLORS[state];
-  const label = isAckedWaiting ? 'ack' : state;
+  const isParked = review === 'parked';
+  const isReadWaiting = state === 'waiting' && review === 'read';
+  const color = isParked ? '#64748b' : isReadWaiting ? '#94a3b8' : STATE_COLORS[state];
+  const label = isParked ? 'parked' : isReadWaiting ? 'read' : state;
 
-  const canAck = state === 'waiting' && !!onToggleAck;
+  const canReview = state !== 'closed' && !!onSetReview;
+  const canMarkRead = state === 'waiting' && !isParked;
+
+  const commit = (next: SessionReview | null, why?: string) => {
+    onSetReview?.(next, why);
+    setParking(false);
+    setMenuOpen(false);
+  };
 
   return (
     <>
       <div style={{ position: 'relative', display: 'inline-block' }}>
         <span
           className={styles.stateBadge}
-          style={{ background: color, color: '#1a1a2e', cursor: canAck ? 'pointer' : undefined }}
-          onClick={canAck ? () => setMenuOpen(v => !v) : undefined}
+          style={{ background: color, color: '#1a1a2e', cursor: canReview ? 'pointer' : undefined }}
+          onClick={canReview ? () => setMenuOpen(v => !v) : undefined}
+          title={isParked && parkReason ? `Parked · ${parkReason}` : undefined}
         >
           {label}
         </span>
-        {menuOpen && canAck && (
-          <div className={styles.badgeDoneMenu} onMouseDown={e => e.stopPropagation()}>
-            <button
-              className={styles.badgeDoneBtn}
-              onClick={() => { onToggleAck!(); setMenuOpen(false); }}
-            >
-              {acknowledged ? '↺ Un-ack' : '✓ ACK'}
-            </button>
+        {menuOpen && canReview && (
+          <div className={styles.badgeReviewMenu} onMouseDown={e => e.stopPropagation()}>
+            {parking ? (
+              <div className={styles.badgeParkForm}>
+                <input
+                  className={styles.badgeParkInput}
+                  autoFocus
+                  maxLength={PARK_REASON_MAX}
+                  placeholder="why parked? (optional)"
+                  value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  onKeyDown={e => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') { e.preventDefault(); commit('parked', reason); }
+                    if (e.key === 'Escape') { e.preventDefault(); setParking(false); }
+                  }}
+                />
+                <button className={styles.badgeReviewBtn} onClick={() => commit('parked', reason)}>
+                  ⏸ Park
+                </button>
+              </div>
+            ) : (
+              <>
+                {canMarkRead && (
+                  <button
+                    className={styles.badgeReviewBtn}
+                    onClick={() => commit(review === 'read' ? null : 'read')}
+                  >
+                    {review === 'read' ? '↺ Un-read' : '✓ Read'}
+                  </button>
+                )}
+                {!isParked && (
+                  <button
+                    className={styles.badgeReviewBtn}
+                    onClick={() => { setReason(''); setParking(true); }}
+                  >
+                    ⏸ Park…
+                  </button>
+                )}
+                {isParked && (
+                  <>
+                    <button
+                      className={styles.badgeReviewBtn}
+                      onClick={() => { setReason(parkReason ?? ''); setParking(true); }}
+                    >
+                      ✎ Edit reason
+                    </button>
+                    <button className={styles.badgeReviewBtn} onClick={() => commit(null)}>
+                      ↺ Un-park
+                    </button>
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -693,14 +780,14 @@ function parseQuestionInput(inputJson?: string): ParsedQuestion[] {
 function questionInputToSet(inputJson?: string): PendingQuestionSet | null {
   if (!inputJson) return null;
   try {
-    const parsed = JSON.parse(inputJson) as { questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string }> }> };
+    const parsed = JSON.parse(inputJson) as { questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string; builtin?: boolean }> }> };
     const questions = (parsed.questions ?? [])
       .filter(q => q.question)
       .map(q => ({
         question: q.question!,
         header: q.header,
         multiSelect: q.multiSelect ?? false,
-        options: (q.options ?? []).map(o => ({ label: o.label ?? '', description: o.description, preview: o.preview })).filter(o => o.label),
+        options: (q.options ?? []).map(o => ({ label: o.label ?? '', description: o.description, preview: o.preview, builtin: o.builtin })).filter(o => o.label),
       }));
     return questions.length > 0 ? { questions } : null;
   } catch {
@@ -710,7 +797,7 @@ function questionInputToSet(inputJson?: string): PendingQuestionSet | null {
 
 // Renders an AskUserQuestion entry inline in the conversation as a Q&A block,
 // with the full question + every option, chosen highlighted, expandable.
-function QuestionEntry({ item, styles }: { item: ActivityItem; styles: Record<string, string> }) {
+function QuestionEntry({ item, styles, stale }: { item: ActivityItem; styles: Record<string, string>; stale?: boolean }) {
   const [expanded, setExpanded] = React.useState(false);
   const answers = parseQuestionAnswers(item.resultJson);
   const parsed = parseQuestionInput(item.inputJson);
@@ -721,13 +808,20 @@ function QuestionEntry({ item, styles }: { item: ActivityItem; styles: Record<st
   // Skip the streaming artifact: an AskUserQuestion tool_use with no question and no answer.
   if (questions.length === 0 && answers.length === 0) return null;
   const pending = answers.length === 0;
+  // A tool_result with no parseable answer is a decline (Esc, or "Type something" /
+  // "Chat about this") — not a question still waiting on the user.
+  const declined = pending && !!item.resultJson;
   const hasOptions = questions.some(q => q.options.length > 0);
   return (
     <div className={styles.qaEntry}>
       <div className={styles.qaLabel}>
         <span className={styles.qaIcon}>?</span>
         Question{questions.length > 1 ? 's' : ''}
-        {pending && <span className={styles.qaPending}>awaiting answer</span>}
+        {pending && (
+          <span className={styles.qaPending} title={(stale || declined) ? 'The terminal is no longer showing this menu — answer in the message box instead.' : undefined}>
+            {declined ? 'declined' : stale ? 'no longer on screen' : 'awaiting answer'}
+          </span>
+        )}
         {hasOptions && (
           <button className={styles.qaToggle} onClick={() => setExpanded(e => !e)}>
             {expanded ? 'hide options' : 'show options'}
@@ -959,9 +1053,51 @@ interface FeedSegmentsProps {
   // interactive prompt that injects the choice into this session's TUI.
   questionSessionId?: string;
   questionStageRef?: React.MutableRefObject<Map<string, number>>;
+  onQuestionDismissedToChat?: () => void;
+  /** Server says the live screen has no AskUserQuestion menu — the pending question
+   *  in the transcript can no longer be answered by injecting keystrokes. */
+  questionStale?: boolean;
+  /** Tag user messages so useStickyUserMessage can pin them. Only the two
+   *  top-level feeds set this — inline subagent feeds nest inside the same
+   *  scroll container and their prompts aren't the user's. */
+  markUserMessages?: boolean;
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef }: FeedSegmentsProps) {
+/** User-role transcript entries the harness generates on your behalf — command
+ *  echoes, compact continuations, hook output. They read as "user" in the JSONL
+ *  but pinning one as "what you asked" would be a lie. */
+const SYNTHETIC_USER_PREFIXES = [
+  '<environment_details',
+  '<local-command',
+  '<command-name>',
+  '<bash-input>',
+  '<bash-stdout>',
+  '<system-reminder',
+  '<user-prompt-submit-hook',
+  'Caveat: The messages below',
+  'This session is being continued from a previous conversation',
+  'Continue from where you left off.',
+];
+
+function isSyntheticUserContent(content: string): boolean {
+  const head = content.trimStart();
+  return SYNTHETIC_USER_PREFIXES.some(p => head.startsWith(p));
+}
+
+/** DOM markers for the pinned-message header. Returns undefined for entries
+ *  that aren't things the user typed (skill preambles, empty/system content). */
+function userMsgAttrs(item: ActivityItem, segIdx: number, isSkillDef: boolean): Record<string, string> | undefined {
+  if (item.role !== 'user' || isSkillDef) return undefined;
+  if (!item.content || isSyntheticUserContent(item.content)) return undefined;
+  const firstLine = item.content.split('\n').find(l => l.trim().length > 0)?.trim();
+  if (!firstLine) return undefined;
+  return {
+    'data-user-msg': item.timestamp ?? `seg:${segIdx}`,
+    'data-user-text': firstLine.length > 300 ? `${firstLine.slice(0, 300)}…` : firstLine,
+  };
+}
+
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, markUserMessages }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
 
@@ -1007,9 +1143,9 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
       {segments.map((seg, segIdx) => {
         if (seg.type === 'question') {
           // Pending (unanswered, live in the TUI) → interactive prompt that injects
-          // the choice. Answered → read-only Q&A block.
+          // the choice. Answered, or stale (TUI no longer on the menu) → read-only.
           const isPending = !seg.item.resultJson;
-          const qSet = isPending ? questionInputToSet(seg.item.inputJson) : null;
+          const qSet = isPending && !questionStale ? questionInputToSet(seg.item.inputJson) : null;
           if (isPending && qSet && questionSessionId && questionStageRef) {
             return (
               <div key={segIdx} data-ts={seg.item.timestamp} style={{ display: 'contents' }}>
@@ -1019,12 +1155,13 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                   questionSet={qSet}
                   initialStage={questionStageRef.current.get(questionSessionId) ?? 0}
                   onStageChange={(s) => { questionStageRef.current.set(questionSessionId, s); }}
+                  onDismissedToChat={onQuestionDismissedToChat}
                   styles={styles}
                 />
               </div>
             );
           }
-          return <div key={segIdx} data-ts={seg.item.timestamp} style={{ display: 'contents' }}><QuestionEntry item={seg.item} styles={styles} /></div>;
+          return <div key={segIdx} data-ts={seg.item.timestamp} style={{ display: 'contents' }}><QuestionEntry item={seg.item} styles={styles} stale={isPending && questionStale} /></div>;
         }
         if (seg.type === 'compact') {
           const meta = seg.item.compactMeta;
@@ -1088,7 +1225,12 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const isAfterTools = seg.item.role === 'user' && prevSeg?.type === 'toolGroup';
           const isSkillDef = seg.item.role === 'user' && seg.item.content?.startsWith('Base directory for this skill');
           return (
-            <div key={segIdx} data-ts={seg.item.timestamp} className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}>
+            <div
+              key={segIdx}
+              data-ts={seg.item.timestamp}
+              {...(markUserMessages ? userMsgAttrs(seg.item, segIdx, isSkillDef) : undefined)}
+              className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}
+            >
               {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
               {isSkillDef ? (
                 <ScrollOnClick className={`${styles.transcriptBubble} ${styles.transcriptBubbleSkillDef}`}>
@@ -1432,6 +1574,61 @@ function ScrollJumpNav({ up, down, onUp, onDown, styles }: ScrollJumpNavProps) {
   );
 }
 
+interface StickyUserHeaderProps {
+  sticky: StickyUserMessage | null;
+  /** Matches the feed's own role label — "you" in a session, "parent" in a subagent feed. */
+  label: string;
+  onPrev: () => void;
+  onNext: () => void;
+  styles: Record<string, string>;
+}
+
+/** One-line pin of the user message governing the visible stretch of the feed.
+ *  Renders nothing while that message is still on screen. The arrows walk the
+ *  feed message by message: up lands on the pinned one, down on the one after. */
+function StickyUserHeader({ sticky, label, onPrev, onNext, styles }: StickyUserHeaderProps) {
+  if (!sticky) return null;
+  const hasNext = sticky.hasNext;
+  return (
+    <div className={styles.stickyUserHeader}>
+      <button
+        type="button"
+        className={styles.stickyUserHeaderMain}
+        onClick={onPrev}
+        title={`${sticky.text}\n\nClick to scroll back to this message`}
+      >
+        <span className={styles.stickyUserHeaderLabel}>{label}</span>
+        <span className={styles.stickyUserHeaderText}>{sticky.text}</span>
+      </button>
+      <span className={styles.stickyUserHeaderNav}>
+        <button
+          type="button"
+          className={styles.stickyUserHeaderNavBtn}
+          onClick={onPrev}
+          title="Previous message"
+          aria-label="Scroll to previous message"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M3 7.5L6 4.5L9 7.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className={styles.stickyUserHeaderNavBtn}
+          onClick={onNext}
+          disabled={!hasNext}
+          title={hasNext ? 'Next message' : 'No later message'}
+          aria-label="Scroll to next message"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function DetailPanel({
   selectedSession,
   selectedSessionId,
@@ -1456,6 +1653,7 @@ export function DetailPanel({
   scrollQuery,
   onScrollTargetConsumed,
   onNavigateRoom,
+  showStickyUserMessage = true,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
@@ -2117,6 +2315,22 @@ const currentDisplayName =
     ...(pendingQuestionItem ? [pendingQuestionItem] : []),
   ];
 
+  // Pinned user message atop the Conversation feed. One instance serves the
+  // main and subagent feeds — they share `transcriptRef`, and only one is
+  // mounted at a time.
+  const { sticky, recomputeSticky, scrollToPrev, scrollToNext } = useStickyUserMessage({
+    containerRef: transcriptRef,
+    feedKey: mergedFeed.length,
+    extraKey: selectedSubagent?.activityFeed?.length,
+    viewKey: `${selectedSession?.sessionId ?? ''}/${selectedSubagentId ?? ''}/${activeTab}/${subagentActiveTab}`,
+    enabled: showStickyUserMessage,
+  });
+
+  const handleScrollWithSticky = useCallback(() => {
+    handleTranscriptScroll();
+    recomputeSticky();
+  }, [handleTranscriptScroll, recomputeSticky]);
+
   const panelSearchResults = useMemo(() => {
     const q = panelSearchQuery.trim();
     if (!q) return [];
@@ -2131,7 +2345,7 @@ const currentDisplayName =
     ? selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking')
     : [];
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
-  const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion;
+  const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion && !selectedSession.questionStale;
   const isCompacting = selectedSession?.isCompacting === true;
   const stateBarScheduledAt = selectedSession?.state === 'waiting' && !stateBarNeedsApproval && !stateBarHasQuestion
     ? selectedSession.scheduledWakeupAt
@@ -2292,7 +2506,7 @@ const currentDisplayName =
 
                 {subagentActiveTab === 'conversation' ? (
                   <div className={styles.scrollAreaWrap}>
-                    <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                    <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleScrollWithSticky}>
                       <section className={styles.section}>
                         {selectedSubagent.activityFeed?.length ? (
                           <div className={styles.transcript}>
@@ -2303,6 +2517,7 @@ const currentDisplayName =
                               ideName={selectedSession.ideName}
                               sessionState={selectedSubagent.state}
                               cwd={selectedSession.cwd}
+                              markUserMessages
                             />
                           </div>
                         ) : (
@@ -2310,6 +2525,7 @@ const currentDisplayName =
                         )}
                       </section>
                     </div>
+                    <StickyUserHeader sticky={sticky} label="parent" onPrev={scrollToPrev} onNext={scrollToNext} styles={styles} />
                     <ScrollJumpNav
                       up={scrollJumpLabels.up}
                       down={scrollJumpLabels.down}
@@ -2579,10 +2795,15 @@ const currentDisplayName =
                     <StateBadge
                       state={selectedSession.state}
                       activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
-                      acknowledged={selectedSession.acknowledged}
-                      onToggleAck={selectedSession.state === 'waiting'
-                        ? () => { void fetch(`/api/sessions/${selectedSession.sessionId}/ack`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }); }
-                        : undefined}
+                      review={selectedSession.review}
+                      parkReason={selectedSession.parkReason}
+                      onSetReview={(review, reason) => {
+                        void fetch(`/api/sessions/${selectedSession.sessionId}/review`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ review, reason }),
+                        });
+                      }}
                     />
                     {(() => {
                       const l = getLaunchInfo(selectedSession, isPty);
@@ -2837,7 +3058,7 @@ const currentDisplayName =
                   <>
                     {/* Non-PTY: transcript + state bar + send input */}
                       <div className={styles.scrollAreaWrap}>
-                        <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleTranscriptScroll}>
+                        <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleScrollWithSticky}>
                           {selectedSession.activeMonitors && selectedSession.activeMonitors.length > 0 && (
                             <div className={styles.watchingSection}>
                               <span className={styles.watchingHeader}>
@@ -2853,6 +3074,31 @@ const currentDisplayName =
                                   </li>
                                 ))}
                               </ul>
+                            </div>
+                          )}
+                          {selectedSession.review === 'parked' && (
+                            <div className={styles.parkedBanner}>
+                              <span>⏸ Parked{selectedSession.parkedAt ? ` ${formatParkedAge(selectedSession.parkedAt)}` : ''}</span>
+                              {selectedSession.parkReason && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className={styles.parkedBannerReason} title={selectedSession.parkReason}>
+                                    {selectedSession.parkReason}
+                                  </span>
+                                </>
+                              )}
+                              <button
+                                className={styles.parkedBannerBtn}
+                                onClick={() => {
+                                  void fetch(`/api/sessions/${selectedSession.sessionId}/review`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ review: null }),
+                                  });
+                                }}
+                              >
+                                Un-park
+                              </button>
                             </div>
                           )}
                           {(mergedFeed.length > 0 || selectedSession.lastMessage) ? (
@@ -2897,6 +3143,9 @@ const currentDisplayName =
                                     scrollTargetTs={effectiveScrollTarget ?? undefined}
                                     questionSessionId={selectedSession.sessionId}
                                     questionStageRef={questionStageRef}
+                                    onQuestionDismissedToChat={() => sendTextareaRef.current?.focus()}
+                                    questionStale={selectedSession.questionStale}
+                                    markUserMessages
                                   />
                                 </div>
                               ) : (
@@ -2919,6 +3168,7 @@ const currentDisplayName =
                             </div>
                           ) : null}
                         </div>
+                        <StickyUserHeader sticky={sticky} label="you" onPrev={scrollToPrev} onNext={scrollToNext} styles={styles} />
                         <ScrollJumpNav
                           up={scrollJumpLabels.up}
                           down={scrollJumpLabels.down}

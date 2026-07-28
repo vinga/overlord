@@ -17,7 +17,8 @@ export type QueueBucketId =
   | 'plan'
   | 'error'
   | 'sleeping'
-  | 'idle';
+  | 'idle'
+  | 'parked';
 
 export interface QueueBucketMeta {
   id: QueueBucketId;
@@ -36,6 +37,7 @@ export interface QueueBucketMeta {
 /**
  * Ordered, most-blocking first. `sleeping` sits above `idle`: a session with a
  * pending wakeup or a background command is waiting on a machine, not on you.
+ * `parked` sits last and collapsed — the user set it aside on purpose.
  */
 export const QUEUE_BUCKETS: QueueBucketMeta[] = [
   { id: 'approval', label: 'Needs approval', chip: 'approval', defaultExpanded: true, countsToBadge: true, inFlat: true },
@@ -44,6 +46,7 @@ export const QUEUE_BUCKETS: QueueBucketMeta[] = [
   { id: 'error', label: 'Error', chip: 'error', defaultExpanded: true, countsToBadge: true, inFlat: true },
   { id: 'sleeping', label: 'Sleeping', chip: 'sleeping', defaultExpanded: false, countsToBadge: false, inFlat: false },
   { id: 'idle', label: 'Idle', chip: 'idle', defaultExpanded: true, countsToBadge: false, inFlat: true },
+  { id: 'parked', label: 'Parked', chip: 'parked', defaultExpanded: false, countsToBadge: false, inFlat: false },
 ];
 
 const BUCKET_BY_ID = new Map(QUEUE_BUCKETS.map(b => [b.id, b]));
@@ -55,13 +58,24 @@ export function bucketMeta(id: QueueBucketId): QueueBucketMeta {
 /**
  * Which bucket a session belongs to, or `null` if it produces no queue row
  * (running, closed, or archived).
+ *
+ * `parked` wins over everything except archival, and is checked before the
+ * `waiting` gate: parking is sticky, so a parked session that resumes working
+ * stays in the Parked section instead of vanishing from the rail.
  */
 export function classifySession(s: Session): QueueBucketId | null {
   if (s.isArchived) return null;
+  if (s.review === 'parked') return 'parked';
   if (s.state !== 'waiting') return null;
+  return waitingBucket(s);
+}
 
+/** Bucket for a session already known to be waiting on someone. */
+function waitingBucket(s: Session): QueueBucketId {
   if (s.needsPermission) return 'approval';
-  if (s.pendingQuestion && s.pendingQuestion.questions.length > 0) return 'question';
+  // A stale question (transcript has it, the TUI no longer shows the menu) is not
+  // something the user can answer — it must not sit in the "answer a question" queue.
+  if (!s.questionStale && s.pendingQuestion && s.pendingQuestion.questions.length > 0) return 'question';
   if (s.latestPlan?.status === 'pending') return 'plan';
   if (s.unknownCommand || s.bridgeDead) return 'error';
   if (s.scheduledWakeupAt != null) return 'sleeping';
@@ -69,6 +83,17 @@ export function classifySession(s: Session): QueueBucketId | null {
   // bucket as a scheduled wakeup, so it never sits in the user's idle queue.
   if (s.backgroundTasks && s.backgroundTasks.length > 0) return 'sleeping';
   return 'idle';
+}
+
+/**
+ * The bucket a parked session *would* be in. Parking hides a row from the badge,
+ * so the parked row still shows this as its chip — "parked, but it's now asking
+ * for approval" stays legible instead of silently disappearing.
+ */
+export function liveBucketOf(s: Session): QueueBucketId | undefined {
+  if (s.state !== 'waiting') return undefined;
+  const live = waitingBucket(s);
+  return live === 'idle' ? undefined : live;
 }
 
 /** A single renderable queue entry. */
@@ -84,6 +109,8 @@ export interface QueueItem {
   activityAt: number;
   /** Second-line context: the prompt, question, plan title, or error. */
   detail?: string;
+  /** For `parked` rows only: the bucket the session would otherwise be in. */
+  liveBucket?: QueueBucketId;
 }
 
 export interface QueueBucketGroup {
@@ -120,6 +147,9 @@ function detailFor(s: Session, bucket: QueueBucketId): string | undefined {
       return s.latestPlan?.title ? truncate(s.latestPlan.title) : undefined;
     case 'error':
       return s.unknownCommand ? `${s.unknownCommand} is not a command` : 'bridge lost';
+    case 'parked':
+      // Reason is optional — fall back to the last message like any other row.
+      return s.parkReason ? truncate(s.parkReason) : (s.lastMessage ? truncate(s.lastMessage) : undefined);
     default:
       return s.lastMessage ? truncate(s.lastMessage) : undefined;
   }
@@ -147,12 +177,13 @@ export function buildQueue(
 
   for (const room of rooms) {
     for (const session of room.sessions) {
-      if (session.state === 'working' || session.state === 'thinking') {
-        workingCount++;
+      // Parked is checked first: a parked session that resumed working belongs in
+      // the Parked section, not in the footer tally.
+      const bucket = classifySession(session);
+      if (!bucket) {
+        if (session.state === 'working' || session.state === 'thinking') workingCount++;
         continue;
       }
-      const bucket = classifySession(session);
-      if (!bucket) continue;
 
       const parsed = Date.parse(session.lastActivity);
       const item: QueueItem = {
@@ -163,6 +194,7 @@ export function buildQueue(
         roomName: room.name,
         activityAt: Number.isNaN(parsed) ? 0 : parsed,
         detail: detailFor(session, bucket),
+        liveBucket: bucket === 'parked' ? liveBucketOf(session) : undefined,
       };
       const list = byBucket.get(bucket);
       if (list) list.push(item);

@@ -59,19 +59,23 @@ function looksLikeAskUserQuestion(text: string): boolean {
 // Best-effort parse of the question + ordered real option labels from the menu screen.
 // Screen text is partial/space-mangled, so this is presentation only; injection relies
 // on option ORDER (index), not label text.
-function parseScreenQuestion(text: string): PendingQuestionSet | null {
+export function parseScreenQuestion(text: string): PendingQuestionSet | null {
   const lines = text.split('\n').map(l => l.replace(/[^\x20-\x7E]/g, '').trim());
   const footerIdx = lines.findIndex(l => /enter to select/i.test(l));
   if (footerIdx < 0) return null;
-  const options: { label: string }[] = [];
+  const options: { label: string; builtin?: boolean }[] = [];
   let firstOptionIdx = -1;
   for (let i = 0; i < footerIdx; i++) {
     const m = lines[i].match(/^\d+\.\s+(.+)$/);
     if (m) {
       if (firstOptionIdx < 0) firstOptionIdx = i;
       const label = m[1].trim();
-      if (ASK_BUILTIN_OPTION.test(label)) continue; // drop "Type something" / "Chat about this"
-      options.push({ label: label.slice(0, 120) });
+      // Keep "Type something" / "Chat about this" — they are real, selectable rows.
+      // Tag them so the UI opens a free-text field instead of committing the choice.
+      // They always trail the model-authored options, so option index still maps 1:1
+      // to the TUI's arrow-key order.
+      const builtin = ASK_BUILTIN_OPTION.test(label);
+      options.push(builtin ? { label: label.slice(0, 120), builtin: true } : { label: label.slice(0, 120) });
     }
   }
   // Question text: the last non-empty line(s) above the first option.
@@ -101,7 +105,7 @@ export interface PermissionCheckable {
   getSession(id: string): { pid: number; state: string; permissionMode?: string; permissionModeLockedUntil?: number } | undefined;
   setNeedsPermission(sessionId: string, value: boolean, promptText?: string, isLimitPrompt?: boolean): void;
   setPermissionMode(sessionId: string, mode: string | undefined): void;
-  setScreenQuestion(sessionId: string, question: PendingQuestionSet | null): void;
+  setScreenQuestion(sessionId: string, question: PendingQuestionSet | null, screenReadable?: boolean): void;
 }
 
 export function startPermissionChecker(
@@ -189,7 +193,10 @@ export function startPermissionChecker(
         } else {
           const misses = (questionMissCount.get(id) ?? 0) + 1;
           questionMissCount.set(id, misses);
-          if (misses >= 3) stateManager.setScreenQuestion(id, null);
+          // `text != null` is the difference between "screen says no menu" (a
+          // transcript-derived question is stale) and "we cannot see the screen"
+          // (no evidence — leave the question interactive).
+          if (misses >= 3) stateManager.setScreenQuestion(id, null, text != null);
         }
         // Detect permission mode from status bar
         if (text) {

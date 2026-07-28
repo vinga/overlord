@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react';
-import type { OfficeSnapshot, Session, SessionProvider } from '../types';
+import type { OfficeSnapshot, Session, SessionProvider, SessionReview } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
 import { QueueRail } from './QueueRail';
@@ -36,7 +36,8 @@ interface OfficeProps {
   onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
   /** Inbox-rail row actions — same endpoints the DetailPanel StateBadge uses. */
-  onToggleAck?: (sessionId: string) => void;
+  onSetReview?: (sessionId: string, review: SessionReview | null, reason?: string) => void;
+  onToggleRead?: (sessionId: string) => void;
   onOpenArchive?: (entry: import('../types').ArchiveEntry) => void;
   onDeleteArchive?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, name: string) => void;
@@ -182,7 +183,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, scrollOnSelect = true, onSelectSessionQuiet, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onToggleAck, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, scrollOnSelect = true, onSelectSessionQuiet, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onSetReview, onToggleRead, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -327,7 +328,8 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         snapshot={snapshot}
         customNames={customNames}
         onSelectSession={onSelectSessionQuiet ?? onSelectSession}
-        onToggleAck={onToggleAck}
+        onSetReview={onSetReview}
+        onToggleRead={onToggleRead}
         selectedSessionId={selectedSessionId}
         onWidthChange={setRailWidth}
       />

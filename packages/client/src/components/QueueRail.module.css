@@ -222,6 +222,12 @@
 .row_error    { border-left-color: #fb923c; }
 .row_sleeping { border-left-color: rgba(255, 255, 255, 0.18); }
 .row_idle     { border-left-color: rgba(255, 255, 255, 0.12); }
+.row_parked   { border-left-color: rgba(148, 163, 184, 0.5); }
+
+/* A parked row is deliberately quiet, but not as faded as a read one — it still
+   carries a reason worth reading. */
+.row_parked.rowDimmed { opacity: 0.62; }
+.row_parked:hover { opacity: 1; }
 
 .dot {
   width: 7px;
@@ -313,6 +319,29 @@
 .chip_question { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
 .chip_plan     { background: rgba(192, 132, 252, 0.15); color: #c084fc; }
 .chip_error    { background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+.chip_parked   { background: rgba(148, 163, 184, 0.16); color: #94a3b8; }
+
+/* Inline park-reason field — appears under the row's two text lines. */
+.parkInput {
+  width: 100%;
+  margin-top: 5px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 11px;
+  color: #e8e8e8;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 5px;
+  outline: none;
+}
+.parkInput::placeholder { color: rgba(255, 255, 255, 0.3); }
+.parkInput:focus { border-color: rgba(148, 163, 184, 0.8); }
+
+.rowActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 3px;
+}
 
 .rowAction {
   flex-shrink: 0;

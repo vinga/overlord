@@ -27,6 +27,9 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // Absent in settings.json written before the setting existed → treat as on.
+  const stickyOn = settings.showStickyUserMessage !== false;
+
   const commitJiraBaseUrl = () => {
     if (jiraBaseUrl !== (settings.jiraBaseUrl ?? '')) {
       onUpdate({ jiraBaseUrl });
@@ -92,17 +95,17 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
 
           <div className={styles.row}>
             <div className={styles.rowText}>
-              <div className={styles.rowLabel}>Auto-resume sessions after restart</div>
+              <div className={styles.rowLabel}>Pin your message above the conversation</div>
               <div className={styles.rowHint}>
-                Respawns sessions that were active when the Overlord server stopped. Only clean restarts qualify — after a crash nothing is resumed.
+                Keeps the prompt that started the current stretch of the feed visible at the top while the agent works. Hidden when the message is already on screen.
               </div>
             </div>
             <button
-              className={`${styles.toggle} ${settings.autoResumeOnRestart ? styles.toggleOn : ''}`}
-              onClick={() => onUpdate({ autoResumeOnRestart: !settings.autoResumeOnRestart })}
+              className={`${styles.toggle} ${stickyOn ? styles.toggleOn : ''}`}
+              onClick={() => onUpdate({ showStickyUserMessage: !stickyOn })}
               role="switch"
-              aria-checked={settings.autoResumeOnRestart}
-              aria-label="Auto-resume sessions after restart"
+              aria-checked={stickyOn}
+              aria-label="Pin your message above the conversation"
             />
           </div>
 

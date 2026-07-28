@@ -463,6 +463,108 @@
   width: 100%;
 }
 
+/* Pinned "the message that got us here" bar. Overlays the top of the scroll
+   area; only rendered once that message has scrolled out of view. */
+.stickyUserHeader {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 3px 8px 3px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(28, 28, 32, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  font-family: 'Inter', system-ui, sans-serif;
+  animation: stickyUserHeaderIn 120ms ease-out;
+}
+
+.stickyUserHeaderMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stickyUserHeaderMain:hover .stickyUserHeaderText {
+  color: #e6e9ef;
+}
+
+.stickyUserHeaderNav {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.stickyUserHeaderNavBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+}
+
+.stickyUserHeaderNavBtn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.stickyUserHeaderNavBtn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.stickyUserHeaderLabel {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+}
+
+/* Same size and colour as a user bubble in the feed (.role_user
+   .transcriptBubble) — the pin reads as the message itself, not as chrome. */
+.stickyUserHeaderText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #c4c8d0;
+}
+
+@keyframes stickyUserHeaderIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stickyUserHeader { animation: none; }
+}
+
 .scrollJumpNav {
   position: absolute;
   bottom: 16px;
@@ -3276,6 +3378,29 @@
   line-height: 1.4;
 }
 
+/* TUI-appended rows ("Type something" / "Chat about this") — same hit target,
+   muted so the model's own options stay primary. */
+.questionOptionBuiltin {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.questionOptionBuiltin:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.questionOptionBuiltin .questionOptionNum {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.questionOptionBuiltin .questionOptionLabel {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 500;
+}
+
 .questionPromptActions {
   display: flex;
   gap: 8px;
@@ -3323,7 +3448,8 @@
 }
 
 
-.badgeDoneMenu {
+/* Review menu hanging off the state badge — read / park / un-park. */
+.badgeReviewMenu {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
@@ -3332,12 +3458,12 @@
   border: 1px solid #2a2a3e;
   border-radius: 8px;
   padding: 4px;
-  min-width: 160px;
+  min-width: 180px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   white-space: nowrap;
 }
 
-.badgeDoneBtn {
+.badgeReviewBtn {
   display: block;
   width: 100%;
   padding: 8px 12px;
@@ -3353,8 +3479,72 @@
   transition: background 0.15s;
 }
 
-.badgeDoneBtn:hover {
+.badgeReviewBtn:hover {
   background: rgba(34, 197, 94, 0.12);
+}
+
+.badgeParkForm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  min-width: 240px;
+}
+
+.badgeParkInput {
+  width: 100%;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid #2a2a3e;
+  border-radius: 6px;
+  color: #e8e8e8;
+  font-family: Inter, sans-serif;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.badgeParkInput::placeholder { color: rgba(255, 255, 255, 0.3); }
+.badgeParkInput:focus { border-color: rgba(148, 163, 184, 0.7); }
+
+/* Parked banner above the activity feed. */
+.parkedBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  background: rgba(100, 116, 139, 0.12);
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 7px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.parkedBannerReason {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e8e8e8;
+}
+
+.parkedBannerBtn {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.75);
+  font-family: Inter, sans-serif;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.parkedBannerBtn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
 }
 
 /* Clickable link in detail rows */

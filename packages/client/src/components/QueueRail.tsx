@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { OfficeSnapshot, Session } from '../types';
+import type { OfficeSnapshot, Session, SessionReview } from '../types';
 import {
   buildQueue,
   formatAge,
@@ -10,13 +10,17 @@ import {
   type QueueItem,
 } from '../lib/queueBuckets';
 import { useQueueRailState } from '../hooks/useQueueRailState';
+import { PARK_REASON_MAX } from '../lib/review';
 import styles from './QueueRail.module.css';
 
 interface QueueRailProps {
   snapshot: OfficeSnapshot | null;
   customNames: Record<string, string>;
   onSelectSession: (session: Session) => void;
-  onToggleAck?: (sessionId: string) => void;
+  /** Set or clear the review marker. `reason` applies to 'parked' only. */
+  onSetReview?: (sessionId: string, review: SessionReview | null, reason?: string) => void;
+  /** ✓ button — toggles 'read'. Never touches a parked session. */
+  onToggleRead?: (sessionId: string) => void;
   selectedSessionId?: string | null;
   /** Reports the rail's rendered width so the office grid can offset for it. */
   onWidthChange?: (width: number) => void;
@@ -27,9 +31,9 @@ const STRIP_WIDTH = 34;
 /** Ages render at 30s granularity — a faster ticker just burns renders. */
 const TICK_MS = 30_000;
 
-/** Buckets whose row exposes the ✓ ack button. `sleeping` is a machine wait —
- *  nothing for the user to acknowledge. */
-const ACK_BUCKETS = new Set<QueueBucketId>(['approval', 'question', 'plan', 'error', 'idle']);
+/** Buckets whose row exposes the ✓ read button. `sleeping` is a machine wait —
+ *  nothing for the user to mark read; `parked` shows un-park instead. */
+const READ_BUCKETS = new Set<QueueBucketId>(['approval', 'question', 'plan', 'error', 'idle']);
 
 function Caret({ open }: { open: boolean }) {
   return (
@@ -51,17 +55,43 @@ interface QueueRowProps {
   showChip: boolean;
   selected: boolean;
   onSelect: (session: Session) => void;
+  /** ✓ read toggle — omitted for buckets that can't be marked read. */
   onClear?: (sessionId: string) => void;
+  onSetReview?: (sessionId: string, review: SessionReview | null, reason?: string) => void;
 }
 
-const QueueRow = memo(function QueueRow({ item, now, showChip, selected, onSelect, onClear }: QueueRowProps) {
+const QueueRow = memo(function QueueRow({ item, now, showChip, selected, onSelect, onClear, onSetReview }: QueueRowProps) {
   const { session, bucket } = item;
-  const dimmed = bucket === 'idle' && session.acknowledged;
+  const isParked = session.review === 'parked';
+  const dimmed = session.review != null;
+  const [parking, setParking] = useState(false);
+  const [reason, setReason] = useState('');
 
   const handleClear = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     onClear?.(session.sessionId);
   }, [onClear, session.sessionId]);
+
+  const openPark = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setReason(session.parkReason ?? '');
+    setParking(true);
+  }, [session.parkReason]);
+
+  // Escape unmounts the input, which fires blur — without this guard the cancel
+  // would immediately be followed by a commit.
+  const cancelled = useRef(false);
+
+  const commitPark = useCallback(() => {
+    if (cancelled.current) { cancelled.current = false; return; }
+    onSetReview?.(session.sessionId, 'parked', reason);
+    setParking(false);
+  }, [onSetReview, session.sessionId, reason]);
+
+  const unpark = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSetReview?.(session.sessionId, null);
+  }, [onSetReview, session.sessionId]);
 
   // `sleeping` covers two waits: a scheduled wakeup (shows its fire time) and a
   // background command (no fire time — show how long it has been running).
@@ -71,6 +101,9 @@ const QueueRow = memo(function QueueRow({ item, now, showChip, selected, onSelec
       ? formatElapsed(session.backgroundTasks[0].startedAt, now)
       : formatAge(item.activityAt, now);
 
+  // A parked row keeps showing why it would otherwise be blocking.
+  const chipBucket = bucket === 'parked' ? (item.liveBucket ?? 'parked') : bucket;
+
   return (
     <div
       className={`${styles.row} ${styles[`row_${bucket}`] ?? ''} ${selected ? styles.rowSelected : ''} ${dimmed ? styles.rowDimmed : ''}`}
@@ -78,7 +111,7 @@ const QueueRow = memo(function QueueRow({ item, now, showChip, selected, onSelec
       role="button"
       tabIndex={0}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(session); } }}
-      title={item.detail ?? item.name}
+      title={isParked && session.parkReason ? `Parked · ${session.parkReason}` : (item.detail ?? item.name)}
     >
       <span className={styles.dot} style={{ background: session.color }} aria-hidden="true" />
       <div className={styles.rowBody}>
@@ -87,24 +120,70 @@ const QueueRow = memo(function QueueRow({ item, now, showChip, selected, onSelec
           <span className={styles.rowAge}>{age}</span>
         </div>
         <div className={styles.rowBottom}>
-          {showChip && <span className={`${styles.chip} ${styles[`chip_${bucket}`] ?? ''}`}>{item.bucket}</span>}
+          {(showChip || (bucket === 'parked' && item.liveBucket)) && (
+            <span className={`${styles.chip} ${styles[`chip_${chipBucket}`] ?? ''}`}>{chipBucket}</span>
+          )}
           <span className={styles.rowRoom}>{item.roomName}</span>
           {item.detail && <span className={styles.rowSep} aria-hidden="true">·</span>}
           {item.detail && <span className={styles.rowDetail}>{item.detail}</span>}
         </div>
+        {parking && (
+          <input
+            className={styles.parkInput}
+            autoFocus
+            maxLength={PARK_REASON_MAX}
+            placeholder="why parked? (optional)"
+            value={reason}
+            onClick={e => e.stopPropagation()}
+            onChange={e => setReason(e.target.value)}
+            onBlur={commitPark}
+            onKeyDown={e => {
+              e.stopPropagation();
+              if (e.key === 'Enter') { e.preventDefault(); commitPark(); }
+              if (e.key === 'Escape') { e.preventDefault(); cancelled.current = true; setParking(false); }
+            }}
+          />
+        )}
       </div>
-      {onClear && (
-        <button
-          className={styles.rowAction}
-          onClick={handleClear}
-          title="Acknowledge"
-          aria-label="Acknowledge"
-        >
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 8.5 6.5 12 13 4" />
-          </svg>
-        </button>
-      )}
+      <div className={styles.rowActions}>
+        {onClear && !isParked && (
+          <button
+            className={styles.rowAction}
+            onClick={handleClear}
+            title="Mark read"
+            aria-label="Mark read"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 8.5 6.5 12 13 4" />
+            </svg>
+          </button>
+        )}
+        {onSetReview && !isParked && (
+          <button
+            className={styles.rowAction}
+            onClick={openPark}
+            title="Park — set aside with an optional reason"
+            aria-label="Park"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M5.5 3.5v9M10.5 3.5v9" />
+            </svg>
+          </button>
+        )}
+        {onSetReview && isParked && (
+          <button
+            className={styles.rowAction}
+            onClick={unpark}
+            title="Un-park"
+            aria-label="Un-park"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 8a5 5 0 1 1 1.7 3.8" />
+              <polyline points="2.5 4.5 3 8 6.5 7.5" />
+            </svg>
+          </button>
+        )}
+      </div>
     </div>
   );
 }, rowPropsEqual);
@@ -120,14 +199,17 @@ function rowPropsEqual(a: QueueRowProps, b: QueueRowProps): boolean {
     a.selected === b.selected &&
     a.onSelect === b.onSelect &&
     a.onClear === b.onClear &&
+    a.onSetReview === b.onSetReview &&
     a.item.key === b.item.key &&
     a.item.bucket === b.item.bucket &&
+    a.item.liveBucket === b.item.liveBucket &&
     a.item.name === b.item.name &&
     a.item.roomName === b.item.roomName &&
     a.item.activityAt === b.item.activityAt &&
     a.item.detail === b.item.detail &&
     a.item.session.color === b.item.session.color &&
-    a.item.session.acknowledged === b.item.session.acknowledged &&
+    a.item.session.review === b.item.session.review &&
+    a.item.session.parkReason === b.item.session.parkReason &&
     a.item.session.scheduledWakeupAt === b.item.session.scheduledWakeupAt &&
     (a.item.session.backgroundTasks?.length ?? 0) === (b.item.session.backgroundTasks?.length ?? 0) &&
     a.item.session.backgroundTasks?.[0]?.toolUseId === b.item.session.backgroundTasks?.[0]?.toolUseId &&
@@ -139,7 +221,8 @@ export const QueueRail = memo(function QueueRail({
   snapshot,
   customNames,
   onSelectSession,
-  onToggleAck,
+  onSetReview,
+  onToggleRead,
   selectedSessionId,
   onWidthChange,
 }: QueueRailProps) {
@@ -147,8 +230,8 @@ export const QueueRail = memo(function QueueRail({
 
   // App re-creates these handlers every render; route them through a ref so the
   // row-level memo actually holds across snapshot ticks.
-  const cbRef = useRef({ onSelectSession, onToggleAck });
-  cbRef.current = { onSelectSession, onToggleAck };
+  const cbRef = useRef({ onSelectSession, onSetReview, onToggleRead });
+  cbRef.current = { onSelectSession, onSetReview, onToggleRead };
 
   const [now, setNow] = useState(() => Date.now());
   const [collapsed, setCollapsed] = useState<Set<QueueBucketId>>(
@@ -180,10 +263,16 @@ export const QueueRail = memo(function QueueRail({
   }, []);
 
   const handleSelect = useCallback((session: Session) => { cbRef.current.onSelectSession(session); }, []);
-  const handleAck = useCallback((sessionId: string) => { cbRef.current.onToggleAck?.(sessionId); }, []);
+  const handleRead = useCallback((sessionId: string) => { cbRef.current.onToggleRead?.(sessionId); }, []);
+  const handleReview = useCallback(
+    (sessionId: string, review: SessionReview | null, reason?: string) => {
+      cbRef.current.onSetReview?.(sessionId, review, reason);
+    },
+    [],
+  );
 
   const clearFor = useCallback((bucket: QueueBucketId): ((sessionId: string) => void) | undefined =>
-    ACK_BUCKETS.has(bucket) ? handleAck : undefined, [handleAck]);
+    READ_BUCKETS.has(bucket) ? handleRead : undefined, [handleRead]);
 
   if (!open) {
     return (
@@ -259,6 +348,7 @@ export const QueueRail = memo(function QueueRail({
               selected={selectedSessionId === item.key || selectedSessionId === item.session.sessionId}
               onSelect={handleSelect}
               onClear={clearFor(item.bucket)}
+              onSetReview={handleReview}
             />
           ))
         ) : (
@@ -284,6 +374,7 @@ export const QueueRail = memo(function QueueRail({
                     selected={selectedSessionId === item.key || selectedSessionId === item.session.sessionId}
                     onSelect={handleSelect}
                     onClear={clearFor(item.bucket)}
+                    onSetReview={handleReview}
                   />
                 ))}
               </section>

@@ -38,6 +38,9 @@ interface PendingQuestionOption {
   label: string;
   description?: string;
   preview?: string;
+  /** TUI-appended option ("Type something" / "Chat about this") — answering it
+   *  opens a free-text field instead of committing the choice. */
+  builtin?: boolean;
 }
 
 interface PendingQuestion {
@@ -85,8 +88,19 @@ interface Task {
   planStatus?: 'approved' | 'rejected' | 'pending'; // only for kind='plan'
 }
 
+/**
+ * Avatar glyphs a worker can wear. Mirrors `WORKER_ICONS` in
+ * `packages/server/src/types.ts` — the two lists must stay identical (the server
+ * validates spawn/PUT against its copy). Guarded by the drift test in
+ * `packages/server/src/session/__tests__/spawnIcon.test.ts`.
+ */
+export const WORKER_ICONS = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes', 'btw', 'release'] as const;
+
 /** Avatar glyph for a worker. undefined = 'user' (default person glyph). */
-export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes' | 'btw' | 'release';
+export type WorkerIcon = typeof WORKER_ICONS[number];
+
+/** User-set review marker. There is deliberately no 'done'. */
+export type SessionReview = 'read' | 'parked';
 
 interface Session {
   sessionId: string;
@@ -126,13 +140,20 @@ interface Session {
   unknownCommand?: string;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
+  /** The question is in the transcript but the live screen shows no menu — the TUI
+   *  already moved on, so render it read-only rather than clickable. */
+  questionStale?: boolean;
   activeMonitors?: ActiveMonitor[];
   scheduledWakeupAt?: number;  // epoch ms a pending ScheduleWakeup fires; present ⇒ show "scheduled" instead of "waiting"
   scheduledWakeupReason?: string;  // why it's sleeping (the ScheduleWakeup `reason`)
   backgroundTasks?: BackgroundTask[];  // in-flight background Bash commands; present ⇒ show "running" instead of "waiting"
   jiraKeys?: string[];
   skillsUsed?: string[];         // skill/command names invoked in this session, accumulated server-side
-  acknowledged?: boolean;  // user-set: silence the pulsing WAITING bubble
+  /** User-set review marker. 'read' silences the pulsing WAITING bubble and
+   *  auto-clears on the next turn; 'parked' is deliberate and sticky. */
+  review?: SessionReview;
+  parkReason?: string;     // optional free text; only meaningful with review==='parked'
+  parkedAt?: number;       // epoch ms the session was parked
   /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   lastUserMessageTs?: string;     // newest user-message ts from untrimmed feed; confirms optimistic echoes past the tail
@@ -193,6 +214,8 @@ interface ArchiveEntry {
 interface GlobalSettings {
   disableBackgroundLLM: boolean;
   autoResumeOnRestart: boolean;
+  /** Absent in settings.json written before this existed — read as `!== false`. */
+  showStickyUserMessage: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
   jiraEmail?: string;

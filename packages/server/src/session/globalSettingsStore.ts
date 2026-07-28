@@ -7,6 +7,10 @@ export interface GlobalSettings {
   /** When true, sessions with a live PTY at server shutdown are respawned
    *  (`claude --resume`) on the first WS client connection after restart. */
   autoResumeOnRestart: boolean;
+  /** When true, the Conversation view pins a one-line header showing the user
+   *  message that governs the visible stretch of the feed. Absent in files
+   *  written before the setting existed — every read site treats that as true. */
+  showStickyUserMessage: boolean;
   /** Root URL of the JIRA instance, e.g. "https://hypatos.atlassian.net".
    *  Used to build chip links: `${jiraBaseUrl}/browse/PROJ-123`. */
   jiraBaseUrl?: string;
@@ -24,6 +28,7 @@ export interface GlobalSettings {
 const DEFAULTS: GlobalSettings = {
   disableBackgroundLLM: false,
   autoResumeOnRestart: false,
+  showStickyUserMessage: true,
 };
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claude', 'overlord');
@@ -88,6 +93,7 @@ function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   const out: Partial<GlobalSettings> = {};
   if (typeof input.disableBackgroundLLM === 'boolean') out.disableBackgroundLLM = input.disableBackgroundLLM;
   if (typeof input.autoResumeOnRestart === 'boolean') out.autoResumeOnRestart = input.autoResumeOnRestart;
+  if (typeof input.showStickyUserMessage === 'boolean') out.showStickyUserMessage = input.showStickyUserMessage;
   if (typeof input.jiraBaseUrl === 'string') {
     const trimmed = input.jiraBaseUrl.trim().replace(/\/+$/, '');
     if (trimmed === '' || /^https?:\/\//i.test(trimmed)) {
@@ -110,6 +116,7 @@ function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
 function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
   return a.disableBackgroundLLM === b.disableBackgroundLLM
     && a.autoResumeOnRestart === b.autoResumeOnRestart
+    && a.showStickyUserMessage === b.showStickyUserMessage
     && (a.jiraBaseUrl ?? '') === (b.jiraBaseUrl ?? '')
     && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
     && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')

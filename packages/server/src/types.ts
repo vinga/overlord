@@ -35,6 +35,10 @@ export interface PendingQuestionOption {
   label: string;
   description?: string;
   preview?: string;
+  /** True for the options the AskUserQuestion TUI appends itself ("Type something",
+   *  "Chat about this"). They are not model-authored, and answering them requires a
+   *  follow-up free-text injection rather than a plain Enter. */
+  builtin?: boolean;
 }
 
 export interface PendingQuestion {
@@ -95,8 +99,28 @@ export interface PlanSummary {
   updatedAt: string;
 }
 
+/**
+ * Avatar glyphs a worker can wear. Single source of truth — the `WorkerIcon`
+ * type is derived from it and every validation site (`PUT /api/sessions/:id/icon`,
+ * `POST /api/sessions/spawn`, WS `terminal:spawn`) goes through `isWorkerIcon`,
+ * so adding a glyph here is the only server-side edit needed.
+ *
+ * `packages/client/src/types.ts` keeps a parallel copy (separate package, no
+ * cross-package import) — kept honest by the drift test in
+ * `session/__tests__/spawnIcon.test.ts`.
+ */
+export const WORKER_ICONS = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes', 'btw', 'release'] as const;
+
 /** Avatar glyph for a worker. `undefined` means 'user' (default person glyph). */
-export type WorkerIcon = 'user' | 'dashboard' | 'ticket' | 'investigate' | 'teach' | 'notes' | 'btw' | 'release';
+export type WorkerIcon = typeof WORKER_ICONS[number];
+
+export function isWorkerIcon(value: unknown): value is WorkerIcon {
+  return typeof value === 'string' && (WORKER_ICONS as readonly string[]).includes(value);
+}
+
+/** User-set review marker on a session. There is deliberately no 'done' — a
+ *  session is never "finished" from the office's point of view. */
+export type SessionReview = 'read' | 'parked';
 
 export interface Session {
   sessionId: string;
@@ -144,6 +168,14 @@ export interface Session {
   // Claude only writes the tool_use to the transcript after it's answered). Used as the
   // pendingQuestion fallback so a live TUI question still surfaces in the UI.
   screenQuestion?: PendingQuestionSet;
+  /** True ⇒ we can read this session's screen and it is NOT showing an AskUserQuestion
+   *  menu. A transcript-derived pendingQuestion is then stale: the TUI already moved on
+   *  (answered elsewhere, declined, Esc), so injecting arrows/Enter would land on the
+   *  ordinary composer and do nothing. Undefined ⇒ no screen evidence either way. */
+  screenQuestionAbsent?: boolean;
+  /** Snapshot-only: pendingQuestion is transcript-derived but the live screen shows
+   *  no menu — render it read-only; clicking an option cannot reach the TUI. */
+  questionStale?: boolean;
   activeMonitors?: ActiveMonitor[];
   /** Epoch ms when a pending ScheduleWakeup fires. Present ⇒ the session is
    *  idle on purpose (dynamic /loop pacing) — UI shows "scheduled" instead of
@@ -163,7 +195,14 @@ export interface Session {
   /** Skill/command names invoked in this session (union across transcript reads).
    *  Wiped on /clear (transcriptTruncated). */
   skillsUsed?: string[];
-  acknowledged?: boolean;  // user-set: silence the pulsing WAITING bubble
+  /** User-set review marker. 'read' silences the pulsing WAITING bubble and
+   *  auto-clears on the next turn; 'parked' is deliberate and sticky — it
+   *  survives new activity and only an explicit un-park clears it. */
+  review?: SessionReview;
+  /** Optional free text explaining the park. Only meaningful with review==='parked'. */
+  parkReason?: string;
+  /** Epoch ms the session was parked — drives the "parked 4h" label. */
+  parkedAt?: number;
   latestPlan?: PlanSummary;
   /** ISO timestamp of the newest user message in the UNTRIMMED activity feed.
    *  Client uses it to confirm optimistic echoes even when the real message has
@@ -233,7 +272,7 @@ export interface PullRequestSnapshot {
  * Keyed by `overlordId` (stable across /clear and /compact). Each /clear or /compact
  * appends to `lineage.history` and updates `lineage.currentSessionId`.
  *
- * Durable work fields (intent, notes, tasks, hint/ack) are at the overlord level so
+ * Durable work fields (intent, notes, tasks, review/park) are at the overlord level so
  * they carry through clears; they never reset when a new sessionId attaches.
  *
  * Archived state is signalled two ways that must agree:
@@ -293,6 +332,12 @@ export interface OverlordSession {
   pendingResume?: { cwd: string; at: number };
   currentTask?: Task;
   completionSummaries?: Task[];
+  /** @see Session.review — persisted so park/read survive a restart. */
+  review?: SessionReview;
+  parkReason?: string;
+  parkedAt?: number;
+  /** @deprecated Superseded by `review`. Read-only: `readReview()` maps a legacy
+   *  `true` to 'read'; every write path drops the field. Never write it again. */
   acknowledged?: boolean;
 
   /** Presence = archived. Written when the record moves to the archive dir. */
@@ -369,6 +414,7 @@ export interface Room {
 export interface GlobalSettings {
   disableBackgroundLLM: boolean;
   autoResumeOnRestart: boolean;
+  showStickyUserMessage: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
   jiraEmail?: string;

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, SessionReview } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -19,6 +19,7 @@ import { getCachedJiraMeta } from './jiraTitleCache.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
+import { PendingSpawnIcons } from './pendingSpawnIcons.js';
 import { normalizePath } from './pathNormalize.js';
 import { log } from '../logger.js';
 
@@ -122,7 +123,7 @@ import {
 } from './transcriptReader.js';
 import { ensureShadow } from './transcriptShadow.js';
 import type { RawSession } from './sessionWatcher.js';
-import { saveAck, loadAck } from '../ai/taskStorage.js';
+import { saveReview, loadReview, readReview, normalizeParkReason, type ReviewState } from '../ai/taskStorage.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { ArtifactStatus } from '../artifacts/types.js';
 
@@ -145,10 +146,27 @@ function derivePlanTitle(plan: string): string {
  *  caused a multi-second blank UI on reconnect/restart. 30 items covers the
  *  visible tail of the detail panel without scrolling. */
 const SNAPSHOT_FEED_TAIL = 30;
+/** Hard ceiling when the tail is stretched back to the last user message.
+ *  A long tool run can put hundreds of items between the prompt and now;
+ *  past this the panel falls back to the "load older" button. */
+const SNAPSHOT_FEED_MAX = 100;
 
-function trimActivityFeed<T>(feed: T[] | undefined): T[] | undefined {
+/** Tail the feed, but never cut off the user's own last message: during a long
+ *  agent run the 30-item tail is all tool calls, so the panel would show work
+ *  with no visible prompt behind it. Stretching back to that message costs
+ *  nothing for the many sessions whose last prompt is already in the tail. */
+function trimActivityFeed<T extends { kind?: string; role?: string }>(feed: T[] | undefined): T[] | undefined {
   if (!feed || feed.length <= SNAPSHOT_FEED_TAIL) return feed;
-  return feed.slice(feed.length - SNAPSHOT_FEED_TAIL);
+  let start = feed.length - SNAPSHOT_FEED_TAIL;
+  const floor = Math.max(0, feed.length - SNAPSHOT_FEED_MAX);
+  for (let i = start - 1; i >= floor; i--) {
+    const item = feed[i];
+    if (item.kind === 'message' && item.role === 'user') {
+      start = i;
+      break;
+    }
+  }
+  return start === 0 ? feed : feed.slice(start);
 }
 
 function trimSubagentFeeds(subs: Subagent[] | undefined): Subagent[] | undefined {
@@ -644,6 +662,20 @@ export class StateManager {
     return e.text;
   }
 
+  // Avatar icon chosen at spawn time, keyed by the pre-minted ovrId. Applied in
+  // addOrUpdate the moment the live session adopts that ovrId — before the
+  // snapshot goes out, so the client never draws the default glyph first.
+  private pendingSpawnIcons = new PendingSpawnIcons();
+
+  trackPendingSpawnIcon(ovrId: string, icon: WorkerIcon): void {
+    this.pendingSpawnIcons.track(ovrId, icon);
+  }
+
+  /** Drop a queued spawn icon (PTY spawn failed, or the icon has been persisted). */
+  clearPendingSpawnIcon(ovrId: string): void {
+    this.pendingSpawnIcons.clear(ovrId);
+  }
+
   hasPendingResume(cwd: string): boolean {
     return this.resumeTracker.hasResume(cwd);
   }
@@ -912,6 +944,10 @@ export class StateManager {
     // resolvedOverlordId was computed above for storedName lookup; reuse it.
     const overlordId = resolvedOverlordId ?? this.generateOvrId();
     color = this.sessionColorByOvrId(overlordId);
+    // Icon requested at spawn time for this (reserved) ovrId. Peeked, not
+    // consumed — it is cleared below only once actually persisted, so a phantom
+    // tick that skips ensureFromLive can't swallow it.
+    const spawnIcon = this.pendingSpawnIcons.peek(overlordId);
 
     // Pin startedAt to the lineage's first-observed value, not just this sid's.
     // Auto-resume / /clear creates a fresh sid for the same lineage; matching
@@ -935,6 +971,18 @@ export class StateManager {
     const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
       existingSession?.sessionHistory ?? [{ sessionId, attachedAt: Date.now() }];
 
+    // Review marker. 'parked' is sticky — it must survive every state, or the
+    // "stays parked when it starts working again" guarantee breaks on the next
+    // tick. 'read' keeps its waiting-only scope (the leave-waiting path below
+    // is what persists the clear).
+    const reviewState: ReviewState = (() => {
+      const carried: ReviewState = existingSession?.review
+        ? { review: existingSession.review, parkReason: existingSession.parkReason, parkedAt: existingSession.parkedAt }
+        : (isNew ? loadReview(sessionId) : {});
+      if (carried.review === 'read' && state !== 'waiting') return {};
+      return carried;
+    })();
+
     const session: Session = {
       sessionId,
       overlordId,
@@ -957,6 +1005,7 @@ export class StateManager {
       ideName,
       sessionType,
       color,
+      icon: spawnIcon ?? existingSession?.icon,
       subagents,
       resumedFrom,
       needsPermission: (() => {
@@ -987,6 +1036,12 @@ export class StateManager {
       // Transcript wins; fall back to a live screen-detected question (the transcript
       // lacks pending AskUserQuestion tool_uses until they're answered).
       pendingQuestion: transcript?.pendingQuestion ?? existingSession?.pendingQuestion ?? existingSession?.screenQuestion,
+      // Screen-grid derived, transient/live-only — carry across rebuilds. Without this
+      // the permissionChecker's verdict is wiped on every transcript tick, so a live
+      // question flickers and `screenQuestionAbsent` never survives long enough to
+      // mark a transcript-derived question stale.
+      screenQuestion: existingSession?.screenQuestion,
+      screenQuestionAbsent: existingSession?.screenQuestionAbsent,
       activeMonitors: transcript?.activeMonitors,
       scheduledWakeupAt: transcript?.scheduledWakeupAt,
       scheduledWakeupReason: transcript?.scheduledWakeupReason,
@@ -1000,7 +1055,7 @@ export class StateManager {
         existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
         transcript?.skillsUsed,
       ),
-      acknowledged: state === 'waiting' ? (existingSession?.acknowledged ?? (isNew ? loadAck(sessionId) : false)) : false,
+      ...reviewState,
       isWorker: raw.kind === 'haiku-worker',
       bridgePipeName: existingSession?.bridgePipeName,
       bridgeMarker: existingSession?.bridgeMarker,
@@ -1026,7 +1081,14 @@ export class StateManager {
       && state === 'closed'
       && !existingSession;
     if (!isPhantom) {
-      sessionStore.ensureFromLive(session);
+      const rec = sessionStore.ensureFromLive(session);
+      // ensureFromLive seeds `icon` only when it creates the record. If the
+      // record already existed (e.g. a resume adopting this lineage), patch it —
+      // then drop the queue entry now that it's durable.
+      if (spawnIcon) {
+        if (rec.icon !== spawnIcon) sessionStore.patch(overlordId, { icon: spawnIcon });
+        this.pendingSpawnIcons.clear(overlordId);
+      }
     }
 
     // When a resume inherits the parent's ovrId, mark the parent session as replaced
@@ -1547,8 +1609,11 @@ export class StateManager {
       session.needsPermission = undefined;
       session.permissionPromptText = undefined;
       session.isLimitPrompt = undefined;
-      session.acknowledged = false;
-      saveAck(sessionId, false);
+      // A cleared session is a fresh start — both read and park go with it.
+      session.review = undefined;
+      session.parkReason = undefined;
+      session.parkedAt = undefined;
+      saveReview(sessionId, {});
       session.jiraKeys = undefined;
       session.skillsUsed = undefined;
       if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, skillsUsed: undefined });
@@ -1592,9 +1657,10 @@ export class StateManager {
       if (prevState === 'waiting' && result.state !== 'waiting') {
         // Leaving waiting = a real turn started; drop any stale unknown-command bubble.
         session.unknownCommand = undefined;
-        if (session.acknowledged) {
-          session.acknowledged = false;
-          saveAck(sessionId, false);
+        // 'read' is a per-turn silencer; 'parked' is deliberate and survives.
+        if (session.review === 'read') {
+          session.review = undefined;
+          saveReview(sessionId, {});
         }
       }
       // Log state transition
@@ -1792,24 +1858,61 @@ export class StateManager {
     return true;
   }
 
-  /** Toggle the acknowledged flag — silences the pulsing WAITING bubble without marking done. */
-  toggleAckByUser(sessionId: string): boolean | null {
+  /**
+   * Set (or clear, with `undefined`) the user's review marker.
+   *
+   * 'read' silences the pulsing WAITING bubble and auto-clears on the next turn.
+   * 'parked' is deliberate: it survives new activity and is only cleared here.
+   * `reason` applies to 'parked' only; re-parking an already-parked session
+   * keeps its original `parkedAt` so the "parked 4h" label doesn't reset when
+   * the user just edits the reason.
+   *
+   * Returns the resulting state, or null when the session is unknown/closed.
+   */
+  setReviewByUser(sessionId: string, review: SessionReview | undefined, reason?: string): ReviewState | null {
     const session = this.sessions.get(sessionId);
     if (!session || session.state === 'closed') return null;
-    const next = !session.acknowledged;
-    session.acknowledged = next;
-    saveAck(sessionId, next);
+
+    let next: ReviewState;
+    if (review === 'parked') {
+      next = {
+        review: 'parked',
+        parkReason: normalizeParkReason(reason),
+        parkedAt: session.review === 'parked' && session.parkedAt ? session.parkedAt : Date.now(),
+      };
+    } else if (review === 'read') {
+      next = { review: 'read' };
+    } else {
+      next = {};
+    }
+
+    session.review = next.review;
+    session.parkReason = next.parkReason;
+    session.parkedAt = next.parkedAt;
+    saveReview(sessionId, next);
     this.onChange();
     return next;
+  }
+
+  /** Convenience toggle behind the rail's ✓ button — 'read' ⇄ cleared. A parked
+   *  session is left alone: un-parking is an explicit action, never a side effect. */
+  toggleReadByUser(sessionId: string): ReviewState | null {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.state === 'closed') return null;
+    if (session.review === 'parked') {
+      return { review: 'parked', parkReason: session.parkReason, parkedAt: session.parkedAt };
+    }
+    return this.setReviewByUser(sessionId, session.review === 'read' ? undefined : 'read');
   }
 
   clearHintOnInput(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     let changed = false;
-    if (session.acknowledged) {
-      session.acknowledged = false;
-      saveAck(sessionId, false);
+    // Typing clears 'read' only — a parked session stays parked until un-parked.
+    if (session.review === 'read') {
+      session.review = undefined;
+      saveReview(sessionId, {});
       changed = true;
     }
     // Only promote to 'working' if the session has prior activity — otherwise a
@@ -1876,16 +1979,21 @@ export class StateManager {
   /** Set/clear a pending AskUserQuestion detected from the live PTY screen.
    *  Stored separately from transcript-derived pendingQuestion (which refreshTranscript
    *  overwrites every tick); surfaced as the pendingQuestion fallback in getSnapshot. */
-  setScreenQuestion(sessionId: string, question: PendingQuestionSet | null): void {
+  setScreenQuestion(sessionId: string, question: PendingQuestionSet | null, screenReadable?: boolean): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     const prev = session.screenQuestion;
+    // `screenQuestionAbsent` records positive evidence that no menu is on screen —
+    // only meaningful when we actually managed to read the screen.
+    const prevAbsent = session.screenQuestionAbsent;
+    session.screenQuestionAbsent = question ? false : (screenReadable ? true : undefined);
+    const absentChanged = prevAbsent !== session.screenQuestionAbsent;
     if (question) {
       // Only fire onChange when the question text actually changes (avoid churn).
       const changed = !prev || JSON.stringify(prev) !== JSON.stringify(question);
       session.screenQuestion = question;
-      if (changed) this.onChange();
-    } else if (prev) {
+      if (changed || absentChanged) this.onChange();
+    } else if (prev || absentChanged) {
       session.screenQuestion = undefined;
       this.onChange();
     }
@@ -2450,7 +2558,8 @@ export class StateManager {
    *  Persistent fields routed through sessionStore: proposedName, color, slug,
    *  model, intent, sessionType, provider, providerSessionId,
    *  resumedFrom, replacedBy, bridgePipeName, bridgeMarker, historyOnly,
-   *  acknowledged. (lastActivity / lastMessage stay live — transcript-derived.)
+   *  review/parkReason/parkedAt. (lastActivity / lastMessage stay live —
+   *  transcript-derived.)
    *
    *  Also folds in latestPlan (per-snapshot memo), PTY-liveness, and trims
    *  activityFeed to the tail visible without scrolling. */
@@ -2490,7 +2599,15 @@ export class StateManager {
       out.bridgePipeName = overlord.bridgePipeName ?? session.bridgePipeName;
       out.bridgeMarker = overlord.bridgeMarker ?? session.bridgeMarker;
       out.historyOnly = overlord.historyOnly ?? session.historyOnly;
-      out.acknowledged = overlord.acknowledged ?? session.acknowledged;
+      // Review is read through readReview so legacy `acknowledged: true` records
+      // still surface as 'read'. A record with no marker must not resurrect a
+      // live one, so fall back only when the record carries nothing.
+      const persistedReview = readReview(overlord);
+      if (persistedReview.review) {
+        out.review = persistedReview.review;
+        out.parkReason = persistedReview.parkReason;
+        out.parkedAt = persistedReview.parkedAt;
+      }
       out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
       out.skillsUsed = overlord.skillsUsed ?? session.skillsUsed;
     }
@@ -2503,6 +2620,15 @@ export class StateManager {
     // re-runs for embedded sessions with no raw record to poll.
     if (!out.pendingQuestion && session.screenQuestion) {
       out.pendingQuestion = session.screenQuestion;
+    }
+    // A transcript-derived question the screen says is no longer on the menu: the
+    // TUI moved on, so its options can't be clicked through any more. Flag it so
+    // the UI renders it read-only instead of pretending the keystrokes will land.
+    // Not gated on out.pendingQuestion: the interactive prompt is also rendered from a
+    // trailing unanswered AskUserQuestion in the activity feed, which outlives
+    // pendingQuestion. The flag means "screen shows no menu", full stop.
+    if (!session.screenQuestion && session.screenQuestionAbsent === true) {
+      out.questionStale = true;
     }
     // Newest user-message timestamp from the UNTRIMMED feed. The client confirms
     // optimistic "queued" echoes against this — deriving it from the 30-item tail
@@ -2852,7 +2978,7 @@ export class StateManager {
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
       jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed),
-      acknowledged: rec.acknowledged,
+      ...readReview(rec),
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),
     };

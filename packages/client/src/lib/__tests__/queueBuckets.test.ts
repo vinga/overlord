@@ -80,8 +80,26 @@ describe('classifySession', () => {
     expect(classifySession(session({ lastMessage: "I've completed the task." }))).toBe('idle');
   });
 
-  it('keeps an acknowledged waiting session in idle', () => {
-    expect(classifySession(session({ acknowledged: true }))).toBe('idle');
+  it('keeps a read waiting session in idle', () => {
+    expect(classifySession(session({ review: 'read' }))).toBe('idle');
+  });
+
+  it('moves a parked session to the parked bucket', () => {
+    expect(classifySession(session({ review: 'parked' }))).toBe('parked');
+  });
+
+  // Park is sticky: it must outrank both the blocking buckets and the
+  // "running sessions produce no row" rule.
+  it('keeps a parked session parked even when it needs approval', () => {
+    expect(classifySession(session({ review: 'parked', needsPermission: true }))).toBe('parked');
+  });
+
+  it('keeps a parked session parked even while it is working', () => {
+    expect(classifySession(session({ review: 'parked', state: 'working' }))).toBe('parked');
+  });
+
+  it('still drops a parked session once it is archived', () => {
+    expect(classifySession(session({ review: 'parked', isArchived: true }))).toBeNull();
   });
 
   it('produces no row for running or closed sessions', () => {
@@ -148,6 +166,37 @@ describe('buildQueue', () => {
     const q = buildQueue([room([session({ sessionId: 'sid-1', proposedName: 'Vex' })], 'overlord')], { 'sid-1': 'Renamed' });
     expect(q.groups[0].items[0].name).toBe('Renamed');
     expect(q.groups[0].items[0].roomName).toBe('overlord');
+  });
+
+  it('keeps parked rows out of the badge and out of flat mode', () => {
+    const q = buildQueue([room([
+      session({ sessionId: 'a', needsPermission: true }),
+      session({ sessionId: 'b', overlordId: 'ovr-b', review: 'parked', needsPermission: true }),
+    ])], {});
+    expect(q.badgeCount).toBe(1);
+    expect(q.flat.map(i => i.bucket)).toEqual(['approval']);
+    expect(q.groups.map(g => g.meta.id)).toEqual(['approval', 'parked']);
+  });
+
+  it('does not count a parked working session as running', () => {
+    const q = buildQueue([room([session({ review: 'parked', state: 'working' })])], {});
+    expect(q.workingCount).toBe(0);
+    expect(q.groups.map(g => g.meta.id)).toEqual(['parked']);
+  });
+
+  it('shows the park reason as row detail, and the live bucket as its chip', () => {
+    const q = buildQueue([room([
+      session({ review: 'parked', parkReason: '  waiting on  BACKEND-1234 ', needsPermission: true }),
+    ])], {});
+    const item = q.groups[0].items[0];
+    expect(item.detail).toBe('waiting on BACKEND-1234');
+    expect(item.liveBucket).toBe('approval');
+  });
+
+  it('falls back to the last message when a park has no reason', () => {
+    const q = buildQueue([room([session({ review: 'parked', lastMessage: 'Done for now.' })])], {});
+    expect(q.groups[0].items[0].detail).toBe('Done for now.');
+    expect(q.groups[0].items[0].liveBucket).toBeUndefined();
   });
 
   it('surfaces the blocking prompt as row detail', () => {

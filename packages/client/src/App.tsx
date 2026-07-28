@@ -7,7 +7,7 @@ import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
 import { setJiraMeta } from './hooks/useJiraMeta';
 import { expandRoom } from './hooks/useRoomCollapsed';
 
-import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalSpawnMode } from './types';
+import type { ArchiveEntry, Session, SessionProvider, SessionReview, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
 import { DetailPanel } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
@@ -454,8 +454,20 @@ export function App() {
     }
   }
 
-  function handleToggleAck(sessionId: string) {
-    fetch(`/api/sessions/${sessionId}/ack`, { method: 'POST' }).catch(console.error);
+  /** Set or clear the review marker. `reason` applies to 'parked' only. */
+  function handleSetReview(sessionId: string, review: SessionReview | null, reason?: string) {
+    fetch(`/api/sessions/${sessionId}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ review, reason }),
+    }).catch(console.error);
+  }
+
+  /** The rail's ✓ button — toggles 'read'; leaves a parked session alone. */
+  function handleToggleRead(sessionId: string) {
+    const s = snapshot?.rooms.flatMap(r => r.sessions).find(x => x.sessionId === sessionId);
+    if (s?.review === 'parked') return;
+    handleSetReview(sessionId, s?.review === 'read' ? null : 'read');
   }
 
   function handleArchiveSession(sessionId: string) {
@@ -536,7 +548,8 @@ export function App() {
         onCloneSession={handleCloneSession}
         onCloseSession={handleCloseSession}
         onArchiveSession={handleArchiveSession}
-        onToggleAck={handleToggleAck}
+        onSetReview={handleSetReview}
+        onToggleRead={handleToggleRead}
         onOpenArchive={handleOpenArchive}
         onDeleteArchive={handleDeleteArchived}
         onRenameSession={rename}
@@ -609,6 +622,7 @@ export function App() {
         selectedSession={selectedSession}
         selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}
+        showStickyUserMessage={snapshot?.settings?.showStickyUserMessage !== false}
         customName={displayNames[selectedSession?.sessionId ?? '']}
         onRename={rename}
         onClose={handleClose}

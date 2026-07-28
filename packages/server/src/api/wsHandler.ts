@@ -12,6 +12,7 @@ import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
 import { spawnClaudeSession } from '../pty/spawnSession.js';
+import { isWorkerIcon, type WorkerIcon } from '../types.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { wsVisible, wsSnapshotOptOut, wsTermSubs, subscribeTerminal, clearClientState } from './wsClientState.js';
@@ -279,12 +280,20 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
         // Optional initial prompt — injected once the TUI is ready.
         const initialPrompt = msg.prompt ? String(msg.prompt) : undefined;
+        // Optional avatar glyph — parity with POST /api/sessions/spawn. No 400
+        // channel here, so an unknown value is dropped with a warning rather
+        // than failing the spawn.
+        let icon: WorkerIcon | undefined;
+        if (msg.icon !== undefined) {
+          if (isWorkerIcon(msg.icon)) icon = msg.icon;
+          else console.warn(`[spawn] ignoring invalid icon: ${JSON.stringify(msg.icon)}`);
+        }
         try {
           // Shared fresh-spawn path (mints ovrId, wires maps, queues the
-          // initial prompt, broadcasts terminal:spawned, spawns the PTY).
+          // initial prompt + icon, broadcasts terminal:spawned, spawns the PTY).
           spawnClaudeSession(
             { ptyManager, stateManager, ovrToPty, ptyToOvr, broadcastRaw },
-            { cwd, name, cols, rows, prompt: initialPrompt, sessions: wsSessionMap.get(ws) },
+            { cwd, name, cols, rows, prompt: initialPrompt, icon, sessions: wsSessionMap.get(ws) },
           );
           // pid-ready event handler populates pendingPtyByPid asynchronously
         } catch (err) {

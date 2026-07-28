@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import type { PtyManager } from './ptyManager.js';
 import type { StateManager } from '../session/stateManager.js';
+import type { WorkerIcon } from '../types.js';
 import { log } from '../logger.js';
 
 /**
@@ -31,6 +32,9 @@ export interface SpawnOptions {
   rows?: number;
   /** Injected once the freshly spawned PTY produces output (TUI ready). */
   prompt?: string;
+  /** Avatar glyph. Applied when the live session adopts the reserved ovrId, so
+   *  the first snapshot already carries it. 'user' is the default — no-op. */
+  icon?: WorkerIcon;
   /** WS-owned session set to register the ids into (WS path only). */
   sessions?: Set<string>;
 }
@@ -71,6 +75,12 @@ export function spawnClaudeSession(
     ctx.stateManager.trackPendingInitialPrompt(ptySessionId, opts.prompt);
   }
 
+  // Queue the avatar icon against the reserved ovrId. 'user' is already the
+  // default glyph, so queueing it would only write a redundant field.
+  if (opts.icon && opts.icon !== 'user') {
+    ctx.stateManager.trackPendingSpawnIcon(ovrId, opts.icon);
+  }
+
   ctx.broadcastRaw({ type: 'terminal:spawned', sessionId: ovrId, pid: 0 });
 
   // Embed ptySessionId as a hidden marker in the session name for reliable PTY
@@ -83,6 +93,7 @@ export function spawnClaudeSession(
     ctx.ovrToPty.delete(ovrId);
     ctx.ptyToOvr.delete(ptySessionId);
     ctx.stateManager.takePendingInitialPrompt(ptySessionId);
+    ctx.stateManager.clearPendingSpawnIcon(ovrId);
     const e = err as Error & { ovrId?: string };
     e.ovrId = ovrId;
     throw e;

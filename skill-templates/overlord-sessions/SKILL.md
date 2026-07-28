@@ -154,14 +154,63 @@ Rooms are the distinct `cwd` values across the records. To create a new embedded
 ```bash
 curl -s -X POST "$OVERLORD_BASE/api/sessions/spawn" \
   -H 'Content-Type: application/json' \
-  -d '{"cwd":"/path/of/target/room","name":"WorkerName","prompt":"optional first task"}'
+  -d '{"cwd":"/path/of/target/room","name":"WorkerName","prompt":"optional first task","icon":"investigate"}'
 # → {"ok":true,"sessionId":"ovr-XXXX","ptySessionId":"pty-..."}
 ```
 
 - `cwd` (required): take it verbatim from a record's `cwd` field so the session lands in that room.
 - `name`: display name — pick one not already in use; match the room's naming style.
 - `prompt`: injected once the TUI is ready — this is how you hand the new worker its first task.
+- `icon`: avatar glyph, applied at creation (see below). An invalid value 400s the whole spawn.
 - `master: true`: crown session (oversight role). Rarely needed.
+
+### Choosing the room
+
+A repo often has several worktree rooms (`foo`, `foo-A`, `foo-B`, `foo-operations`, …). They are not
+interchangeable: the new worker inherits that checkout's branch, uncommitted state, `.env`, and
+virtualenv.
+
+Default to **the room you are spawning from** — the user's active checkout is the one whose tooling
+they keep working. Pick a different room only when the task genuinely needs it (e.g. a long-running
+job that must not disturb the active branch), and say which room you chose and why.
+
+Do not read a room's *name* as a routing hint. A room called `-operations` or `-debug` is just
+another worktree; it may be stale or lack local config. Room population (`/api/debug/state`) tells
+you which rooms are actually in use — a room with recent sessions is a safer target than a quiet one.
+
+### Set the icon
+
+Put `icon` in the spawn body. A worker spawned without one renders with the default `user` glyph,
+indistinguishable from a session the human started by hand — set it whenever the task has an obvious
+shape. The glyph is on the record before the worker first draws, so there is no follow-up call and no
+flash of the default icon.
+
+Valid values (anything else 400s with the list): `user`, `dashboard`, `ticket`, `investigate`,
+`teach`, `notes`, `btw`, `release`.
+
+| Icon | Use for |
+|---|---|
+| `investigate` | debugging, root-cause hunts, log/incident analysis |
+| `ticket` | implementation work — a Jira ticket, or any discrete change request |
+| `release` | releases, deploys, promotion and rollout babysitting |
+| `dashboard` | monitoring, metrics, Grafana/ClickHouse queries, reporting |
+| `teach` | explaining or walking the user through something |
+| `notes` | docs, specs, write-ups, meeting notes |
+| `btw` | side quests and asides that don't fit the room's main thread |
+| `user` | the default — leave it when the task has no clear shape |
+
+`"icon":"user"` in a spawn is accepted but does nothing — `user` is already the default.
+
+**Changing the icon of a session that already exists** — the PUT endpoint, which keys on the
+**Claude sessionId**, not the overlordId (`ovr-XXXX` returns `404 session not found`):
+
+```bash
+curl -s -X PUT "$OVERLORD_BASE/api/sessions/<claudeSessionId>/icon" \
+  -H 'Content-Type: application/json' -d '{"icon":"investigate"}'
+# → {"ok":true}
+```
+
+Here `user` means *clear* — it patches `icon: undefined`, resetting to the default glyph.
 
 The returned `sessionId` is the **overlordId**. Print its deep link immediately. The worker appears
 in the office within a few seconds.
@@ -191,6 +240,12 @@ Subagent ids are the `.jsonl` basenames in that session's `subagents/` directory
 
 Format results as a markdown list: name — one-line intent — link. Never answer with bare overlordIds.
 
+**The `#session/...` hash is the only route — there is no path-based one.** The client reads the
+hash on mount and listens for `hashchange`; it has no router. An invented path like
+`/s/<overlordId>` or `/session/<overlordId>` is **not** an error you will notice: Vite's SPA
+fallback answers `200` with `index.html`, so the app loads normally, sees an empty hash, and selects
+nothing. The link looks fine and quietly does half its job. Copy the format above literally.
+
 ## Rules
 
 - Read-only on disk: never modify, move, or delete anything under `~/.claude/overlord/` or
@@ -198,7 +253,10 @@ Format results as a markdown list: name — one-line intent — link. Never answ
 - Prefer record fields (`intent`, `proposedName`, `jiraKeys`) before grepping transcripts — records
   are small, transcripts can be hundreds of MB. Always `tail -c` large transcripts.
 - Cross-check freshness with file mtime, not `lastActivity`.
-- `sessionId` (Claude UUID) and `overlordId` (ovr-XXXX) are different keys — inject/screen take the
-  former, links/records/plans the latter.
+- `sessionId` (Claude UUID) and `overlordId` (ovr-XXXX) are different keys — inject/screen and the
+  icon **PUT** take the former, links/records/plans the latter. (Spawn needs neither — pass `icon`
+  in the body.)
+- A session you spawn is yours to label: give it a `name` that reads in the room and an `icon` that
+  matches the task. A wall of default `user` glyphs makes the office unreadable.
 - Spawning and injecting are visible actions with side effects: say what you did, and don't do
   either speculatively.

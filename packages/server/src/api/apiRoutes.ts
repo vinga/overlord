@@ -19,6 +19,7 @@ import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { detectModeFromText } from '../session/modeDetect.js';
 import { injectViaMac } from '../pty/macInjector.js';
+import { scheduleInject, shouldUseExtraEnter } from '../pty/injectScheduler.js';
 import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState, readScheduledWakeups } from '../session/transcriptReader.js';
 import { runClaudeQuery } from '../ai/claudeQuery.js';
@@ -29,9 +30,11 @@ import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
+import { PARK_REASON_MAX } from '../ai/taskStorage.js';
 import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
+import { WORKER_ICONS, isWorkerIcon } from '../types.js';
 
 /** Brain file routes only ever touch ~/.claude/ or the room's own cwd — never arbitrary paths. */
 export function isInBrainScope(resolved: string, cwd: string): boolean {
@@ -91,6 +94,9 @@ export function registerApiRoutes(
     }
     if (typeof body.autoResumeOnRestart === 'boolean') {
       partial.autoResumeOnRestart = body.autoResumeOnRestart;
+    }
+    if (typeof body.showStickyUserMessage === 'boolean') {
+      partial.showStickyUserMessage = body.showStickyUserMessage;
     }
     if (typeof body.jiraBaseUrl === 'string') {
       partial.jiraBaseUrl = body.jiraBaseUrl;
@@ -187,10 +193,18 @@ export function registerApiRoutes(
     const prompt = req.body?.prompt ? String(req.body.prompt) : undefined;
     const cols = req.body?.cols ? Number(req.body.cols) : undefined;
     const rows = req.body?.rows ? Number(req.body.rows) : undefined;
+    // Optional avatar glyph — same validation as PUT /api/sessions/:id/icon.
+    // Applied at session creation, so the caller doesn't have to resolve the
+    // Claude sessionId (which spawn doesn't return) just to set an icon.
+    const icon = req.body?.icon;
+    if (icon !== undefined && !isWorkerIcon(icon)) {
+      res.status(400).json({ error: `icon must be one of: ${WORKER_ICONS.join(', ')}` });
+      return;
+    }
     try {
       const { ovrId, ptySessionId } = spawnClaudeSession(
         { ptyManager, stateManager, ovrToPty, ptyToOvr, broadcastRaw },
-        { cwd, name, prompt, cols, rows },
+        { cwd, name, prompt, cols, rows, icon },
       );
       res.json({ ok: true, sessionId: ovrId, ptySessionId });
     } catch (err) {
@@ -399,6 +413,36 @@ export function registerApiRoutes(
         if (stateManager.isBridge(sessionId)) {
           injected = await injectViaPipe(sessionId, text);
           if (injected) console.log(`[approve] pipe inject done session=${sessionId}`);
+        } else {
+          // Overlord-spawned PTYs: write straight to node-pty stdin. CGEvent cannot
+          // reach a node-pty child (no GUI terminal in its parent chain), so without
+          // this the darwin branch below throws "not inside a known terminal app" and
+          // permission / AskUserQuestion clicks silently do nothing.
+          const ovrIdForPty = session.overlordId ?? sessionId;
+          const ptyIdForWrite = ovrToPty.get(ovrIdForPty);
+          if (ptyIdForWrite && ptyManager.has(ptyIdForWrite)) {
+            const ptyId = ptyIdForWrite;
+            const ptyWrite = (data: string): boolean => {
+              try { return ptyManager.write(ptyId, data); } catch { return false; }
+            };
+            // raw, or a control sequence that already carries its own Enter → single
+            // verbatim write. Everything else goes through the text/\r split, because
+            // Ink treats an atomic `text + \r` as a paste and swallows the submit.
+            const verbatim = raw === true || text.endsWith('\r') || text.endsWith('\n');
+            if (verbatim) {
+              injected = ptyWrite(text);
+            } else {
+              scheduleInject(
+                ptyWrite,
+                () => ptyManager.has(ptyId),
+                () => { /* deferred failure — nothing left to fall back to from here */ },
+                text,
+                shouldUseExtraEnter(text),
+              );
+              injected = true;
+            }
+            console.log(`[approve] pty inject ovr=${ovrIdForPty} ptyId=${ptyId} verbatim=${verbatim} ok=${injected}`);
+          }
         }
         if (!injected && process.platform === 'darwin') {
           injected = await injectViaMac(session.pid, text, false);
@@ -536,12 +580,37 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
-  // Toggle acknowledged — silences the pulsing WAITING bubble
+  // Set the review marker. body: { review: 'read' | 'parked' | null, reason?: string }
+  //   'read'   — silences the pulsing WAITING bubble; auto-clears on the next turn
+  //   'parked' — deliberate, sticky, optional free-text reason (<= PARK_REASON_MAX)
+  //   null     — clears whichever marker is set
+  app.post('/api/sessions/:sessionId/review', (req, res) => {
+    const { sessionId } = req.params;
+    const raw = (req.body ?? {}) as { review?: unknown; reason?: unknown };
+    const review = raw.review;
+    if (review != null && review !== 'read' && review !== 'parked') {
+      res.status(400).json({ error: "review must be 'read', 'parked', or null" });
+      return;
+    }
+    if (raw.reason != null && typeof raw.reason !== 'string') {
+      res.status(400).json({ error: 'reason must be a string' });
+      return;
+    }
+    if (typeof raw.reason === 'string' && raw.reason.trim().length > PARK_REASON_MAX) {
+      res.status(400).json({ error: `reason exceeds ${PARK_REASON_MAX} characters` });
+      return;
+    }
+    const next = stateManager.setReviewByUser(sessionId, review ?? undefined, raw.reason as string | undefined);
+    if (next === null) { res.status(404).json({ error: 'session not found or closed' }); return; }
+    res.json(next);
+  });
+
+  /** @deprecated Use POST /review. Kept as a thin 'read' toggle for older clients. */
   app.post('/api/sessions/:sessionId/ack', (req, res) => {
     const { sessionId } = req.params;
-    const next = stateManager.toggleAckByUser(sessionId);
+    const next = stateManager.toggleReadByUser(sessionId);
     if (next === null) { res.status(404).json({ error: 'session not found or closed' }); return; }
-    res.json({ acknowledged: next });
+    res.json(next);
   });
 
   // Dismiss a Jira ticket chip — drops the key from the session and remembers
@@ -965,9 +1034,8 @@ export function registerApiRoutes(
   app.put('/api/sessions/:sessionId/icon', express.json(), (req, res) => {
     const { sessionId } = req.params;
     const icon = req.body?.icon;
-    const validIcons = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes', 'btw', 'release'];
-    if (!validIcons.includes(icon)) {
-      res.status(400).json({ error: `icon must be one of: ${validIcons.join(', ')}` });
+    if (!isWorkerIcon(icon)) {
+      res.status(400).json({ error: `icon must be one of: ${WORKER_ICONS.join(', ')}` });
       return;
     }
     const ok = stateManager.setSessionIcon(sessionId, icon);
