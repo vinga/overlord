@@ -1763,16 +1763,60 @@ function readCodexTranscriptState(filePath: string): {
   }
 }
 
+/** filePath → resolved slug. `slug` is stamped on the transcript once and never
+ *  changes for that file, so a hit is permanent. Misses record the size scanned
+ *  and the time, because a slug-less transcript is the case that would otherwise
+ *  re-read the whole file forever. */
+const slugCache = new Map<string, { slug: string | undefined; scannedSize: number; scannedAt: number }>();
+/** How long a "no slug in this file" verdict stands before the growing tail is
+ *  re-checked. The slug lands within the first few hundred records or not at all. */
+const SLUG_MISS_TTL_MS = 60_000;
+
+/** Read the session slug out of a transcript.
+ *
+ *  PERFORMANCE: this reads and JSON.parses the file line by line until it finds a
+ *  `slug` field, which in a real transcript is several hundred records in (line
+ *  ~590 of an 8.6MB file is typical). It is called from BOTH `addOrUpdate` (every
+ *  chokidar event) and `refreshTranscript` (every 3s poll), so uncached it was
+ *  4% of server CPU — synchronous, on the thread that also carries PTY bytes.
+ *  Cached, the scan runs at most once per file. */
 export function readSlug(filePath: string): string | undefined {
   if (isCodexTranscript(filePath)) return undefined;
+
+  let size = 0;
+  try {
+    size = fs.statSync(filePath).size;
+  } catch {
+    return undefined;
+  }
+
+  const cached = slugCache.get(filePath);
+  if (cached) {
+    // A found slug is final.
+    if (cached.slug !== undefined) return cached.slug;
+    // Shrinkage means the file was rewritten (/clear in a --resume'd session) —
+    // the old verdict is about a file that no longer exists. Otherwise hold the
+    // miss until it goes stale AND the file has actually grown.
+    if (size >= cached.scannedSize
+        && (size === cached.scannedSize || Date.now() - cached.scannedAt < SLUG_MISS_TTL_MS)) {
+      return undefined;
+    }
+  }
+
+  let slug: string | undefined;
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.split('\n').filter((l) => l.trim().length > 0);
+    const lines = content.split('\n');
     for (const line of lines) {
+      if (line.trim().length === 0) continue;
+      // Cheap reject before the parse: the overwhelming majority of records have
+      // no slug field at all, and JSON.parse of a 100KB assistant message is not free.
+      if (line.indexOf('"slug"') < 0) continue;
       try {
         const parsed = JSON.parse(line) as { slug?: string };
         if (parsed.slug && typeof parsed.slug === 'string') {
-          return parsed.slug;
+          slug = parsed.slug;
+          break;
         }
       } catch {
         // skip
@@ -1781,7 +1825,8 @@ export function readSlug(filePath: string): string | undefined {
   } catch {
     // ignore
   }
-  return undefined;
+  slugCache.set(filePath, { slug, scannedSize: size, scannedAt: Date.now() });
+  return slug;
 }
 
 export function readProposedName(sessionId: string, transcriptPath: string): string | undefined {

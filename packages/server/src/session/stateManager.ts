@@ -7,7 +7,7 @@ import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
 import { PrHistoryStore } from '../git/prHistoryStore.js';
-import { readGitStatus } from '../git/gitStatus.js';
+import { readGitAhead } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
 import { sessionStore, scrubReplacedBy } from './sessionStore.js';
@@ -295,6 +295,12 @@ export class StateManager {
   /** Full process snapshot for fast chain walks — populated on startup, refreshed lazily. */
   private processSnapshot = new Map<number, { parentPid: number; name: string }>();
   private processSnapshotAge = 0;
+  /** pid → timestamp of a failed `ps` lookup. See getProcessInfoFallback. */
+  private processInfoMisses = new Map<number, number>();
+  /** pid → resolved IDE display name (or null for "no IDE ancestor"). The parent
+   *  chain of a live pid never changes, so this is resolved at most once per pid
+   *  instead of on every addOrUpdate tick. Dropped with the process snapshot. */
+  private ideNameByPid = new Map<number, string | null>();
   private gitAheadInFlight = false;
   private clearLifecycle = new ClearLifecycleManager();
   getPendingClearSessions(): string[] { return this.clearLifecycle.getInFlightSessions(); }
@@ -388,7 +394,9 @@ export class StateManager {
     this.gitWatcher = new GitWatcher(() => this.onChange());
     this.prHistoryStore = new PrHistoryStore();
     this.prCache = new PrCache(() => this.onChange(), this.prHistoryStore);
-    this.gitAheadTimer = setInterval(() => { void this.refreshGitAheadCache(); }, 15_000);
+    // 30s, not 15s: the sweep is now one cheap spawn per room, and the ahead-count
+    // is an advisory badge. Halving the cadence halves what is left of its cost.
+    this.gitAheadTimer = setInterval(() => { void this.refreshGitAheadCache(); }, 30_000);
     // Hourly background refresh of PR state for archived/closed rooms (live
     // rooms already poll on the 15-min HIT TTL). Non-destructive + REST-only +
     // gated by env, so default-ON is acceptable. First run is delayed off boot.
@@ -420,17 +428,26 @@ export class StateManager {
   private refreshProcessSnapshot(): void {
     this.processSnapshot = getAllProcessInfo();
     this.processSnapshotAge = Date.now();
+    // Both are derived from the snapshot's parent chains — a fresh snapshot
+    // invalidates them, and dropping them here bounds their growth.
+    this.processInfoMisses.clear();
+    this.ideNameByPid.clear();
   }
 
-  /** Sweep `git status` across the rooms that have a live session, refreshing the
-   *  ahead-count cache. Serial by design — a parallel fan-out would spawn one git
-   *  per repo at once.
+  /** Sweep the ahead-count across the rooms that have a live session. Serial by
+   *  design — a parallel fan-out would spawn one git per repo at once.
    *
-   *  Re-entrancy guard: this is `async` but was driven by a bare 15s setInterval.
-   *  Each sweep spawns one `git status --untracked-files=all` per cwd (0.1–0.4s
-   *  each), so a slow sweep overran its own interval and the next one started on
-   *  top of it, stacking blocking `posix_spawn` calls on the event loop. Skip the
-   *  tick instead — the cache is advisory and the next tick is 15s away. */
+   *  Re-entrancy guard: this is `async` but is driven by a bare 30s setInterval,
+   *  so a slow sweep would otherwise overrun its own interval and the next one
+   *  would start on top of it, stacking blocking `posix_spawn` calls on the event
+   *  loop. Skip the tick instead — the cache is advisory and the next tick is 30s
+   *  away.
+   *
+   *  Cost history: this used to call the full `readGitStatus` (8–10 spawns per
+   *  room, including a whole-working-tree `--untracked-files=all` walk). At ~12
+   *  live rooms that was ~110 spawns per sweep and 10.9% of server CPU sitting in
+   *  `posix_spawn` on the main thread — the dominant cause of embedded-PTY stalls.
+   *  It now calls `readGitAhead` (one spawn, header-only) and yields between rooms. */
   private async refreshGitAheadCache(): Promise<void> {
     if (this.gitAheadInFlight) return;
     this.gitAheadInFlight = true;
@@ -442,8 +459,16 @@ export class StateManager {
         if (session.cwd && session.state !== 'closed') cwds.add(session.cwd);
       }
       for (const cwd of cwds) {
+        // Yield between rooms. `execFile` is async but `posix_spawn` itself runs
+        // on the main thread, so an unyielded sweep holds the loop across every
+        // fork and PTY output stalls for the whole sweep.
+        await new Promise<void>(resolve => setImmediate(resolve));
         try {
-          const status = await readGitStatus(cwd, this.prCache);
+          // readGitAhead, not readGitStatus: one spawn instead of 8–10, and no
+          // `--untracked-files=all` working-tree walk. The PR cache is warmed by
+          // getSnapshot's per-room `prCache.get()` on every tick, so dropping the
+          // warm-up that came with readGitStatus costs nothing.
+          const status = await readGitAhead(cwd);
           if (status) {
             this.gitAheadCache.set(cwd, { ahead: status.ahead, cachedAt: Date.now() });
           }
@@ -3258,6 +3283,14 @@ export class StateManager {
    *  Returns the IDE display name if found, undefined otherwise.
    *  Uses the process snapshot for fast lookups (no per-PID OS calls). */
   private detectIdeFromProcessChain(pid: number): string | undefined {
+    const memo = this.ideNameByPid.get(pid);
+    if (memo !== undefined) return memo ?? undefined;
+    const resolved = this.detectIdeFromProcessChainUncached(pid);
+    this.ideNameByPid.set(pid, resolved ?? null);
+    return resolved;
+  }
+
+  private detectIdeFromProcessChainUncached(pid: number): string | undefined {
     let current = pid;
     for (let i = 0; i < 6; i++) {
       const info = this.processSnapshot.get(current) ?? this.getProcessInfoFallback(current);
@@ -3285,9 +3318,18 @@ export class StateManager {
   }
 
   /** Fallback: query a single PID if it's not in the snapshot (process started after snapshot).
-   *  Caches the result in the snapshot to avoid repeated lookups. */
+   *  Caches the result in the snapshot to avoid repeated lookups.
+   *
+   *  Misses are cached too. `execSync('ps -p …')` is a BLOCKING fork on the main
+   *  thread, and the common caller is `addOrUpdate` — which fires on every
+   *  chokidar session-file event, for sessions whose pid is usually long dead.
+   *  Without a negative cache the same dead pid re-forked `ps` forever (1.5% of
+   *  server CPU, all of it synchronous stall). Misses expire on a 60s TTL so pid
+   *  reuse still resolves, and are dropped wholesale on a snapshot refresh. */
   private getProcessInfoFallback(pid: number): { parentPid: number; name: string } | null {
     if (this.processSnapshot.has(pid)) return this.processSnapshot.get(pid)!;
+    const missAt = this.processInfoMisses.get(pid);
+    if (missAt !== undefined && Date.now() - missAt < 60_000) return null;
     try {
       let out: string;
       if (process.platform === 'win32') {
@@ -3311,11 +3353,13 @@ export class StateManager {
           if (!isNaN(parentPid)) {
             const info = { parentPid, name };
             this.processSnapshot.set(pid, info);
+            this.processInfoMisses.delete(pid);
             return info;
           }
         }
       }
     } catch { /* ignore */ }
+    this.processInfoMisses.set(pid, Date.now());
     return null;
   }
 }

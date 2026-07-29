@@ -28,10 +28,48 @@ async function run(cwd: string, args: string[], timeoutMs = 3000): Promise<strin
   return stdout;
 }
 
+/** Ahead-count only, in ONE spawn.
+ *
+ *  `readGitStatus` costs 8–10 `git` subprocesses, one of which walks the entire
+ *  working tree (`--untracked-files=all`). The 30s ahead-sweep needs exactly two
+ *  fields out of that, so it gets its own query: no working-tree walk, no log,
+ *  no stash, no base resolution. On a 12-room server this is the difference
+ *  between ~110 spawns per sweep and 12 — `posix_spawn` on the main thread was
+ *  10.9% of server CPU and the dominant source of PTY stalls. */
+export async function readGitAhead(cwd: string): Promise<{ branch: string | null; ahead: number } | null> {
+  try {
+    const out = await run(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=no', '--no-renames'], 3000);
+    let branch: string | null = null;
+    let ahead = 0;
+    for (const line of out.split('\n')) {
+      if (line.startsWith('# branch.head ')) {
+        const h = line.slice('# branch.head '.length).trim();
+        branch = h === '(detached)' ? null : h;
+      } else if (line.startsWith('# branch.ab ')) {
+        const m = line.match(/\+(\d+) -(\d+)/);
+        if (m) ahead = parseInt(m[1], 10);
+      } else if (!line.startsWith('# ')) {
+        // Header block is emitted first; everything after it is file status we
+        // don't need. Stop scanning rather than walking the whole output.
+        break;
+      }
+    }
+    return { branch, ahead };
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    if (/not a git repository/i.test(msg)) return null;
+    return null;
+  }
+}
+
 export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitStatus | null> {
   try {
     // porcelain v2 includes branch info + all file status lines
     const out = await run(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=all'], 5000);
+
+    // Resolved once and reused by both the branch-commits range and the
+    // ahead/behind-vs-base pass below — this used to fork twice per call.
+    const baseRef = await resolveBase(cwd);
 
     let branch: string | null = null;
     let upstream: string | null = null;
@@ -93,7 +131,6 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
     // Single `git log --shortstat` call: fetches hash/subject/time AND files-changed in one pass.
     const branchCommits: GitStatus['branchCommits'] = [];
     try {
-      const baseRef = await resolveBase(cwd);
       const range = baseRef ? `${baseRef}..HEAD` : upstream ? `${upstream}..HEAD` : 'HEAD';
       const limit = baseRef || upstream ? 50 : 20;
       const args = baseRef || upstream
@@ -140,11 +177,10 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
     // Ahead/behind vs the repo's base branch (origin/main, origin/master, or
     // whatever origin/HEAD points to). Computed here so the tooltip has the
     // answer without a second roundtrip.
-    let base: string | null = null;
+    const base: string | null = baseRef;
     let baseAhead = 0;
     let baseBehind = 0;
     try {
-      base = await resolveBase(cwd);
       if (base) {
         const ab = await run(cwd, ['rev-list', '--left-right', '--count', `${base}...HEAD`]);
         const m = ab.trim().match(/^(\d+)\s+(\d+)/);
@@ -179,7 +215,23 @@ export async function readGitStatus(cwd: string, prCache: PrCache): Promise<GitS
   }
 }
 
+/** `origin/HEAD` does not move minute to minute, but resolving it costs up to 3
+ *  spawns (symbolic-ref, then rev-parse per candidate) and `readGitStatus` used
+ *  to call it twice per invocation. Memoized on a 10-minute TTL; a miss is the
+ *  only case that forks. Negative results are cached too — a repo with no origin
+ *  is exactly the case that pays the full 3-spawn price on every call. */
+const baseCache = new Map<string, { base: string | null; at: number }>();
+const BASE_TTL_MS = 10 * 60 * 1000;
+
 async function resolveBase(cwd: string): Promise<string | null> {
+  const hit = baseCache.get(cwd);
+  if (hit && Date.now() - hit.at < BASE_TTL_MS) return hit.base;
+  const base = await resolveBaseUncached(cwd);
+  baseCache.set(cwd, { base, at: Date.now() });
+  return base;
+}
+
+async function resolveBaseUncached(cwd: string): Promise<string | null> {
   try {
     const out = await run(cwd, ['symbolic-ref', 'refs/remotes/origin/HEAD'], 2000);
     const m = out.trim().match(/^refs\/remotes\/(.+)$/);
