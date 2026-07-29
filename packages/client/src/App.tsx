@@ -98,7 +98,7 @@ export function App() {
     migrateRoomOrder(oldId, newId);
   }, [migrateNames, migrateRoomOrder]);
 
-  const { snapshot, connected, connecting, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced });
+  const { snapshot, connected, connecting, sendMessage } = useOfficeData(handleTerminalMessageStable, { onSessionReplaced: handleSessionReplaced, focusOvrId: selectedSessionId });
   const terminal = useTerminal(sendMessage, (id) => setActivePtySessionId(id));
 
   useEffect(() => {

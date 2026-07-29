@@ -2342,7 +2342,13 @@ export class StateManager {
       .map(s => ({ sessionId: s.sessionId, cwd: s.cwd, provider: s.provider, providerSessionId: s.providerSessionId }));
   }
 
-  getSnapshot(): OfficeSnapshot {
+  /** Build the wire snapshot.
+   *
+   *  `focusOvrId` is the session the requesting client has open in its detail
+   *  panel. Only that session carries `activityFeed` / `sessionHistory` — they
+   *  are 75% of the payload combined and no other view reads them (cards use
+   *  `lastMessage`). Omit the argument for a feedless snapshot. */
+  getSnapshot(focusOvrId?: string): OfficeSnapshot {
     const _t0 = Date.now();
     const roomMap = new Map<string, Room>();
     // Per-snapshot memo (Tier 1 + Tier 2 from snapshot-cost plan): build the
@@ -2388,7 +2394,7 @@ export class StateManager {
           sessions: [],
         });
       }
-      roomMap.get(cwd)!.sessions.push(this.composeSession(session, plansByOvr));
+      roomMap.get(cwd)!.sessions.push(this.composeSession(session, plansByOvr, focusOvrId));
     }
     const _t2 = Date.now();
 
@@ -2593,15 +2599,26 @@ export class StateManager {
    *  transcript-derived.)
    *
    *  Also folds in latestPlan (per-snapshot memo), PTY-liveness, and trims
-   *  activityFeed to the tail visible without scrolling. */
+   *  activityFeed to the tail visible without scrolling.
+   *
+   *  `focusOvrId` gates the two heavy per-session fields. At N=84 sessions
+   *  `activityFeed` was 70.9% of a 419KB snapshot and `sessionHistory` another
+   *  4.1%, yet both render only in the detail panel — for one session at a time.
+   *  Unfocused sessions get `hasActivity` instead, which is all the cards need. */
   private composeSession(
     session: Session,
     plansByOvr: Map<string, PlanSummary>,
+    focusOvrId?: string,
   ): Session {
     const overlord = sessionStore.getByOverlordId(session.overlordId);
     const latestPlan = plansByOvr.get(session.overlordId);
     const needsPty = session.sessionType === 'embedded' && session.overlordId;
-    const dropFeed = session.state === 'closed';
+    // Match sessionId too: the client's selection is normally an ovrId, but it
+    // falls back to a raw sessionId for pre-ovrId hashes and pending pty ids.
+    // A focus that silently matches nothing means an empty detail panel.
+    const focused = focusOvrId !== undefined
+      && (session.overlordId === focusOvrId || session.sessionId === focusOvrId);
+    const dropFeed = session.state === 'closed' || !focused;
     const trimmedFeed = dropFeed ? undefined : trimActivityFeed(session.activityFeed);
     const trimmedSubs = trimSubagentFeeds(session.subagents);
     const feedChanged = trimmedFeed !== session.activityFeed;
@@ -2678,6 +2695,16 @@ export class StateManager {
       }
     }
     if (subsChanged && trimmedSubs) out.subagents = trimmedSubs;
+    // Cards can't test `activityFeed.length` any more — it isn't sent unless this
+    // session is focused. `hasActivity` is the scalar they actually needed (it
+    // gates the Clone action in Room.tsx) and costs ~5 bytes.
+    out.hasActivity = (session.activityFeed?.length ?? 0) > 0;
+    if (!focused) {
+      // Detail-panel-only, and heavy: 4.1% of the snapshot across all sessions.
+      out.sessionHistory = undefined;
+    }
+    // Never read by the client (verified: zero references outside types).
+    out.transcriptPath = undefined;
     return out;
   }
 

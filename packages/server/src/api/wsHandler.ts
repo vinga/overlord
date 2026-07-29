@@ -16,7 +16,7 @@ import { serializeGrid } from '../pty/screenGrid.js';
 import { isWorkerIcon, type WorkerIcon } from '../types.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
-import { wsVisible, wsSnapshotOptOut, wsTermSubs, subscribeTerminal, clearClientState } from './wsClientState.js';
+import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
 import { sessionStore } from '../session/sessionStore.js';
@@ -224,7 +224,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // Hidden tabs are skipped by snapshot broadcasts — push a fresh
         // snapshot on the hidden→visible flip so the tab never shows stale state.
         if (visible && !wasVisible && !wsSnapshotOptOut.has(ws)) {
-          sendToClient(ws, { type: 'snapshot', ...stateManager.getSnapshot() });
+          sendToClient(ws, { type: 'snapshot', ...stateManager.getSnapshot(wsFocus.get(ws)) });
         }
         return;
       }
@@ -233,6 +233,21 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       // the 300–600 KB snapshot stream.
       if (type === 'snapshot:optout') {
         wsSnapshotOptOut.add(ws);
+        return;
+      }
+
+      // Which session this client has open in its detail panel. Only that
+      // session's snapshot carries activityFeed/sessionHistory (71% + 4% of the
+      // payload), so the client must send this on selection AND on reconnect.
+      // Answer with a snapshot immediately: the panel fills on this tick rather
+      // than waiting for whatever change happens to fire next.
+      if (type === 'snapshot:focus') {
+        const ovrId = typeof msg.ovrId === 'string' && msg.ovrId ? msg.ovrId : undefined;
+        const prev = wsFocus.get(ws);
+        if (ovrId) wsFocus.set(ws, ovrId); else wsFocus.delete(ws);
+        if (prev !== ovrId && !wsSnapshotOptOut.has(ws)) {
+          sendToClient(ws, { type: 'snapshot', ...stateManager.getSnapshot(ovrId) });
+        }
         return;
       }
 

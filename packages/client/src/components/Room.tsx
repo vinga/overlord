@@ -865,7 +865,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
               {onDeleteSession && (
                 <DeskMenu
                   onDelete={() => onDeleteSession(session.sessionId)}
-                  onClone={onCloneSession && session.activityFeed && session.activityFeed.length > 0 ? () => onCloneSession(session.sessionId) : undefined}
+                  onClone={onCloneSession && session.hasActivity ? () => onCloneSession(session.sessionId) : undefined}
                   onClear={session.state !== 'closed' ? () => {
                     fetch(`/api/sessions/${session.sessionId}/inject`, {
                       method: 'POST',

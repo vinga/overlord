@@ -22,6 +22,15 @@ export const wsTermSubs = new Map<WebSocket, Set<string>>();
  *  consumes log:history/log:entry). Opt in via {type:'snapshot:optout'}. */
 export const wsSnapshotOptOut = new Set<WebSocket>();
 
+/** ovrId of the session this client currently has open in the detail panel.
+ *  Set via {type:'snapshot:focus', ovrId}; cleared when the selection clears.
+ *
+ *  activityFeed is 71% of the snapshot and only ever rendered for the focused
+ *  session, so it is sent for that one session and omitted everywhere else.
+ *  Clients MUST re-declare focus on reconnect — `ws.onopen` in useOfficeData —
+ *  or the panel comes back empty after a drop. */
+export const wsFocus = new Map<WebSocket, string>();
+
 export function subscribeTerminal(ws: WebSocket, ovrId: string): void {
   if (!ovrId) return;
   let subs = wsTermSubs.get(ws);
@@ -36,4 +45,5 @@ export function clearClientState(ws: WebSocket): void {
   wsVisible.delete(ws);
   wsTermSubs.delete(ws);
   wsSnapshotOptOut.delete(ws);
+  wsFocus.delete(ws);
 }

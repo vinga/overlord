@@ -109,6 +109,33 @@ export function AdvancedSearchPopup({
     return () => window.removeEventListener('mousedown', onDown);
   }, [menuOpen]);
 
+  // Live-session feeds are no longer in the snapshot (they are sent only for the
+  // focused session), so cross-session search runs server-side. Keyed by
+  // `sessionId` or `sessionId::agentId`, matching the result keys built below.
+  const [liveHits, setLiveHits] = useState<Map<string, ActivityItem[]>>(new Map());
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) { setLiveHits(new Map()); return; }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`, { signal: controller.signal });
+        if (!res.ok) throw new Error(String(res.status));
+        const body = (await res.json()) as {
+          sessions: Array<{ sessionId: string; subagentId?: string; items: ActivityItem[] }>;
+        };
+        const next = new Map<string, ActivityItem[]>();
+        for (const row of body.sessions) {
+          next.set(row.subagentId ? `${row.sessionId}::${row.subagentId}` : row.sessionId, row.items);
+        }
+        setLiveHits(next);
+      } catch (err) {
+        if ((err as { name?: string }).name !== 'AbortError') setLiveHits(new Map());
+      }
+    }, 250);
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [query]);
+
   useEffect(() => {
     const q = query.trim();
     if (!includeArchived || q.length < 2) {
@@ -154,7 +181,9 @@ export function AdvancedSearchPopup({
             content: title ? `${k} — ${title}` : k,
           };
         });
-        const matches = searchFeed([...jiraItems, ...(session.activityFeed ?? [])], q);
+        // jiraKeys still ride the snapshot, so they stay searchable client-side;
+        // feed items come from /api/search.
+        const matches = searchFeed([...jiraItems, ...(liveHits.get(session.sessionId) ?? [])], q);
         if (matches.length > 0) {
           sessionResults.push({
             key: session.sessionId,
@@ -166,7 +195,7 @@ export function AdvancedSearchPopup({
           });
         }
         for (const sub of session.subagents ?? []) {
-          const subMatches = searchFeed(sub.activityFeed ?? [], q);
+          const subMatches = searchFeed(liveHits.get(`${session.sessionId}::${sub.agentId}`) ?? [], q);
           if (subMatches.length > 0) {
             sessionResults.push({
               key: `${session.sessionId}::${sub.agentId}`,
@@ -186,7 +215,7 @@ export function AdvancedSearchPopup({
       }
     }
     return out.sort((a, b) => b.totalMatches - a.totalMatches);
-  }, [query, snapshot, customNames, jiraMeta]);
+  }, [query, snapshot, customNames, jiraMeta, liveHits]);
 
   const qTrimmed = query.trim();
 

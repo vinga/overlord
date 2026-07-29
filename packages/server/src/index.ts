@@ -35,7 +35,7 @@ import { registerApiRoutes } from './api/apiRoutes.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
-import { wsVisible, wsTermSubs, wsSnapshotOptOut } from './api/wsClientState.js';
+import { wsVisible, wsTermSubs, wsSnapshotOptOut, wsFocus } from './api/wsClientState.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
 import { readGridText } from './pty/screenGrid.js';
@@ -522,28 +522,53 @@ function sendToClient(ws: WebSocket, msg: object): void {
 // opted-out clients (LogsPage). A snapshot is 300–600 KB re-sent at up to 5Hz;
 // sending it to backgrounded tabs ratchets their renderer RSS by GBs/day.
 // Returns the serialized byte count so the caller can log payload growth.
-let lastSnapshotPayload = '';
-function broadcast(snapshot: OfficeSnapshot): number {
+/** Last payload sent, per focus key — see the identical-payload skip below. */
+const lastSnapshotPayloadByFocus = new Map<string, string>();
+const NO_FOCUS = ' none';
+
+/** Broadcast the snapshot, one serialization per DISTINCT focused session.
+ *
+ *  activityFeed is only sent for the session a client has open, so the payload
+ *  is no longer identical for everyone. Grouping by focus keeps the stringify
+ *  count at the number of distinct focused sessions — 1–2 in normal use, not one
+ *  per client. `focusGroups` is logged so the day that assumption breaks (many
+ *  tabs on many different sessions) is visible rather than silently slow. */
+function broadcast(): number {
   const t0 = Date.now();
-  const payload = JSON.stringify({ type: 'snapshot', ...snapshot });
-  const stringifyMs = Date.now() - t0;
-  // Identical payload → every client already has this exact state. Observed in
-  // production: consecutive broadcasts with byte-for-byte equal 1.4MB payloads,
-  // because onChange fires on transcript touches that don't alter the snapshot.
-  // Skipping the writes here is free; the stringify above is the part we still
-  // pay, and shrinking the payload (see SNAPSHOT_FEED_TAIL) is what pays that down.
-  if (payload === lastSnapshotPayload) {
-    if (stringifyMs > 100) console.log(`[perf] broadcast: skipped identical payload (stringify=${stringifyMs}ms bytes=${payload.length})`);
-    return 0;
-  }
-  lastSnapshotPayload = payload;
+  const targets = new Map<string, WebSocket[]>();
   for (const client of wss.clients) {
     if (client.readyState !== WebSocket.OPEN) continue;
     if (wsVisible.get(client) === false || wsSnapshotOptOut.has(client)) continue;
-    client.send(payload);
+    const key = wsFocus.get(client) ?? NO_FOCUS;
+    const list = targets.get(key);
+    if (list) list.push(client); else targets.set(key, [client]);
   }
-  if (stringifyMs > 100) console.log(`[perf] broadcast: stringify=${stringifyMs}ms write=${Date.now() - t0 - stringifyMs}ms bytes=${payload.length}`);
-  return payload.length;
+  if (targets.size === 0) return 0;
+
+  let bytes = 0;
+  let stringifyMs = 0;
+  for (const [key, clients] of targets) {
+    const snap = stateManager.getSnapshot(key === NO_FOCUS ? undefined : key);
+    const s0 = Date.now();
+    const payload = JSON.stringify({ type: 'snapshot', ...snap });
+    stringifyMs += Date.now() - s0;
+    // Identical payload → these clients already have this exact state. onChange
+    // fires on transcript touches that don't alter the snapshot at all, so this
+    // skips a meaningful share of writes when the office is idle.
+    if (payload === lastSnapshotPayloadByFocus.get(key)) continue;
+    lastSnapshotPayloadByFocus.set(key, payload);
+    for (const client of clients) client.send(payload);
+    bytes += payload.length;
+  }
+  // Bound the map: focus keys churn as sessions are selected and closed.
+  if (lastSnapshotPayloadByFocus.size > 32) {
+    for (const key of lastSnapshotPayloadByFocus.keys()) {
+      if (!targets.has(key)) lastSnapshotPayloadByFocus.delete(key);
+    }
+  }
+  const totalMs = Date.now() - t0;
+  if (totalMs > 100) console.log(`[perf] broadcast: focusGroups=${targets.size} stringify=${stringifyMs}ms total=${totalMs}ms bytes=${bytes}`);
+  return bytes;
 }
 
 // Broadcast an arbitrary typed message to all connected WS clients
@@ -615,12 +640,9 @@ artifactWatcher.start();
 
 // Setup state manager
 const stateManager = new StateManager(() => {
-  const t0 = Date.now();
-  const snap = stateManager.getSnapshot();
-  const t1 = Date.now();
-  const bytes = broadcast(snap);
-  const t2 = Date.now();
-  if (t2 - t0 > 100) console.log(`[perf] broadcast: getSnapshot=${t1 - t0}ms send=${t2 - t1}ms bytes=${bytes} clients=${wss.clients.size}`);
+  // broadcast() builds the snapshot itself — it needs one per focused session,
+  // not one shared object. Its own [perf] line covers the timing.
+  broadcast();
 });
 // Inject ovrToPty-backed liveness probe so snapshots carry `ptyAlive` for embedded sessions.
 stateManager.setHasLivePtyFn((ovrId) => {
@@ -642,7 +664,7 @@ globalSettingsStore.onChange((next, prev) => {
     (next.jiraEmail ?? '') !== (prev.jiraEmail ?? '') ||
     (next.jiraApiToken ?? '') !== (prev.jiraApiToken ?? '');
   if (credsChanged) clearJiraTitleCache();
-  broadcast(stateManager.getSnapshot());
+  broadcast();
 });
 
 // Extract readable text from a raw terminal output buffer (last N chunks)

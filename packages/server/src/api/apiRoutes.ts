@@ -3,7 +3,7 @@ import * as os from 'os';
 import { join, resolve, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
-import { readGridText } from '../pty/screenGrid.js';
+import { readGridText, serializeGrid } from '../pty/screenGrid.js';
 import { getCachedJiraTitle, getJiraCacheStats } from '../session/jiraTitleCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -333,6 +333,34 @@ export function registerApiRoutes(
   });
 
   // Debug endpoint: PTY buffer stats (chunk count, total bytes, BSU marker positions).
+  // Debug endpoint: exactly what terminal:replay would paint for this session.
+  // Replay sends the serialized screen grid, so a blank terminal means this
+  // returns an empty/trivial screen — this shows which, without guessing.
+  app.get('/api/debug/replay/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    const session = stateManager.getSession(sessionId);
+    if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+    const ovrId = session.overlordId ?? sessionId;
+    const ptyId = ovrToPty.get(ovrId);
+    const gridKey = ptyId ?? ovrId;
+    const screen = await serializeGrid(gridKey);
+    const gridText = readGridText(gridKey);
+    const chunks = ptyOutputBuffer.get(gridKey) ?? [];
+    res.json({
+      ovrId,
+      ptyId: ptyId ?? null,
+      gridKey,
+      sessionType: session.sessionType,
+      state: session.state,
+      screenBytes: screen?.length ?? 0,
+      screenPreview: screen ? screen.slice(0, 400) : null,
+      gridTextLength: gridText?.length ?? 0,
+      gridTextPreview: gridText ? gridText.slice(-400) : null,
+      bufferChunks: chunks.length,
+      bufferBytes: chunks.reduce((n, c) => n + c.length, 0),
+    });
+  });
+
   // Diagnoses replay bloat: if chunks accumulate far past the last BSU, replay
   // sends a large blob and feels slow on reconnect.
   app.get('/api/debug/pty-stats/:sessionId', (req, res) => {
@@ -1137,6 +1165,51 @@ export function registerApiRoutes(
 
   // Archive: free-text search across all archived transcripts.
   // Mirrors the client-side search logic in packages/client/src/lib/search.tsx.
+  /** Search the activity feeds of LIVE sessions.
+   *
+   *  Until focus-scoped snapshots, AdvancedSearchPopup searched
+   *  `session.activityFeed` client-side. The feed is now sent only for the
+   *  focused session, so cross-session search has to run here. This is also
+   *  strictly better: it scans the FULL in-memory feed, where the client only
+   *  ever saw the ~10-item snapshot tail and silently missed older matches.
+   *
+   *  Returns raw matching items; the client builds excerpts with its existing
+   *  searchFeed(), so highlight behaviour stays identical. */
+  app.get('/api/search', (req, res) => {
+    const q = String(req.query.q ?? '').trim();
+    const perSession = Math.min(200, Math.max(1, parseInt(String(req.query.perSession ?? '50'), 10) || 50));
+    if (q.length < 2) { res.json({ sessions: [], truncated: false }); return; }
+    const qLower = q.toLowerCase();
+
+    const corpus = (item: { kind?: string; isRedacted?: boolean; content?: string; inputJson?: string; resultJson?: string }): string => {
+      if (item.kind === 'thinking' && item.isRedacted) return '';
+      const parts = [item.content ?? ''];
+      if (item.inputJson) parts.push(item.inputJson);
+      if (item.resultJson) parts.push(item.resultJson);
+      return parts.join(' ');
+    };
+
+    const out: Array<{ sessionId: string; overlordId?: string; subagentId?: string; items: unknown[] }> = [];
+    let truncated = false;
+    for (const sid of stateManager.getAllSessionIds()) {
+      const session = stateManager.getSession(sid);
+      if (!session) continue;
+      const hits = (session.activityFeed ?? []).filter(i => corpus(i).toLowerCase().includes(qLower));
+      if (hits.length > 0) {
+        if (hits.length > perSession) truncated = true;
+        out.push({ sessionId: session.sessionId, overlordId: session.overlordId, items: hits.slice(-perSession) });
+      }
+      for (const sub of session.subagents ?? []) {
+        const subHits = (sub.activityFeed ?? []).filter(i => corpus(i).toLowerCase().includes(qLower));
+        if (subHits.length > 0) {
+          if (subHits.length > perSession) truncated = true;
+          out.push({ sessionId: session.sessionId, overlordId: session.overlordId, subagentId: sub.agentId, items: subHits.slice(-perSession) });
+        }
+      }
+    }
+    res.json({ sessions: out, truncated });
+  });
+
   app.get('/api/archive/search', (req, res) => {
     const q = String(req.query.q ?? '').trim();
     const limit = Math.min(1000, Math.max(1, parseInt(String(req.query.limit ?? '300'), 10) || 300));

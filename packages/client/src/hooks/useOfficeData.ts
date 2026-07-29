@@ -4,6 +4,10 @@ import type { OfficeSnapshot, TerminalMessage } from '../types';
 interface UseOfficeDataOptions {
   onTerminalMessage?: (msg: TerminalMessage) => void;
   onSessionReplaced?: (oldId: string, newId: string) => void;
+  /** ovrId of the session shown in the detail panel. The server sends
+   *  activityFeed/sessionHistory only for this one — 75% of the payload — so it
+   *  is declared on every change AND re-declared on reconnect. */
+  focusOvrId?: string | null;
 }
 
 interface UseOfficeDataResult {
@@ -25,6 +29,10 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
   onTerminalMessageRef.current = onTerminalMessage;
   const onSessionReplacedRef = useRef(options?.onSessionReplaced);
   onSessionReplacedRef.current = options?.onSessionReplaced;
+  // Read inside ws.onopen, so the reconnect path always declares the CURRENT
+  // focus rather than whatever it was when the effect first ran.
+  const focusRef = useRef(options?.focusOvrId ?? null);
+  focusRef.current = options?.focusOvrId ?? null;
 
   const sendMessage = useCallback((msg: object): boolean => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -54,6 +62,10 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
           // (PR cache, etc.) when the tab is hidden at connect time.
           try {
             ws.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState !== 'hidden' }));
+            // Re-declare focus BEFORE the first snapshot arrives. Without this a
+            // reconnect leaves the server with no focus for this client and the
+            // detail panel comes back permanently empty.
+            ws.send(JSON.stringify({ type: 'snapshot:focus', ovrId: focusRef.current ?? '' }));
           } catch { /* ignore */ }
         }
       };
@@ -138,6 +150,17 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
       }
     };
   }, []);
+
+  // Declare focus whenever the selection changes. The server replies with a
+  // snapshot immediately, so the panel fills on this tick.
+  const focus = options?.focusOvrId ?? null;
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: 'snapshot:focus', ovrId: focus ?? '' }));
+    } catch { /* ignore */ }
+  }, [focus, connected]);
 
   return { snapshot, connected, connecting, sendMessage };
 }

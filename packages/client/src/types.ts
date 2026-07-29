@@ -118,6 +118,10 @@ interface Session {
   lastMessage?: string;   // last assistant message, max 300 chars
   activityFeed?: ActivityItem[];
   feedTruncated?: boolean;
+  /** True when this session has any activity at all. Sent for EVERY session;
+   *  `activityFeed` is sent only for the focused one, so cards that used to test
+   *  `activityFeed.length > 0` must use this instead. */
+  hasActivity?: boolean;
   ideName?: string;
   color: string;          // e.g. "hsl(120, 65%, 55%)"
   icon?: WorkerIcon;      // avatar glyph; undefined = 'user'

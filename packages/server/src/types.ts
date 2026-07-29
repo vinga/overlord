@@ -138,6 +138,10 @@ export interface Session {
   lastMessage?: string;
   activityFeed?: ActivityItem[];
   feedTruncated?: boolean;
+  /** True when this session has any activity at all. Sent for EVERY session;
+   *  `activityFeed` is sent only for the focused one, so cards that used to test
+   *  `activityFeed.length > 0` must use this instead. */
+  hasActivity?: boolean;
   ptyCompactItems?: ActivityItem[];  // compact items sourced from PTY output, merged into activityFeed
   ptyCompactBaseline?: number;  // compactCount at the moment PTY detected "Compacting conversation"; keeps isCompacting sticky until a new boundary lands
   ptyCompactBaselineAt?: number;  // Date.now() of baseline snapshot; used for TTL safety release
