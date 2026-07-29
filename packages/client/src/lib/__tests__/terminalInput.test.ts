@@ -10,13 +10,11 @@ describe('filterTerminalInput', () => {
     expect(filterTerminalInput(`${ESC}[A`)).toBe(`${ESC}[A`); // arrow up
   });
 
-  it('strips the exact reports that leaked into real messages', () => {
-    // Captured verbatim from user messages: motion (button 35 = 32|3) and
-    // wheel-up (button 64), with the ESC[< prefix intact as xterm emits it.
+  it('strips the motion report that leaked into a real message', () => {
+    // Captured verbatim from a user message: button 35 = 32|3 (motion, no
+    // button held), with the ESC[< prefix intact as xterm emits it.
     expect(filterTerminalInput(`${ESC}[<35;96;40Mit is still too slow`))
       .toBe('it is still too slow');
-    expect(filterTerminalInput(`${ESC}[<64;72;46Mit is again tooo slow`))
-      .toBe('it is again tooo slow');
   });
 
   it('strips a burst of motion reports around typed text', () => {
@@ -36,8 +34,19 @@ describe('filterTerminalInput', () => {
     expect(filterTerminalInput(`${ESC}[<32;10;5M`)).toBe('');
   });
 
-  it('strips wheel down as well as wheel up', () => {
-    expect(filterTerminalInput(`${ESC}[<65;10;5M`)).toBe('');
+  it('KEEPS wheel reports so scrolling inside the terminal works', () => {
+    // With mouse tracking on, xterm forwards wheel to the app instead of
+    // scrolling its own buffer — filtering these would kill scrolling.
+    expect(filterTerminalInput(`${ESC}[<64;72;46M`)).toBe(`${ESC}[<64;72;46M`); // up
+    expect(filterTerminalInput(`${ESC}[<65;10;5M`)).toBe(`${ESC}[<65;10;5M`);   // down
+    // Wheel while the pointer is also moving must still scroll, not be dropped
+    // as motion (bit 32 + bit 64 both set).
+    expect(filterTerminalInput(`${ESC}[<96;10;5M`)).toBe(`${ESC}[<96;10;5M`);
+  });
+
+  it('still strips motion interleaved with a scroll', () => {
+    const mixed = `${ESC}[<35;10;5M${ESC}[<64;10;5M${ESC}[<35;11;5M`;
+    expect(filterTerminalInput(mixed)).toBe(`${ESC}[<64;10;5M`);
   });
 
   it('still strips focus reports (the pre-existing behaviour)', () => {

@@ -21,32 +21,32 @@ const X10_MOUSE = /\x1b\[M[\s\S]{3}/g;
 const FOCUS_REPORTS = /\x1b\[I|\x1b\[O/g;
 
 const MOTION_FLAG = 32;
-const WHEEL_FLAG = 64;
 
 /**
  * Strip terminal reports that are noise rather than user intent.
  *
  * Removed:
  *  - focus in/out (`ESC[I` / `ESC[O`)
- *  - mouse MOTION reports (button bit 32) — the flood; Claude's TUI has no hover
- *  - mouse WHEEL reports (button bit 64)
- *  - legacy X10 mouse reports, which carry no button info we can inspect
+ *  - mouse MOTION reports (button bit 32) — the flood: `?1003` means one report
+ *    per mouse move, and Claude's TUI has no hover behaviour that uses them
+ *  - legacy X10 mouse reports, which carry no button byte we can inspect
  *
- * Kept: plain button press/release (left/middle/right + modifiers), so clicking
- * a TUI menu option still works.
- *
- * NOTE on wheel: with mouse tracking on, xterm forwards wheel to the application
- * instead of scrolling its own buffer. Dropping wheel reports here therefore
- * also drops in-TUI scrolling. If scrolling inside the embedded terminal matters
- * more than wheel noise, delete the WHEEL_FLAG test below — motion is the part
- * that actually floods.
+ * Kept:
+ *  - plain button press/release, so clicking a TUI menu option still works
+ *  - WHEEL reports (bit 64). With mouse tracking enabled xterm forwards wheel to
+ *    the application instead of scrolling its own buffer, so filtering them
+ *    would kill scrolling inside the embedded terminal. Motion is the part that
+ *    floods; wheel only fires on deliberate user action, and the TUI consumes it.
  */
 export function filterTerminalInput(data: string): string {
   return data
     .replace(FOCUS_REPORTS, '')
     .replace(SGR_MOUSE, (full, button: string) => {
       const b = Number(button);
-      return (b & MOTION_FLAG) !== 0 || (b & WHEEL_FLAG) !== 0 ? '' : full;
+      // Wheel reports also set bit 32 in some encodings; check wheel first so a
+      // scroll is never mistaken for motion and dropped.
+      if ((b & 64) !== 0) return full;
+      return (b & MOTION_FLAG) !== 0 ? '' : full;
     })
     .replace(X10_MOUSE, '');
 }
