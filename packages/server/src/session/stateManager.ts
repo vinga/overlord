@@ -141,15 +141,21 @@ function derivePlanTitle(plan: string): string {
 
 /** Tail length for activityFeed in WS snapshots. DetailPanel lazy-loads older
  *  items via REST (`/api/sessions/:id/activity-before`) when the user scrolls
- *  past this boundary. Lowered from 200 → 30 because the first snapshot was
- *  shipping 2.4MB at N=26 sessions, and parsing/rendering that on the client
- *  caused a multi-second blank UI on reconnect/restart. 30 items covers the
- *  visible tail of the detail panel without scrolling. */
-const SNAPSHOT_FEED_TAIL = 30;
+ *  past this boundary.
+ *
+ *  History: 200 → 30 (first snapshot was 2.4MB at N=26) → 100 max when the tail
+ *  was stretched back to the last user message → **10 / 24 now**. At N=83 live
+ *  sessions the 30/100 pair produced a 1.4MB snapshot that cost 900–3000ms to
+ *  build and 2000–5000ms to serialize, re-sent at up to 5Hz — the server spent
+ *  most of its time re-serializing a payload whose bytes were often identical.
+ *  The feed is per-session, so this multiplies by session count; it is the one
+ *  snapshot field that grows without bound. 10 covers the visible tail. */
+const SNAPSHOT_FEED_TAIL = 10;
 /** Hard ceiling when the tail is stretched back to the last user message.
  *  A long tool run can put hundreds of items between the prompt and now;
- *  past this the panel falls back to the "load older" button. */
-const SNAPSHOT_FEED_MAX = 100;
+ *  past this the panel falls back to the "load older" button. Kept above TAIL so
+ *  the pinned-prompt header still finds its message in the common case. */
+const SNAPSHOT_FEED_MAX = 24;
 
 /** Tail the feed, but never cut off the user's own last message: during a long
  *  agent run the 30-item tail is all tool calls, so the panel would show work

@@ -522,13 +522,27 @@ function sendToClient(ws: WebSocket, msg: object): void {
 // opted-out clients (LogsPage). A snapshot is 300–600 KB re-sent at up to 5Hz;
 // sending it to backgrounded tabs ratchets their renderer RSS by GBs/day.
 // Returns the serialized byte count so the caller can log payload growth.
+let lastSnapshotPayload = '';
 function broadcast(snapshot: OfficeSnapshot): number {
+  const t0 = Date.now();
   const payload = JSON.stringify({ type: 'snapshot', ...snapshot });
+  const stringifyMs = Date.now() - t0;
+  // Identical payload → every client already has this exact state. Observed in
+  // production: consecutive broadcasts with byte-for-byte equal 1.4MB payloads,
+  // because onChange fires on transcript touches that don't alter the snapshot.
+  // Skipping the writes here is free; the stringify above is the part we still
+  // pay, and shrinking the payload (see SNAPSHOT_FEED_TAIL) is what pays that down.
+  if (payload === lastSnapshotPayload) {
+    if (stringifyMs > 100) console.log(`[perf] broadcast: skipped identical payload (stringify=${stringifyMs}ms bytes=${payload.length})`);
+    return 0;
+  }
+  lastSnapshotPayload = payload;
   for (const client of wss.clients) {
     if (client.readyState !== WebSocket.OPEN) continue;
     if (wsVisible.get(client) === false || wsSnapshotOptOut.has(client)) continue;
     client.send(payload);
   }
+  if (stringifyMs > 100) console.log(`[perf] broadcast: stringify=${stringifyMs}ms write=${Date.now() - t0 - stringifyMs}ms bytes=${payload.length}`);
   return payload.length;
 }
 
