@@ -12,6 +12,7 @@ import { log } from '../logger.js';
 import { focusBridgeWindow } from '../pty/windowFocus.js';
 import { scheduleInject, scheduleBridgeInject } from '../pty/injectScheduler.js';
 import { spawnClaudeSession } from '../pty/spawnSession.js';
+import { serializeGrid } from '../pty/screenGrid.js';
 import { isWorkerIcon, type WorkerIcon } from '../types.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { archiveManager } from '../archive/archiveManager.js';
@@ -47,6 +48,14 @@ export interface WsHandlerContext {
 // feels slow. If no BSU is present we return [] and rely on the SIGWINCH nudge
 // to produce the next full frame.
 const BSU_MARKER = Buffer.from('\x1b[?2026h');
+/** Slice the replay buffer from the last synchronized-output frame start.
+ *
+ *  NOTE: the current Claude CLI does not emit BSU, so this returns [] in
+ *  practice. Only the BRIDGE replay path still calls it. That is safe: an empty
+ *  slice means the bridge sends nothing and relies on its SIGWINCH nudge, which
+ *  produces a real full repaint — no garbage is painted. Embedded PTY sessions
+ *  no longer use this at all; they replay the screen grid (see terminal:replay).
+ *  Bridge output is not fed into the screen grid, which is why it keeps this path. */
 export function sliceBufferFromLastBsu(buf: Buffer[] | undefined): Buffer[] {
   if (!buf || buf.length === 0) return [];
   for (let i = buf.length - 1; i >= 0; i--) {
@@ -838,17 +847,25 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols || 0);
         const rows = Number(msg.rows || 0);
         const isRaw = claudeSession?.sessionType === 'raw';
-        // For non-raw TUIs, only replay from the last BSU chunk (coherent frame start).
-        // Raw shells have no BSU, so keep the full-buffer replay (line output is idempotent).
-        let replaySlice = isRaw ? (buf ?? []) : sliceBufferFromLastBsu(buf);
-        // Fallback: if no BSU has been emitted yet (e.g. claude --resume that
-        // hasn't reached its first synchronized frame), but the buffer holds
-        // chunks, send the tail anyway. Worst case = a brief unframed paint;
-        // current behavior = blank xterm forever when the TUI is frozen.
-        if (!isRaw && replaySlice.length === 0 && buf && buf.length > 0) {
-          replaySlice = buf.slice(Math.max(0, buf.length - 32));
-        }
-        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} sliceChunks=${replaySlice.length} cols=${cols} rows=${rows} raw=${isRaw}`);
+        // Non-raw TUI: replay the RENDERED SCREEN, never the byte stream.
+        //
+        // This used to slice the buffer from the last `\x1b[?2026h` (BSU) chunk,
+        // treating it as a frame boundary. The current Claude CLI does not emit
+        // BSU at all (0 occurrences in a captured stream — see
+        // __tests__/fixtures/claude-pty-stream.json), so that slice was always
+        // empty and every reopen fell through to `buf.slice(-32)`: 32 arbitrary
+        // mid-stream chunks of cursor-addressed deltas (`\x1b[40;1H`, `\x1b[12G`)
+        // written into a blank xterm, landing at the wrong positions. That is the
+        // scrambled paint users saw on every reopen. It also dropped the
+        // `\x1b[?1049h` alt-screen switch, which only appears in the first chunk.
+        //
+        // serializeGrid() returns the resolved screen as a self-contained escape
+        // stream, so a fresh xterm renders exactly what the session looks like.
+        const screen = isRaw ? null : await serializeGrid(ptySessionId ?? ovrId);
+        // Raw shells have no cursor-addressed TUI — line output is idempotent, so
+        // the full-buffer replay stays.
+        const replaySlice = isRaw ? (buf ?? []) : [];
+        console.log(`[terminal:replay] pty ovrId=${ovrId.slice(0, 8)} ptyId=${ptySessionId?.slice(0, 8) ?? 'none'} nudgeId=${nudgeId?.slice(0, 8) ?? 'none'} bufChunks=${buf?.length ?? 0} screenBytes=${screen?.length ?? 0} cols=${cols} rows=${rows} raw=${isRaw}`);
         // Raw sessions with a disk log: replay from disk when no live buffer is available.
         // This covers both historyOnly revived sessions and fresh reconnects where the
         // in-memory ring buffer was lost across a server restart.
@@ -859,6 +876,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             : `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} ──\x1b[0m\r\n`;
           const payload = Buffer.concat([diskLog, Buffer.from(banner)]).toString('base64');
           sendToClient(ws, { type: 'terminal:history-dump', sessionId: ovrId, data: payload });
+        } else if (screen) {
+          // Full reset first — the serialized screen is absolute, so any residue
+          // in the fresh xterm (or a stale pre-mount flush) must go.
+          const payload = Buffer.from(`\x1bc${screen}`, 'utf8').toString('base64');
+          sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: payload });
         } else if (replaySlice.length > 0) {
           const encoded = Buffer.concat(replaySlice).toString('base64');
           sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });

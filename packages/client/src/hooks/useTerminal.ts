@@ -278,12 +278,12 @@ export function useTerminal(
   const registerOutputHandler = useCallback(
     (ovrId: string, handler: (data: Uint8Array) => void, cols?: number, rows?: number) => {
       outputHandlers.current.set(ovrId, handler);
-      // Flush any client-side buffered output
-      const buf = outputBuffer.current.get(ovrId);
-      if (buf && buf.length > 0) {
-        for (const chunk of buf) handler(chunk);
-        outputBuffer.current.delete(ovrId);
-      }
+      // Do NOT flush the pre-mount buffer here. Those are cursor-addressed deltas
+      // captured while no terminal was mounted; painting them into a fresh xterm
+      // puts text at the wrong positions, and the server's replay (an absolute
+      // screen repaint, prefixed with \x1bc) wipes them a moment later anyway.
+      // Drop them and let the replay below be the single source of the screen.
+      outputBuffer.current.delete(ovrId);
       // Request server-side buffer replay (also subscribes this WS client to
       // the session's terminal:output stream on the server)
       sendMessage({ type: 'terminal:replay', sessionId: ovrId, ...(cols && rows ? { cols, rows } : {}) });

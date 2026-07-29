@@ -322,13 +322,17 @@ function connectBridgeOutputSocket(sessionId: string, pipeAddr: string, pipeName
     let buf = ptyOutputBuffer.get(eid);
     if (!buf) { buf = []; ptyOutputBuffer.set(eid, buf); }
 
-    // \x1b[?2026h is the "synchronized output" start marker that Ink/React TUI
-    // sends before every full-screen repaint. Use it as a checkpoint: discard
-    // history so the replay buffer always begins at a complete, self-contained frame.
-    // This prevents cursor-position-dependent incremental chunks from rendering
-    // on top of unrelated history in a fresh xterm instance.
-    const isRepaint = data.includes(0x1b) && data.toString('binary').includes('\x1b[?2026h');
-    if (isRepaint) {
+    // Screen-clear checkpoint: discard replay history so the buffer begins at a
+    // self-contained screen, instead of cursor-position-dependent incremental
+    // chunks rendering on top of unrelated history in a fresh xterm.
+    //
+    // This used to key on `\x1b[?2026h` (BSU, the synchronized-output marker Ink
+    // once sent before each repaint). The current Claude CLI emits no BSU at all,
+    // so the checkpoint never fired. `\x1b[2J` is emitted and carries the same
+    // meaning here. Bridge sessions still replay from this buffer (they are not
+    // fed into the screen grid), so unlike the embedded PTY path this reset stays.
+    const isScreenClear = data.includes(0x1b) && data.toString('binary').includes('\x1b[2J');
+    if (isScreenClear) {
       buf = [];
       ptyOutputBuffer.set(eid, buf);
     }

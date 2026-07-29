@@ -183,12 +183,15 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     let buf = ctx.ptyOutputBuffer.get(ptySessionId);
     if (!buf) { buf = []; ctx.ptyOutputBuffer.set(ptySessionId, buf); }
 
-    const isRepaint = data.includes('\x1b[?2026h');
-    if (isRepaint) {
-      buf = [];
-      ctx.ptyOutputBuffer.set(ptySessionId, buf);
-      // Repaint redraws the full terminal state — stale partial text in the compact
-      // detect buffer would combine with new chunks and cause false positives.
+    // Screen-clear detection. This was `data.includes('\x1b[?2026h')` (BSU), which
+    // the current Claude CLI never emits — so the resets below silently never ran.
+    // `\x1b[2J` IS emitted (verified against a captured stream) and means the same
+    // thing for these consumers: the screen was wiped, so partial text carried in
+    // the detect buffers is now stale and would combine with new chunks into false
+    // positives. The replay buffer is no longer reset here — replay reads the
+    // screen grid, not this buffer (see terminal:replay in wsHandler).
+    const isScreenClear = data.includes('\x1b[2J');
+    if (isScreenClear) {
       clearCompactDetector(ptySessionId);
       activeDetectBuf.delete(ptySessionId);
       unknownCmdCarry.delete(ptySessionId);
