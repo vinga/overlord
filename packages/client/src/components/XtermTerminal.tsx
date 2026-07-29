@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import styles from './XtermTerminal.module.css';
+import { filterTerminalInput } from '../lib/terminalInput';
 
 interface XtermTerminalProps {
   sessionId: string;
@@ -102,14 +103,13 @@ export function XtermTerminal({
 
     termRef.current = term;
 
-    // Forward keyboard input to server.
-    // Strip focus-tracking sequences (ESC[I = focus-in, ESC[O = focus-out)
-    // that xterm.js generates when the browser gains/loses focus if the running
-    // application enabled focus reporting (ESC[?1004h). Claude's TUI does this,
-    // so without filtering they appear as ^[[I / ^[[O garbage in the prompt.
+    // Forward keyboard input to server, minus the terminal reports xterm sends
+    // down the same channel — focus (ESC[?1004h) and mouse (ESC[?1000/2/3h +
+    // ESC[?1006h), both of which Claude's TUI enables. Unfiltered they land in
+    // the prompt as garbage like `35;96;40M`. See lib/terminalInput.ts.
     const onDataDispose = term.onData((data) => {
       if (!isExitedRef.current) {
-        const filtered = data.replace(/\x1b\[I|\x1b\[O/g, '');
+        const filtered = filterTerminalInput(data);
         if (filtered) onInput(filtered);
       } else if (onResumeRef.current) {
         setShowResumePrompt(true);
