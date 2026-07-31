@@ -4,7 +4,7 @@ type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 /** How a new terminal session should be spawned */
 type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw';
 
-type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
+type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap';
 
 interface ActivityItem {
   kind: ActivityItemKind;
@@ -52,6 +52,10 @@ interface PendingQuestion {
 
 interface PendingQuestionSet {
   questions: PendingQuestion[];
+  /** Assistant text rendered above the menu in the TUI. Only present on screen-derived
+   *  sets — the transcript holds nothing of an unanswered AskUserQuestion turn, so this
+   *  is the only copy of that message while the menu is up. */
+  preamble?: string;
 }
 
 interface ActiveMonitor {

@@ -641,19 +641,37 @@ export function registerApiRoutes(
     res.json(next);
   });
 
+  // Validate a Jira key against the configured project allowlist — prevents
+  // arbitrary strings being written to disk via the jira-keys endpoints.
+  // Returns an error string, or null when the key is acceptable.
+  function validateJiraKey(key: string): string | null {
+    const raw = globalSettingsStore.get().jiraProjects;
+    if (!raw) return 'JIRA project allowlist not configured';
+    const tokens = raw.split(',').map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
+    if (tokens.length === 0) return 'JIRA project allowlist not configured';
+    const re = new RegExp(String.raw`^(${tokens.join('|')})-(\d{1,6})$`);
+    return re.test(key) ? null : 'Invalid JIRA key';
+  }
+
   // Dismiss a Jira ticket chip — drops the key from the session and remembers
   // it under jiraKeysDismissed so the next transcript scan won't re-add it.
   app.delete('/api/sessions/:sessionId/jira-keys/:key', (req, res) => {
     const { sessionId, key } = req.params;
-    // Validate against the configured project allowlist regex — prevents
-    // arbitrary strings being written to disk via this endpoint.
-    const raw = globalSettingsStore.get().jiraProjects;
-    if (!raw) { res.status(400).json({ error: 'JIRA project allowlist not configured' }); return; }
-    const tokens = raw.split(',').map(s => s.trim().toUpperCase()).filter(s => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
-    if (tokens.length === 0) { res.status(400).json({ error: 'JIRA project allowlist not configured' }); return; }
-    const re = new RegExp(String.raw`^(${tokens.join('|')})-(\d{1,6})$`);
-    if (!re.test(key)) { res.status(400).json({ error: 'Invalid JIRA key' }); return; }
+    const invalid = validateJiraKey(key);
+    if (invalid) { res.status(400).json({ error: invalid }); return; }
     const ok = stateManager.dismissJiraKey(sessionId, key);
+    if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // Pin a Jira ticket the user clicked `+` on in the conversation feed. The
+  // transcript scanner only reads user-authored text, so this is the only way
+  // to adopt a key the assistant mentioned. Also clears an earlier dismissal.
+  app.post('/api/sessions/:sessionId/jira-keys/:key', (req, res) => {
+    const { sessionId, key } = req.params;
+    const invalid = validateJiraKey(key);
+    if (invalid) { res.status(400).json({ error: invalid }); return; }
+    const ok = stateManager.pinJiraKey(sessionId, key);
     if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
     res.json({ ok: true });
   });

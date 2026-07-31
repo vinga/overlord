@@ -193,17 +193,27 @@ function trimSubagentFeeds(subs: Subagent[] | undefined): Subagent[] | undefined
 
 const JIRA_KEYS_MAX = 5;
 const JIRA_DISMISSED_MAX = 50;
-/** Union-merge two ordered key lists (existing first, then new), de-duplicated,
- *  capped, and with any user-dismissed keys filtered out. */
-function mergeJiraKeys(
+/** Union-merge ordered key lists (pinned first, then existing, then new),
+ *  de-duplicated, capped, and with any user-dismissed keys filtered out.
+ *  Pinned keys are user-added and exempt from the dismissed filter — pinning a
+ *  key IS the un-dismiss — and are placed first so the scanner can never evict
+ *  them by filling the cap. */
+export function mergeJiraKeys(
   existing: string[] | undefined,
   fresh: string[] | undefined,
   dismissed?: string[],
+  pinned?: string[],
 ): string[] | undefined {
-  if (!existing?.length && !fresh?.length) return undefined;
+  if (!existing?.length && !fresh?.length && !pinned?.length) return undefined;
   const blocked = dismissed && dismissed.length > 0 ? new Set(dismissed) : null;
   const seen = new Set<string>();
   const out: string[] = [];
+  for (const k of pinned ?? []) {
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= JIRA_KEYS_MAX) return out;
+  }
   for (const k of existing ?? []) {
     if (seen.has(k) || (blocked && blocked.has(k))) continue;
     seen.add(k);
@@ -1081,6 +1091,7 @@ export class StateManager {
         existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
         transcript?.jiraKeys,
         sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
+        sessionStore.getByOverlordId(overlordId)?.jiraKeysPinned,
       ),
       skillsUsed: mergeSkillsUsed(
         existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
@@ -1647,21 +1658,21 @@ export class StateManager {
       saveReview(sessionId, {});
       session.jiraKeys = undefined;
       session.skillsUsed = undefined;
-      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, skillsUsed: undefined });
+      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, jiraKeysPinned: undefined, skillsUsed: undefined });
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
       });
     }
 
-    const dismissedKeys = session.overlordId
-      ? sessionStore.getByOverlordId(session.overlordId)?.jiraKeysDismissed
-      : undefined;
+    const jiraRec = session.overlordId ? sessionStore.getByOverlordId(session.overlordId) : undefined;
+    const dismissedKeys = jiraRec?.jiraKeysDismissed;
+    // Truncation drops the scanner's history, but user-pinned keys are not
+    // transcript-derived — they survive it.
+    const pinnedKeys = jiraRec?.jiraKeysPinned;
     const mergedJiraKeys = result.transcriptTruncated
-      ? (result.jiraKeys && result.jiraKeys.length > 0
-          ? result.jiraKeys.filter(k => !dismissedKeys?.includes(k)).slice(0, JIRA_KEYS_MAX)
-          : undefined)
-      : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys);
+      ? mergeJiraKeys(undefined, result.jiraKeys, dismissedKeys, pinnedKeys)
+      : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys, pinnedKeys);
     const mergedSkillsUsed = result.transcriptTruncated
       ? (result.skillsUsed && result.skillsUsed.length > 0 ? result.skillsUsed : undefined)
       : mergeSkillsUsed(session.skillsUsed, result.skillsUsed);
@@ -1880,10 +1891,39 @@ export class StateManager {
     const nextDismissed = prevDismissed.includes(key)
       ? prevDismissed
       : [key, ...prevDismissed].slice(0, JIRA_DISMISSED_MAX);
+    // A pinned key must also lose its pin, otherwise mergeJiraKeys re-adds it
+    // on the next transcript read (pinned is exempt from the dismissed filter).
+    const prevPinned = rec.jiraKeysPinned ?? [];
+    const nextPinned = prevPinned.filter(k => k !== key);
     session.jiraKeys = nextKeys.length > 0 ? nextKeys : undefined;
     sessionStore.patch(session.overlordId, {
       jiraKeys: nextKeys.length > 0 ? nextKeys : undefined,
       jiraKeysDismissed: nextDismissed,
+      jiraKeysPinned: nextPinned.length > 0 ? nextPinned : undefined,
+    });
+    this.onChange();
+    return true;
+  }
+
+  /** User clicked + on an inline Jira key in the conversation feed. Pins the key
+   *  so it leads jiraKeys and survives every later transcript scan, and clears
+   *  any earlier dismissal. Idempotent; returns false only for unknown sessions. */
+  pinJiraKey(sessionId: string, key: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.overlordId) return false;
+    const rec = sessionStore.getByOverlordId(session.overlordId);
+    if (!rec) return false;
+    const prevPinned = rec.jiraKeysPinned ?? [];
+    const nextPinned = prevPinned.includes(key)
+      ? prevPinned
+      : [...prevPinned, key].slice(-JIRA_KEYS_MAX);
+    const nextDismissed = (rec.jiraKeysDismissed ?? []).filter(k => k !== key);
+    const nextKeys = mergeJiraKeys(session.jiraKeys, undefined, nextDismissed, nextPinned);
+    session.jiraKeys = nextKeys;
+    sessionStore.patch(session.overlordId, {
+      jiraKeys: nextKeys,
+      jiraKeysPinned: nextPinned,
+      jiraKeysDismissed: nextDismissed.length > 0 ? nextDismissed : undefined,
     });
     this.onChange();
     return true;
@@ -3035,7 +3075,7 @@ export class StateManager {
       bridgeMarker: rec.bridgeMarker,
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
-      jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed),
+      jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, rec.jiraKeysPinned),
       ...readReview(rec),
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),

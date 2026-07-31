@@ -161,6 +161,32 @@ describe('SessionStore', () => {
     expect(store.getByOverlordId('ovr-rbs')).toBeUndefined();
   });
 
+  // Two records claiming the same sid: the index only resolves one, so the
+  // other used to survive a delete and rehydrate on the next boot.
+  it('removeActiveBySessionIds removes every duplicate record for the sid', () => {
+    store.upsertActive(baseRecord('ovr-dup1', 'sid-dup'));
+    store.upsertActive(baseRecord('ovr-dup2', 'sid-dup'));
+
+    const removed = store.removeActiveBySessionIds(['sid-dup']);
+
+    expect(removed.sort()).toEqual(['ovr-dup1', 'ovr-dup2']);
+    expect(store.listActive()).toHaveLength(0);
+    expect(fs.existsSync(path.join(baseDir, 'overlord-sessions', 'ovr-dup1.json'))).toBe(false);
+    expect(fs.existsSync(path.join(baseDir, 'overlord-sessions', 'ovr-dup2.json'))).toBe(false);
+  });
+
+  it('removeActiveBySessionIds leaves archived records alone', () => {
+    store.upsertActive(baseRecord('ovr-arch', 'sid-shared'));
+    store.archive('ovr-arch', { roomId: '/tmp/test', name: 'archived', transcripts: [] });
+    store.upsertActive(baseRecord('ovr-live', 'sid-shared'));
+
+    const removed = store.removeActiveBySessionIds(['sid-shared']);
+
+    expect(removed).toEqual(['ovr-live']);
+    expect(store.getByOverlordId('ovr-arch')).toBeDefined();
+    expect(store.listArchived()).toHaveLength(1);
+  });
+
   it('patch on missing overlordId is a no-op returning undefined', () => {
     const result = store.patch('ghost', { intent: 'x' });
     expect(result).toBeUndefined();

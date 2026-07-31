@@ -2,7 +2,7 @@ export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 // Include 'aider' to support Aider provider sessions (MVP: detection/tracking only, no Overlord spawn).
 export type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 
-export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact';
+export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap';
 
 export interface ActivityItem {
   kind: ActivityItemKind;
@@ -51,6 +51,12 @@ export interface PendingQuestion {
 /** All questions from one AskUserQuestion tool call */
 export interface PendingQuestionSet {
   questions: PendingQuestion[];
+  /** The assistant text rendered directly above the menu in the TUI. Claude flushes
+   *  nothing of an AskUserQuestion turn to the transcript until the question is
+   *  answered — text block included — so while the menu is up this is the only
+   *  source of the preamble. Screen-derived only; undefined on transcript sets,
+   *  where the real assistant message is already in the feed. */
+  preamble?: string;
 }
 
 /** An in-flight Monitor tool_use — emitted while the tool has no tool_result yet. */
@@ -326,6 +332,11 @@ export interface OverlordSession {
    *  scanner will keep finding them; mergeJiraKeys filters this set out so
    *  dismissed keys don't reappear on the next read. Cap 50, recent-first. */
   jiraKeysDismissed?: string[];
+  /** Keys the user added by hand via the `+` button on an inline ticket key in
+   *  the conversation feed. Merged ahead of scanned keys and never evicted by
+   *  them; exempt from jiraKeysDismissed (pinning is the un-dismiss). Wiped on
+   *  /clear. Cap 5. */
+  jiraKeysPinned?: string[];
   /** Persisted skill/command names invoked in this session (union across
    *  transcript reads). Wiped on /clear. */
   skillsUsed?: string[];

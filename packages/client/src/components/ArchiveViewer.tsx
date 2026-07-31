@@ -181,6 +181,14 @@ export function ArchiveViewer({ sessionId, onClose }: Props) {
               </div>
             );
           }
+          if (item.kind === 'recap') {
+            return (
+              <div key={idx} style={{ ...ROW_STYLE(), fontStyle: 'italic', color: '#d4af37' }}>
+                <div style={LABEL_STYLE}>recap{item.timestamp ? ` · ${formatDate(item.timestamp)}` : ''}</div>
+                {item.content}
+              </div>
+            );
+          }
           if (item.kind === 'compact') {
             return (
               <div key={idx} style={{ ...ROW_STYLE(), borderStyle: 'dashed', textAlign: 'center', color: '#9ca3af' }}>

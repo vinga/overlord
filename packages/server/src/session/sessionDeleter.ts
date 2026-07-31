@@ -180,8 +180,18 @@ export function deleteSession(
       console.warn(`[deleteSession] failed to delete shell history for ${sessionId}:`, (err as Error).message);
     }
 
-    // Drop the OverlordSession record unless it was just archived
-    // (archive must survive deleteSession).
-    if (!storeRec?.archive) sessionStore.removeBySessionId(sessionId);
+    // Drop every ACTIVE OverlordSession record pointing at any sid in this
+    // lineage — not just the one the sid index resolves to. Duplicate records
+    // for the same sid shadow each other (one sid → one ovrId in the index), so
+    // removing only the indexed copy left the twin on disk to rehydrate on the
+    // next boot. Archived records are skipped by removeActiveBySessionIds, so an
+    // archive-then-delete still keeps its archive entry.
+    const removedOvrIds = sessionStore.removeActiveBySessionIds(sidsToWipe);
+    for (const removed of removedOvrIds) {
+      if (removed !== ovrId) stateManager.purgeOvrId(removed);
+    }
+    if (removedOvrIds.length > 1) {
+      console.log(`[deleteSession] removed ${removedOvrIds.length} store records: ${removedOvrIds.join(',')}`);
+    }
   });
 }

@@ -9,7 +9,7 @@ import { expandRoom } from './hooks/useRoomCollapsed';
 
 import type { ArchiveEntry, Session, SessionProvider, SessionReview, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
-import { DetailPanel } from './components/DetailPanel';
+import { DetailPanel, setJiraProjects } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
@@ -108,6 +108,12 @@ export function App() {
   useEffect(() => {
     setJiraMeta(snapshot?.jiraMeta);
   }, [snapshot?.jiraMeta]);
+
+  // Feeds the inline-ticket matcher in the conversation feed. Clears the
+  // markdown cache when the allowlist changes, so tokens follow the setting.
+  useEffect(() => {
+    setJiraProjects(snapshot?.settings?.jiraProjects);
+  }, [snapshot?.settings?.jiraProjects]);
 
   const snapshotBridgeIds = useMemo(() => {
     const ids = new Set<string>();

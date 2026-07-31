@@ -452,6 +452,31 @@ export class SessionStore {
     if (ovrId) this.remove(ovrId);
   }
 
+  /**
+   * Remove every ACTIVE record whose `lineage.currentSessionId` is one of
+   * `sessionIds`. Returns the removed ovrIds.
+   *
+   * `sidIndexActive` maps a sid to exactly one ovrId, so when two records claim
+   * the same sid only one is reachable: `removeBySessionId` deletes that one and
+   * the twin survives on disk, then rehydrates on the next boot — the user
+   * deletes a worker, restarts, and it is back. Scan the records instead of the
+   * index so a delete means every copy.
+   *
+   * Archived records are deliberately untouched — `archiveManager` owns that
+   * tier (`/api/archive/:sessionId` deletes there), and `deleteSession` runs
+   * right after archiving, where the archive record must survive.
+   */
+  removeActiveBySessionIds(sessionIds: Iterable<string>): string[] {
+    const wanted = new Set(sessionIds);
+    if (wanted.size === 0) return [];
+    const doomed: string[] = [];
+    for (const [ovrId, rec] of this.active) {
+      if (wanted.has(rec.lineage.currentSessionId)) doomed.push(ovrId);
+    }
+    for (const ovrId of doomed) this.remove(ovrId);
+    return doomed;
+  }
+
   async flushAll(): Promise<void> {
     const ids = [...this.flushTimers.keys()];
     for (const id of ids) {

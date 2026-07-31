@@ -2,7 +2,8 @@ import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
-import { loadDraft, saveDraft, clearDraft } from '../hooks/draftStore';
+import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draftStore';
+import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
 import { getLaunchInfo } from '../types';
 import { PARK_REASON_MAX } from '../lib/review';
@@ -19,6 +20,8 @@ import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
 import { SkillChips } from './SkillChips';
+import { JiraChips } from './JiraChips';
+import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
 import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
@@ -41,6 +44,53 @@ const MARKDOWN_CACHE_MAX = 500;
 const markdownCache = new Map<string, string>();
 // Matches absolute Unix paths (/a/b/c) and Windows paths (C:\a\b or C:/a/b) with optional :line or :line:col suffix.
 const PATH_REGEX = /(?:\/[\w.\-+@]+){2,}(?::\d+(?::\d+)?)?|[A-Za-z]:[\\/](?:[\w.\-+@]+[\\/]?)+(?::\d+(?::\d+)?)?/g;
+
+// Inline JIRA keys in the feed. The transcript scanner only mines user-authored
+// text, so a key the assistant mentioned never becomes a chip on its own — these
+// tokens carry a hover `+` that pins it (POST /api/sessions/:id/jira-keys/:key).
+let jiraProjectsSource = '';
+let jiraKeyRegex: RegExp | null = null;
+/** Rebuild the matcher from the settings allowlist. markdownCache is keyed by
+ *  text alone, so cached HTML would keep the previous tokens — clear it. */
+export function setJiraProjects(raw: string | undefined) {
+  const source = (raw ?? '').trim();
+  if (source === jiraProjectsSource) return;
+  jiraProjectsSource = source;
+  const tokens = source
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter((s) => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
+  jiraKeyRegex = tokens.length > 0
+    ? new RegExp(String.raw`\b(?:${tokens.join('|')})-\d{1,6}\b`, 'g')
+    : null;
+  markdownCache.clear();
+}
+
+type InlineMatch = { index: number; text: string; kind: 'path' | 'jira' };
+/** Path and JIRA matches in one text node, left to right, overlaps dropped
+ *  (a key inside a path — /repo/BACKEND-1/x — stays part of the path). */
+function collectInlineMatches(text: string): InlineMatch[] {
+  const found: InlineMatch[] = [];
+  PATH_REGEX.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PATH_REGEX.exec(text))) found.push({ index: m.index, text: m[0], kind: 'path' });
+  if (jiraKeyRegex) {
+    jiraKeyRegex.lastIndex = 0;
+    while ((m = jiraKeyRegex.exec(text))) found.push({ index: m.index, text: m[0], kind: 'jira' });
+  }
+  if (found.length < 2) return found;
+  // Paths first at equal offsets so an overlapping key loses.
+  found.sort((a, b) => a.index - b.index || (a.kind === 'path' ? -1 : 1));
+  const out: InlineMatch[] = [];
+  let end = 0;
+  for (const f of found) {
+    if (f.index < end) continue;
+    out.push(f);
+    end = f.index + f.text.length;
+  }
+  return out;
+}
+
 function linkifyPaths(html: string, wrapFences = true): string {
   if (typeof DOMParser === 'undefined') return html;
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
@@ -82,20 +132,31 @@ function linkifyPaths(html: string, wrapFences = true): string {
   while ((n = walker.nextNode())) textNodes.push(n as Text);
   for (const tn of textNodes) {
     const text = tn.nodeValue ?? '';
-    PATH_REGEX.lastIndex = 0;
-    if (!PATH_REGEX.test(text)) continue;
-    PATH_REGEX.lastIndex = 0;
+    const matches = collectInlineMatches(text);
+    if (matches.length === 0) continue;
     const frag = doc.createDocumentFragment();
     let last = 0;
-    let m: RegExpExecArray | null;
-    while ((m = PATH_REGEX.exec(text))) {
-      if (m.index > last) frag.appendChild(doc.createTextNode(text.slice(last, m.index)));
+    for (const match of matches) {
+      if (match.index > last) frag.appendChild(doc.createTextNode(text.slice(last, match.index)));
       const span = doc.createElement('span');
-      span.setAttribute('data-file-path', m[0].replace(/:\d+(?::\d+)?$/, ''));
-      span.className = 'inlineFilePath';
-      span.textContent = m[0];
+      if (match.kind === 'path') {
+        span.setAttribute('data-file-path', match.text.replace(/:\d+(?::\d+)?$/, ''));
+        span.className = 'inlineFilePath';
+        span.textContent = match.text;
+      } else {
+        span.setAttribute('data-jira-key', match.text);
+        span.className = 'inlineJiraKey';
+        span.appendChild(doc.createTextNode(match.text));
+        const add = doc.createElement('button');
+        add.className = 'jiraAddBtn';
+        add.setAttribute('tabindex', '-1');
+        add.setAttribute('title', `Add ${match.text} to this session's tickets`);
+        add.setAttribute('aria-label', `Add ${match.text} to this session's tickets`);
+        add.textContent = '+';
+        span.appendChild(add);
+      }
       frag.appendChild(span);
-      last = m.index + m[0].length;
+      last = match.index + match.text.length;
     }
     if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
     tn.parentNode?.replaceChild(frag, tn);
@@ -718,13 +779,16 @@ type FeedSegment =
   | { type: 'toolGroup'; items: ActivityItem[] }
   | { type: 'thinking'; item: ActivityItem }
   | { type: 'question'; item: ActivityItem }
-  | { type: 'compact'; item: ActivityItem };
+  | { type: 'compact'; item: ActivityItem }
+  | { type: 'recap'; item: ActivityItem };
 
 function buildSegments(feed: ActivityItem[]): FeedSegment[] {
   const segments: FeedSegment[] = [];
   for (const item of feed) {
     if (item.kind === 'compact') {
       segments.push({ type: 'compact', item });
+    } else if (item.kind === 'recap') {
+      segments.push({ type: 'recap', item });
     } else if (item.kind === 'tool' && item.toolName === 'AskUserQuestion') {
       // AskUserQuestion is rendered as its own prominent Q&A block, never grouped
       segments.push({ type: 'question', item });
@@ -1175,6 +1239,14 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
               <span className={styles.compactDividerLabel}>
                 ✦ Compacted{meta?.trigger === 'manual' ? ' (manual)' : ''}{tokens ? ` · ${tokens} tokens` : ''}{ptyMeta ? ` · ${ptyMeta}` : ''}
               </span>
+            </div>
+          );
+        }
+        if (seg.type === 'recap') {
+          return (
+            <div key={segIdx} className={styles.recapBlock} data-ts={seg.item.timestamp}>
+              <span className={styles.recapLabel}>✳ recap</span>
+              <span className={styles.recapText}>{seg.item.content}</span>
             </div>
           );
         }
@@ -1668,6 +1740,8 @@ export function DetailPanel({
   // Re-render every second to update duration / relative times — only when panel is open
   useTick(selectedSession ? 1000 : null);
 
+  const jiraBaseUrl = useJiraBaseUrl();
+
   const [fileEditorPath, setFileEditorPath] = useState<string | null>(null);
   useEffect(() => {
     const handler = (e: Event) => {
@@ -1704,6 +1778,28 @@ export function DetailPanel({
         }
         return;
       }
+      const jiraToken = (e.target as HTMLElement | null)?.closest('[data-jira-key]') as HTMLElement | null;
+      if (jiraToken) {
+        const key = jiraToken.getAttribute('data-jira-key');
+        if (!key) return;
+        e.preventDefault();
+        const addBtn = (e.target as HTMLElement | null)?.closest('.jiraAddBtn');
+        if (addBtn && selectedSession?.sessionId) {
+          // Optimistic: the chip lands on the next snapshot tick, which then
+          // owns the class via the sync effect below.
+          jiraToken.classList.add('jiraPinned');
+          void fetch(`/api/sessions/${selectedSession.sessionId}/jira-keys/${encodeURIComponent(key)}`, {
+            method: 'POST',
+          })
+            .then((r) => { if (!r.ok) jiraToken.classList.remove('jiraPinned'); })
+            .catch(() => { jiraToken.classList.remove('jiraPinned'); });
+          return;
+        }
+        if (jiraBaseUrl) {
+          window.open(`${jiraBaseUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(key)}`, '_blank', 'noopener,noreferrer');
+        }
+        return;
+      }
       const target = (e.target as HTMLElement | null)?.closest('[data-file-path]');
       if (target) {
         const path = target.getAttribute('data-file-path');
@@ -1728,7 +1824,7 @@ export function DetailPanel({
       window.removeEventListener('keydown', keyHandler);
       document.removeEventListener('click', clickHandler);
     };
-  }, [selectedSession?.cwd]);
+  }, [selectedSession?.cwd, selectedSession?.sessionId, jiraBaseUrl]);
 
   // Persist question stage across remounts (snapshot refreshes can unmount/remount QuestionPrompt)
   const questionStageRef = useRef<Map<string, number>>(new Map());
@@ -1767,7 +1863,7 @@ export function DetailPanel({
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'artifacts'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   const [notesContent, setNotesContent] = useState('');
@@ -1798,6 +1894,11 @@ export function DetailPanel({
   const [sendInput2, setSendInput2] = useState('');
   const [showQuickMenu, setShowQuickMenu] = useState(false);
   const quickMenuRef = useRef<HTMLDivElement>(null);
+  // Sent-message history: recall text the composer cleared but Claude never received.
+  const [sentHistory, setSentHistory] = useState<SentEntry[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [showHistoryMenu, setShowHistoryMenu] = useState(false);
+  const preHistoryDraft = useRef('');
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const sendTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [showConvMenu, setShowConvMenu] = useState(false);
@@ -1814,6 +1915,16 @@ export function DetailPanel({
     return () => document.removeEventListener('mousedown', handler);
   }, [showQuickMenu]);
   useEffect(() => {
+    if (!showHistoryMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (quickMenuRef.current && !quickMenuRef.current.contains(e.target as Node)) {
+        setShowHistoryMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showHistoryMenu]);
+  useEffect(() => {
     if (!showConvMenu) return;
     const handler = (e: MouseEvent) => {
       if (convMenuRef.current && !convMenuRef.current.contains(e.target as Node)) {
@@ -1828,6 +1939,7 @@ export function DetailPanel({
   const realCountPerSession = useRef<Map<string, number | null>>(new Map());
   const sendTsPerSession = useRef<Map<string, number | null>>(new Map());
   const prevSessionIdRef = useRef<string | undefined>(undefined);
+  const prevOvrIdRef = useRef<string | undefined>(undefined);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDeleteArchive, setConfirmDeleteArchive] = useState(false);
@@ -1871,6 +1983,21 @@ const currentDisplayName =
       onScrollTargetConsumed?.();
     },
   });
+
+  // Keys already in this session's ticket context hide their `+`. Applied as a
+  // class after render rather than baked into the HTML — renderMarkdown caches
+  // by text alone and that cache is shared across sessions.
+  const jiraKeySet = useMemo(
+    () => new Set(selectedSession?.jiraKeys ?? []),
+    [selectedSession?.jiraKeys],
+  );
+  useEffect(() => {
+    const root = transcriptRef.current;
+    if (!root) return;
+    root.querySelectorAll<HTMLElement>('[data-jira-key]').forEach((el) => {
+      el.classList.toggle('jiraPinned', jiraKeySet.has(el.getAttribute('data-jira-key') ?? ''));
+    });
+  }, [jiraKeySet, selectedSession?.activityFeed, extraFeed, activeTab, transcriptRef]);
 
   // Recompute jump pill state when transcript tab or target changes
   useEffect(() => {
@@ -2023,14 +2150,17 @@ const currentDisplayName =
 
   // Reset scroll to bottom and edit state when selected session/subagent changes
   useEffect(() => {
-    // Save current draft and pending messages before switching
+    // Save current draft and pending messages before switching.
+    // Drafts key on overlordId (stable across compaction / /clear / resume) — sessionId
+    // rotates and strands the durable copy. localSent still keys on sessionId.
     const prevId = prevSessionIdRef.current;
-    if (prevId && sendInput2.trim()) {
-      draftPerSession.current.set(prevId, sendInput2);
-      saveDraft(prevId, sendInput2);
-    } else if (prevId) {
-      draftPerSession.current.delete(prevId);
-      clearDraft(prevId);
+    const prevOvr = prevOvrIdRef.current;
+    if (prevOvr && sendInput2.trim()) {
+      draftPerSession.current.set(prevOvr, sendInput2);
+      saveDraft(prevOvr, sendInput2);
+    } else if (prevOvr) {
+      draftPerSession.current.delete(prevOvr);
+      clearDraft(prevOvr);
     }
     if (prevId) {
       if (localSent.length > 0) {
@@ -2044,6 +2174,7 @@ const currentDisplayName =
       }
     }
     prevSessionIdRef.current = selectedSession?.sessionId;
+    prevOvrIdRef.current = effectiveOvrId || undefined;
 
     // Don't scroll to bottom if we have a scroll target (search result click)
     isAtBottomRef.current = !effectiveScrollTarget;
@@ -2079,7 +2210,13 @@ const currentDisplayName =
     sendTimestampMs.current = alreadyConfirmed ? null : savedSendTs;
     // Restore draft for the new session
     // In-memory draft first; fall back to the durable localStorage copy (survives reload).
-    setSendInput2(newId ? (draftPerSession.current.get(newId) ?? loadDraft(newId)) : '');
+    const newOvr = effectiveOvrId || undefined;
+    migrateDraftKey(newId, newOvr);  // legacy sessionId-keyed drafts
+    setSendInput2(newOvr ? (draftPerSession.current.get(newOvr) ?? loadDraft(newOvr)) : '');
+    setSentHistory(loadSentHistory(newOvr));
+    setHistoryIndex(null);
+    setShowHistoryMenu(false);
+    preHistoryDraft.current = '';
     setConfirmDelete(false);
     setConfirmDeleteArchive(false);
     setPastedImage(null);
@@ -2168,6 +2305,9 @@ const currentDisplayName =
     if (selectedSession.isCompacting) return false;
     const sent = injectText(effectiveOvrId, text, text.includes('@'));
     if (sent) {
+      // Record before the composer clears — a send that lands mid-compaction is
+      // swallowed by the TUI, and this ring is the only remaining copy.
+      setSentHistory(pushSentHistory(effectiveOvrId, text, Date.now()));
       if (realCountAtFirstSend.current === null) {
         const feed = selectedSession.activityFeed ?? [];
         realCountAtFirstSend.current = feed.filter(i => i.role === 'user').length;
@@ -2188,11 +2328,54 @@ const currentDisplayName =
     const sent = sendText(full);
     if (!sent) return; // preserve input + image if WebSocket not connected
     setSendInput2('');
+    setHistoryIndex(null);
+    preHistoryDraft.current = '';
     if (selectedSession) {
-      draftPerSession.current.delete(selectedSession.sessionId);
-      clearDraft(selectedSession.sessionId);
+      draftPerSession.current.delete(effectiveOvrId);
+      clearDraft(effectiveOvrId);
     }
     setPastedImage(null);
+  }
+
+  // Compaction swallows injected text. Snapshot whatever is in the composer the
+  // moment it starts, so an unsent draft is recoverable from ↑ even if the user
+  // never pressed Enter and the flag arrived too late to block the send.
+  const wasCompacting = useRef(false);
+  useEffect(() => {
+    const now = !!selectedSession?.isCompacting;
+    if (now && !wasCompacting.current && sendInput2.trim()) {
+      setSentHistory(pushSentHistory(effectiveOvrId, sendInput2, Date.now()));
+    }
+    wasCompacting.current = now;
+  }, [selectedSession?.isCompacting, sendInput2, effectiveOvrId]);
+
+  // Memoized: this panel re-renders on every WebSocket tick.
+  const recentSends = useMemo(() => sentHistory.slice(0, 10), [sentHistory]);
+
+  /** Load a history entry into the composer without sending it. */
+  function recallEntry(index: number) {
+    const entry = sentHistory[index];
+    if (!entry) return;
+    if (historyIndex === null) preHistoryDraft.current = sendInput2;
+    setHistoryIndex(index);
+    setSendInput2(entry.text);
+    saveDraft(effectiveOvrId, entry.text);
+    requestAnimationFrame(() => {
+      const el = sendTextareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }
+
+  function exitHistory(restore: boolean) {
+    if (historyIndex === null) return;
+    setHistoryIndex(null);
+    if (restore) {
+      setSendInput2(preHistoryDraft.current);
+      saveDraft(effectiveOvrId, preHistoryDraft.current);
+    }
+    preHistoryDraft.current = '';
   }
 
   function handleExplain(quoted: string) {
@@ -2307,11 +2490,28 @@ const currentDisplayName =
         inputJson: JSON.stringify({ questions: selectedSession.pendingQuestion.questions }),
       }
     : null;
+  // The assistant text above the menu. Claude writes nothing of an AskUserQuestion
+  // turn to the transcript until it is answered — the text block included — so while
+  // the menu is up the screen-scraped preamble is the only copy. Dropped as soon as
+  // the transcript catches up (guard below), which is when pendingQuestion clears.
+  const questionPreamble = pendingQuestionItem ? selectedSession?.pendingQuestion?.preamble : undefined;
+  const preambleItem: ActivityItem | null = (() => {
+    if (!questionPreamble) return null;
+    const head = questionPreamble.slice(0, 40);
+    for (let i = realFeed.length - 1, seen = 0; i >= 0 && seen < 3; i--) {
+      const it = realFeed[i];
+      if (it.kind !== 'message') continue;
+      seen++;
+      if (it.role === 'assistant' && it.content?.startsWith(head)) return null;
+    }
+    return { kind: 'message', role: 'assistant', content: questionPreamble };
+  })();
 
   const mergedFeed: ActivityItem[] = [
     ...extraFeed,
     ...realFeed,
     ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
+    ...(preambleItem ? [preambleItem] : []),
     ...(pendingQuestionItem ? [pendingQuestionItem] : []),
   ];
 
@@ -2656,11 +2856,13 @@ const currentDisplayName =
                     )}
                   </div>
 
-                  {!selectedSession.isWorker && (notesContent.trim() || selectedSession.intent) && ((() => {
+                  {/* Notes line is always rendered (empty shows a click-to-edit placeholder)
+                      so the subtitle can be written without opening the Notes tab. */}
+                  {!selectedSession.isWorker && (!selectedSession.isArchived || notesContent.trim() || selectedSession.intent) && ((() => {
                     const noteFirst = getFirstLineInfo(notesContent).text;
                     return (
                     <div className={styles.currentTaskCard}>
-                      {notesContent.trim() && (
+                      {(!selectedSession.isArchived || notesContent.trim()) && (
                         <div className={styles.currentTaskLine}>
                           <span className={styles.currentTaskLabel}>Notes:</span>
                           {notesFirstEditing ? (
@@ -2697,7 +2899,7 @@ const currentDisplayName =
                             />
                           ) : (
                             <span
-                              className={`${styles.currentTaskTitle} ${styles.headerSummaryText} ${styles.notesEditable}`}
+                              className={`${styles.currentTaskTitle} ${styles.headerSummaryText} ${styles.notesEditable} ${noteFirst ? '' : styles.notesFirstLineEmpty}`}
                               onClick={(e) => {
                                 const t = e.target as HTMLElement;
                                 if (t.closest('a')) return;
@@ -2706,7 +2908,7 @@ const currentDisplayName =
                               }}
                               title="Click to edit"
                             >
-                              {renderWithLinks(noteFirst, styles.notesFirstLineLink)}
+                              {noteFirst ? renderWithLinks(noteFirst, styles.notesFirstLineLink) : 'Add a note…'}
                               <span className={styles.notesEditIndicator} aria-hidden="true">✎</span>
                             </span>
                           )}
@@ -2883,6 +3085,14 @@ const currentDisplayName =
                   >
                     Details
                   </button>
+                  {!selectedSession.isArchived && (
+                    <button
+                      className={`${styles.tab} ${activeTab === 'notes' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('notes')}
+                    >
+                      Notes{notesContent.trim() && <span className={styles.tabNotesDot}>✱</span>}
+                    </button>
+                  )}
                   {!selectedSession.isArchived && (
                     <button
                       className={`${styles.tab} ${activeTab === 'artifacts' ? styles.tabActive : ''}`}
@@ -3343,6 +3553,37 @@ const currentDisplayName =
                                 >
                                   Skill…
                                 </button>
+                                <button
+                                  className={styles.quickMenuItem}
+                                  disabled={sentHistory.length === 0}
+                                  onMouseDown={e => {
+                                    e.preventDefault();
+                                    if (sentHistory.length === 0) return;
+                                    setShowQuickMenu(false);
+                                    setShowHistoryMenu(true);
+                                  }}
+                                >
+                                  Recent sends…
+                                </button>
+                              </div>
+                            )}
+                            {showHistoryMenu && (
+                              <div className={`${styles.quickMenu} ${styles.historyMenu}`}>
+                                {recentSends.map((entry, i) => (
+                                  <button
+                                    key={`${entry.ts}-${i}`}
+                                    className={`${styles.quickMenuItem} ${styles.historyItem}`}
+                                    title={entry.text}
+                                    onMouseDown={e => {
+                                      e.preventDefault();
+                                      setShowHistoryMenu(false);
+                                      recallEntry(i);
+                                    }}
+                                  >
+                                    <span className={styles.historyItemText}>{entry.text.replace(/\s+/g, ' ').trim()}</span>
+                                    <span className={styles.historyItemTime}>{formatParkedAge(entry.ts)}</span>
+                                  </button>
+                                ))}
                               </div>
                             )}
                           </div>
@@ -3353,8 +3594,10 @@ const currentDisplayName =
                             disabled={!connected || !!(selectedSession.ideName && selectedSession.sessionType !== 'bridge' && selectedSession.sessionType !== 'embedded')}
                             onChange={e => {
                               setSendInput2(e.target.value);
+                              // Editing a recalled message makes it a normal draft again.
+                              if (historyIndex !== null) { setHistoryIndex(null); preHistoryDraft.current = ''; }
                               // Persist every keystroke so unsent text survives reload/crash.
-                              saveDraft(selectedSession.sessionId, e.target.value);
+                              saveDraft(effectiveOvrId, e.target.value);
                             }}
                             onClick={() => {
                               if (needsResume && onResumeSession && !resuming) {
@@ -3369,10 +3612,30 @@ const currentDisplayName =
                                 if (onResumeSession && !resuming) { setResuming(true); onResumeSession(selectedSession.sessionId, selectedSession.cwd); }
                                 return;
                               }
+                              // ↑/↓ walk the sent-message ring, shell-style. Only from an
+                              // empty composer (or once already navigating) so ↑ keeps
+                              // moving the caret inside a multi-line draft.
+                              const el = e.currentTarget;
+                              const caretAtStart = el.selectionStart === 0 && el.selectionEnd === 0;
+                              if (e.key === 'ArrowUp' && sentHistory.length > 0 &&
+                                  (historyIndex !== null || sendInput2 === '' || caretAtStart)) {
+                                e.preventDefault();
+                                recallEntry(Math.min((historyIndex ?? -1) + 1, sentHistory.length - 1));
+                                return;
+                              }
+                              if (e.key === 'ArrowDown' && historyIndex !== null) {
+                                e.preventDefault();
+                                if (historyIndex === 0) exitHistory(true);
+                                else recallEntry(historyIndex - 1);
+                                return;
+                              }
                               if (e.key === 'Escape') {
                                 e.preventDefault();
+                                // Always clears — including a recalled history entry.
+                                setHistoryIndex(null);
+                                preHistoryDraft.current = '';
                                 setSendInput2('');
-                                clearDraft(selectedSession.sessionId);
+                                clearDraft(effectiveOvrId);
                               } else if (e.key === 'Enter' && !e.shiftKey) {
                                 e.preventDefault();
                                 if (!connected) return;
@@ -3414,7 +3677,7 @@ const currentDisplayName =
                               };
                               reader.readAsDataURL(blob);
                             }}
-                            placeholder={resuming ? 'Resuming session…' : (selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (needsResume ? (selectedSession.state === 'closed' ? 'Session exited — click to resume' : 'PTY disconnected — click to resume') : (connected ? 'Message… (Enter to send, paste image)' : 'Not connected')))}
+                            placeholder={resuming ? 'Resuming session…' : (selectedSession.isArchived ? 'Archived — click to unarchive & resume' : (needsResume ? (selectedSession.state === 'closed' ? 'Session exited — click to resume' : 'PTY disconnected — click to resume') : (connected ? (sentHistory.length > 0 ? 'Message… (Enter to send, ↑ for history)' : 'Message… (Enter to send, paste image)') : 'Not connected')))}
                             rows={2}
                           />
                           <button
@@ -3474,6 +3737,33 @@ const currentDisplayName =
                         Resume in new PTY
                       </button>
                     )}
+                  </div>
+                )}
+
+                {/* Tab: Notes — free-form session description. First line also renders
+                    inline in the header and on the worker card. */}
+                {activeTab === 'notes' && (
+                  <div className={styles.notesTab}>
+                    <textarea
+                      className={styles.notesTextarea}
+                      value={notesContent}
+                      placeholder="Describe this session…"
+                      onChange={e => {
+                        const value = e.target.value;
+                        setNotesContent(value);
+                        if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
+                        const sessionId = selectedSession.sessionId;
+                        notesSaveTimerRef.current = setTimeout(() => {
+                          fetch(`/api/sessions/${sessionId}/notes`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ notes: value }),
+                          }).then(() => {
+                            updateNoteFirstLine(sessionId, value);
+                          }).catch(() => {});
+                        }, 500);
+                      }}
+                    />
                   </div>
                 )}
 
@@ -3656,6 +3946,18 @@ const currentDisplayName =
                           </div>
                         );
                       })()}
+                      {selectedSession.jiraKeys && selectedSession.jiraKeys.length > 0 && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Tickets</span>
+                          <span className={styles.fieldValue}>
+                            <JiraChips
+                              keys={selectedSession.jiraKeys}
+                              baseUrl={jiraBaseUrl}
+                              sessionId={selectedSession.sessionId}
+                            />
+                          </span>
+                        </div>
+                      )}
                       {selectedSession.skillsUsed && selectedSession.skillsUsed.length > 0 && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Skills</span>

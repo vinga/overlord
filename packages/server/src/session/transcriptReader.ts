@@ -851,6 +851,12 @@ function capMessage(t: string): { content: string; contentTruncated?: true } {
     : { content: t };
 }
 
+/** Claude appends "(disable recaps in /config)" to every away_summary. It is a TUI
+ *  hint, not part of the recap — drop it before it reaches the conversation feed. */
+function stripRecapFooter(text: string): string {
+  return text.replace(/\s*\(disable recaps in \/config\)\s*$/, '').trim();
+}
+
 function buildToolResults(lines: string[]): Map<string, { content: string; isError: boolean }> {
   const results = new Map<string, { content: string; isError: boolean }>();
   for (const line of lines) {
@@ -1151,6 +1157,14 @@ export function readTranscriptState(filePath: string): {
               preTokens: parsed.compactMetadata?.preTokens ?? 0,
             },
           });
+        }
+        // Away-recap ("✳ recap: …" in the TUI). A system entry, not an assistant
+        // message — without this branch it never reaches the conversation feed.
+        if (parsed && parsed.type === 'system' && parsed.subtype === 'away_summary') {
+          const recapText = typeof parsed.content === 'string' ? stripRecapFooter(parsed.content) : '';
+          if (recapText) {
+            activityFeed.unshift({ kind: 'recap', content: recapText.slice(0, MAX_CONTENT_LENGTH), timestamp: parsed.timestamp });
+          }
         }
         if (parsed && (parsed.type === 'user' || parsed.type === 'assistant')) {
           const rawContent = parsed.message?.content;
@@ -2123,6 +2137,8 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
     try {
       const parsed = JSON.parse(window[i]) as {
         type?: string;
+        subtype?: string;
+        content?: unknown;
         timestamp?: string;
         attachment?: { type?: string; prompt?: string; timestamp?: string; origin?: { kind?: string } };
         message?: {
@@ -2130,7 +2146,12 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
         };
       };
 
-      if (parsed.type === 'attachment'
+      if (parsed.type === 'system' && parsed.subtype === 'away_summary') {
+        const recapText = typeof parsed.content === 'string' ? stripRecapFooter(parsed.content) : '';
+        if (recapText) {
+          activityFeed.unshift({ kind: 'recap', content: recapText.slice(0, MAX_CONTENT), timestamp: parsed.timestamp });
+        }
+      } else if (parsed.type === 'attachment'
         && parsed.attachment?.type === 'queued_command'
         && parsed.attachment.origin?.kind === 'human') {
         const prompt = parsed.attachment.prompt;

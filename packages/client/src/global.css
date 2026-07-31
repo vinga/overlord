@@ -80,6 +80,72 @@
   border-bottom-color: rgba(232, 201, 124, 0.7);
 }
 
+/* Inline JIRA key in the conversation feed. Quiet by default; hovering reveals
+   a `+` that pins the ticket to the session's context. Keys already pinned get
+   .jiraPinned (applied by DetailPanel after render) and drop the `+`. */
+.inlineJiraKey {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.inlineJiraKey:hover {
+  color: rgba(255, 255, 255, 0.98);
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+.inlineJiraKey.jiraPinned {
+  border-color: rgba(96, 165, 250, 0.28);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.jiraAddBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0;
+  overflow: hidden;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s, width 0.12s, color 0.12s, background 0.12s;
+}
+
+.inlineJiraKey:hover .jiraAddBtn {
+  width: 14px;
+  opacity: 1;
+}
+
+.jiraAddBtn:hover {
+  color: rgba(96, 165, 250, 0.95);
+  background: rgba(96, 165, 250, 0.18);
+}
+
+/* Already in context — nothing to add. */
+.inlineJiraKey.jiraPinned .jiraAddBtn {
+  display: none;
+}
+
 /* Per-fence markdown toggle: a ```markdown block that can be rendered inline */
 .mdFence {
   position: relative;

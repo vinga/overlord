@@ -22,6 +22,25 @@ export function saveDraft(id: string | undefined, text: string): void {
   }
 }
 
+/**
+ * Drafts used to be keyed by sessionId, which rotates on compaction / /clear /
+ * resume — stranding the durable copy under a key nothing reads back. Move any
+ * legacy value onto the stable overlordId key, once, on session switch.
+ */
+export function migrateDraftKey(fromId: string | undefined, toId: string | undefined): void {
+  if (!fromId || !toId || fromId === toId) return;
+  try {
+    const legacy = localStorage.getItem(PREFIX + fromId);
+    if (legacy === null) return;
+    if (localStorage.getItem(PREFIX + toId) === null && legacy) {
+      localStorage.setItem(PREFIX + toId, legacy);
+    }
+    localStorage.removeItem(PREFIX + fromId);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function clearDraft(id: string | undefined): void {
   if (!id) return;
   try {

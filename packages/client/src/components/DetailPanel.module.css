@@ -46,6 +46,14 @@
   text-transform: uppercase;
 }
 
+.tabNotesDot {
+  font-size: 8px;
+  color: inherit;
+  opacity: 0.7;
+  margin-left: 3px;
+  line-height: 1;
+}
+
 .tabPtyBadgeEnded {
   background: rgba(102, 102, 102, 0.15);
   border: 1px solid rgba(102, 102, 102, 0.25);
@@ -2717,6 +2725,45 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+.quickMenuItem:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.quickMenuItem:disabled:hover {
+  background: none;
+  color: #d1d5db;
+}
+
+/* Recent sends — same popover language as .quickMenu, wider for message text. */
+.historyMenu {
+  min-width: 320px;
+  max-width: 420px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.historyItem {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.historyItemText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyItemTime {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
 .convMenuAnchor {
   position: relative;
   flex-shrink: 0;
@@ -2975,6 +3022,38 @@
   color: rgba(212, 175, 55, 0.55);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.recapBlock {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-left: 2px solid rgba(212, 175, 55, 0.35);
+  background: rgba(212, 175, 55, 0.05);
+  border-radius: 0 6px 6px 0;
+}
+
+.recapLabel {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(212, 175, 55, 0.75);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.recapText {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.55;
+  font-style: italic;
+  color: var(--text-secondary, rgba(235, 235, 245, 0.7));
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .thinkingBlock {
@@ -4029,6 +4108,34 @@
   color: #f87171;
 }
 
+/* Notes tab */
+.notesTab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+}
+
+.notesTextarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 16px 18px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.notesTextarea::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
 .notesFirstLineRow {
   margin-top: 10px;
   padding-bottom: 12px;
@@ -4098,6 +4205,21 @@
 
 .notesEditable:hover .notesEditIndicator {
   opacity: 0.85;
+}
+
+/* Empty subtitle: still clickable, reads as a prompt rather than content.
+   Declared after .notesEditable:hover so the muted hover colour wins. */
+.notesFirstLineEmpty {
+  color: rgba(255, 255, 255, 0.3);
+  font-style: italic;
+}
+
+.notesFirstLineEmpty:hover {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.notesFirstLineEmpty .notesEditIndicator {
+  opacity: 0.5;
 }
 
 .notesFirstLineInput:focus {
