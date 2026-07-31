@@ -27,6 +27,15 @@
 - Injection guard: `wsHandler.ts` refuses `terminal:send` on embedded sessions with no live PTY — CGEvent can't reach a node-pty child, so the alternative is a misleading "Accessibility" error. Surfacing this as an error is correct; the client should display "Resume in new PTY" instead.
 - **Orphaned `claude --resume` from prior boot.** A claude child from a previous server run holds the `~/.claude/sessions/{pid}.json` lock for its sessionId; reparented to launchd (ppid=1) after the server died. `terminal:resume` would otherwise fail with claude exiting immediately on lock collision. `findExistingClaudeResumePid` in `wsHandler.ts` classifies it as `killable` when ppid===server.pid OR the process command line carries our `___OVR:` / `___BRG:` marker — both cases are SIGTERM'd (escalating to SIGKILL after 2s) before respawning. Foreign claude processes without our marker are refused with an actionable kill-pid message.
 
+## Auto-Resume After Restart
+
+Gated on `autoResumeOnRestart` (settings) or `OVERLORD_AUTO_RESUME=1`; fired once on the first client WebSocket connection (`wsHandler.ts`), not at boot, so the user is connected to receive the resumed terminals' output. `autoResumePtySessions` only resumes sessions named by a **live-set record** — `getPtySessionsToResume()` alone returns every closed embedded session ever, which would spawn a claude per stale card. Two records exist, both under `~/.claude/overlord/`:
+
+1. **`live-at-shutdown.json`** — written by `shutdown()` (SIGTERM / SIGINT / **SIGHUP**) as the *first* step, before any `await`. The flushes that follow can be out-raced by a logout/restart grace period, and a lost capture means nothing resumes. Consumed once at boot (`index.ts`), then deleted.
+2. **`live-pty.json`** — a 15s write-on-change heartbeat mirror of `ovrToPty` (+ each PTY child's pid). Covers the deaths where `shutdown()` never runs: computer restart, panic, `kill -9`. Only consulted when record 1 is absent, and only trusted when **all three** guards in `consumeLivePtyFallback()` pass: non-empty entries; younger than 24h; and either written before the current OS boot (`mtime < now - os.uptime()`, so every child it names is gone) or every recorded pid is dead. A rejected heartbeat is still consumed, so it can't be retried next boot.
+
+A clean shutdown deletes the heartbeat — record 1 wins whenever it exists. Node's default action for SIGHUP is instant death; **do not remove the SIGHUP handler**, it is the whole reason a computer restart resumes at all (a closing terminal hangs up the controlling tty).
+
 ## /clear Detection
 
 `/clear` creates new transcript + sessionId; PID stays the same; `{pid}.json` updates in-place. Detection uses **only PID-based mechanisms** (spec: `specs/clear-detection-simplification.md`):

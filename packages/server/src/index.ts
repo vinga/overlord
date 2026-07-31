@@ -27,7 +27,7 @@ import { IntentSummarizer } from './ai/intentSummary.js';
 import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
 import { globalSettingsStore } from './session/globalSettingsStore.js';
-import { writeLiveAtShutdown, consumeLiveAtShutdown, type LiveAtShutdownEntry } from './session/liveAtShutdownStore.js';
+import { writeLiveAtShutdown, consumeLiveAtShutdown, writeLivePtyHeartbeat, clearLivePtyHeartbeat, consumeLivePtyFallback, type LiveAtShutdownEntry, type LivePtyEntry } from './session/liveAtShutdownStore.js';
 import { clearJiraTitleCache } from './session/jiraTitleCache.js';
 import { artifactStore } from './artifacts/artifactStore.js';
 import { ArtifactWatcher } from './artifacts/artifactWatcher.js';
@@ -776,10 +776,21 @@ try {
 // the toggle off the file would otherwise survive across boots, and a later
 // crash (which writes no capture) would resume a set from some much older
 // shutdown. One capture ⇒ exactly one boot.
-const liveAtShutdown = consumeLiveAtShutdown();
+let liveAtShutdown = consumeLiveAtShutdown();
 console.log(liveAtShutdown === null
   ? '[startup] no live-at-shutdown capture (crash or first run)'
   : `[startup] live-at-shutdown capture: ${liveAtShutdown.length} session(s)`);
+if (liveAtShutdown === null) {
+  // No clean capture ⇒ the server died without running shutdown(): a computer
+  // restart (terminal teardown SIGHUPs/SIGKILLs us), a panic, or kill -9. Fall
+  // back to the heartbeat mirror, which only reports a set it can prove is
+  // safe to resume (see consumeLivePtyFallback's three guards).
+  liveAtShutdown = consumeLivePtyFallback();
+  if (liveAtShutdown) console.log(`[startup] recovered ${liveAtShutdown.length} session(s) from live-pty heartbeat (unclean shutdown)`);
+} else {
+  // The clean capture is authoritative; drop any heartbeat left behind.
+  clearLivePtyHeartbeat();
+}
 
 function autoResumePtySessions(): Promise<void> {
   return autoResumePtySessionsImpl({ stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker, liveAtShutdown });
@@ -795,6 +806,34 @@ processChecker.start((pids) => {
 setInterval(() => {
   stateManager.cleanupStaleSessions();
 }, 60_000).unref();
+
+/** Current live embedded-PTY set: what auto-resume would bring back if the
+ *  server died right now. Shared by the heartbeat and by shutdown()'s capture. */
+function buildLivePtyEntries(): LivePtyEntry[] {
+  const live: LivePtyEntry[] = [];
+  for (const [ovrId, ptyId] of ovrToPty) {
+    const sid = sessionStore.getByOverlordId(ovrId)?.lineage.currentSessionId;
+    if (sid) live.push({ ovrId, sessionId: sid, pid: ptyManager.getPid(ptyId) ?? 0 });
+  }
+  return live;
+}
+
+// Mirror the live PTY set to disk so an unclean death (computer restart, panic,
+// kill -9) still has a record to auto-resume from — shutdown() only runs on
+// SIGTERM/SIGINT/SIGHUP. Write-on-change only: an idle office writes nothing.
+let lastHeartbeatKey = '';
+setInterval(() => {
+  try {
+    const entries = buildLivePtyEntries();
+    const key = entries.map(e => `${e.ovrId}:${e.sessionId}:${e.pid}`).sort().join('|');
+    if (key === lastHeartbeatKey) return;
+    lastHeartbeatKey = key;
+    if (entries.length === 0) clearLivePtyHeartbeat();
+    else writeLivePtyHeartbeat(entries);
+  } catch (err) {
+    console.warn('[live-pty] heartbeat tick failed:', (err as Error).message);
+  }
+}, 15_000).unref();
 
 // Delete overlord-session files whose transcripts are missing or untouched
 // for >2 days. Protected: every record hydrated into stateManager on boot
@@ -929,22 +968,22 @@ async function shutdown(signal: string) {
   wss.clients.forEach(client => {
     try { client.send(JSON.stringify({ type: 'server:shutdown' })); } catch { /* ignore */ }
   });
-  // 2. Flush any pending SessionStore writes so durable state lands on disk
+  // 2. Record which sessions have a live PTY right now — after killAll the
+  //    in-memory map is gone. Consumed once by auto-resume on next boot.
+  //    FIRST, before any await: the OS grace period during a logout/restart can
+  //    end mid-shutdown, and a lost capture means nothing auto-resumes.
+  try {
+    const live: LiveAtShutdownEntry[] = buildLivePtyEntries().map(({ ovrId, sessionId }) => ({ ovrId, sessionId }));
+    writeLiveAtShutdown(live);
+    console.log(`[shutdown] captured ${live.length} live PTY session(s) for auto-resume`);
+    // The clean capture supersedes the heartbeat mirror.
+    clearLivePtyHeartbeat();
+  } catch { /* ignore */ }
+  // 2b. Flush any pending SessionStore writes so durable state lands on disk
   try { await sessionStore.flushAll(); } catch { /* ignore */ }
   // 2c. Flush pending artifact writes and stop watcher
   try { await artifactStore.flushAll(); } catch { /* ignore */ }
   try { await artifactWatcher.stop(); } catch { /* ignore */ }
-  // 2d. Record which sessions have a live PTY right now — after killAll the
-  //     in-memory map is gone. Consumed once by auto-resume on next boot.
-  try {
-    const live: LiveAtShutdownEntry[] = [];
-    for (const ovrId of ovrToPty.keys()) {
-      const sid = sessionStore.getByOverlordId(ovrId)?.lineage.currentSessionId;
-      if (sid) live.push({ ovrId, sessionId: sid });
-    }
-    writeLiveAtShutdown(live);
-    console.log(`[shutdown] captured ${live.length} live PTY session(s) for auto-resume`);
-  } catch { /* ignore */ }
   // 3. Kill embedded PTY sessions gracefully (SIGTERM, not SIGKILL)
   //    so Claude CLI can clean up. Bridge sessions survive — they're external.
   ptyManager.killAll();
@@ -959,6 +998,10 @@ async function shutdown(signal: string) {
 }
 process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
 process.on('SIGINT', () => { void shutdown('SIGINT'); });
+// A closing terminal (window closed, logout, computer restart) hangs up the
+// controlling tty — node's default action for SIGHUP is to die instantly, which
+// skipped the auto-resume capture entirely. Handle it like any other stop.
+process.on('SIGHUP', () => { void shutdown('SIGHUP'); });
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] uncaughtException:', err);
   process.exit(1);

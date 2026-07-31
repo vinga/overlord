@@ -59,13 +59,14 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 
 ## Session Lifecycle
 
-See `docs/session-lifecycle.md` for lineage/persistence, boot hydration & purge, PTY liveness, /clear detection. Highlights:
+See `docs/session-lifecycle.md` for lineage/persistence, boot hydration & purge, PTY liveness, auto-resume, /clear detection. Highlights:
 
 - `OverlordSession` is the single source of truth for `color`, `proposedName`, `intent`, `gitBranch`, `sessionType`. No second cache.
 - `OverlordSession.lastActivity` is seed-only — use transcript mtime for freshness.
 - Boot hydrates every active record into `this.sessions` (no transcript gate). Purge skips hydrated ovrIds.
 - `Session.ptyAlive` (server truth) > client-side `isPty` for "attached" UI.
 - /clear detection: 4 PID-based paths only. Do NOT add new ones.
+- Auto-resume needs a live-set record: `live-at-shutdown.json` (clean stop) or the `live-pty.json` 15s heartbeat (reboot / kill -9). Keep the `SIGHUP` handler in `index.ts` — without it a computer restart resumes nothing.
 
 ## Plan-Driven Development
 
