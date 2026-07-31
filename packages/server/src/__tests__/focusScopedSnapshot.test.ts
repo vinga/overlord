@@ -1,11 +1,16 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import * as os from 'os';
 import * as fs from 'fs';
 import { join } from 'path';
 
 // Isolate the on-disk session store per run, like the other stateManager tests.
+// sessionStore resolves its baseDir from $HOME/$USERPROFILE — NOT $OVERLORD_HOME.
+// Stubbing the wrong var wrote fixture records (sid-a/sid-b/sid-empty under
+// /tmp/focus-room) straight into the real ~/.claude/overlord/overlord-sessions/,
+// where they hydrated as ghost workers on every server boot.
 const TMP = fs.mkdtempSync(join(os.tmpdir(), 'ovr-focus-'));
-vi.stubEnv('OVERLORD_HOME', TMP);
+process.env.HOME = TMP;
+process.env.USERPROFILE = TMP;
 
 const { StateManager } = await import('../session/stateManager.js');
 
