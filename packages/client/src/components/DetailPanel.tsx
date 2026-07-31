@@ -27,6 +27,12 @@ import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
 import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
+import {
+  setJiraProjectAllowlist,
+  hasJiraAllowlist,
+  browseKeyFromUrl,
+  collectInlineMatches,
+} from '../lib/jiraInline';
 import { useStickyUserMessage, type StickyUserMessage } from '../hooks/useStickyUserMessage';
 import { marked } from 'marked';
 
@@ -43,43 +49,11 @@ marked.use({
 
 const MARKDOWN_CACHE_MAX = 500;
 const markdownCache = new Map<string, string>();
-// Matches absolute Unix paths (/a/b/c) and Windows paths (C:\a\b or C:/a/b) with optional :line or :line:col suffix.
-const PATH_REGEX = /(?:\/[\w.\-+@]+){2,}(?::\d+(?::\d+)?)?|[A-Za-z]:[\\/](?:[\w.\-+@]+[\\/]?)+(?::\d+(?::\d+)?)?/g;
 
-// Inline JIRA keys in the feed. The transcript scanner only mines user-authored
-// text, so a key the assistant mentioned never becomes a chip on its own — these
-// tokens carry a hover `+` that pins it (POST /api/sessions/:id/jira-keys/:key).
-let jiraProjectsSource = '';
-let jiraKeyRegex: RegExp | null = null;
-/** Rebuild the matcher from the settings allowlist. markdownCache is keyed by
- *  text alone, so cached HTML would keep the previous tokens — clear it. */
+/** Feed the inline-ticket matcher from settings. markdownCache is keyed by text
+ *  alone, so HTML rendered under the previous allowlist has to go. */
 export function setJiraProjects(raw: string | undefined) {
-  const source = (raw ?? '').trim();
-  if (source === jiraProjectsSource) return;
-  jiraProjectsSource = source;
-  const tokens = source
-    .split(',')
-    .map((s) => s.trim().toUpperCase())
-    .filter((s) => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
-  jiraKeyRegex = tokens.length > 0
-    ? new RegExp(String.raw`\b(?:${tokens.join('|')})-\d{1,6}\b`, 'g')
-    : null;
-  markdownCache.clear();
-}
-
-// Ticket URLs — `https://acme.atlassian.net/browse/KEY`, optionally with a
-// query/hash. Matched whole so the token covers the URL rather than leaving a
-// bare key wrapped in loose text (and so PATH_REGEX can't claim /browse/KEY).
-const JIRA_URL_REGEX = /https?:\/\/[^\s<>"']+\/browse\/([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})/g;
-
-/** The allowlisted ticket key a `/browse/…` URL points at, or null. */
-function browseKeyFromUrl(url: string): string | null {
-  if (!jiraKeyRegex) return null;
-  const m = /\/browse\/([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})/.exec(url);
-  if (!m) return null;
-  const key = m[1].toUpperCase();
-  jiraKeyRegex.lastIndex = 0;
-  return jiraKeyRegex.test(key) ? key : null;
+  if (setJiraProjectAllowlist(raw)) markdownCache.clear();
 }
 
 /** `+` affordance appended to a ticket token; the delegated click handler in
@@ -92,39 +66,6 @@ function makeJiraAddButton(doc: Document, key: string): HTMLButtonElement {
   add.setAttribute('aria-label', `Add ${key} to this session's tickets`);
   add.textContent = '+';
   return add;
-}
-
-type InlineMatch = { index: number; text: string; kind: 'path' | 'jira'; key?: string };
-/** Path, bare-key and ticket-URL matches in one text node, left to right,
- *  overlaps dropped (a key inside a path — /repo/BACKEND-1/x — stays part of
- *  the path; a URL starts before the path buried in it, so the URL wins). */
-function collectInlineMatches(text: string): InlineMatch[] {
-  const found: InlineMatch[] = [];
-  let m: RegExpExecArray | null;
-  if (jiraKeyRegex) {
-    JIRA_URL_REGEX.lastIndex = 0;
-    while ((m = JIRA_URL_REGEX.exec(text))) {
-      const key = browseKeyFromUrl(m[0]);
-      if (key) found.push({ index: m.index, text: m[0], kind: 'jira', key });
-    }
-  }
-  PATH_REGEX.lastIndex = 0;
-  while ((m = PATH_REGEX.exec(text))) found.push({ index: m.index, text: m[0], kind: 'path' });
-  if (jiraKeyRegex) {
-    jiraKeyRegex.lastIndex = 0;
-    while ((m = jiraKeyRegex.exec(text))) found.push({ index: m.index, text: m[0], kind: 'jira', key: m[0] });
-  }
-  if (found.length < 2) return found;
-  // Longest first at equal offsets so an overlapping shorter match loses.
-  found.sort((a, b) => a.index - b.index || b.text.length - a.text.length);
-  const out: InlineMatch[] = [];
-  let end = 0;
-  for (const f of found) {
-    if (f.index < end) continue;
-    out.push(f);
-    end = f.index + f.text.length;
-  }
-  return out;
 }
 
 function linkifyPaths(html: string, wrapFences = true): string {
@@ -155,7 +96,7 @@ function linkifyPaths(html: string, wrapFences = true): string {
   // Ticket URLs are already anchors by the time we get here (marked autolinks
   // them), and the walker below skips anchor text — so pin them in place: keep
   // the link, hang a `+` off it. Anchors inside code fences are left alone.
-  if (jiraKeyRegex) {
+  if (hasJiraAllowlist()) {
     root.querySelectorAll('a[href]').forEach((a) => {
       if (a.closest('pre, code')) return;
       const key = browseKeyFromUrl(a.getAttribute('href') ?? '');
