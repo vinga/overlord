@@ -4,6 +4,7 @@ import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
 import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draftStore';
 import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
+import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
 import { getLaunchInfo } from '../types';
 import { PARK_REASON_MAX } from '../lib/review';
@@ -66,21 +67,56 @@ export function setJiraProjects(raw: string | undefined) {
   markdownCache.clear();
 }
 
-type InlineMatch = { index: number; text: string; kind: 'path' | 'jira' };
-/** Path and JIRA matches in one text node, left to right, overlaps dropped
- *  (a key inside a path — /repo/BACKEND-1/x — stays part of the path). */
+// Ticket URLs — `https://acme.atlassian.net/browse/KEY`, optionally with a
+// query/hash. Matched whole so the token covers the URL rather than leaving a
+// bare key wrapped in loose text (and so PATH_REGEX can't claim /browse/KEY).
+const JIRA_URL_REGEX = /https?:\/\/[^\s<>"']+\/browse\/([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})/g;
+
+/** The allowlisted ticket key a `/browse/…` URL points at, or null. */
+function browseKeyFromUrl(url: string): string | null {
+  if (!jiraKeyRegex) return null;
+  const m = /\/browse\/([A-Za-z][A-Za-z0-9]{1,9}-\d{1,6})/.exec(url);
+  if (!m) return null;
+  const key = m[1].toUpperCase();
+  jiraKeyRegex.lastIndex = 0;
+  return jiraKeyRegex.test(key) ? key : null;
+}
+
+/** `+` affordance appended to a ticket token; the delegated click handler in
+ *  DetailPanel turns it into a POST. */
+function makeJiraAddButton(doc: Document, key: string): HTMLButtonElement {
+  const add = doc.createElement('button');
+  add.className = 'jiraAddBtn';
+  add.setAttribute('tabindex', '-1');
+  add.setAttribute('title', `Add ${key} to this session's tickets`);
+  add.setAttribute('aria-label', `Add ${key} to this session's tickets`);
+  add.textContent = '+';
+  return add;
+}
+
+type InlineMatch = { index: number; text: string; kind: 'path' | 'jira'; key?: string };
+/** Path, bare-key and ticket-URL matches in one text node, left to right,
+ *  overlaps dropped (a key inside a path — /repo/BACKEND-1/x — stays part of
+ *  the path; a URL starts before the path buried in it, so the URL wins). */
 function collectInlineMatches(text: string): InlineMatch[] {
   const found: InlineMatch[] = [];
-  PATH_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
+  if (jiraKeyRegex) {
+    JIRA_URL_REGEX.lastIndex = 0;
+    while ((m = JIRA_URL_REGEX.exec(text))) {
+      const key = browseKeyFromUrl(m[0]);
+      if (key) found.push({ index: m.index, text: m[0], kind: 'jira', key });
+    }
+  }
+  PATH_REGEX.lastIndex = 0;
   while ((m = PATH_REGEX.exec(text))) found.push({ index: m.index, text: m[0], kind: 'path' });
   if (jiraKeyRegex) {
     jiraKeyRegex.lastIndex = 0;
-    while ((m = jiraKeyRegex.exec(text))) found.push({ index: m.index, text: m[0], kind: 'jira' });
+    while ((m = jiraKeyRegex.exec(text))) found.push({ index: m.index, text: m[0], kind: 'jira', key: m[0] });
   }
   if (found.length < 2) return found;
-  // Paths first at equal offsets so an overlapping key loses.
-  found.sort((a, b) => a.index - b.index || (a.kind === 'path' ? -1 : 1));
+  // Longest first at equal offsets so an overlapping shorter match loses.
+  found.sort((a, b) => a.index - b.index || b.text.length - a.text.length);
   const out: InlineMatch[] = [];
   let end = 0;
   for (const f of found) {
@@ -116,6 +152,19 @@ function linkifyPaths(html: string, wrapFences = true): string {
       wrapper.appendChild(pre);
     });
   }
+  // Ticket URLs are already anchors by the time we get here (marked autolinks
+  // them), and the walker below skips anchor text — so pin them in place: keep
+  // the link, hang a `+` off it. Anchors inside code fences are left alone.
+  if (jiraKeyRegex) {
+    root.querySelectorAll('a[href]').forEach((a) => {
+      if (a.closest('pre, code')) return;
+      const key = browseKeyFromUrl(a.getAttribute('href') ?? '');
+      if (!key || a.querySelector('.jiraAddBtn')) return;
+      a.setAttribute('data-jira-key', key);
+      a.className = `${a.className} inlineJiraKey`.trim();
+      a.appendChild(makeJiraAddButton(doc, key));
+    });
+  }
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       let p = node.parentElement;
@@ -144,16 +193,11 @@ function linkifyPaths(html: string, wrapFences = true): string {
         span.className = 'inlineFilePath';
         span.textContent = match.text;
       } else {
-        span.setAttribute('data-jira-key', match.text);
+        const key = match.key ?? match.text;
+        span.setAttribute('data-jira-key', key);
         span.className = 'inlineJiraKey';
         span.appendChild(doc.createTextNode(match.text));
-        const add = doc.createElement('button');
-        add.className = 'jiraAddBtn';
-        add.setAttribute('tabindex', '-1');
-        add.setAttribute('title', `Add ${match.text} to this session's tickets`);
-        add.setAttribute('aria-label', `Add ${match.text} to this session's tickets`);
-        add.textContent = '+';
-        span.appendChild(add);
+        span.appendChild(makeJiraAddButton(doc, key));
       }
       frag.appendChild(span);
       last = match.index + match.text.length;
@@ -984,6 +1028,16 @@ function ToolEntry({
   const skillName = tool.toolName === 'Skill' && tool.inputJson
     ? (() => { try { return (JSON.parse(tool.inputJson) as { skill?: string }).skill ?? null; } catch { return null; } })()
     : null;
+  const { breakNewlines, wrap } = useToolTextPrefs();
+  const argsText = useMemo(
+    () => (isArgsExpanded && breakNewlines && tool.inputJson) ? unescapeToolText(tool.inputJson) : tool.inputJson,
+    [tool.inputJson, breakNewlines, isArgsExpanded],
+  );
+  const resultText = useMemo(
+    () => (isResultExpanded && breakNewlines && tool.resultJson) ? unescapeToolText(tool.resultJson) : tool.resultJson,
+    [tool.resultJson, breakNewlines, isResultExpanded],
+  );
+  const showTextToggles = (isArgsExpanded && tool.inputJson) || (isResultExpanded && tool.resultJson);
   return (
     <div className={styles.toolEntry}>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
@@ -1064,11 +1118,29 @@ function ToolEntry({
         )}
         {skillName && <span className={styles.toolDesc}>{skillName}</span>}
       </div>
-      {isArgsExpanded && tool.inputJson && (
-        <pre className={styles.argsView}>{tool.inputJson}</pre>
+      {showTextToggles && (
+        <div className={styles.argsViewToggles}>
+          <button
+            className={`${styles.argsViewToggle} ${breakNewlines ? styles.argsViewToggleActive : ''}`}
+            title="Render escaped \n and \t as real line breaks"
+            onClick={(e) => { e.stopPropagation(); toggleBreakNewlines(); }}
+          >
+            \n
+          </button>
+          <button
+            className={`${styles.argsViewToggle} ${wrap ? styles.argsViewToggleActive : ''}`}
+            title="Soft-wrap long lines"
+            onClick={(e) => { e.stopPropagation(); toggleWrap(); }}
+          >
+            wrap
+          </button>
+        </div>
       )}
-      {isResultExpanded && tool.resultJson && (
-        <pre className={`${styles.argsView} ${tool.isError ? styles.resultViewError : styles.resultView}`}>{tool.resultJson}</pre>
+      {isArgsExpanded && argsText && (
+        <pre className={`${styles.argsView} ${wrap ? styles.argsViewWrap : ''}`}>{argsText}</pre>
+      )}
+      {isResultExpanded && resultText && (
+        <pre className={`${styles.argsView} ${wrap ? styles.argsViewWrap : ''} ${tool.isError ? styles.resultViewError : styles.resultView}`}>{resultText}</pre>
       )}
       {hasDiff && isDiffExpanded && (
         <div className={styles.diffView}>
@@ -1782,8 +1854,10 @@ export function DetailPanel({
       if (jiraToken) {
         const key = jiraToken.getAttribute('data-jira-key');
         if (!key) return;
-        e.preventDefault();
         const addBtn = (e.target as HTMLElement | null)?.closest('.jiraAddBtn');
+        // A tokenized ticket URL is still a real link — only the `+` and the
+        // bare-key tokens (which have no href) need the default suppressed.
+        if (addBtn || jiraToken.tagName !== 'A') e.preventDefault();
         if (addBtn && selectedSession?.sessionId) {
           // Optimistic: the chip lands on the next snapshot tick, which then
           // owns the class via the sync effect below.

@@ -2195,6 +2195,47 @@
   white-space: pre;
 }
 
+.argsViewWrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.argsViewToggles {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 6px;
+  margin-bottom: -2px;
+}
+
+.argsViewToggle {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 6px;
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  line-height: 1.7;
+}
+
+.argsViewToggle:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.argsViewToggleActive {
+  background: rgba(167, 139, 250, 0.15);
+  border-color: rgba(167, 139, 250, 0.3);
+  color: #a78bfa;
+}
+
+.argsViewToggleActive:hover {
+  background: rgba(167, 139, 250, 0.25);
+  color: #a78bfa;
+}
+
 .resultToggle {
   background: rgba(52, 211, 153, 0.12);
   border: 1px solid rgba(52, 211, 153, 0.25);
