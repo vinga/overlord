@@ -78,3 +78,63 @@ describe('useRoomHidden store', () => {
     expect(mod.isRoomHidden('r1')).toBe(true);
   });
 });
+
+describe('server sync', () => {
+  it('hide/unhide with cwd POST /api/room-config', async () => {
+    const { mod } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    mod.hideRoom('r1', '/repo/a');
+    mod.unhideRoom('r1', '/repo/a');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ cwd: '/repo/a', hidden: true });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ cwd: '/repo/a', hidden: false });
+  });
+
+  it('hide/unhide without cwd do not fetch', async () => {
+    const { mod } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    mod.hideRoom('r1');
+    mod.unhideRoom('r1');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('POST failure keeps local state', async () => {
+    const { mod } = await loadStore();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('down')));
+    mod.hideRoom('r1', '/repo/a');
+    expect(mod.isRoomHidden('r1')).toBe(true);
+  });
+
+  it('unhideAll POSTs hidden:false for each hidden room with known cwd', async () => {
+    const { mod } = await loadStore();
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+    mod.hideRoom('r1');
+    mod.hideRoom('r2');
+    mod.unhideAll([{ id: 'r1', cwd: '/repo/a' }, { id: 'r2', cwd: '/repo/b' }, { id: 'r3', cwd: '/repo/c' }]);
+    expect(mod.isRoomHidden('r1')).toBe(false);
+    const bodies = fetchMock.mock.calls.map(c => JSON.parse(c[1].body));
+    expect(bodies).toEqual([
+      { cwd: '/repo/a', hidden: false },
+      { cwd: '/repo/b', hidden: false },
+    ]);
+  });
+
+  it('seedFromServer union-merges hidden rooms once', async () => {
+    const { mod, localStorage } = await loadStore({ [STORAGE_KEY]: JSON.stringify({ local: true }) });
+    mod.seedFromServer([
+      { id: 'srv', hidden: true },
+      { id: 'visible' },
+    ]);
+    expect(mod.isRoomHidden('srv')).toBe(true);
+    expect(mod.isRoomHidden('local')).toBe(true);
+    expect(mod.isRoomHidden('visible')).toBe(false);
+    // second seed is ignored — local unhide stays authoritative
+    mod.unhideRoom('srv');
+    mod.seedFromServer([{ id: 'srv', hidden: true }]);
+    expect(mod.isRoomHidden('srv')).toBe(false);
+    expect(JSON.parse(localStorage.store.get(STORAGE_KEY)!)).toEqual({ local: true });
+  });
+});

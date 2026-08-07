@@ -424,6 +424,7 @@ export interface Room {
   };
   gitWarning?: string;  // present when gh/git pr lookup failed
   description?: string;  // free-form per-room notes; first line renders in header
+  hidden?: boolean;  // persisted room-config hidden flag; client union-seeds its local store from it
 }
 
 export interface GlobalSettings {

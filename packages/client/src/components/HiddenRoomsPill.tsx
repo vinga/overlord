@@ -6,7 +6,7 @@ interface HiddenRoomsPillProps {
   hiddenRooms: Room[];
   /** Sessions in hidden rooms currently waiting for input (unreviewed). */
   attentionCount: number;
-  onUnhide: (roomId: string) => void;
+  onUnhide: (roomId: string, cwd?: string) => void;
   onUnhideAll: () => void;
 }
 
@@ -82,7 +82,7 @@ export function HiddenRoomsPill({ hiddenRooms, attentionCount, onUnhide, onUnhid
                 key={room.id}
                 className={styles.row}
                 role="menuitem"
-                onClick={() => onUnhide(room.id)}
+                onClick={() => onUnhide(room.id, room.cwd)}
                 title={room.cwd}
               >
                 <span className={styles.roomDot} style={{ background: dotColor }} />

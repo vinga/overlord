@@ -773,10 +773,11 @@ export function registerApiRoutes(
   });
 
   app.post('/api/room-config', express.json(), (req, res) => {
-    const { cwd, prefix, description, lastMode, lastProvider } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string; lastMode?: string; lastProvider?: string };
+    const { cwd, prefix, description, lastMode, lastProvider, hidden } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string; lastMode?: string; lastProvider?: string; hidden?: boolean };
     if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
     if (prefix !== undefined && typeof prefix !== 'string') { res.status(400).json({ error: 'prefix must be a string' }); return; }
     if (description !== undefined && typeof description !== 'string') { res.status(400).json({ error: 'description must be a string' }); return; }
+    if (hidden !== undefined && typeof hidden !== 'boolean') { res.status(400).json({ error: 'hidden must be a boolean' }); return; }
     const validModes = ['embedded', 'bridge', 'plain', 'raw'] as const;
     const validProviders = ['claude', 'opencode'] as const;
     if (lastMode !== undefined && !validModes.includes(lastMode as typeof validModes[number])) {
@@ -794,6 +795,7 @@ export function registerApiRoutes(
       description: description !== undefined ? description : current.description,
       lastMode: lastMode !== undefined ? (lastMode as typeof validModes[number]) : current.lastMode,
       lastProvider: lastProvider !== undefined ? (lastProvider as typeof validProviders[number]) : current.lastProvider,
+      hidden: hidden !== undefined ? (hidden || undefined) : current.hidden,
     });
     res.json({ ok: true });
   });

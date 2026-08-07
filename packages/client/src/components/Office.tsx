@@ -6,7 +6,7 @@ import { QueueRail } from './QueueRail';
 import { ScratchpadPopup } from './ScratchpadPopup';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
 import { expandRoom } from '../hooks/useRoomCollapsed';
-import { useRoomHidden, unhideRoom } from '../hooks/useRoomHidden';
+import { useRoomHidden, unhideRoom, seedFromServer } from '../hooks/useRoomHidden';
 import { HiddenRoomsPill } from './HiddenRoomsPill';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './Office.module.css';
@@ -222,6 +222,12 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
 
   const { map: hiddenMap, unhide, unhideAll } = useRoomHidden();
 
+  // Merge server-persisted hidden rooms into the local store (once per page
+  // load) so hidden state survives fresh browsers and cleared localStorage.
+  useEffect(() => {
+    if (rooms.length > 0) seedFromServer(rooms);
+  }, [rooms]);
+
   const visibleRooms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     let filtered = rooms.filter(room => room.sessions.length > 0);
@@ -294,7 +300,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         r.sessions.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId)
       );
       if (!room) return;
-      unhideRoom(room.id);
+      unhideRoom(room.id, room.cwd);
       expandRoom(room.id);
       document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -366,7 +372,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           hiddenRooms={hiddenRooms}
           attentionCount={hiddenAttentionCount}
           onUnhide={unhide}
-          onUnhideAll={unhideAll}
+          onUnhideAll={() => unhideAll(hiddenRooms)}
         />
         {onOpenAdvancedSearch && (
           <button
@@ -403,7 +409,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             ) : hiddenRooms.length > 0 && !searchQuery.trim() ? (
               <>
                 <span className={styles.emptyText}>All rooms hidden</span>
-                <button className={styles.emptyShowAll} onClick={unhideAll}>Show all</button>
+                <button className={styles.emptyShowAll} onClick={() => unhideAll(hiddenRooms)}>Show all</button>
               </>
             ) : (
               <>

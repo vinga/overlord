@@ -11,6 +11,8 @@ export interface RoomConfig {
   description: string;
   lastMode?: RoomLastMode;
   lastProvider?: RoomLastProvider;
+  /** Room hidden in the office view. Only `true` is stored; absent = visible. */
+  hidden?: boolean;
 }
 
 const DEFAULT_CONFIG: RoomConfig = { prefix: '', description: '' };
@@ -86,6 +88,7 @@ function loadFromDisk(cwd: string): RoomConfig {
         ? (parsed.lastMode as RoomLastMode)
         : undefined,
       lastProvider: parsed.lastProvider === 'opencode' ? 'opencode' : parsed.lastProvider === 'claude' ? 'claude' : undefined,
+      hidden: parsed.hidden === true ? true : undefined,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

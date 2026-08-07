@@ -672,7 +672,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
         </button>
         <button
           className={`${styles.hideBtn} ${hidden ? styles.hideBtnActive : ''}`}
-          onClick={() => (hidden ? unhide(room.id) : hide(room.id))}
+          onClick={() => (hidden ? unhide(room.id, room.cwd) : hide(room.id, room.cwd))}
           data-tooltip={hidden ? 'Show room' : 'Hide room'}
           data-tooltip-dir="down"
           aria-label={hidden ? 'Show room' : 'Hide room'}

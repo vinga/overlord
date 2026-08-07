@@ -190,6 +190,7 @@ interface Room {
   };
   gitWarning?: string;
   description?: string;
+  hidden?: boolean;       // server-persisted hidden flag (room config)
 }
 
 interface ArchiveEntry {

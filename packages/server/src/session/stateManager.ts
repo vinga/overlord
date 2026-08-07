@@ -2493,6 +2493,7 @@ export class StateManager {
       }
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;
+      if (cfg.hidden) room.hidden = true;
     }
     this.gitWatcher.retain(activeCwds);
     this.prCache.retain(activeCwds);
