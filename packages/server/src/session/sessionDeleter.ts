@@ -1,8 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
-import { execSync } from 'child_process';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
+import { killProcessTree } from '../pty/processTree.js';
 import { deleteLog as deleteShellHistoryLog } from '../pty/shellHistoryLog.js';
 import { sessionStore } from './sessionStore.js';
 import { bridgeManager } from '../pty/pipeInjector.js';
@@ -46,10 +46,15 @@ export function deleteSession(
   const { stateManager, ptyManager, ovrToPty, ptyToOvr, bridgePermText, bridgePermMode, linkedBridgeSessions, bridgeIdOverrides } = deps;
   const caller = reason ?? new Error().stack?.split('\n')[2]?.trim() ?? 'unknown';
   log('session:killed', `Session deleted (${caller})`, { sessionId, sessionName: sessionId.slice(0, 8), extra: pid ? `PID ${pid}` : 'no PID' });
-  console.log(`[deleteSession] sessionId=${sessionId} pid=${pid} reason=${caller}`);
+  console.log(`[deleteSession] sessionId=${sessionId} pid=${pid ?? 'unset'} reason=${caller}`);
 
   // Capture refs that later cleanup needs — stateManager.remove wipes them.
   const existing = stateManager.getSession(sessionId);
+  // Delete always terminates the process. Callers that know the pid pass it;
+  // the rest (REST delete used to pass one only for bridge sessions) fall back
+  // to the record, so an external/adopted session isn't left running headless
+  // after its card is gone.
+  const effectivePid = pid ?? existing?.pid;
   const ovrId = existing?.overlordId;
   const ptyId = ovrId ? ovrToPty.get(ovrId) : undefined;
   const wasBridge = stateManager.isBridge(sessionId);
@@ -87,14 +92,12 @@ export function deleteSession(
   // SLOW PATH — process kill + file I/O deferred so the snapshot broadcast
   // (queued by stateManager.remove via setImmediate) fires first.
   setImmediate(() => {
-    if (pid) {
-      try {
-        try { execSync(`pkill -P ${pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
-        execSync(`kill -9 ${pid}`, { stdio: 'ignore' });
-        console.log(`[deleteSession] killed pid=${pid} via kill -9`);
-      } catch {
-        // Process already dead — fine
-      }
+    if (effectivePid) {
+      // Whole subtree, not just direct children — MCP servers hang 2–3 levels
+      // below Claude (claude → `npm exec <pkg>` → <pkg> → node) and the old
+      // one-level `pkill -P` left the actual server running as an orphan.
+      killProcessTree(effectivePid);
+      console.log(`[deleteSession] killed process tree for pid=${effectivePid}`);
     }
 
     const sessionFile = join(os.homedir(), '.claude', 'sessions', `${sessionId}.json`);

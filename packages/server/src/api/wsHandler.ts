@@ -21,6 +21,7 @@ import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSession
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
 import { sessionStore } from '../session/sessionStore.js';
 import { globalSettingsStore } from '../session/globalSettingsStore.js';
+import { killProcessTree } from '../pty/processTree.js';
 
 export interface WsHandlerContext {
   stateManager: StateManager;
@@ -949,8 +950,30 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       }
 
       if (type === 'session:close') {
+        // Close terminates the process; it does NOT delete anything. The
+        // OverlordSession record, transcript and history all survive, so the
+        // card stays in the office and can be resumed on demand.
+        //
+        // Killing here is what keeps auto-resume honest: the live-at-shutdown
+        // capture is built from ovrToPty (index.ts buildLivePtyEntries), so a
+        // close that left the PTY running was re-spawned on the next restart.
         const sessionId = String(msg.sessionId ?? '');
+        const session = stateManager.getSession(sessionId);
+        const ovrId = session?.overlordId ?? sessionId;
+        const ptyId = ovrToPty.get(ovrId);
+        if (ptyId) {
+          ptyManager.kill(ptyId);           // kills the whole subtree (MCP servers included)
+          ptyToOvr.delete(ptyId);
+          ovrToPty.delete(ovrId);
+          const tracked = wsSessionMap.get(ws);
+          if (tracked) { tracked.delete(ovrId); tracked.delete(ptyId); }
+        } else if (session?.pid) {
+          // Bridge / externally-launched session: no PTY of ours, kill the
+          // Claude process directly.
+          killProcessTree(session.pid);
+        }
         stateManager.markClosed(sessionId);
+        console.log(`[session:close] closed ${sessionId.slice(0, 8)}${ptyId ? ` (pty ${ptyId})` : ''}`);
         return;
       }
 

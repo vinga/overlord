@@ -35,6 +35,7 @@ import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
 import { WORKER_ICONS, isWorkerIcon } from '../types.js';
+import { killProcessTree } from '../pty/processTree.js';
 
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -603,8 +604,8 @@ export function registerApiRoutes(
     const session = stateManager.getSession(sessionId);
     if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
     try {
-      try { execSync(`pkill -P ${session.pid}`, { stdio: 'ignore' }); } catch { /* no children */ }
-      execSync(`kill -9 ${session.pid}`, { stdio: 'ignore' });
+      // Whole subtree — MCP servers sit 2–3 levels below Claude.
+      killProcessTree(session.pid);
       const killedName = session.proposedName ?? sessionId.slice(0, 8);
       log('session:killed', 'Process killed', { sessionId, sessionName: killedName, extra: 'PID ' + session.pid });
       res.json({ ok: true });
@@ -613,13 +614,13 @@ export function registerApiRoutes(
     }
   });
 
-  // Delete a session from state (removes from UI; kills the process for bridge sessions)
+  // Delete a session: removes it from state AND kills its process tree
+  // (Claude + every MCP server below it), for every session type.
   app.delete('/api/sessions/:sessionId', (req, res) => {
     const { sessionId } = req.params;
     const session = stateManager.getSession(sessionId);
     if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
-    const pidToKill = session.sessionType === 'bridge' ? session.pid : undefined;
-    deleteSession(sessionId, pidToKill, 'session:delete (REST)');
+    deleteSession(sessionId, session.pid, 'session:delete (REST)');
     res.json({ ok: true });
   });
 
@@ -1383,7 +1384,10 @@ export function registerApiRoutes(
       const capturedLastMessage = session.lastMessage;
       const capturedLastActivity = session.lastActivity;
       const capturedModel = session.model;
-      const pidToKill = capturedSessionType === 'bridge' ? capturedPid : undefined;
+      // Archive terminates the session for every type, not just bridge — an
+      // archived card whose Claude (and MCP servers) kept running was the
+      // source of leaked processes and of auto-resume re-spawning it.
+      const pidToKill = capturedPid;
 
       // FAST PATH: yank session from state IMMEDIATELY, before any git/transcript I/O.
       // The setImmediate yield flushes the snapshot broadcast so the worker disappears

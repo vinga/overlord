@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
 import * as os from 'os';
+import { killProcessTree } from './processTree.js';
 
 let pty: typeof import('node-pty') | null = null;
 try {
@@ -108,7 +109,14 @@ export class PtyManager extends EventEmitter {
   }
 
   kill(sessionId: string): void {
-    this.sessions.get(sessionId)?.kill();
+    const proc = this.sessions.get(sessionId);
+    if (!proc) return;
+    // node-pty's kill signals the pty leader only; MCP servers spawned by Claude
+    // (claude → `npm exec <pkg>` → <pkg> → node) survive as orphans. Sweep the
+    // subtree first, while the ppid links still point at this pid.
+    const pid = proc.pid;
+    if (pid) killProcessTree(pid);
+    proc.kill();
     this.sessions.delete(sessionId);
   }
 
