@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
-import { join, resolve, dirname, basename } from 'path';
+import { join, resolve, dirname, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
 import { readGridText, serializeGrid } from '../pty/screenGrid.js';
@@ -35,6 +35,18 @@ import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
 import { WORKER_ICONS, isWorkerIcon } from '../types.js';
+
+const IMAGE_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+};
 
 /** Brain file routes only ever touch ~/.claude/ or the room's own cwd — never arbitrary paths. */
 export function isInBrainScope(resolved: string, cwd: string): boolean {
@@ -903,6 +915,21 @@ export function registerApiRoutes(
       let writable = false;
       try { fs.accessSync(filePath, fs.constants.W_OK); writable = true; } catch { /* read-only */ }
       res.json({ content, writable });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Raw binary serving for the inline file viewer — image types only.
+  app.get('/api/file-raw', (req, res) => {
+    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
+    const mime = IMAGE_MIME[extname(filePath).slice(1).toLowerCase()];
+    if (!mime) { res.status(415).json({ error: 'unsupported type' }); return; }
+    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
+    try {
+      res.setHeader('Content-Type', mime);
+      res.send(fs.readFileSync(filePath));
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

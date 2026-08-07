@@ -30,8 +30,9 @@ import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
 import {
   setJiraProjectAllowlist,
   hasJiraAllowlist,
-  browseKeyFromUrl,
+  urlTicketKey,
   collectInlineMatches,
+  splitPathLine,
 } from '../lib/jiraInline';
 import { useStickyUserMessage, type StickyUserMessage } from '../hooks/useStickyUserMessage';
 import { marked } from 'marked';
@@ -99,19 +100,23 @@ function linkifyPaths(html: string, wrapFences = true): string {
   if (hasJiraAllowlist()) {
     root.querySelectorAll('a[href]').forEach((a) => {
       if (a.closest('pre, code')) return;
-      const key = browseKeyFromUrl(a.getAttribute('href') ?? '');
+      const key = urlTicketKey(a.getAttribute('href') ?? '');
       if (!key || a.querySelector('.jiraAddBtn')) return;
       a.setAttribute('data-jira-key', key);
       a.className = `${a.className} inlineJiraKey`.trim();
       a.appendChild(makeJiraAddButton(doc, key));
     });
   }
+  // Code contexts are walked too — paths in backticks are the most common
+  // presentation — but only `path` matches are wrapped there, in a span that
+  // stays visually silent until hover. Jira tokens (and their `+` buttons)
+  // never enter code. Span wrapping keeps `textContent` byte-identical, so
+  // copy-paste and the mdFence render toggle are unaffected.
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
       let p = node.parentElement;
       while (p && p !== root) {
-        const tag = p.tagName;
-        if (tag === 'CODE' || tag === 'PRE' || tag === 'A') return NodeFilter.FILTER_REJECT;
+        if (p.tagName === 'A') return NodeFilter.FILTER_REJECT;
         p = p.parentElement;
       }
       return NodeFilter.FILTER_ACCEPT;
@@ -122,7 +127,9 @@ function linkifyPaths(html: string, wrapFences = true): string {
   while ((n = walker.nextNode())) textNodes.push(n as Text);
   for (const tn of textNodes) {
     const text = tn.nodeValue ?? '';
-    const matches = collectInlineMatches(text);
+    const inCode = tn.parentElement?.closest('pre, code') != null;
+    let matches = collectInlineMatches(text);
+    if (inCode) matches = matches.filter((m) => m.kind === 'path');
     if (matches.length === 0) continue;
     const frag = doc.createDocumentFragment();
     let last = 0;
@@ -130,8 +137,10 @@ function linkifyPaths(html: string, wrapFences = true): string {
       if (match.index > last) frag.appendChild(doc.createTextNode(text.slice(last, match.index)));
       const span = doc.createElement('span');
       if (match.kind === 'path') {
-        span.setAttribute('data-file-path', match.text.replace(/:\d+(?::\d+)?$/, ''));
-        span.className = 'inlineFilePath';
+        const { path, line } = splitPathLine(match.text);
+        span.setAttribute('data-file-path', path);
+        if (line !== undefined) span.setAttribute('data-file-line', String(line));
+        span.className = inCode ? 'inlineFilePathCode' : 'inlineFilePath';
         span.textContent = match.text;
       } else {
         const key = match.key ?? match.text;
@@ -1755,11 +1764,11 @@ export function DetailPanel({
 
   const jiraBaseUrl = useJiraBaseUrl();
 
-  const [fileEditorPath, setFileEditorPath] = useState<string | null>(null);
+  const [fileEditorTarget, setFileEditorTarget] = useState<{ path: string; line?: number } | null>(null);
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ path: string }>).detail;
-      if (detail?.path) setFileEditorPath(detail.path);
+      const detail = (e as CustomEvent<{ path: string; line?: number }>).detail;
+      if (detail?.path) setFileEditorTarget({ path: detail.path, line: detail.line });
     };
     const clickHandler = (e: MouseEvent) => {
       const fenceToggle = (e.target as HTMLElement | null)?.closest('.mdFenceToggle') as HTMLElement | null;
@@ -1820,15 +1829,17 @@ export function DetailPanel({
         const path = target.getAttribute('data-file-path');
         if (path) {
           e.preventDefault();
-          setFileEditorPath(path);
+          const lineAttr = target.getAttribute('data-file-line');
+          const line = lineAttr ? parseInt(lineAttr, 10) : undefined;
+          setFileEditorTarget({ path, line: Number.isFinite(line) ? line : undefined });
         }
       }
     };
     const keyHandler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
         e.preventDefault();
-        const path = window.prompt('Open file (absolute path):', selectedSession?.cwd ? `${selectedSession.cwd}/CLAUDE.md` : '');
-        if (path) setFileEditorPath(path);
+        const raw = window.prompt('Open file (absolute path):', selectedSession?.cwd ? `${selectedSession.cwd}/CLAUDE.md` : '');
+        if (raw) setFileEditorTarget(splitPathLine(raw.trim()));
       }
     };
     window.addEventListener('overlord:openFile', handler);
@@ -4198,11 +4209,12 @@ const currentDisplayName =
           </>
         )}
       </div>
-      {fileEditorPath && (
+      {fileEditorTarget && (
         <FileEditorOverlay
-          path={fileEditorPath}
+          path={fileEditorTarget.path}
+          line={fileEditorTarget.line}
           cwd={selectedSession?.cwd}
-          onClose={() => setFileEditorPath(null)}
+          onClose={() => setFileEditorTarget(null)}
         />
       )}
       {showSkillPicker && selectedSession && (

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { marked } from 'marked';
 import styles from './FileEditorOverlay.module.css';
 
@@ -22,15 +22,24 @@ function renderMarkdown(text: string): string {
 
 const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
 
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
+
+function isImagePath(p: string): boolean {
+  const dot = p.lastIndexOf('.');
+  if (dot < 0) return false;
+  return IMAGE_EXTS.has(p.slice(dot + 1).toLowerCase());
+}
+
 interface Props {
   path: string;
+  line?: number;
   cwd?: string;
   onClose: () => void;
 }
 
 type Mode = 'preview' | 'edit';
 
-export function FileEditorOverlay({ path, cwd, onClose }: Props) {
+export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const [content, setContent] = useState('');
   const [original, setOriginal] = useState('');
   const [writable, setWritable] = useState(false);
@@ -46,9 +55,19 @@ export function FileEditorOverlay({ path, cwd, onClose }: Props) {
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isMarkdown = path.toLowerCase().endsWith('.md');
-  const isDirty = content !== original;
+  const isImage = isImagePath(path);
+  const isDirty = !isImage && content !== original;
+  // A line reference gets a numbered read-only code view (even for markdown —
+  // rendered-markdown lines don't map back to source lines).
+  const hasLineView = line !== undefined && !isImage;
+  const highlightRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (isImage) {
+      setLoading(false);
+      setTooLarge(false);
+      return;
+    }
     setLoading(true);
     setTooLarge(false);
     fetch(`/api/file?path=${encodeURIComponent(path)}`)
@@ -59,11 +78,23 @@ export function FileEditorOverlay({ path, cwd, onClose }: Props) {
         setContent(data.content);
         setOriginal(data.content);
         setWritable(data.writable);
-        if (!isMarkdown) setMode('edit');
+        if (line !== undefined) setMode('preview');
+        else if (!isMarkdown) setMode('edit');
         setLoading(false);
       })
       .catch((err) => { setSaveError(String(err)); setLoading(false); });
-  }, [path, isMarkdown]);
+  }, [path, isMarkdown, isImage, line]);
+
+  useEffect(() => {
+    if (!loading && mode === 'preview' && hasLineView) {
+      highlightRef.current?.scrollIntoView({ block: 'center' });
+    }
+  }, [loading, mode, hasLineView, line, path]);
+
+  const codeLines = useMemo(
+    () => (hasLineView && !loading ? content.split('\n') : null),
+    [hasLineView, loading, content],
+  );
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -127,7 +158,7 @@ export function FileEditorOverlay({ path, cwd, onClose }: Props) {
             {dirPart}<span>{filePart}</span>
           </div>
           <div className={styles.controls}>
-            {isMarkdown && (
+            {(isMarkdown || hasLineView) && (
               <div className={styles.toggleGroup}>
                 <button
                   className={`${styles.toggleBtn} ${mode === 'preview' ? styles.active : ''}`}
@@ -141,13 +172,15 @@ export function FileEditorOverlay({ path, cwd, onClose }: Props) {
             )}
             {saveFlash && <span className={styles.saveFlash}>{saveFlash}</span>}
             {saveError && !saveFlash && <span className={styles.saveError}>{saveError}</span>}
-            <button
-              className={styles.saveBtn}
-              onClick={handleSave}
-              disabled={!isDirty || !writable || saving}
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
+            {!isImage && (
+              <button
+                className={styles.saveBtn}
+                onClick={handleSave}
+                disabled={!isDirty || !writable || saving}
+              >
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            )}
             <button className={styles.closeBtn} onClick={handleClose} title="Close (Esc)">✕</button>
           </div>
         </div>
@@ -165,13 +198,41 @@ export function FileEditorOverlay({ path, cwd, onClose }: Props) {
               >Open in IDE</button>
             </div>
           )}
-          {!loading && !tooLarge && mode === 'preview' && isMarkdown && (
+          {!loading && isImage && (
+            <div className={styles.imageWrap}>
+              {saveError
+                ? <span className={styles.saveError}>{saveError}</span>
+                : (
+                  <img
+                    className={styles.imageView}
+                    src={`/api/file-raw?path=${encodeURIComponent(path)}`}
+                    alt={filePart}
+                    onError={() => setSaveError('Failed to load image')}
+                  />
+                )}
+            </div>
+          )}
+          {!loading && !tooLarge && codeLines && mode === 'preview' && (
+            <div className={styles.codeView}>
+              {codeLines.map((text, i) => (
+                <div
+                  key={i}
+                  ref={i + 1 === line ? highlightRef : undefined}
+                  className={`${styles.codeLine} ${i + 1 === line ? styles.lineHighlight : ''}`}
+                >
+                  <span className={styles.lineNum}>{i + 1}</span>
+                  <span className={styles.lineText}>{text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {!loading && !tooLarge && !isImage && !hasLineView && mode === 'preview' && isMarkdown && (
             <div
               className={styles.markdownContent}
               dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
             />
           )}
-          {!loading && !tooLarge && mode === 'edit' && (
+          {!loading && !tooLarge && !isImage && mode === 'edit' && (
             <textarea
               className={styles.editTextarea}
               value={content}

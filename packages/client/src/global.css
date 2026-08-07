@@ -80,6 +80,21 @@
   border-bottom-color: rgba(232, 201, 124, 0.7);
 }
 
+/* Path inside inline code or a fenced block: visually silent until hover, so
+   code keeps looking like code. Click opens the same file overlay. */
+.inlineFilePathCode {
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.inlineFilePathCode:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  background: rgba(212, 175, 55, 0.12);
+}
+
 /* Inline JIRA key in the conversation feed. Quiet by default; hovering reveals
    a `+` that pins the ticket to the session's context. Keys already pinned get
    .jiraPinned (applied by DetailPanel after render) and drop the `+`. */
