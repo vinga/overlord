@@ -12,7 +12,7 @@ Target: Linear / Vercel / Raycast polish. Inter (sans-serif), not monospace, for
 
 ```bash
 npm run dev                              # server + client
-npm run dev --workspace=packages/server  # server only (port 3000, WS same)
+npm run dev --workspace=packages/server  # server only (port 3173, WS same)
 npm run dev --workspace=packages/client  # client only (port 5173)
 npm run build                            # production
 ```
@@ -76,7 +76,7 @@ Manage plans via the `overlord-plans` skill (REST to `/api/plans`). Flow: draft 
 
 ## Independence & Self-Testing
 
-Never ask the user to test something you can test yourself. Only ask when verification requires human judgment. If port 5173 or 3000 is not running — start it with `npm run dev`. Do not ask.
+Never ask the user to test something you can test yourself. Only ask when verification requires human judgment. If port 5173 or 3173 is not running — start it with `npm run dev`. Do not ask.
 
 ## Agent Usage
 

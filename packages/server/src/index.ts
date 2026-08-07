@@ -46,7 +46,7 @@ import type { OfficeSnapshot } from './types.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.OVERLORD_PORT) || 3173;
 
 const app = express();
 const httpServer = createServer(app);
@@ -949,10 +949,10 @@ httpServer.listen(PORT, () => {
 
 httpServer.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
-    console.log('[server] Port 3000 busy — killing old process and retrying...');
+    console.log(`[server] Port ${PORT} busy — killing old process and retrying...`);
     try {
       execSync(
-        'powershell -Command "Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -gt 0 } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"',
+        `powershell -Command "Get-NetTCPConnection -LocalPort ${PORT} -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -gt 0 } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
         { stdio: 'ignore' }
       );
     } catch (_) { /* ignore */ }

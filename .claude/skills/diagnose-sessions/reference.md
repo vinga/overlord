@@ -41,7 +41,7 @@ Architecture diagrams, known issues, and quick symptom lookup for session diagno
 **Recovery:** Usually self-heals when Overlord eventually re-links the live process to the session — `lastActivity` then jumps forward and the feed populates. If it doesn't, restart the server.
 
 **Diagnostic steps:**
-1. `curl -s http://localhost:3000/api/debug/state` — note the session's `pid`, `state`, `lastActivity`.
+1. `curl -s http://localhost:3173/api/debug/state` — note the session's `pid`, `state`, `lastActivity`.
 2. `ps -p <pid>` (or `tasklist /FI "PID eq <pid>"` on Windows) — is it alive?
 3. `stat -f "%m" <transcript.jsonl>` vs session's `lastActivity` — large gap = stuck.
 4. `grep -c '"type":"summary"' <transcript.jsonl>` — zero = NOT /clear.
@@ -57,7 +57,7 @@ When `/clear` is run in an IntelliJ terminal, the session file (named by PID) so
 `transferSessionIdentity()` sets `launchMethod = 'overlord-resume'` on old sessions after `/clear` detection. `getSnapshot()` was filtering ALL `overlord-resume` sessions, even when their successor had died or been closed. This caused old/closed sessions to vanish from the UI after a server restart when the successor was no longer alive. **Fix:** only hide `overlord-resume` sessions when their successor session is still alive (not closed).
 
 ### Server restart kills Claude sessions (FIXED)
-The `restart-server.md` command previously ran `Get-Process -Name 'node' | Stop-Process` which killed ALL node processes including active Claude sessions. **Fix:** the restart command now only kills processes that are listening on ports 3000 and 5173, leaving Claude sessions untouched.
+The `restart-server.md` command previously ran `Get-Process -Name 'node' | Stop-Process` which killed ALL node processes including active Claude sessions. **Fix:** the restart command now only kills processes that are listening on ports 3173 and 5173, leaving Claude sessions untouched.
 
 ### IDE session PID guard (IMPLEMENTED)
 `updateAlivePids()` now checks the transcript file mtime before closing IDE-launched sessions. If the transcript was written to within 60 seconds, the session stays alive even if the wrapper PID is dead. This mitigates the IntelliJ wrapper PID mismatch where the shell wrapper exits but Claude keeps running.

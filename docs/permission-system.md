@@ -403,7 +403,7 @@ The entire detection and injection system is guarded by `IS_WINDOWS` / `process.
 
 3. **Test `readScreen` manually.** Send a read command to the daemon:
    ```bash
-   curl -X POST http://localhost:3000/api/sessions/<sessionId>/inject \
+   curl -X POST http://localhost:3173/api/sessions/<sessionId>/inject \
      -H "Content-Type: application/json" \
      -d '{"text":""}'
    ```
@@ -473,17 +473,17 @@ With the server running (`npm run dev`), find a session ID from the WebSocket sn
 
 ```bash
 # Send Enter (Yes)
-curl -s -X POST http://localhost:3000/api/sessions/<sessionId>/inject \
+curl -s -X POST http://localhost:3173/api/sessions/<sessionId>/inject \
   -H "Content-Type: application/json" \
   -d '{"text":"\r"}'
 
 # Send Arrow-Down + Enter (Yes, allow this session)
-curl -s -X POST http://localhost:3000/api/sessions/<sessionId>/inject \
+curl -s -X POST http://localhost:3173/api/sessions/<sessionId>/inject \
   -H "Content-Type: application/json" \
   -d '{"text":"\u001b[B\r"}'
 
 # Send ESC (No)
-curl -s -X POST http://localhost:3000/api/sessions/<sessionId>/inject \
+curl -s -X POST http://localhost:3173/api/sessions/<sessionId>/inject \
   -H "Content-Type: application/json" \
   -d '{"text":"\u001b"}'
 ```
@@ -507,10 +507,10 @@ To test detection without waiting for a real permission dialog:
 
 ### Checking `needsPermission` State via WebSocket
 
-Connect to `ws://localhost:3000` and parse the `OfficeSnapshot`. The `session.needsPermission` and `session.permissionPromptText` fields are included in every snapshot broadcast. A simple test client:
+Connect to `ws://localhost:3173` and parse the `OfficeSnapshot`. The `session.needsPermission` and `session.permissionPromptText` fields are included in every snapshot broadcast. A simple test client:
 
 ```javascript
-const ws = new WebSocket('ws://localhost:3000');
+const ws = new WebSocket('ws://localhost:3173');
 ws.onmessage = (e) => {
   const snap = JSON.parse(e.data);
   if (snap.type === 'snapshot') {

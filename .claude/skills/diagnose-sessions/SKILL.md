@@ -25,7 +25,7 @@ This is the recurring class of problem: after a server restart, the user sees to
 ```bash
 echo "files on disk:"; ls ~/.claude/overlord/overlord-sessions/*.json 2>/dev/null | wc -l
 echo "tmp leftovers:"; ls ~/.claude/overlord/overlord-sessions/*.tmp 2>/dev/null | wc -l
-curl -s http://localhost:3000/api/debug/state | node -e "
+curl -s http://localhost:3173/api/debug/state | node -e "
 const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
 console.log('hydrated sessions:', d.sessions.length);
 const unnamed=d.sessions.filter(s=>!s.proposedName);
@@ -67,7 +67,7 @@ Non-zero result *after a restart* = hydration gate failed to drop them. Expected
 **0c. Find ptyAlive=false on embedded sessions (dangling PTY UI):**
 
 ```bash
-curl -s http://localhost:3000/api/debug/state | node -e "
+curl -s http://localhost:3173/api/debug/state | node -e "
 const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
 const bad=d.sessions.filter(s=>s.sessionType==='embedded' && s.ptyAlive===false && s.state!=='closed');
 console.log('Embedded + no live PTY + not closed:',bad.length);
@@ -90,7 +90,7 @@ Expected for sessions hydrated after restart: `ptyAlive: false` until user click
 Hit the debug endpoint and capture the full state:
 
 ```bash
-curl -s http://localhost:3000/api/debug/state
+curl -s http://localhost:3173/api/debug/state
 ```
 
 If the server is not running, note it and skip server-dependent checks.
@@ -100,7 +100,7 @@ Also capture the live WebSocket snapshot to compare what clients actually see:
 ```bash
 cd C:/projekty/overlord && node -e "
 const ws = require('ws');
-const client = new ws('ws://localhost:3000');
+const client = new ws('ws://localhost:3173');
 client.on('message', (data) => {
   const msg = JSON.parse(data);
   if (msg.type === 'snapshot') {
@@ -309,7 +309,7 @@ const path = require('path');
 const home = require('os').homedir();
 const projDir = path.join(home, '.claude', 'projects');
 const http = require('http');
-http.get('http://localhost:3000/api/debug/state', (res) => {
+http.get('http://localhost:3173/api/debug/state', (res) => {
   let data = '';
   res.on('data', c => data += c);
   res.on('end', () => {
@@ -344,7 +344,7 @@ For non-PTY sessions, read the actual console screen content via the screen-read
 
 ```bash
 # Read console screen for a specific session
-curl -s http://localhost:3000/api/sessions/SESSION_ID/screen | node -e "process.stdin.on('data', d => console.log(JSON.parse(d).text))"
+curl -s http://localhost:3173/api/sessions/SESSION_ID/screen | node -e "process.stdin.on('data', d => console.log(JSON.parse(d).text))"
 ```
 
 **Use this to:**
@@ -364,7 +364,7 @@ curl -s http://localhost:3000/api/sessions/SESSION_ID/screen | node -e "process.
 Use the dedicated identity endpoint to see the full ovrId ↔ claudeId ↔ ptyId mapping:
 
 ```bash
-curl -s http://localhost:3000/api/debug/identity | node -e "
+curl -s http://localhost:3173/api/debug/identity | node -e "
 const d = JSON.parse(require('fs').readFileSync('/dev/stdin', 'utf8'));
 console.log('Identities:');
 for (const i of d.identities) {

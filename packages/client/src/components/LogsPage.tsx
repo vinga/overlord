@@ -88,7 +88,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
     function connect() {
       if (!mountedRef.current) return;
 
-      const ws = new WebSocket('ws://localhost:3000');
+      const ws = new WebSocket('ws://localhost:3173');
       wsRef.current = ws;
 
       ws.onopen = () => {

@@ -11,11 +11,11 @@ export default defineConfig({
     },
     proxy: {
       '/ws': {
-        target: 'ws://localhost:3000',
+        target: 'ws://localhost:3173',
         ws: true,
       },
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:3173',
       },
     },
   },

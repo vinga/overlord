@@ -20,7 +20,7 @@ OVR_DIR="$HOME/.claude/overlord/overlord-sessions"
 PROJECTS_DIR="$HOME/.claude/projects"
 SHADOW_DIR="$HOME/.claude/overlord/transcripts"
 SESSIONS_DIR="$HOME/.claude/sessions"
-API="http://localhost:3000/api/debug/state"
+API="http://localhost:3173/api/debug/state"
 
 bold() { printf "\n\033[1m== %s ==\033[0m\n" "$1"; }
 warn() { printf "\033[33m%s\033[0m\n" "$1"; }

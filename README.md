@@ -26,7 +26,7 @@ npm run dev[CLAUDE.md](../../.claude/CLAUDE.md)
 ```
 
 - **Client:** http://localhost:5173
-- **Server / WebSocket:** http://localhost:3000
+- **Server / WebSocket:** http://localhost:3173
 
 ## Architecture
 

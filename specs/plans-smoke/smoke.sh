@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # V4: API smoke for /api/plans
-# Usage: BASE=http://localhost:3000 OVERLORD_ID=ovr-XXXX ./smoke.sh
+# Usage: BASE=http://localhost:3173 OVERLORD_ID=ovr-XXXX ./smoke.sh
 
 set -euo pipefail
-BASE="${BASE:-http://localhost:3000}"
+BASE="${BASE:-http://localhost:3173}"
 OVERLORD_ID="${OVERLORD_ID:?OVERLORD_ID required — pick a real overlordId}"
 
 echo "→ list (no filter)"
