@@ -66,6 +66,24 @@
 
 .emptyText {}
 
+.emptyShowAll {
+  margin-left: 10px;
+  padding: 3px 10px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 6px;
+  color: #d4af37;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.emptyShowAll:hover {
+  background: rgba(212, 175, 55, 0.16);
+  color: #f0c947;
+}
+
 .cursor {
   display: inline-block;
   animation: blink 1s step-end infinite;
@@ -128,6 +146,8 @@
   margin-left: auto;
   margin-right: 6px;
   width: 260px;
+  /* Shrinkable so the Hidden pill fits when the office column is narrow. */
+  min-width: 64px;
   padding: 6px 12px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -152,6 +172,7 @@
 
 .advSearchBtn {
   margin-right: 12px;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;

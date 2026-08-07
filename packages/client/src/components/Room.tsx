@@ -8,6 +8,7 @@ import styles from './Room.module.css';
 import { SpawnDialog } from './SpawnDialog';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
+import { useRoomHidden } from '../hooks/useRoomHidden';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
@@ -244,6 +245,8 @@ interface RoomProps {
   platform?: string;
   onRoomDragStart?: (e: React.DragEvent) => void;
   onRoomDragEnd?: () => void;
+  /** True when this room is hidden but rendered because it matches an active search. */
+  searchRevealed?: boolean;
 }
 
 function SpawningDesk({ name }: { name: string }) {
@@ -450,7 +453,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd }: RoomProps) {
+export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd, searchRevealed = false }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -493,6 +496,8 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
   const { getOrder, setOrder } = useRoomOrder();
   const { isCollapsed, toggle } = useRoomCollapsed();
   const collapsed = isCollapsed(room.id);
+  const { isHidden, hide, unhide } = useRoomHidden();
+  const hidden = isHidden(room.id);
 
   const isTerminalSpawning = terminalSpawnCwd === room.cwd;
 
@@ -665,6 +670,19 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             <polyline points="2 3 5 6 8 3" />
           </svg>
         </button>
+        <button
+          className={`${styles.hideBtn} ${hidden ? styles.hideBtnActive : ''}`}
+          onClick={() => (hidden ? unhide(room.id) : hide(room.id))}
+          data-tooltip={hidden ? 'Show room' : 'Hide room'}
+          data-tooltip-dir="down"
+          aria-label={hidden ? 'Show room' : 'Hide room'}
+        >
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z" />
+            <circle cx="8" cy="8" r="1.8" />
+            {hidden && <line x1="2.5" y1="2.5" x2="13.5" y2="13.5" />}
+          </svg>
+        </button>
         <div className={styles.roomNameStack}>
           <span
             className={`${styles.roomName} ${onRoomClick ? styles.roomNameClickable : ''}`}
@@ -684,6 +702,13 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
             );
           })()}
         </div>
+        {searchRevealed && (
+          <span
+            className={styles.hiddenBadge}
+            data-tooltip="This room is hidden — shown because it matches your search"
+            data-tooltip-dir="down"
+          >hidden</span>
+        )}
         {collapsed && (
           <div className={styles.collapsedChips}>
             {(['working', 'thinking', 'waiting', 'closed'] as const).map(state => {

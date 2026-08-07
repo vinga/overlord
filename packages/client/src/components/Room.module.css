@@ -71,6 +71,48 @@
   color: rgba(255, 255, 255, 0.7);
 }
 
+.hideBtn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: color 0.15s, opacity 0.15s;
+}
+
+.room:hover .hideBtn,
+.hideBtn:focus-visible,
+.hideBtnActive {
+  opacity: 1;
+}
+
+.hideBtn:hover {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.hideBtnActive {
+  color: rgba(212, 175, 55, 0.7);
+}
+
+.hiddenBadge {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(212, 175, 55, 0.85);
+  background: rgba(212, 175, 55, 0.1);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+
 .collapsedChips {
   display: flex;
   gap: 5px;

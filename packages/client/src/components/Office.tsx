@@ -6,6 +6,8 @@ import { QueueRail } from './QueueRail';
 import { ScratchpadPopup } from './ScratchpadPopup';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
 import { expandRoom } from '../hooks/useRoomCollapsed';
+import { useRoomHidden, unhideRoom } from '../hooks/useRoomHidden';
+import { HiddenRoomsPill } from './HiddenRoomsPill';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './Office.module.css';
 
@@ -218,9 +220,16 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     return fields.some(f => typeof f === 'string' && f.toLowerCase().includes(q));
   }, [customNames, notesSummaries, jiraMeta]);
 
+  const { map: hiddenMap, unhide, unhideAll } = useRoomHidden();
+
   const visibleRooms = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     let filtered = rooms.filter(room => room.sessions.length > 0);
+    // Hidden rooms leave the grid — except while a search is active, where a
+    // match must surface regardless (the room gets a "hidden" badge instead).
+    if (!q) {
+      filtered = filtered.filter(room => !hiddenMap[room.id]);
+    }
     if (activeOnly) {
       filtered = filtered
         .map(room => {
@@ -246,7 +255,16 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         .filter((r): r is NonNullable<typeof r> => r !== null);
     }
     return sortRooms(filtered);
-  }, [rooms, sortRooms, searchQuery, sessionMatches, activeOnly]);
+  }, [rooms, sortRooms, searchQuery, sessionMatches, activeOnly, hiddenMap]);
+
+  const { hiddenRooms, hiddenAttentionCount } = useMemo(() => {
+    const hr = rooms.filter(r => hiddenMap[r.id] && r.sessions.length > 0);
+    const n = hr.reduce(
+      (acc, r) => acc + r.sessions.filter(s => s.state === 'waiting' && s.review == null).length,
+      0,
+    );
+    return { hiddenRooms: hr, hiddenAttentionCount: n };
+  }, [rooms, hiddenMap]);
 
   // Register any room IDs not yet in persisted order (side-effect free from render)
   useEffect(() => {
@@ -269,13 +287,14 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       const sel = CSS.escape(selectedSessionId);
       const desk = document.querySelector(`[data-desk-ovr="${sel}"], [data-desk-sid="${sel}"]`);
       if (desk) { desk.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return; }
-      // Desk not rendered — the room is collapsed. Expand it so the worker is
-      // actually reachable, then fall back to the room card for this pass; the
-      // 260ms retry below lands on the now-mounted desk.
+      // Desk not rendered — the room is collapsed or hidden. Unhide + expand so
+      // the worker is actually reachable, then fall back to the room card for
+      // this pass; the 260ms retry below lands on the now-mounted desk.
       const room = roomsRef.current.find(r =>
         r.sessions.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId)
       );
       if (!room) return;
+      unhideRoom(room.id);
       expandRoom(room.id);
       document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -343,6 +362,12 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); } }}
         />
+        <HiddenRoomsPill
+          hiddenRooms={hiddenRooms}
+          attentionCount={hiddenAttentionCount}
+          onUnhide={unhide}
+          onUnhideAll={unhideAll}
+        />
         {onOpenAdvancedSearch && (
           <button
             className={styles.advSearchBtn}
@@ -374,6 +399,11 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
               <>
                 <span className={styles.emptyText}>Connecting to server</span>
                 <span className={styles.cursor} aria-hidden="true">_</span>
+              </>
+            ) : hiddenRooms.length > 0 && !searchQuery.trim() ? (
+              <>
+                <span className={styles.emptyText}>All rooms hidden</span>
+                <button className={styles.emptyShowAll} onClick={unhideAll}>Show all</button>
               </>
             ) : (
               <>
@@ -418,6 +448,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                   platform={platform}
                   onRoomDragStart={e => handleDragStart(e, room.id)}
                   onRoomDragEnd={handleDragEnd}
+                  searchRevealed={searchQuery.trim().length > 0 && !!hiddenMap[room.id]}
                 />
               </div>
             ))}
