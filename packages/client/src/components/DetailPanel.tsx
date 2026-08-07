@@ -3473,7 +3473,7 @@ const currentDisplayName =
                                       await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ text: '\x1b' }),
+                                        body: JSON.stringify({ text: '\x1b', raw: true }),
                                       });
                                     } catch (err) {
                                       console.error('Interrupt failed:', err);
@@ -3490,7 +3490,7 @@ const currentDisplayName =
                                       await fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ text: '\x03' }),
+                                        body: JSON.stringify({ text: '\x03', raw: true }),
                                       });
                                     } catch (err) {
                                       console.error('Force stop failed:', err);
@@ -3646,6 +3646,18 @@ const currentDisplayName =
                               }
                               if (e.key === 'Escape') {
                                 e.preventDefault();
+                                // Empty composer + busy session → forward Esc as an
+                                // interrupt, TUI-style. Non-empty composer keeps the
+                                // clear-draft behavior.
+                                if (sendInput2 === '' && historyIndex === null &&
+                                    (selectedSession.state === 'working' || selectedSession.state === 'thinking')) {
+                                  fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ text: '\x1b', raw: true }),
+                                  }).catch(err => console.error('Interrupt failed:', err));
+                                  return;
+                                }
                                 // Always clears — including a recalled history entry.
                                 setHistoryIndex(null);
                                 preHistoryDraft.current = '';

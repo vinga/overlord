@@ -453,10 +453,13 @@ export function registerApiRoutes(
             const ptyWrite = (data: string): boolean => {
               try { return ptyManager.write(ptyId, data); } catch { return false; }
             };
-            // raw, or a control sequence that already carries its own Enter → single
-            // verbatim write. Everything else goes through the text/\r split, because
-            // Ink treats an atomic `text + \r` as a paste and swallows the submit.
-            const verbatim = raw === true || text.endsWith('\r') || text.endsWith('\n');
+            // raw, a control sequence that already carries its own Enter, or a
+            // control-only payload (Esc / Ctrl+C — appending \r would turn Esc into
+            // a meta-Enter chord in Ink) → single verbatim write. Everything else
+            // goes through the text/\r split, because Ink treats an atomic
+            // `text + \r` as a paste and swallows the submit.
+            const verbatim = raw === true || text.endsWith('\r') || text.endsWith('\n')
+              || /^[\x00-\x1f\x7f]+$/.test(text);
             if (verbatim) {
               injected = ptyWrite(text);
             } else {
