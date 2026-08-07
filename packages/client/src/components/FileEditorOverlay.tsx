@@ -62,6 +62,15 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const hasLineView = line !== undefined && !isImage;
   const highlightRef = useRef<HTMLDivElement | null>(null);
 
+  // Repo-relative references (`/src/File.tsx`) 404 as-is; retry against the
+  // session cwd. `inferred` drives a visible warning — the viewer is then
+  // showing a guess, not the literal path that was clicked.
+  const [effective, setEffective] = useState<{ path: string; inferred: boolean }>({ path, inferred: false });
+  useEffect(() => { setEffective({ path, inferred: false }); }, [path, cwd]);
+  const cwdCandidate = cwd && !path.startsWith(cwd)
+    ? `${cwd.replace(/\/+$/, '')}${path.startsWith('/') ? '' : '/'}${path}`
+    : null;
+
   useEffect(() => {
     if (isImage) {
       setLoading(false);
@@ -70,8 +79,20 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
     }
     setLoading(true);
     setTooLarge(false);
-    fetch(`/api/file?path=${encodeURIComponent(path)}`)
-      .then(async (r) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        let r = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+        let used = { path, inferred: false };
+        if (r.status === 404 && cwdCandidate) {
+          const retry = await fetch(`/api/file?path=${encodeURIComponent(cwdCandidate)}`);
+          if (retry.ok || retry.status === 413) {
+            r = retry;
+            used = { path: cwdCandidate, inferred: true };
+          }
+        }
+        if (cancelled) return;
+        setEffective(used);
         if (r.status === 413) { setTooLarge(true); setLoading(false); return; }
         if (!r.ok) { setSaveError(`Error ${r.status}`); setLoading(false); return; }
         const data = await r.json() as { content: string; writable: boolean };
@@ -81,9 +102,12 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
         if (line !== undefined) setMode('preview');
         else if (!isMarkdown) setMode('edit');
         setLoading(false);
-      })
-      .catch((err) => { setSaveError(String(err)); setLoading(false); });
-  }, [path, isMarkdown, isImage, line]);
+      } catch (err) {
+        if (!cancelled) { setSaveError(String(err)); setLoading(false); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [path, isMarkdown, isImage, line, cwdCandidate]);
 
   useEffect(() => {
     if (!loading && mode === 'preview' && hasLineView) {
@@ -103,7 +127,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
       const r = await fetch('/api/file', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, content }),
+        body: JSON.stringify({ path: effective.path, content }),
       });
       if (r.status === 403) { setSaveError('File is read-only'); setSaving(false); return; }
       if (!r.ok) { setSaveError(`Error ${r.status}`); setSaving(false); return; }
@@ -115,7 +139,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
       setSaveError(String(err));
     }
     setSaving(false);
-  }, [path, content]);
+  }, [effective.path, content]);
 
   const handleClose = useCallback(() => {
     if (isDirty && !window.confirm('Discard unsaved changes?')) return;
@@ -143,9 +167,9 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
   }, []);
 
-  const displayPath = cwd && path.startsWith(cwd + '/')
-    ? path.slice(cwd.length + 1)
-    : path;
+  const displayPath = cwd && effective.path.startsWith(cwd + '/')
+    ? effective.path.slice(cwd.length + 1)
+    : effective.path;
 
   const dirPart = displayPath.includes('/') ? displayPath.slice(0, displayPath.lastIndexOf('/') + 1) : '';
   const filePart = displayPath.slice(dirPart.length);
@@ -157,6 +181,14 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
           <div className={styles.filePath}>
             {dirPart}<span>{filePart}</span>
           </div>
+          {effective.inferred && (
+            <span
+              className={styles.inferredBadge}
+              title={`"${path}" was not found on disk — showing ${effective.path}, auto-inferred from the session workspace. It may be a different file.`}
+            >
+              ⚠ auto-inferred
+            </span>
+          )}
           <div className={styles.controls}>
             {(isMarkdown || hasLineView) && (
               <div className={styles.toggleGroup}>
@@ -205,9 +237,15 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
                 : (
                   <img
                     className={styles.imageView}
-                    src={`/api/file-raw?path=${encodeURIComponent(path)}`}
+                    src={`/api/file-raw?path=${encodeURIComponent(effective.path)}`}
                     alt={filePart}
-                    onError={() => setSaveError('Failed to load image')}
+                    onError={() => {
+                      if (!effective.inferred && cwdCandidate) {
+                        setEffective({ path: cwdCandidate, inferred: true });
+                      } else {
+                        setSaveError('Failed to load image');
+                      }
+                    }}
                   />
                 )}
             </div>

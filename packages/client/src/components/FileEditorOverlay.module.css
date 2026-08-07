@@ -47,6 +47,20 @@
   color: rgba(255, 255, 255, 0.8);
 }
 
+.inferredBadge {
+  flex-shrink: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #e2b93b;
+  background: rgba(226, 185, 59, 0.12);
+  border: 1px solid rgba(226, 185, 59, 0.35);
+  border-radius: 4px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .controls {
   display: flex;
   align-items: center;
