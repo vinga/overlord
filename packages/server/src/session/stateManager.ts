@@ -125,6 +125,8 @@ import { ensureShadow } from './transcriptShadow.js';
 import type { RawSession } from './sessionWatcher.js';
 import { saveReview, loadReview, readReview, normalizeParkReason, type ReviewState } from '../ai/taskStorage.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
+// Safe edge: archiveManager imports only sessionStore + types, never stateManager.
+import { archiveManager } from '../archive/archiveManager.js';
 import type { ArtifactStatus } from '../artifacts/types.js';
 
 function planStatusFromClaude(status: 'approved' | 'rejected' | 'pending'): ArtifactStatus {
@@ -180,6 +182,32 @@ export function titleStampForRename(
   const staleTitle = parseTitleSentinel(rec.lastMessage);
   if (!staleTitle || rec.titleSentinel === staleTitle) return undefined;
   return { titleSentinel: staleTitle };
+}
+
+/** Cooldown before a live pid may revive the session it just archived.
+ *  Archive kills the process subtree, but the kill is deferred to a
+ *  `setImmediate` in deleteSession while SessionWatcher keeps polling — without
+ *  this, a dying process re-reporting its sid would instantly undo the archive.
+ *  Deliberately outlives DELETED_SID_TTL_MS (60s) so the two windows overlap. */
+export const ADOPT_COOLDOWN_MS = 120_000;
+
+/** Whether a live process reporting `sid` should revive the archived record that
+ *  still owns it, instead of minting a twin ovrId.
+ *
+ *  Requires a real pid: only a process reporting through `{pid}.json` counts.
+ *  Transcript-scan paths carry no pid and must never revive anything. */
+export function shouldAdoptArchived(
+  rec: { archive?: { archivedAt: string } } | undefined,
+  pid: number,
+  now: number,
+): boolean {
+  if (!pid || pid <= 0) return false;
+  if (!rec?.archive) return false;
+  const archivedAt = Date.parse(rec.archive.archivedAt);
+  // Unparseable archivedAt fails open — such records predate the field and are
+  // far older than any cooldown would cover.
+  if (Number.isFinite(archivedAt) && now - archivedAt < ADOPT_COOLDOWN_MS) return false;
+  return true;
 }
 
 /** Tail length for activityFeed in WS snapshots. DetailPanel lazy-loads older
@@ -481,6 +509,7 @@ export class StateManager {
     this.hydratePendingResumesFromSessionStore();
     void this.refreshGitAheadCache();
     this.logBootSummary();
+    this.logSidCollisions();
   }
 
   /** Refresh the full process snapshot (one OS call). */
@@ -1026,7 +1055,9 @@ export class StateManager {
     // On resume, inherit the parent's ovrId so the new sessionId attaches to the
     // existing lineage rather than minting a duplicate OverlordSession record.
     // resolvedOverlordId was computed above for storedName lookup; reuse it.
-    const overlordId = resolvedOverlordId ?? this.generateOvrId();
+    const overlordId = resolvedOverlordId
+      ?? this.adoptArchivedOvrId(sessionId, raw.pid)
+      ?? this.generateOvrId();
     color = this.sessionColorByOvrId(overlordId);
     // Icon requested at spawn time for this (reserved) ovrId. Peeked, not
     // consumed — it is cleared below only once actually persisted, so a phantom
@@ -1235,6 +1266,65 @@ export class StateManager {
    *  with replacedBy set so the snapshot hides it. If the successor is later
    *  deleted, that hidden predecessor re-surfaces as a closed orphan. Returns
    *  the list of sids that were purged. */
+  /**
+   * A live process reporting a sid that an archived record still owns means the
+   * user resumed an archived conversation. Revive that record rather than
+   * minting a twin.
+   *
+   * `resolveOverlordId` is active-tier only by design (see its docstring), so an
+   * archived owner is invisible to the normal chain and the sid would otherwise
+   * mint a fresh ovrId — producing two records for one sid, with the archived
+   * one's title / intent / PR / color orphaned. That is how ovr-hzs1ez74 and
+   * ovr-orch0tne ended up sharing 4ead279c.
+   *
+   * Returns undefined on any doubt so the caller falls back to minting — the
+   * session must never end up unrepresented.
+   */
+  private adoptArchivedOvrId(sessionId: string, pid: number): string | undefined {
+    const rec = sessionStore.getArchivedBySessionId(sessionId);
+    if (!shouldAdoptArchived(rec, pid, Date.now())) return undefined;
+    const revived = archiveManager.unarchiveForAdoption(sessionId);
+    if (!revived) return undefined;
+    log('info', 'Revived archived session for live pid', {
+      sessionId,
+      sessionName: revived.proposedName ?? sessionId.slice(0, 8),
+      extra: `ovrId=${revived.overlordId} pid=${pid}`,
+    });
+    return revived.overlordId;
+  }
+
+  /** Sids owned by both an active and an archived record. Read-only diagnostic:
+   *  merging two records loses data either way, so repair stays manual. */
+  findSidCollisions(): Array<{ sessionId: string; activeOvrId: string; archivedOvrId: string }> {
+    const out: Array<{ sessionId: string; activeOvrId: string; archivedOvrId: string }> = [];
+    const activeBySid = new Map<string, string>();
+    for (const rec of sessionStore.listActive()) {
+      for (const h of rec.lineage?.history ?? []) activeBySid.set(h.sessionId, rec.overlordId);
+      if (rec.lineage?.currentSessionId) activeBySid.set(rec.lineage.currentSessionId, rec.overlordId);
+    }
+    for (const rec of sessionStore.listArchived()) {
+      const sids = new Set([
+        rec.lineage?.currentSessionId,
+        ...(rec.lineage?.history ?? []).map(h => h.sessionId),
+      ].filter((s): s is string => !!s));
+      for (const sid of sids) {
+        const activeOvrId = activeBySid.get(sid);
+        if (activeOvrId) out.push({ sessionId: sid, activeOvrId, archivedOvrId: rec.overlordId });
+      }
+    }
+    return out;
+  }
+
+  private logSidCollisions(): void {
+    const collisions = this.findSidCollisions();
+    for (const c of collisions) {
+      console.warn(
+        `[boot] sid collision: ${c.sessionId.slice(0, 8)} owned by active ${c.activeOvrId} ` +
+        `AND archived ${c.archivedOvrId} — repair manually (GET /api/debug/sid-collisions)`
+      );
+    }
+  }
+
   purgeOvrId(ovrId: string): string[] {
     if (!ovrId) return [];
     const sids: string[] = [];

@@ -223,6 +223,25 @@ export class ArchiveManager {
   }
 
   /**
+   * Restore the transcript and move the record back to active, as one step.
+   *
+   * The unarchive REST route and stateManager's live-pid adoption path both need
+   * exactly this pair; keeping it here stops them drifting. Callers still own
+   * re-hydrating the live Session (`stateManager.rehydrateFromSessionStore`) —
+   * this module must not depend on stateManager.
+   *
+   * Returns the now-active record, or undefined when the transcript could not be
+   * restored (record left archived, so the caller can fall back safely).
+   */
+  unarchiveForAdoption(sessionId: string): OverlordSession | undefined {
+    const rec = sessionStore.getArchivedBySessionId(sessionId);
+    if (!rec?.archive) return undefined;
+    if (!this.restoreTranscript(sessionId)) return undefined;
+    if (!this.remove(sessionId)) return undefined;
+    return sessionStore.getByOverlordId(rec.overlordId);
+  }
+
+  /**
    * Permanently delete an archived overlord: unlink the archived transcript
    * copies, remove the per-overlord archive dir, and drop the OverlordSession
    * record entirely (index + JSON file + shadow dir). Unlike `remove`

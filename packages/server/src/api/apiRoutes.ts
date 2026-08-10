@@ -257,6 +257,13 @@ export function registerApiRoutes(
     res.json(getJiraCacheStats());
   });
 
+  // Debug endpoint: sids owned by both an active and an archived record. Read
+  // only — merging two records loses data either way, so repair stays manual.
+  app.get('/api/debug/sid-collisions', (_req, res) => {
+    const collisions = stateManager.findSidCollisions();
+    res.json({ count: collisions.length, collisions });
+  });
+
   // Debug endpoint: dump current state snapshot
   app.get('/api/debug/state', (_req, res) => {
     const snapshot = stateManager.getSnapshot();
@@ -1453,12 +1460,10 @@ export function registerApiRoutes(
     const { sessionId } = req.params;
     const entry = archiveManager.get(sessionId);
     if (!entry) { res.status(404).json({ error: 'archive entry not found' }); return; }
-    const restored = archiveManager.restoreTranscript(sessionId);
-    if (!restored) {
+    if (!archiveManager.unarchiveForAdoption(sessionId)) {
       res.status(500).json({ error: 'failed to restore transcript' });
       return;
     }
-    archiveManager.remove(sessionId);
     stateManager.rehydrateFromSessionStore(sessionId);
     if (broadcastRaw) broadcastRaw({ type: 'archive:removed', sessionId, roomId: entry.roomId });
     log('info', 'Session unarchived', { sessionId, sessionName: entry.name });
