@@ -98,7 +98,7 @@ interface Task {
  * validates spawn/PUT against its copy). Guarded by the drift test in
  * `packages/server/src/session/__tests__/spawnIcon.test.ts`.
  */
-export const WORKER_ICONS = ['user', 'dashboard', 'ticket', 'investigate', 'teach', 'notes', 'btw', 'release'] as const;
+export const WORKER_ICONS = ['user', 'ticket', 'done', 'investigate', 'release', 'dashboard', 'teach', 'notes', 'btw', 'config'] as const;
 
 /** Avatar glyph for a worker. undefined = 'user' (default person glyph). */
 export type WorkerIcon = typeof WORKER_ICONS[number];

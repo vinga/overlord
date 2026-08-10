@@ -6,19 +6,21 @@ import { WorkerGlyph } from './workerGlyphs';
 import styles from './ColorPicker.module.css';
 
 const POPOVER_WIDTH = 264; // matches .popover min-width + padding
-const POPOVER_HEIGHT = 300; // approximate; used only for vertical flip
+const POPOVER_HEIGHT = 350; // approximate (2 icon rows); used only for vertical flip
 
 // Keyed by WorkerIcon, so adding a glyph to WORKER_ICONS fails the build here
 // until it gets a label — the picker can never silently lag the icon list.
 const ICON_LABELS: Record<WorkerIcon, string> = {
   user: 'Worker',
-  dashboard: 'Dashboard',
   ticket: 'Refining ticket',
+  done: 'Done',
   investigate: 'Investigating',
+  release: 'Release',
+  dashboard: 'Dashboard',
   teach: 'Teaching',
   notes: 'Pinned notes',
   btw: 'By the way',
-  release: 'Release',
+  config: 'Configuration',
 };
 
 const ICON_PRESETS: { icon: WorkerIcon; label: string }[] =
@@ -180,7 +182,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
                       data-label={p.label}
                       aria-label={p.label}
                     >
-                      <svg width="24" height="31" viewBox="0 0 40 52" xmlns="http://www.w3.org/2000/svg">
+                      <svg width="26" height="34" viewBox="0 0 40 52" xmlns="http://www.w3.org/2000/svg">
                         <defs>
                           <linearGradient id={gradId} x1="0%" y1="0%" x2="60%" y2="100%">
                             <stop offset="0%" stopColor={`hsl(${hue}, ${saturation}%, ${Math.min(100, lightness + 25)}%)`} />

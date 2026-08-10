@@ -28,8 +28,8 @@
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  width: min(560px, calc(100vw - 48px));
-  max-height: 70vh;
+  width: min(680px, calc(100vw - 48px));
+  max-height: 76vh;
   display: flex;
   flex-direction: column;
   background: #1e1e2e;
@@ -42,15 +42,14 @@
 }
 
 .popupLarge {
-  /* Note: the sticky header's backdrop-filter makes it the containing block
-     for fixed descendants, so 100% here = header width (viewport minus the
-     open detail panel), not the full viewport. */
+  /* Portaled to <body> (escapes the sticky header's backdrop-filter containing
+     block), so this is viewport-relative and may overlap the detail panel. */
   position: fixed;
-  top: 64px;
+  top: 56px;
   right: 16px;
-  width: min(820px, calc(100% - 32px));
+  width: min(1400px, calc(100vw - 32px));
   max-height: none;
-  height: calc(100vh - 96px);
+  height: calc(100vh - 72px);
 }
 
 .popupHeader {

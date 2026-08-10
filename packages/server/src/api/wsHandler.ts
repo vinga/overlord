@@ -20,6 +20,7 @@ import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, cl
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
 import { sessionStore } from '../session/sessionStore.js';
+import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from '../session/transcriptShadow.js';
 import { globalSettingsStore } from '../session/globalSettingsStore.js';
 import { killProcessTree } from '../pty/processTree.js';
 
@@ -406,6 +407,22 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const effectiveResumeId = resolved.sessionId;
         if (effectiveResumeId !== resumeSessionId) {
           console.log(`[terminal:resume] ${resumeSessionId.slice(0, 8)} jsonl missing — falling back to ancestor ${effectiveResumeId.slice(0, 8)}`);
+        }
+
+        // If the resolved transcript lives only in the shadow store, claude --resume
+        // starts but its TUI cannot load the conversation (it reads the canonical
+        // project dir, not the shadow) and the input loop silently dies. Hard-link
+        // shadow → canonical first. Mirrors autoResumeBootstrap.
+        if (resolved.transcriptPath.startsWith(SHADOW_ROOT_DIR)) {
+          const shadowOvr = sessionStore.getBySessionId(effectiveResumeId);
+          if (shadowOvr) {
+            const restored = restoreCanonicalFromShadow(shadowOvr.overlordId, effectiveResumeId, cwd);
+            if (restored) {
+              console.log(`[terminal:resume] restored canonical transcript for ${effectiveResumeId.slice(0, 8)} from shadow`);
+            } else {
+              console.warn(`[terminal:resume] failed to restore canonical for ${effectiveResumeId.slice(0, 8)}; --resume may not load`);
+            }
+          }
         }
 
         // A second `claude --resume <sid>` collides with claude's session lock

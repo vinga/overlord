@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Link from '@tiptap/extension-link';
@@ -24,6 +25,7 @@ export function ScratchpadPopup() {
   const [saveError, setSaveError] = useState(false);
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const openTimer = useRef<number | undefined>(undefined);
   const closeTimer = useRef<number | undefined>(undefined);
   const saveTimer = useRef<number | undefined>(undefined);
@@ -109,7 +111,9 @@ export function ScratchpadPopup() {
       if (e.key === 'Escape') close();
     }
     function onMouseDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) close();
+      const t = e.target as Node;
+      if (rootRef.current?.contains(t) || popupRef.current?.contains(t)) return;
+      close();
     }
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onMouseDown);
@@ -190,28 +194,18 @@ export function ScratchpadPopup() {
   const toolBtn = (active: boolean) =>
     `${styles.toolBtn} ${active ? styles.toolBtnActive : ''}`;
 
-  return (
+  // Large mode portals to <body> to escape the sticky header's backdrop-filter
+  // containing block, so hover open/close needs handlers on the popup itself.
+  const popup = open && (
     <div
-      ref={rootRef}
-      className={styles.root}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
+      ref={popupRef}
+      className={`${styles.popup} ${large ? styles.popupLarge : ''}`}
+      role="dialog"
+      aria-label="Scratchpad"
+      onKeyDown={handlePopupKeyDown}
+      onMouseEnter={large ? handleMouseEnter : undefined}
+      onMouseLeave={large ? handleMouseLeave : undefined}
     >
-      <button
-        className={styles.triggerBtn}
-        onClick={handleTriggerClick}
-        title="Scratchpad"
-        aria-label="Scratchpad"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M11.5 1.9l2.6 2.6L5.4 13.2l-3.3.7.7-3.3z" />
-          <path d="M9.8 3.6l2.6 2.6" />
-        </svg>
-      </button>
-      {open && (
-        <div className={`${styles.popup} ${large ? styles.popupLarge : ''}`} role="dialog" aria-label="Scratchpad" onKeyDown={handlePopupKeyDown}>
           <div className={styles.popupHeader}>
             <span className={styles.popupTitle}>Scratchpad</span>
             <div className={styles.toolbar}>
@@ -328,10 +322,32 @@ export function ScratchpadPopup() {
               </button>
             </div>
           )}
-          {!loaded && <div className={styles.loading}>Loading…</div>}
-          <EditorContent editor={editor} className={`${styles.editorScroll} ${loaded ? '' : styles.hidden}`} />
-        </div>
-      )}
+      {!loaded && <div className={styles.loading}>Loading…</div>}
+      <EditorContent editor={editor} className={`${styles.editorScroll} ${loaded ? '' : styles.hidden}`} />
+    </div>
+  );
+
+  return (
+    <div
+      ref={rootRef}
+      className={styles.root}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      <button
+        className={styles.triggerBtn}
+        onClick={handleTriggerClick}
+        title="Scratchpad"
+        aria-label="Scratchpad"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M11.5 1.9l2.6 2.6L5.4 13.2l-3.3.7.7-3.3z" />
+          <path d="M9.8 3.6l2.6 2.6" />
+        </svg>
+      </button>
+      {large ? createPortal(popup, document.body) : popup}
     </div>
   );
 }

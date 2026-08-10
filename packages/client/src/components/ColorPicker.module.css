@@ -85,9 +85,10 @@
   justify-items: center;
 }
 
+/* 10 glyphs in two even rows of 5 — keeps each big enough to read. */
 .iconPresets {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 5px;
   margin-bottom: 14px;
 }
@@ -97,7 +98,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 5px 0;
+  padding: 6px 0;
   background: rgba(255, 255, 255, 0.04);
   border: 2px solid transparent;
   border-radius: 8px;

@@ -139,6 +139,36 @@ export function WorkerGlyph({ icon, gradientUrl, color }: GlyphProps & { icon: W
           <path d="M 20 39 C 22 41.5 22 44 20 47.5 C 18 44 18 41.5 20 39 Z" fill="rgba(255,255,255,0.75)" />
         </>
       );
+    case 'config':
+      return (
+        <>
+          {/* Cog teeth — 8 spokes around the hub */}
+          <g fill={gradientUrl}>
+            <rect x="16.5" y="3" width="7" height="42" rx="2.5" />
+            <rect x="16.5" y="3" width="7" height="42" rx="2.5" transform="rotate(45 20 24)" />
+            <rect x="16.5" y="3" width="7" height="42" rx="2.5" transform="rotate(90 20 24)" />
+            <rect x="16.5" y="3" width="7" height="42" rx="2.5" transform="rotate(135 20 24)" />
+          </g>
+          {/* Body */}
+          <circle cx="20" cy="24" r="14" fill={gradientUrl} />
+          {/* Rim */}
+          <circle cx="20" cy="24" r="14" stroke={color} strokeWidth="2" fill="none" />
+          {/* Bore */}
+          <circle cx="20" cy="24" r="6" fill="rgba(0,0,0,0.45)" />
+          <circle cx="20" cy="24" r="6" stroke="rgba(255,255,255,0.85)" strokeWidth="2" fill="none" />
+        </>
+      );
+    case 'done':
+      return (
+        <>
+          {/* Disc */}
+          <circle cx="20" cy="24" r="18" fill={gradientUrl} />
+          {/* Inner rim */}
+          <circle cx="20" cy="24" r="18" stroke={color} strokeWidth="2" fill="none" />
+          {/* Checkmark */}
+          <path d="M 11.5 24.5 L 17.5 30.5 L 28.5 17.5" stroke="rgba(255,255,255,0.95)" strokeWidth="4.4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        </>
+      );
     default:
       return (
         <>
