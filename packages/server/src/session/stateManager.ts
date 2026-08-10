@@ -139,6 +139,49 @@ function derivePlanTitle(plan: string): string {
   return stripped.length > 80 ? stripped.slice(0, 77) + '…' : stripped;
 }
 
+const TITLE_SENTINEL_RE = /<<overlord:title>>([\s\S]+?)<<\/overlord:title>>/;
+
+/** Extract the body of a `<<overlord:title>>…<</overlord:title>>` block, trimmed
+ *  and capped at 80 chars. Returns undefined when absent or empty. */
+export function parseTitleSentinel(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const m = text.match(TITLE_SENTINEL_RE);
+  const title = m?.[1].trim().slice(0, 80);
+  return title || undefined;
+}
+
+/** Name a sentinel rename should produce. Preserves a short uppercase prefix the
+ *  user added to group sessions (e.g. "OV", "PS-B"); only the topic is replaced. */
+export function nextNameForTitle(proposedName: string | undefined, title: string): string {
+  const prefixMatch = proposedName?.match(/^([A-Z][A-Z0-9-]{0,5})\s+/);
+  return prefixMatch ? `${prefixMatch[1]} ${title}` : title;
+}
+
+/** Whether the insert path (addOrUpdate) should run the sentinel rename.
+ *
+ *  refreshTranscript only applies the sentinel inside its `changed` branch, so a
+ *  session inserted against a transcript that will never be written again
+ *  (restore / unarchive / lineage adoption / boot hydration) would keep its
+ *  spawn-pool name forever. `titleSentinel` makes this one-shot per record — and
+ *  setSessionName stamps it too, so a manual rename is never revived. */
+export function shouldApplyTitleOnInsert(
+  rec: { titleSentinel?: string } | undefined,
+  lastMessage: string | undefined,
+): boolean {
+  if (!rec || rec.titleSentinel) return false;
+  return parseTitleSentinel(lastMessage) !== undefined;
+}
+
+/** Patch fragment that marks a still-unapplied sentinel as consumed, so a manual
+ *  rename wins over the sentinel sitting in the record's transcript. */
+export function titleStampForRename(
+  rec: { titleSentinel?: string; lastMessage?: string },
+): { titleSentinel: string } | undefined {
+  const staleTitle = parseTitleSentinel(rec.lastMessage);
+  if (!staleTitle || rec.titleSentinel === staleTitle) return undefined;
+  return { titleSentinel: staleTitle };
+}
+
 /** Tail length for activityFeed in WS snapshots. DetailPanel lazy-loads older
  *  items via REST (`/api/sessions/:id/activity-before`) when the user scrolls
  *  past this boundary.
@@ -1156,6 +1199,16 @@ export class StateManager {
           title: derivePlanTitle(p.plan),
         });
       }
+    }
+
+    // A session inserted against a transcript that will never be written again
+    // (restore / unarchive / lineage adoption / boot hydration) never reaches
+    // refreshTranscript's `changed` branch, so its title sentinel would never
+    // apply and the worker keeps its spawn-pool name. Guarded on titleSentinel
+    // so this is one-shot per record; runs after the proposedName reconciliation
+    // above for the same reason as the ordering note in refreshTranscript.
+    if (shouldApplyTitleOnInsert(sessionStore.getByOverlordId(overlordId), transcript?.lastMessage)) {
+      this.applyTitleSentinelIfPresent(sessionId, transcript?.lastMessage);
     }
 
     this.onChange();
@@ -2850,7 +2903,10 @@ export class StateManager {
     if (!rec && live) rec = sessionStore.ensureFromLive(live);
     if (!rec) return false;
 
-    sessionStore.patch(rec.overlordId, { proposedName: next });
+    // A manual rename overrides any sentinel still sitting in the transcript.
+    // Stamp it as already-applied so the dedupe in applyTitleSentinelIfPresent
+    // suppresses it — otherwise the insert path would revive it on next boot.
+    sessionStore.patch(rec.overlordId, { proposedName: next, ...titleStampForRename(rec) });
     if (live) {
       live.proposedName = next;
       this.onChange();
@@ -2864,18 +2920,12 @@ export class StateManager {
    *  no longer drifts from disk — so a single titleSentinel-text dedupe is
    *  sufficient. */
   private applyTitleSentinelIfPresent(sessionId: string, lastMessage: string | undefined): void {
-    if (!lastMessage) return;
-    const match = lastMessage.match(/<<overlord:title>>([\s\S]+?)<<\/overlord:title>>/);
-    if (!match) return;
-    const title = match[1].trim().slice(0, 80);
+    const title = parseTitleSentinel(lastMessage);
     if (!title) return;
     const rec = sessionStore.getBySessionId(sessionId);
     if (!rec) return;
     if (rec.titleSentinel === title) return;
-    // Preserve a short uppercase prefix the user added to group sessions
-    // (e.g. "OV", "PS-B"); only the topic suffix is replaced.
-    const prefixMatch = rec.proposedName?.match(/^([A-Z][A-Z0-9-]{0,5})\s+/);
-    const nextName = prefixMatch ? `${prefixMatch[1]} ${title}` : title;
+    const nextName = nextNameForTitle(rec.proposedName, title);
     sessionStore.patch(rec.overlordId, { titleSentinel: title, proposedName: nextName });
     const live = this.sessions.get(sessionId);
     if (live) {
@@ -3084,6 +3134,12 @@ export class StateManager {
 
     this.sessions.set(sessionId, session);
     this.sessionsByOvrId.set(rec.overlordId, sessionId);
+    // Boot hydration is the other insert path that never reaches
+    // refreshTranscript's `changed` branch — a closed session's transcript is
+    // frozen, so without this its title sentinel would never apply.
+    if (shouldApplyTitleOnInsert(rec, session.lastMessage)) {
+      this.applyTitleSentinelIfPresent(sessionId, session.lastMessage);
+    }
     this.onChange();
     return session;
   }
