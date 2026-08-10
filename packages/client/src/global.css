@@ -171,37 +171,53 @@ a.inlineJiraKey[data-jira-key] {
   display: none;
 }
 
-/* Per-fence markdown toggle: a ```markdown block that can be rendered inline */
+/* Fenced code block: hover action bar (copy, and `render` on markdown fences) */
+.codeBlock,
 .mdFence {
   position: relative;
 }
 
-.mdFenceToggle {
+.codeBlockActions {
   position: absolute;
   top: 6px;
   right: 6px;
   z-index: 1;
-  background: rgba(255, 255, 255, 0.06);
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.codeBlock:hover .codeBlockActions,
+.codeBlockActions:focus-within {
+  opacity: 1;
+}
+
+.mdFenceToggle,
+.codeCopyBtn {
+  background: rgba(20, 20, 22, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.45);
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   padding: 1px 5px;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
 }
 
-.mdFence:hover .mdFenceToggle {
-  opacity: 1;
-}
-
-.mdFenceToggle:hover {
+.mdFenceToggle:hover,
+.codeCopyBtn:hover {
   background: rgba(255, 255, 255, 0.12);
   color: rgba(255, 255, 255, 0.75);
+}
+
+.codeCopyBtn.codeCopyBtnDone {
+  color: rgba(52, 211, 153, 0.95);
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.12);
 }
 
 /* Rendered-inline fence keeps a hint that it was a fenced markdown block */

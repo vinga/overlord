@@ -74,23 +74,38 @@ function linkifyPaths(html: string, wrapFences = true): string {
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
   const root = doc.body.firstChild as HTMLElement | null;
   if (!root) return html;
-  // Wrap ```markdown / ```md fences with a per-fence "render" toggle so their
-  // content can be shown as real formatted markdown instead of grey source.
+  // Wrap every fenced block with a hover action bar: a copy-to-clipboard button
+  // for all of them, plus a "render" toggle on ```markdown / ```md fences so
+  // their content can be shown as real formatted markdown instead of grey source.
   if (wrapFences) {
-    const fences = root.querySelectorAll('pre > code.language-markdown, pre > code.language-md');
-    fences.forEach((code) => {
-      const pre = code.parentElement as HTMLElement | null;
-      const parent = pre?.parentElement;
-      if (!pre || !parent) return;
+    root.querySelectorAll('pre').forEach((el) => {
+      const pre = el as HTMLElement;
+      const parent = pre.parentElement;
+      if (!parent || parent.classList.contains('codeBlock')) return;
+      const code = pre.querySelector('code');
+      const isMarkdown = !!code && /(^|\s)language-(markdown|md)(\s|$)/.test(code.className);
       const wrapper = doc.createElement('div');
-      wrapper.className = 'mdFence';
-      wrapper.setAttribute('data-md-src', encodeURIComponent(code.textContent ?? ''));
-      const btn = doc.createElement('button');
-      btn.className = 'mdFenceToggle';
-      btn.setAttribute('data-state', 'source');
-      btn.textContent = 'render';
+      wrapper.className = isMarkdown ? 'codeBlock mdFence' : 'codeBlock';
+      const actions = doc.createElement('div');
+      actions.className = 'codeBlockActions';
+      if (isMarkdown) {
+        wrapper.setAttribute('data-md-src', encodeURIComponent(code!.textContent ?? ''));
+        const btn = doc.createElement('button');
+        btn.className = 'mdFenceToggle';
+        btn.setAttribute('type', 'button');
+        btn.setAttribute('data-state', 'source');
+        btn.textContent = 'render';
+        actions.appendChild(btn);
+      }
+      const copy = doc.createElement('button');
+      copy.className = 'codeCopyBtn';
+      copy.setAttribute('type', 'button');
+      copy.setAttribute('title', 'Copy to clipboard');
+      copy.setAttribute('aria-label', 'Copy code block to clipboard');
+      copy.textContent = 'copy';
+      actions.appendChild(copy);
       parent.replaceChild(wrapper, pre);
-      wrapper.appendChild(btn);
+      wrapper.appendChild(actions);
       wrapper.appendChild(pre);
     });
   }
@@ -1771,6 +1786,26 @@ export function DetailPanel({
       if (detail?.path) setFileEditorTarget({ path: detail.path, line: detail.line });
     };
     const clickHandler = (e: MouseEvent) => {
+      const copyBtn = (e.target as HTMLElement | null)?.closest('.codeCopyBtn') as HTMLElement | null;
+      if (copyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const wrapper = copyBtn.closest('.codeBlock') as HTMLElement | null;
+        const pre = wrapper?.querySelector('pre') as HTMLElement | null;
+        // Path/Jira spans keep textContent byte-identical, so this is the raw source.
+        const text = (pre?.querySelector('code') ?? pre)?.textContent ?? '';
+        if (!text) return;
+        const flash = (label: string) => {
+          copyBtn.textContent = label;
+          copyBtn.classList.add('codeCopyBtnDone');
+          window.setTimeout(() => {
+            copyBtn.textContent = 'copy';
+            copyBtn.classList.remove('codeCopyBtnDone');
+          }, 1200);
+        };
+        navigator.clipboard.writeText(text).then(() => flash('copied'), () => flash('failed'));
+        return;
+      }
       const fenceToggle = (e.target as HTMLElement | null)?.closest('.mdFenceToggle') as HTMLElement | null;
       if (fenceToggle) {
         e.preventDefault();
