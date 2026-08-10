@@ -85,11 +85,11 @@
   justify-items: center;
 }
 
-/* 10 glyphs in two even rows of 5 — keeps each big enough to read. */
+/* 12 glyphs in two even rows of 6 — keeps each big enough to read. */
 .iconPresets {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 5px;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
   margin-bottom: 14px;
 }
 

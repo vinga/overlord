@@ -1,0 +1,137 @@
+.wrap {
+  margin-top: 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.banner {
+  padding: 4px 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(251, 191, 36, 0.85);
+  background: rgba(251, 191, 36, 0.08);
+  border-bottom: 1px solid rgba(251, 191, 36, 0.15);
+}
+
+.rows {
+  overflow: auto;
+  max-height: 340px;
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  white-space: pre;
+}
+
+.rowWrap .text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.gutter {
+  flex: 0 0 auto;
+  width: 34px;
+  padding: 0 6px;
+  text-align: right;
+  color: rgba(255, 255, 255, 0.25);
+  user-select: none;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.marker {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  user-select: none;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.text {
+  flex: 1 1 auto;
+  padding-right: 10px;
+}
+
+.ctx {
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.del {
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+}
+
+.del .marker { color: #fca5a5; }
+
+.add {
+  background: rgba(34, 197, 94, 0.1);
+  color: #86efac;
+}
+
+.add .marker { color: #86efac; }
+
+/* Word-level highlight inside a 1:1 replacement. */
+.del .word {
+  background: rgba(239, 68, 68, 0.3);
+  border-radius: 2px;
+}
+
+.add .word {
+  background: rgba(34, 197, 94, 0.28);
+  border-radius: 2px;
+}
+
+.expander {
+  display: block;
+  width: 100%;
+  padding: 2px 10px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.4);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.expander:hover {
+  background: rgba(167, 139, 250, 0.1);
+  color: #a78bfa;
+}
+
+.footer {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.footerBtn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+.footerBtn:hover { color: #a78bfa; }
+
+.loading {
+  padding: 6px 10px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+}

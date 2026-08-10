@@ -28,10 +28,13 @@ import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
 import { globalSettingsStore } from './session/globalSettingsStore.js';
 import { writeLiveAtShutdown, consumeLiveAtShutdown, writeLivePtyHeartbeat, clearLivePtyHeartbeat, consumeLivePtyFallback, type LiveAtShutdownEntry, type LivePtyEntry } from './session/liveAtShutdownStore.js';
+import { reapPreviousInstance } from './session/bootReaper.js';
 import { clearJiraTitleCache } from './session/jiraTitleCache.js';
 import { artifactStore } from './artifacts/artifactStore.js';
 import { ArtifactWatcher } from './artifacts/artifactWatcher.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
+import { initOriginGuard, originGuard, verifyWsClient, isLoopbackBind } from './api/originGuard.js';
+import { setRoomCwdProvider } from './api/pathGuard.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
 import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
@@ -48,9 +51,27 @@ const __dirname = dirname(__filename);
 
 const PORT = Number(process.env.OVERLORD_PORT) || 3173;
 
+// Loopback by default: every API route below is unauthenticated, and several
+// read files, write files, and spawn processes. Binding 0.0.0.0 hands those to
+// anyone routable to this machine, so widening it requires a token.
+const BIND_HOST = process.env.OVERLORD_BIND ?? '127.0.0.1';
+const AUTH_TOKEN = process.env.OVERLORD_TOKEN ?? '';
+if (!isLoopbackBind(BIND_HOST) && !AUTH_TOKEN) {
+  console.error(
+    `[server] refusing to start: OVERLORD_BIND=${BIND_HOST} exposes the API off-loopback. ` +
+    `Set OVERLORD_TOKEN=<secret> as well, or drop OVERLORD_BIND to bind 127.0.0.1.`,
+  );
+  process.exit(1);
+}
+initOriginGuard({ port: PORT, bindHost: BIND_HOST, token: AUTH_TOKEN });
+
 const app = express();
 const httpServer = createServer(app);
-const wss = new WebSocketServer({ server: httpServer });
+const wss = new WebSocketServer({ server: httpServer, verifyClient: verifyWsClient });
+
+// Guard runs ahead of every route *and* the static client — a rebound hostname
+// must not even be served the app shell.
+app.use(originGuard);
 
 // Serve static files from client/dist in production
 const clientDist = join(__dirname, '..', '..', '..', 'client', 'dist');
@@ -644,6 +665,9 @@ const stateManager = new StateManager(() => {
   // not one shared object. Its own [perf] line covers the timing.
   broadcast();
 });
+// Room cwds are the main allowed root for the file endpoints, and they change
+// as sessions come and go — pathGuard reads them live rather than snapshotting.
+setRoomCwdProvider(() => stateManager.listKnownRoomCwds());
 // Inject ovrToPty-backed liveness probe so snapshots carry `ptyAlive` for embedded sessions.
 stateManager.setHasLivePtyFn((ovrId) => {
   const ptyId = ovrToPty.get(ovrId);
@@ -770,6 +794,17 @@ try {
   console.log(`[startup] revived ${logs.length} shell-history session(s)`);
 } catch (err) {
   console.warn('[startup] shell-history revival failed:', (err as Error).message);
+}
+
+// Kill PTY children stranded by a previous instance that never ran shutdown()
+// (kill -9, crash, reboot). Must run BEFORE the consume below: with the orphans
+// dead, consumeLivePtyFallback's "every recorded pid is dead" guard holds and
+// those sessions auto-resume instead of being abandoned alongside a leaked
+// process tree. Reads the heartbeat without consuming it.
+try {
+  reapPreviousInstance();
+} catch (err) {
+  console.warn('[boot-reap] failed:', (err as Error).message);
 }
 
 // Consume the shutdown capture ONCE at boot, not when auto-resume runs: with
@@ -943,8 +978,9 @@ registerApiRoutes(
 );
 
 // Start HTTP server
-httpServer.listen(PORT, () => {
-  console.log(`Overlord server listening on http://localhost:${PORT}`);
+httpServer.listen(PORT, BIND_HOST, () => {
+  const scope = isLoopbackBind(BIND_HOST) ? 'loopback only' : `EXPOSED on ${BIND_HOST}, token required`;
+  console.log(`Overlord server listening on http://${BIND_HOST}:${PORT} (${scope})`);
 });
 
 httpServer.on('error', (err: NodeJS.ErrnoException) => {
@@ -956,7 +992,7 @@ httpServer.on('error', (err: NodeJS.ErrnoException) => {
         { stdio: 'ignore' }
       );
     } catch (_) { /* ignore */ }
-    httpServer.listen(PORT);
+    httpServer.listen(PORT, BIND_HOST);
   } else {
     throw err;
   }

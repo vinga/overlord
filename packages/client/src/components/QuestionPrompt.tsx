@@ -30,7 +30,11 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
   const question = questions[stage];
   if (!question) return null;
   const total = questions.length;
-  const options = question.options.some(o => o.builtin)
+  // A CLI-owned modal (resume-from-summary, compaction) renders exactly the rows it
+  // shows — no built-ins to synthesize. Adding them would send arrows past the last
+  // row, which wraps the selection back to the top and picks the wrong option.
+  const isSystem = questionSet.kind === 'system';
+  const options = isSystem || question.options.some(o => o.builtin)
     ? question.options
     : [...question.options, ...BUILTIN_OPTIONS];
 
@@ -74,9 +78,11 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
           setResponding(false);
         }, 400);
       } else {
-        // Last question answered — TUI shows a "Review + Submit" confirmation step.
-        // Auto-confirm by sending Enter (selects "Submit answers", option 1) after a delay.
-        setTimeout(() => void doInject('\r').catch(() => null), 600);
+        // Last question answered — the AskUserQuestion TUI shows a "Review + Submit"
+        // confirmation step; auto-confirm it with Enter (option 1) after a delay. A
+        // system modal commits on the first Enter and is already back at the composer,
+        // so a second one would submit an empty message to Claude.
+        if (!isSystem) setTimeout(() => void doInject('\r').catch(() => null), 600);
         // Clear persisted stage so next question set starts at 0
         onStageChange(0);
         // Leave responding=true until transcript clears the prompt
@@ -92,7 +98,11 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
   return (
     <div className={styles.questionPrompt}>
       <div className={styles.questionMeta}>
-        {question.header && <span className={styles.questionHeader}>{question.header}</span>}
+        {/* System modals carry no header chip of their own; label them so the choice
+            reads as the CLI asking, not the model. */}
+        {(question.header || isSystem) && (
+          <span className={styles.questionHeader}>{question.header ?? 'Terminal'}</span>
+        )}
         {total > 1 && (
           <span className={styles.questionProgress}>{stage + 1} / {total}</span>
         )}

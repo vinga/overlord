@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
-import { join, resolve, dirname, basename, extname } from 'path';
+import { join, resolve, dirname, basename, extname, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
 import { readGridText, serializeGrid } from '../pty/screenGrid.js';
@@ -9,7 +9,7 @@ import { getCachedJiraTitle, getJiraCacheStats } from '../session/jiraTitleCache
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-import { exec, execSync } from 'child_process';
+import { exec, execFile, execSync } from 'child_process';
 import express from 'express';
 import type { Express } from 'express';
 import type { WebSocket } from 'ws';
@@ -18,6 +18,7 @@ import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
 import { detectModeFromText } from '../session/modeDetect.js';
+import { splitPrRef } from '../git/prRef.js';
 import { injectViaMac } from '../pty/macInjector.js';
 import { scheduleInject, shouldUseExtraEnter } from '../pty/injectScheduler.js';
 import { spawnClaudeSession } from '../pty/spawnSession.js';
@@ -36,6 +37,7 @@ import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
 import { WORKER_ICONS, isWorkerIcon } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
+import { resolveAllowedPath } from './pathGuard.js';
 
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -53,8 +55,22 @@ const IMAGE_MIME: Record<string, string> = {
 export function isInBrainScope(resolved: string, cwd: string): boolean {
   const homeDir = resolve(os.homedir(), '.claude');
   const cwdResolved = resolve(cwd);
-  return resolved.startsWith(homeDir + '/') || resolved === homeDir
-    || resolved.startsWith(cwdResolved + '/') || resolved === cwdResolved;
+  // `sep`, not '/': on Windows the POSIX separator never matched, so the
+  // prefix test silently passed nothing.
+  return resolved.startsWith(homeDir + sep) || resolved === homeDir
+    || resolved.startsWith(cwdResolved + sep) || resolved === cwdResolved;
+}
+
+/**
+ * Route-level wrapper around `resolveAllowedPath`: writes the error response and
+ * returns null so callers can `if (!p) return;`.
+ */
+function guardPath(raw: unknown, res: express.Response, mode: 'file' | 'browse' = 'file'): string | null {
+  const verdict = resolveAllowedPath(raw, { mode });
+  if (verdict.ok) return verdict.path;
+  log('info', `guard: rejected path`, { extra: `${verdict.reason} — ${typeof raw === 'string' ? raw : '(non-string)'}` });
+  res.status(verdict.status).json({ error: verdict.reason });
+  return null;
 }
 
 /** A per-project memory note: ~/.claude/projects/<slug>/memory/<name>.md */
@@ -699,6 +715,36 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
+  // PR refs travel in the JSON body, not the path: `owner/repo#number` contains
+  // both `/` and `#`, which no amount of encoding makes pleasant in a path param.
+  // splitPrRef is the validation gate — nothing unparsed reaches a stored record.
+  function readPrRef(body: unknown): string | null {
+    const ref = (body as { ref?: unknown } | undefined)?.ref;
+    if (typeof ref !== 'string') return null;
+    return splitPrRef(ref) ? ref.trim() : null;
+  }
+
+  // Pin a PR the user clicked `+` on in the conversation feed. Autodetection
+  // already covers PRs mentioned in the tail window; this adopts one explicitly
+  // and clears any earlier dismissal.
+  app.post('/api/sessions/:sessionId/pr-refs', (req, res) => {
+    const ref = readPrRef(req.body);
+    if (!ref) { res.status(400).json({ error: 'Invalid PR ref — expected owner/repo#number' }); return; }
+    const ok = stateManager.pinPr(req.params.sessionId, ref);
+    if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // Dismiss a PR chip — drops the ref and blocklists it so the scanner can't
+  // re-add it on the next transcript read.
+  app.delete('/api/sessions/:sessionId/pr-refs', (req, res) => {
+    const ref = readPrRef(req.body);
+    if (!ref) { res.status(400).json({ error: 'Invalid PR ref — expected owner/repo#number' }); return; }
+    const ok = stateManager.dismissPr(req.params.sessionId, ref);
+    if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
+    res.json({ ok: true });
+  });
+
   // On-demand ScheduleWakeup history for the Detail panel (newest first, max 10).
   // Deliberately NOT in the WS snapshot — fetched lazily when the user expands
   // the wakeups stats row. The snapshot carries only the scheduledWakeupAt scalar.
@@ -917,8 +963,9 @@ export function registerApiRoutes(
 
   // Inline file editor endpoints
   app.get('/api/file', (req, res) => {
-    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
+    const guarded = guardPath(req.query.path, res);
+    if (!guarded) return;
+    const filePath = guarded;
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
     try {
       const content = fs.readFileSync(filePath, 'utf8');
@@ -932,8 +979,9 @@ export function registerApiRoutes(
 
   // Raw binary serving for the inline file viewer — image types only.
   app.get('/api/file-raw', (req, res) => {
-    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!filePath) { res.status(400).json({ error: 'path required' }); return; }
+    const guarded = guardPath(req.query.path, res);
+    if (!guarded) return;
+    const filePath = guarded;
     const mime = IMAGE_MIME[extname(filePath).slice(1).toLowerCase()];
     if (!mime) { res.status(415).json({ error: 'unsupported type' }); return; }
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
@@ -946,8 +994,10 @@ export function registerApiRoutes(
   });
 
   app.put('/api/file', express.json({ limit: '10mb' }), (req, res) => {
-    const { path: filePath, content } = req.body as { path: string; content: string };
-    if (!filePath || typeof content !== 'string') { res.status(400).json({ error: 'path and content required' }); return; }
+    const { path: rawPath, content } = req.body as { path: string; content: string };
+    if (typeof content !== 'string') { res.status(400).json({ error: 'path and content required' }); return; }
+    const filePath = guardPath(rawPath, res);
+    if (!filePath) return;
     try { fs.accessSync(filePath, fs.constants.W_OK); } catch { res.status(403).json({ error: 'not writable' }); return; }
     try {
       fs.writeFileSync(filePath, content, 'utf8');
@@ -959,12 +1009,13 @@ export function registerApiRoutes(
 
   // Open file endpoint: opens a file path in a JetBrains IDE (Windows) or default system editor
   app.post('/api/open-file', express.json(), (req, res) => {
-    const { path: filePath, ideName } = req.body as { path: string; ideName?: string };
-    if (!filePath || typeof filePath !== 'string') {
-      res.status(400).json({ error: 'path required' });
-      return;
-    }
-    let cmd: string;
+    const { path: rawPath, ideName } = req.body as { path: string; ideName?: string };
+    const filePath = guardPath(rawPath, res);
+    if (!filePath) return;
+    // execFile, not exec: the path reaches the launcher as an argv entry, so a
+    // quote or `;` in a filename can no longer close the shell string and run.
+    let file: string;
+    let args: string[];
     if (process.platform === 'win32') {
       const ideCmd = (() => {
         const name = (ideName ?? '').toLowerCase();
@@ -974,15 +1025,20 @@ export function registerApiRoutes(
       })();
       const toolboxScripts = join(process.env.LOCALAPPDATA ?? '', 'JetBrains', 'Toolbox', 'scripts');
       const scriptPath = join(toolboxScripts, `${ideCmd}.cmd`);
-      cmd = fs.existsSync(scriptPath)
-        ? `"${scriptPath}" "${filePath}"`
-        : `${ideCmd} "${filePath}"`;
+      const launcher = fs.existsSync(scriptPath) ? scriptPath : ideCmd;
+      // `.cmd` launchers need cmd.exe, but going through `shell: true` would
+      // re-join argv into one string and undo the point of execFile. Invoking
+      // cmd.exe directly keeps the path as its own argument.
+      file = 'cmd.exe';
+      args = ['/c', launcher, filePath];
     } else if (process.platform === 'darwin') {
-      cmd = `open "${filePath}"`;
+      file = 'open';
+      args = [filePath];
     } else {
-      cmd = `xdg-open "${filePath}"`;
+      file = 'xdg-open';
+      args = [filePath];
     }
-    exec(cmd, (err) => {
+    execFile(file, args, (err) => {
       if (err) res.status(500).json({ error: err.message });
       else res.json({ ok: true });
     });
@@ -991,6 +1047,12 @@ export function registerApiRoutes(
   // Paste image endpoint: receives base64-encoded image, writes to tmp file, returns path + preview URL
   app.post('/api/paste-image', express.json({ limit: '10mb' }), (req, res) => {
     const { base64, ext } = req.body as { base64: string; ext: string };
+    // `ext` lands in a filename — without this a `../` walks out of the temp dir.
+    if (typeof ext !== 'string' || !/^[a-z0-9]{1,5}$/i.test(ext)) {
+      res.status(400).json({ error: 'invalid ext' });
+      return;
+    }
+    if (typeof base64 !== 'string') { res.status(400).json({ error: 'base64 required' }); return; }
     const tmpDir = os.tmpdir();
     const filename = `overlord-paste-${Date.now()}.${ext}`;
     const filepath = join(tmpDir, filename);
@@ -1003,11 +1065,16 @@ export function registerApiRoutes(
 
   // Serve pasted images by path (only overlord-paste-* files from temp dir)
   app.get('/api/paste-image', (req, res) => {
-    const filePath = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!filePath || !basename(filePath).startsWith('overlord-paste-')) {
+    const raw = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!raw || !basename(raw).startsWith('overlord-paste-')) {
       res.status(403).send('Forbidden');
       return;
     }
+    // The basename check alone allowed any directory holding an `overlord-paste-*`
+    // name; the guard pins it to the temp dir (and the other allowed roots).
+    const guarded = resolveAllowedPath(raw);
+    if (!guarded.ok) { res.status(guarded.status).send('Forbidden'); return; }
+    const filePath = guarded.path;
     try {
       if (!fs.existsSync(filePath)) { res.status(404).send('Not found'); return; }
       const ext = filePath.split('.').pop()?.toLowerCase();
@@ -1020,14 +1087,22 @@ export function registerApiRoutes(
   // Directory browser for new-folder spawn dialog
   app.get('/api/directories', (req, res) => {
     const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+    // 'browse' widens to $HOME: the spawn dialog has to reach project folders
+    // that are not rooms yet. It still keeps /etc, /var and secret dirs out.
+    const guarded = resolveAllowedPath(requestedPath || process.cwd(), { mode: 'browse' });
+    if (!guarded.ok) { res.status(guarded.status).json({ error: guarded.reason }); return; }
     try {
-      const resolved = requestedPath ? resolve(requestedPath) : process.cwd();
+      const resolved = guarded.path;
       if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
         res.status(400).json({ error: 'Not a valid directory' });
         return;
       }
+      // Null the parent link once it leaves the browsable area, so "up" stops
+      // at the boundary instead of offering a 403.
       const parentDir = dirname(resolved);
-      const parent = parentDir !== resolved ? parentDir : null;
+      const parent = parentDir !== resolved && resolveAllowedPath(parentDir, { mode: 'browse' }).ok
+        ? parentDir
+        : null;
       const entries = fs.readdirSync(resolved, { withFileTypes: true });
       const dirs = entries
         .filter(e => e.isDirectory() && !e.name.startsWith('$') && e.name !== 'System Volume Information')
@@ -1048,6 +1123,9 @@ export function registerApiRoutes(
   app.get('/api/skills-agents', (req, res) => {
     const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     if (!cwd) { res.status(400).json({ error: 'cwd query param required' }); return; }
+    // Sibling cwd routes all gate on this; this one did not, and it returns
+    // full file contents.
+    if (!stateManager.isKnownRoomCwd(cwd)) { res.status(403).json({ error: 'unknown cwd' }); return; }
 
     function extractDescription(raw: string): string {
       // Try YAML frontmatter description field first

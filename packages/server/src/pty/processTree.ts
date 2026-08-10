@@ -61,6 +61,67 @@ export function collectDescendants(pid: number, childMap?: Map<number, number[]>
   return out;
 }
 
+/** Marker every Overlord-spawned PTY session carries in its `--name` flag. */
+const OVR_MARKER = '___OVR:';
+
+/** Full command line of a pid, or '' when it is gone. */
+export function readCommandLine(pid: number): string {
+  if (!pid || pid <= 1) return '';
+  try {
+    return execSync(`ps -o command= -p ${pid}`, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Is `pid` still the Overlord PTY child that was recorded under `sessionId`?
+ *
+ * Pid-reuse guard for the boot reaper: after a reboot a recorded pid can belong
+ * to something entirely unrelated, and killing it would be a stranger's process.
+ * Both conditions must hold — the `___OVR:` marker (bridge and user-launched
+ * Claude processes never carry it) and the recorded sessionId somewhere in the
+ * command line, which for a resumed session is its `--resume <sid>` argument.
+ */
+export function isOverlordPtyProcess(pid: number, sessionId: string): boolean {
+  const cmd = readCommandLine(pid);
+  if (!cmd || !cmd.includes(OVR_MARKER)) return false;
+  if (sessionId && cmd.includes(sessionId)) return true;
+  // The recorded sid is the lineage's CURRENT sid, while the process was
+  // spawned with `--resume <older sid>` — after a /clear or a compaction the
+  // two diverge and the cmdline match fails. Fall back to age: a process that
+  // predates this server cannot be a pid this boot handed to someone new.
+  return startedBefore(pid, process.pid);
+}
+
+/** True when `pid` started strictly before `refPid`. Both timestamps come from
+ *  one `ps` call so they are read against the same clock. */
+export function startedBefore(pid: number, refPid: number): boolean {
+  let raw: string;
+  try {
+    raw = execSync(`ps -o pid=,lstart= -p ${pid},${refPid}`, {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return false;
+  }
+  const started = new Map<number, number>();
+  for (const line of raw.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const ts = Date.parse(m[2].trim());
+    if (!Number.isNaN(ts)) started.set(Number(m[1]), ts);
+  }
+  const a = started.get(pid);
+  const b = started.get(refPid);
+  if (a === undefined || b === undefined) return false;
+  return a < b;
+}
+
 function signal(pid: number, sig: NodeJS.Signals): void {
   try { process.kill(pid, sig); } catch { /* already gone */ }
 }

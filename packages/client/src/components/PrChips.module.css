@@ -1,0 +1,158 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  align-items: center;
+  justify-content: center;
+}
+
+.chipWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 3px 8px;
+  padding-right: 18px;
+  min-height: 22px;
+  max-width: 100%;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+  line-height: 1.35;
+}
+
+.chip:hover {
+  color: rgba(255, 255, 255, 0.95);
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+/* The PR icon — inherits the state pill's colour so the chip reads at a glance. */
+.glyph {
+  flex-shrink: 0;
+  display: inline-flex;
+  opacity: 0.85;
+}
+
+.chipRef {
+  display: inline-block;
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.chipRepo {
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.4);
+  white-space: nowrap;
+}
+
+.chipTitle {
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  color: rgba(255, 255, 255, 0.65);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.state {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.state[data-state='OPEN'] {
+  color: #4ec38a;
+  background: rgba(78, 195, 138, 0.16);
+}
+
+.state[data-state='DRAFT'] {
+  color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.state[data-state='MERGED'] {
+  color: #b58af5;
+  background: rgba(181, 138, 245, 0.16);
+}
+
+.state[data-state='CLOSED'] {
+  color: #f28a8a;
+  background: rgba(242, 138, 138, 0.16);
+}
+
+.dismiss {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 400;
+  cursor: pointer;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+
+.chip:hover .dismiss,
+.chipWrap:focus-within .dismiss {
+  opacity: 1;
+}
+
+.dismiss:hover {
+  color: rgba(248, 113, 113, 0.95);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.more {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+  padding: 1px 7px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+
+.more:hover {
+  color: rgba(255, 255, 255, 0.85);
+  border-color: rgba(255, 255, 255, 0.25);
+}

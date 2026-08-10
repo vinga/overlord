@@ -95,11 +95,13 @@
   background: rgba(212, 175, 55, 0.12);
 }
 
-/* Inline JIRA key in the conversation feed. Quiet by default; hovering reveals
-   a `+` that pins the ticket to the session's context. Keys already pinned get
-   .jiraPinned (applied by DetailPanel after render) and drop the `+`. */
-/* Attribute in the selector so a tokenized ticket URL outranks `.markdownContent a`. */
-.inlineJiraKey[data-jira-key] {
+/* Inline JIRA key / pull request in the conversation feed. Quiet by default;
+   hovering reveals a `+` that adds it to the session's context. Entries already
+   attached get .jiraPinned / .prPinned (applied by DetailPanel after render)
+   and drop the `+`. */
+/* Attribute in the selector so a tokenized URL outranks `.markdownContent a`. */
+.inlineJiraKey[data-jira-key],
+.inlinePrRef[data-pr-ref] {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -117,25 +119,30 @@
 }
 
 /* URL form — long, so let it wrap instead of pushing the message wide. */
-a.inlineJiraKey[data-jira-key] {
+a.inlineJiraKey[data-jira-key],
+a.inlinePrRef[data-pr-ref],
+.inlinePrRef[data-pr-ref] {
   max-width: 100%;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
-.inlineJiraKey[data-jira-key]:hover {
+.inlineJiraKey[data-jira-key]:hover,
+.inlinePrRef[data-pr-ref]:hover {
   color: rgba(255, 255, 255, 0.98);
   border-color: rgba(96, 165, 250, 0.45);
   background: rgba(96, 165, 250, 0.12);
   text-decoration: none;
 }
 
-.inlineJiraKey.jiraPinned {
+.inlineJiraKey.jiraPinned,
+.inlinePrRef.prPinned {
   border-color: rgba(96, 165, 250, 0.28);
   background: rgba(96, 165, 250, 0.08);
 }
 
-.jiraAddBtn {
+.jiraAddBtn,
+.prAddBtn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -156,18 +163,21 @@ a.inlineJiraKey[data-jira-key] {
   transition: opacity 0.12s, width 0.12s, color 0.12s, background 0.12s;
 }
 
-.inlineJiraKey:hover .jiraAddBtn {
+.inlineJiraKey:hover .jiraAddBtn,
+.inlinePrRef:hover .prAddBtn {
   width: 14px;
   opacity: 1;
 }
 
-.jiraAddBtn:hover {
+.jiraAddBtn:hover,
+.prAddBtn:hover {
   color: rgba(96, 165, 250, 0.95);
   background: rgba(96, 165, 250, 0.18);
 }
 
 /* Already in context — nothing to add. */
-.inlineJiraKey.jiraPinned .jiraAddBtn {
+.inlineJiraKey.jiraPinned .jiraAddBtn,
+.inlinePrRef.prPinned .prAddBtn {
   display: none;
 }
 

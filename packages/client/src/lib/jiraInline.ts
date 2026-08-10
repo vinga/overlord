@@ -1,8 +1,15 @@
-// Inline JIRA tokens in the conversation feed. The server-side transcript
-// scanner only mines user-authored text, so a ticket the assistant mentioned
-// never becomes a chip on its own — these tokens carry a hover `+` that pins it
-// (POST /api/sessions/:id/jira-keys/:key). Kept DOM-free so the matching rules
-// are unit-testable; the rendering lives in DetailPanel.
+// Inline JIRA and pull-request tokens in the conversation feed.
+//
+// Tickets: the server-side transcript scanner only mines user-authored text, so
+// a ticket the assistant mentioned never becomes a chip on its own — these
+// tokens carry a hover `+` that pins it (POST /api/sessions/:id/jira-keys/:key).
+//
+// PRs: autodetected server-side from PR URLs anywhere in the transcript, so the
+// `+` here (POST /api/sessions/:id/pr-refs) is for adopting one the tail window
+// has already scrolled past, or one detection dropped at the cap.
+//
+// Kept DOM-free so the matching rules are unit-testable; rendering lives in
+// DetailPanel.
 
 // Absolute Unix paths (/a/b/c) and Windows paths (C:\a\b or C:/a/b) with optional :line or :line:col.
 export const PATH_REGEX = /(?:\/[\w.\-+@]+){2,}(?::\d+(?::\d+)?)?|[A-Za-z]:[\\/](?:[\w.\-+@]+[\\/]?)+(?::\d+(?::\d+)?)?/g;
@@ -67,7 +74,21 @@ export function urlTicketKey(url: string): string | null {
   return null;
 }
 
-export type InlineMatch = { index: number; text: string; kind: 'path' | 'jira'; key?: string };
+// A pull request URL, any host (GitHub Enterprise lives on private domains) —
+// the `/pull/<digits>` path segment is what identifies it. Mirrors the server's
+// parsePrUrl; duplicated on purpose so this module stays dependency-free.
+const PR_URL_REGEX = /^https?:\/\/[^/\s]+\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/pull\/(\d+)(?:[/?#]|$)/;
+
+/** The `owner/repo#number` a URL points at, or null when it isn't a PR link. */
+export function prUrlRef(url: string): string | null {
+  const m = PR_URL_REGEX.exec(url.trim().replace(TRAILING_PUNCT, ''));
+  if (!m) return null;
+  const number = Number(m[3]);
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+  return `${m[1]}/${m[2]}#${number}`;
+}
+
+export type InlineMatch = { index: number; text: string; kind: 'path' | 'jira' | 'pr'; key?: string };
 
 /** Split a matched path token into the bare path and the optional trailing
  *  `:line(:col)` reference. The Windows drive colon never matches — it is
@@ -91,6 +112,13 @@ export function collectInlineMatches(text: string): InlineMatch[] {
     const url = m[0].replace(TRAILING_PUNCT, '');
     if (!url) continue;
     urls.push([m.index, m.index + url.length]);
+    // PR first: a PR URL routinely carries a ticket key in the branch segment
+    // (…/pull/12 from BACKEND-2278-fix), and it is a PR link, not a ticket link.
+    const prRef = prUrlRef(url);
+    if (prRef) {
+      found.push({ index: m.index, text: url, kind: 'pr', key: prRef });
+      continue;
+    }
     const key = urlTicketKey(url);
     if (key) found.push({ index: m.index, text: url, kind: 'jira', key });
   }

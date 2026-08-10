@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { setJiraProjectAllowlist, urlTicketKey, collectInlineMatches, splitPathLine } from '../jiraInline.js';
+import { setJiraProjectAllowlist, urlTicketKey, prUrlRef, collectInlineMatches, splitPathLine } from '../jiraInline.js';
 
 const summarize = (text: string) =>
   collectInlineMatches(text).map((m) => `${m.kind}:${m.key ?? m.text}`);
@@ -145,5 +145,65 @@ describe('splitPathLine', () => {
 
   it('leaves a digit-final path segment alone', () => {
     expect(splitPathLine('/a/b/v2')).toEqual({ path: '/a/b/v2' });
+  });
+});
+
+describe('inline PR matching', () => {
+  beforeEach(() => {
+    setJiraProjectAllowlist('');
+    setJiraProjectAllowlist('BACKEND, API');
+  });
+
+  it.each([
+    ['https://github.com/hypatos/prompting-service/pull/819', 'hypatos/prompting-service#819'],
+    ['https://github.com/o/r/pull/12/files', 'o/r#12'],
+    ['https://github.com/o/r/pull/12#discussion_r99', 'o/r#12'],
+    ['https://github.com/o/r/pull/12?w=1', 'o/r#12'],
+    // GitHub Enterprise — private host, same path shape.
+    ['https://github.acme.internal/team/svc/pull/44', 'team/svc#44'],
+  ])('resolves %s', (url, ref) => {
+    expect(prUrlRef(url)).toBe(ref);
+  });
+
+  it.each([
+    ['https://github.com/o/r/pulls'],
+    ['https://github.com/o/r/pull/abc'],
+    ['https://github.com/o/r/pull/0'],
+    ['https://github.com/o/r/issues/12'],
+    ['https://github.com/o/r/tree/BACKEND-2278-fix'],
+  ])('rejects %s', (url) => {
+    expect(prUrlRef(url)).toBe(null);
+  });
+
+  it('tokenizes a PR URL in prose', () => {
+    expect(summarize('opened https://github.com/o/r/pull/12 just now'))
+      .toEqual(['pr:o/r#12']);
+  });
+
+  it('beats the ticket rule when a PR URL also carries a key', () => {
+    // The branch segment of a PR URL routinely holds the ticket key. It is
+    // still a PR link, and the `+` must pin the PR, not the ticket.
+    expect(summarize('https://github.com/o/r/pull/12?head=BACKEND-2278'))
+      .toEqual(['pr:o/r#12']);
+  });
+
+  it('does not turn a PR URL into a bogus file path', () => {
+    const kinds = collectInlineMatches('https://github.com/o/r/pull/12').map((m) => m.kind);
+    expect(kinds).toEqual(['pr']);
+  });
+
+  it('keeps ticket URLs as tickets', () => {
+    expect(summarize('https://x.atlassian.net/browse/BACKEND-2278'))
+      .toEqual(['jira:BACKEND-2278']);
+  });
+
+  it('handles a PR URL and a bare key on one line', () => {
+    expect(summarize('BACKEND-2278 → https://github.com/o/r/pull/12'))
+      .toEqual(['jira:BACKEND-2278', 'pr:o/r#12']);
+  });
+
+  it('detects PR URLs with no ticket allowlist configured', () => {
+    setJiraProjectAllowlist('');
+    expect(summarize('https://github.com/o/r/pull/12')).toEqual(['pr:o/r#12']);
   });
 });

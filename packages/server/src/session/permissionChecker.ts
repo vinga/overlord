@@ -58,12 +58,61 @@ const ASK_BUILTIN_ROW = /^[ \t]*\d+\.[ \t]+(?:type something|chat about this)\b/
 const ASK_JUMP_TO_BOTTOM = /jump to bottom/i;
 const ASK_OPTION_LINE = /^\s*\d+\.\s+\S/m;
 
-// Any evidence that an AskUserQuestion menu is on screen, footer or not. Used both
-// to detect the menu and — inverted — to refuse to declare a question dead while
-// one of these is still visible.
+// Footer of a CLI-owned modal (`Enter to confirm · Esc to cancel`) — two parts, no
+// "↑/↓ to navigate". The resume-from-summary dialog Claude raises when reattaching
+// to a long session uses it; so does the compaction choice.
+const CONFIRM_FOOTER = /enter to confirm/i;
+// The composer's own caret: `❯ ` followed by something that is NOT a numbered option
+// row. If it is on screen the TUI is back at the prompt and nothing is blocking.
+const COMPOSER_CARET = /^[ \t]*❯[ \t]+(?!\d+\.[ \t])\S/m;
+// A numbered option in either form — plain, or carrying the selection caret.
+const OPTION_ROW_G = /^[ \t]*(?:❯[ \t]*)?\d+\.[ \t]+\S/gm;
+
+// Last line matching `re`, or -1. The screen carries scrollback above the live
+// dialog, so the newest match is the only one that describes what is on screen now.
+function findLastIdx(lines: string[], re: RegExp): number {
+  for (let i = lines.length - 1; i >= 0; i--) if (re.test(lines[i])) return i;
+  return -1;
+}
+
+// Start of the dialog box: the line after the full-width rule that opens it. 0 when
+// there is no rule. Every marker test must be scoped to this window — the scrollback
+// above it routinely holds an old `❯ 1.`, an old `☐`, or an old "do you want to".
+function boxStartIdx(lines: string[], footerIdx: number): number {
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    if (BOX_RULE.test(lines[i].trimEnd())) return i + 1;
+  }
+  return 0;
+}
+
+// A CLI-owned modal rather than the AskUserQuestion tool: no ` ☐ ` header chip, the
+// confirm footer instead of the navigate triad. Same arrow-key mechanics, but no
+// built-in "Type something" rows and no review/submit step — hence its own `kind`.
+// Guarded tightly (caret + two options + nothing live below it) because a false
+// positive puts the session in the UI's "needs an answer" bucket.
+function looksLikeSystemMenu(text: string): boolean {
+  const lines = text.split('\n');
+  const footerIdx = findLastIdx(lines, CONFIRM_FOOTER);
+  if (footerIdx < 0) return false;
+  // A modal is the bottom-most thing on screen. A composer caret below its footer
+  // means it already closed and this footer is scrollback.
+  for (let i = footerIdx + 1; i < lines.length; i++) {
+    if (COMPOSER_CARET.test(lines[i])) return false;
+  }
+  const box = lines.slice(boxStartIdx(lines, footerIdx), footerIdx).join('\n');
+  if (PRIMARY_PATTERN.test(box)) return false;   // permission prompt
+  if (ASK_HEADER_CHIP.test(box)) return false;   // AskUserQuestion, handled above
+  if (!ASK_OPTION_CARET.test(box)) return false; // a live selection, not prose
+  return (box.match(OPTION_ROW_G) ?? []).length >= 2;
+}
+
+// Any evidence that a choice menu is on screen, footer or not. Used both to detect
+// the menu and — inverted — to refuse to declare a question dead while one of these
+// is still visible.
 function hasAskUserQuestionMarkers(text: string): boolean {
-  if (!ASK_OPTION_LINE.test(text)) return false;
-  return ASK_HEADER_CHIP.test(text) || ASK_OPTION_CARET.test(text) || ASK_BUILTIN_ROW.test(text);
+  if (!ASK_OPTION_LINE.test(text) && !ASK_OPTION_CARET.test(text)) return false;
+  return ASK_HEADER_CHIP.test(text) || ASK_OPTION_CARET.test(text)
+    || ASK_BUILTIN_ROW.test(text) || CONFIRM_FOOTER.test(text);
 }
 
 function looksLikeAskUserQuestion(text: string): boolean {
@@ -124,9 +173,11 @@ function extractPreamble(rawLines: string[], questionIdx: number): string | unde
 export function parseScreenQuestion(text: string): PendingQuestionSet | null {
   const rawLines = text.split('\n');
   const lines = rawLines.map(l => l.replace(/[^\x20-\x7E]/g, '').trim());
+  const system = looksLikeSystemMenu(text);
   // End of the option list: the menu footer, or — when the menu is taller than the
-  // viewport and has scrolled — the "Jump to bottom" rule that replaces it.
-  let footerIdx = lines.findIndex(l => /enter to select/i.test(l));
+  // viewport and has scrolled — the "Jump to bottom" rule that replaces it. Last
+  // match, not first: everything above the live dialog is scrollback.
+  let footerIdx = findLastIdx(lines, /enter to (?:select|confirm)/i);
   if (footerIdx < 0) {
     const jumpIdx = lines.findIndex(l => ASK_JUMP_TO_BOTTOM.test(l));
     // The indicator is painted over the right-hand side of whatever row is last on
@@ -144,6 +195,10 @@ export function parseScreenQuestion(text: string): PendingQuestionSet | null {
     const m = rawLines[i].match(/^[ \t]*☐[ \t]+(.*?)\s*$/);
     if (m) { boxIdx = i + 1; header = m[1].trim() || undefined; break; }
   }
+  // No chip (CLI modals have none): the full-width rule that opens the box is the
+  // next best anchor. Without it the scan starts at line 0 and swallows whatever
+  // scrollback happens to be above — for a resume dialog that is the previous turn.
+  if (boxIdx === 0) boxIdx = boxStartIdx(rawLines, footerIdx);
   const options: { label: string; builtin?: boolean }[] = [];
   let firstOptionIdx = -1;
   for (let i = boxIdx; i < footerIdx; i++) {
@@ -160,22 +215,33 @@ export function parseScreenQuestion(text: string): PendingQuestionSet | null {
       options.push(builtin ? { label: label.slice(0, 120), builtin: true } : { label: label.slice(0, 120) });
     }
   }
-  // Question text: the last non-empty line(s) above the first option.
-  let question = '';
+  // Question text: the paragraph directly above the first option. Joining the whole
+  // paragraph rather than its last line matters for CLI modals, whose question wraps
+  // over several lines; an AskUserQuestion question is one line followed by a blank,
+  // so this collapses to the old behaviour there. For a CLI modal take every line in
+  // the box — its blank-separated lead-in ("This session is 1h 30m old…") is context
+  // the user needs to choose, not decoration.
   let questionIdx = firstOptionIdx < 0 ? footerIdx : firstOptionIdx;
-  for (let i = questionIdx - 1; i >= boxIdx; i--) {
-    if (lines[i]) { question = lines[i]; questionIdx = i; break; }
+  const para: string[] = [];
+  let i = questionIdx - 1;
+  while (i >= boxIdx && !lines[i]) i--;
+  for (; i >= boxIdx && (lines[i] || system); i--) {
+    if (lines[i]) { para.unshift(lines[i]); questionIdx = i; }
   }
+  const question = para.join(' ');
   if (!question && options.length === 0) return null;
-  const preamble = extractPreamble(rawLines, questionIdx);
+  // A CLI modal has no assistant text above it — only the previous turn's scrollback,
+  // which is already in the transcript. Attributing that to the dialog would duplicate it.
+  const preamble = system ? undefined : extractPreamble(rawLines, questionIdx);
   return {
     questions: [{ question: question.slice(0, 300), header, multiSelect: false, options }],
+    ...(system ? { kind: 'system' as const } : {}),
     ...(preamble ? { preamble } : {}),
   };
 }
 
 /** Detection predicates, exported for tests only. */
-export const __testing = { looksLikeAskUserQuestion, hasAskUserQuestionMarkers };
+export const __testing = { looksLikeAskUserQuestion, looksLikeSystemMenu, hasAskUserQuestionMarkers };
 
 // Rate-limit prompt: Claude CLI blocks on Enter when the usage limit is hit
 const RATE_LIMIT_PATTERN = /you'?ve hit your limit/i;
@@ -272,9 +338,10 @@ export function startPermissionChecker(
             stateManager.setNeedsPermission(id, true, cleanText(extractPromptBlock(text)), true);
           }
         }
-        // AskUserQuestion (interactive, shows even in bypass): surface the live TUI
-        // question so it appears inline in the conversation. Clear after 3 misses.
-        if (text && !hasPrompt && looksLikeAskUserQuestion(text)) {
+        // AskUserQuestion (interactive, shows even in bypass) and CLI-owned modals
+        // such as the resume-from-summary dialog: surface the live TUI choice so it
+        // appears inline in the conversation. Clear after 3 misses.
+        if (text && !hasPrompt && (looksLikeAskUserQuestion(text) || looksLikeSystemMenu(text))) {
           const parsed = parseScreenQuestion(text);
           if (parsed) {
             questionMissCount.set(id, 0);

@@ -15,11 +15,13 @@ const ICON_LABELS: Record<WorkerIcon, string> = {
   ticket: 'Refining ticket',
   done: 'Done',
   investigate: 'Investigating',
+  bug: 'Bug',
   release: 'Release',
   dashboard: 'Dashboard',
   teach: 'Teaching',
   notes: 'Pinned notes',
   btw: 'By the way',
+  docs: 'Documentation',
   config: 'Configuration',
 };
 
@@ -182,7 +184,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
                       data-label={p.label}
                       aria-label={p.label}
                     >
-                      <svg width="26" height="34" viewBox="0 0 40 52" xmlns="http://www.w3.org/2000/svg">
+                      <svg width="23" height="30" viewBox="0 0 40 52" xmlns="http://www.w3.org/2000/svg">
                         <defs>
                           <linearGradient id={gradId} x1="0%" y1="0%" x2="60%" y2="100%">
                             <stop offset="0%" stopColor={`hsl(${hue}, ${saturation}%, ${Math.min(100, lightness + 25)}%)`} />

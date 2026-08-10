@@ -13,6 +13,8 @@ interface ActivityItem {
   toolName?: string;             // for kind='tool'
   oldString?: string;            // for kind='tool' + toolName='Edit' | 'Write' (Write sets '' to mean "new file")
   newString?: string;            // for kind='tool' + toolName='Edit' | 'Write'
+  oldStringTruncated?: boolean;  // server cut it at 10k — diff context can't be located
+  newStringTruncated?: boolean;
   isRedacted?: boolean;          // for kind='thinking'
   contentTruncated?: boolean;    // message text was cut at 32k; full text only in the transcript/pty
   inputJson?: string;            // full tool input as JSON (truncated)
@@ -52,6 +54,10 @@ interface PendingQuestion {
 
 interface PendingQuestionSet {
   questions: PendingQuestion[];
+  /** Absent/'ask' = the AskUserQuestion tool menu. 'system' = a CLI-owned modal (the
+   *  resume-from-summary / compaction choice). A system modal has no built-in
+   *  "Type something" rows and no review/submit step — don't add either. */
+  kind?: 'ask' | 'system';
   /** Assistant text rendered above the menu in the TUI. Only present on screen-derived
    *  sets — the transcript holds nothing of an unanswered AskUserQuestion turn, so this
    *  is the only copy of that message while the menu is up. */
@@ -98,7 +104,7 @@ interface Task {
  * validates spawn/PUT against its copy). Guarded by the drift test in
  * `packages/server/src/session/__tests__/spawnIcon.test.ts`.
  */
-export const WORKER_ICONS = ['user', 'ticket', 'done', 'investigate', 'release', 'dashboard', 'teach', 'notes', 'btw', 'config'] as const;
+export const WORKER_ICONS = ['user', 'ticket', 'done', 'investigate', 'bug', 'release', 'dashboard', 'teach', 'notes', 'btw', 'docs', 'config'] as const;
 
 /** Avatar glyph for a worker. undefined = 'user' (default person glyph). */
 export type WorkerIcon = typeof WORKER_ICONS[number];
@@ -156,6 +162,9 @@ interface Session {
   scheduledWakeupReason?: string;  // why it's sleeping (the ScheduleWakeup `reason`)
   backgroundTasks?: BackgroundTask[];  // in-flight background Bash commands; present ⇒ show "running" instead of "waiting"
   jiraKeys?: string[];
+  /** `owner/repo#number` refs for PRs this session touched — autodetected from PR
+   *  URLs in the transcript and/or pinned via the `+` on a PR link in the feed. */
+  prRefs?: string[];
   skillsUsed?: string[];         // skill/command names invoked in this session, accumulated server-side
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
    *  auto-clears on the next turn; 'parked' is deliberate and sticky. */
@@ -240,6 +249,15 @@ export interface JiraIssueMeta {
   statusCategory?: string; // status.statusCategory.key: "new" | "indeterminate" | "done"
 }
 
+/** Resolved metadata for one `owner/repo#number` ref. All fields optional — the
+ *  chip degrades to a bare ref when `gh` can't resolve it. */
+export interface PrRefMeta {
+  title?: string;
+  state?: string;    // OPEN | CLOSED | MERGED
+  isDraft?: boolean;
+  url?: string;      // real URL, preserving a GitHub Enterprise host
+}
+
 interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
@@ -249,6 +267,9 @@ interface OfficeSnapshot {
   /** Map of Jira key → resolved metadata. Server fills it from jiraTitleCache
    *  when credentials are configured; absent or empty otherwise. */
   jiraMeta?: Record<string, JiraIssueMeta>;
+  /** Map of `owner/repo#number` → resolved PR metadata for every ref attached to
+   *  a session. Missing entries → bare chip with no title or state pill. */
+  prMeta?: Record<string, PrRefMeta>;
 }
 
 // Terminal message types (server → client)

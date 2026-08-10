@@ -11,6 +11,11 @@ export interface ActivityItem {
   toolName?: string;             // for kind='tool'
   oldString?: string;            // for Edit tool calls
   newString?: string;            // for Edit tool calls
+  // Cut at MAX_CONTENT_LENGTH. The diff viewer locates an edit by searching the
+  // file for newString, which can never match once truncated — it needs to tell
+  // that apart from "the file changed since".
+  oldStringTruncated?: boolean;
+  newStringTruncated?: boolean;
   isRedacted?: boolean;
   contentTruncated?: boolean;    // content was cut at MAX_MESSAGE_LENGTH; full text only in transcript
   inputJson?: string;            // full tool input as JSON (truncated)
@@ -51,6 +56,12 @@ export interface PendingQuestion {
 /** All questions from one AskUserQuestion tool call */
 export interface PendingQuestionSet {
   questions: PendingQuestion[];
+  /** Which TUI dialog this came from. Absent/'ask' = the AskUserQuestion tool menu.
+   *  'system' = a CLI-owned modal (the resume-from-summary / compaction choice shown
+   *  when reattaching to a long session). Same arrow-key mechanics, but a system
+   *  modal has no built-in "Type something" rows and no review/submit step, so the
+   *  client must neither synthesize the former nor auto-send the latter. */
+  kind?: 'ask' | 'system';
   /** The assistant text rendered directly above the menu in the TUI. Claude flushes
    *  nothing of an AskUserQuestion turn to the transcript until the question is
    *  answered — text block included — so while the menu is up this is the only
@@ -115,7 +126,7 @@ export interface PlanSummary {
  * cross-package import) — kept honest by the drift test in
  * `session/__tests__/spawnIcon.test.ts`.
  */
-export const WORKER_ICONS = ['user', 'ticket', 'done', 'investigate', 'release', 'dashboard', 'teach', 'notes', 'btw', 'config'] as const;
+export const WORKER_ICONS = ['user', 'ticket', 'done', 'investigate', 'bug', 'release', 'dashboard', 'teach', 'notes', 'btw', 'docs', 'config'] as const;
 
 /** Avatar glyph for a worker. `undefined` means 'user' (default person glyph). */
 export type WorkerIcon = typeof WORKER_ICONS[number];
@@ -202,6 +213,10 @@ export interface Session {
    *  across reads — keys seen earlier in the conversation but no longer in the
    *  tail window persist here. Wiped on /clear (transcriptTruncated). */
   jiraKeys?: string[];
+  /** Pull requests this session touched, as `owner/repo#number`. Detected from PR
+   *  URLs anywhere in the transcript (assistant + tool output included) and/or
+   *  pinned by hand. Union-merged across reads. Cap 5. */
+  prRefs?: string[];
   /** Skill/command names invoked in this session (union across transcript reads).
    *  Wiped on /clear (transcriptTruncated). */
   skillsUsed?: string[];
@@ -337,6 +352,18 @@ export interface OverlordSession {
    *  them; exempt from jiraKeysDismissed (pinning is the un-dismiss). Wiped on
    *  /clear. Cap 5. */
   jiraKeysPinned?: string[];
+  /** Persisted PR refs (`owner/repo#number`), union across transcript reads.
+   *  On /clear this is recomputed down to prRefsPinned — the scanner's history
+   *  is gone, but a hand-pinned PR is a statement about the work, not about the
+   *  transcript. Cap 5. */
+  prRefs?: string[];
+  /** Refs the user dismissed via the chip × button. The scanner keeps finding
+   *  them in the tail; mergePrRefs filters this set out. Cap 50, recent-first. */
+  prRefsDismissed?: string[];
+  /** Refs the user added by hand via the `+` button on a PR link in the feed.
+   *  Lead the merge, exempt from prRefsDismissed (pinning is the un-dismiss),
+   *  survive /clear. Cap 5. */
+  prRefsPinned?: string[];
   /** Persisted skill/command names invoked in this session (union across
    *  transcript reads). Wiped on /clear. */
   skillsUsed?: string[];
@@ -396,6 +423,7 @@ export interface LiveSession {
   pendingQuestion?: PendingQuestionSet;
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
+  prRefs?: string[];
   skillsUsed?: string[];
   providerSessionId?: string;
   requestSummary?: string;
@@ -448,6 +476,18 @@ export interface JiraIssueMeta {
   statusCategory?: string; // status.statusCategory.key: "new" | "indeterminate" | "done"
 }
 
+/** Resolved metadata for a single `owner/repo#number` PR ref. All fields
+ *  optional — the ref renders as a bare chip when `gh` is missing, the repo is
+ *  private to another account, or the fetch is still in flight. */
+export interface PrRefMeta {
+  title?: string;
+  /** OPEN | CLOSED | MERGED. */
+  state?: string;
+  isDraft?: boolean;
+  /** Real URL, preserving the originating host (GitHub Enterprise). */
+  url?: string;
+}
+
 export interface OfficeSnapshot {
   rooms: Room[];
   updatedAt: string;
@@ -458,4 +498,7 @@ export interface OfficeSnapshot {
    *  contains entries the server has successfully resolved. Missing keys → chip
    *  falls back to "Open KEY in JIRA". */
   jiraMeta?: Record<string, JiraIssueMeta>;
+  /** Map of `owner/repo#number` → resolved PR metadata, for every ref currently
+   *  attached to a session. Missing entries → bare chip, no state pill. */
+  prMeta?: Record<string, PrRefMeta>;
 }

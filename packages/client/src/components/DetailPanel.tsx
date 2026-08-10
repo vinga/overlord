@@ -17,11 +17,13 @@ import styles from './DetailPanel.module.css';
 import { SessionCommands } from './SessionCommands';
 import { searchFeed, BoldExcerpt } from '../lib/search';
 import { FileEditorOverlay } from './FileEditorOverlay';
+import { DiffViewer } from './DiffViewer';
 import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
 import { SkillChips } from './SkillChips';
 import { JiraChips } from './JiraChips';
+import { PrChips } from './PrChips';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
@@ -31,6 +33,7 @@ import {
   setJiraProjectAllowlist,
   hasJiraAllowlist,
   urlTicketKey,
+  prUrlRef,
   collectInlineMatches,
   splitPathLine,
 } from '../lib/jiraInline';
@@ -57,17 +60,23 @@ export function setJiraProjects(raw: string | undefined) {
   if (setJiraProjectAllowlist(raw)) markdownCache.clear();
 }
 
-/** `+` affordance appended to a ticket token; the delegated click handler in
- *  DetailPanel turns it into a POST. */
-function makeJiraAddButton(doc: Document, key: string): HTMLButtonElement {
+/** `+` affordance appended to a ticket or PR token; the delegated click handler
+ *  in DetailPanel turns it into a POST. */
+function makeAddButton(doc: Document, cls: string, label: string): HTMLButtonElement {
   const add = doc.createElement('button');
-  add.className = 'jiraAddBtn';
+  add.className = cls;
   add.setAttribute('tabindex', '-1');
-  add.setAttribute('title', `Add ${key} to this session's tickets`);
-  add.setAttribute('aria-label', `Add ${key} to this session's tickets`);
+  add.setAttribute('title', label);
+  add.setAttribute('aria-label', label);
   add.textContent = '+';
   return add;
 }
+
+const makeJiraAddButton = (doc: Document, key: string) =>
+  makeAddButton(doc, 'jiraAddBtn', `Add ${key} to this session's tickets`);
+
+const makePrAddButton = (doc: Document, ref: string) =>
+  makeAddButton(doc, 'prAddBtn', `Add ${ref} to this session's pull requests`);
 
 function linkifyPaths(html: string, wrapFences = true): string {
   if (typeof DOMParser === 'undefined') return html;
@@ -112,16 +121,26 @@ function linkifyPaths(html: string, wrapFences = true): string {
   // Ticket URLs are already anchors by the time we get here (marked autolinks
   // them), and the walker below skips anchor text — so pin them in place: keep
   // the link, hang a `+` off it. Anchors inside code fences are left alone.
-  if (hasJiraAllowlist()) {
-    root.querySelectorAll('a[href]').forEach((a) => {
-      if (a.closest('pre, code')) return;
-      const key = urlTicketKey(a.getAttribute('href') ?? '');
-      if (!key || a.querySelector('.jiraAddBtn')) return;
-      a.setAttribute('data-jira-key', key);
-      a.className = `${a.className} inlineJiraKey`.trim();
-      a.appendChild(makeJiraAddButton(doc, key));
-    });
-  }
+  root.querySelectorAll('a[href]').forEach((a) => {
+    if (a.closest('pre, code')) return;
+    const href = a.getAttribute('href') ?? '';
+    // PRs first: a PR URL often carries a ticket key in its branch segment, but
+    // it is a PR link — the `+` must pin the PR, not the ticket.
+    const prRef = prUrlRef(href);
+    if (prRef) {
+      if (a.querySelector('.prAddBtn')) return;
+      a.setAttribute('data-pr-ref', prRef);
+      a.className = `${a.className} inlinePrRef`.trim();
+      a.appendChild(makePrAddButton(doc, prRef));
+      return;
+    }
+    if (!hasJiraAllowlist()) return;
+    const key = urlTicketKey(href);
+    if (!key || a.querySelector('.jiraAddBtn')) return;
+    a.setAttribute('data-jira-key', key);
+    a.className = `${a.className} inlineJiraKey`.trim();
+    a.appendChild(makeJiraAddButton(doc, key));
+  });
   // Code contexts are walked too — paths in backticks are the most common
   // presentation — but only `path` matches are wrapped there, in a span that
   // stays visually silent until hover. Jira tokens (and their `+` buttons)
@@ -157,6 +176,12 @@ function linkifyPaths(html: string, wrapFences = true): string {
         if (line !== undefined) span.setAttribute('data-file-line', String(line));
         span.className = inCode ? 'inlineFilePathCode' : 'inlineFilePath';
         span.textContent = match.text;
+      } else if (match.kind === 'pr') {
+        const ref = match.key ?? match.text;
+        span.setAttribute('data-pr-ref', ref);
+        span.className = 'inlinePrRef';
+        span.appendChild(doc.createTextNode(match.text));
+        span.appendChild(makePrAddButton(doc, ref));
       } else {
         const key = match.key ?? match.text;
         span.setAttribute('data-jira-key', key);
@@ -453,18 +478,6 @@ function trimPath(fullPath: string, cwd?: string): string {
     return normFull.slice(normCwd.length + 1);
   }
   return fullPath;
-}
-
-function computeDiff(oldStr: string, newStr: string): Array<{ type: 'removed' | 'added' | 'context', text: string }> {
-  const result: Array<{ type: 'removed' | 'added' | 'context', text: string }> = [];
-  // Simple: show removed lines then added lines (not LCS, but clear enough)
-  if (oldStr.length > 0) {
-    for (const line of oldStr.split('\n')) result.push({ type: 'removed', text: line });
-  }
-  if (newStr.length > 0) {
-    for (const line of newStr.split('\n')) result.push({ type: 'added', text: line });
-  }
-  return result;
 }
 
 const STATE_COLORS: Record<WorkerState, string> = {
@@ -853,7 +866,7 @@ function parseQuestionInput(inputJson?: string): ParsedQuestion[] {
 function questionInputToSet(inputJson?: string): PendingQuestionSet | null {
   if (!inputJson) return null;
   try {
-    const parsed = JSON.parse(inputJson) as { questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string; builtin?: boolean }> }> };
+    const parsed = JSON.parse(inputJson) as { kind?: 'ask' | 'system'; questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string; builtin?: boolean }> }> };
     const questions = (parsed.questions ?? [])
       .filter(q => q.question)
       .map(q => ({
@@ -862,7 +875,9 @@ function questionInputToSet(inputJson?: string): PendingQuestionSet | null {
         multiSelect: q.multiSelect ?? false,
         options: (q.options ?? []).map(o => ({ label: o.label ?? '', description: o.description, preview: o.preview, builtin: o.builtin })).filter(o => o.label),
       }));
-    return questions.length > 0 ? { questions } : null;
+    // `kind` rides through the same JSON so a CLI modal keeps its answering rules
+    // after the round-trip; anything but 'system' is the ordinary tool menu.
+    return questions.length > 0 ? { questions, ...(parsed.kind === 'system' ? { kind: 'system' as const } : {}) } : null;
   } catch {
     return null;
   }
@@ -942,7 +957,7 @@ function parseTaskNotification(content: string): { summary: string; status: stri
 }
 
 interface ToolEntryProps {
-  tool: { toolName?: string; content?: string; inputJson?: string; resultJson?: string; isError?: boolean; durationMs?: number; oldString?: string; newString?: string };
+  tool: { toolName?: string; content?: string; inputJson?: string; resultJson?: string; isError?: boolean; durationMs?: number; oldString?: string; newString?: string; oldStringTruncated?: boolean; newStringTruncated?: boolean };
   diffKey: string;
   argsKey: string;
   resultKey: string;
@@ -1108,16 +1123,15 @@ function ToolEntry({
         <pre className={`${styles.argsView} ${wrap ? styles.argsViewWrap : ''} ${tool.isError ? styles.resultViewError : styles.resultView}`}>{resultText}</pre>
       )}
       {hasDiff && isDiffExpanded && (
-        <div className={styles.diffView}>
-          {computeDiff(tool.oldString!, tool.newString ?? '').map((line, li) => (
-            <div
-              key={li}
-              className={`${styles.diffLine} ${line.type === 'removed' ? styles.diffRemoved : styles.diffAdded}`}
-            >
-              {line.text}
-            </div>
-          ))}
-        </div>
+        <DiffViewer
+          oldString={tool.oldString ?? ''}
+          newString={tool.newString ?? ''}
+          oldStringTruncated={tool.oldStringTruncated}
+          newStringTruncated={tool.newStringTruncated}
+          // For Edit/Write the tool description IS the absolute file path.
+          filePath={tool.content && isFilePath(tool.content) ? tool.content : undefined}
+          wrap={wrap}
+        />
       )}
     </div>
   );
@@ -1835,6 +1849,28 @@ export function DetailPanel({
         }
         return;
       }
+      const prToken = (e.target as HTMLElement | null)?.closest('[data-pr-ref]') as HTMLElement | null;
+      if (prToken) {
+        const ref = prToken.getAttribute('data-pr-ref');
+        if (!ref) return;
+        const addBtn = (e.target as HTMLElement | null)?.closest('.prAddBtn');
+        // Every PR token comes from a URL, so the anchor form is the norm — only
+        // the `+` needs the navigation suppressed.
+        if (addBtn) e.preventDefault();
+        if (addBtn && selectedSession?.sessionId) {
+          // Optimistic: the chip lands on the next snapshot tick, which then
+          // owns the class via the sync effect below.
+          prToken.classList.add('prPinned');
+          void fetch(`/api/sessions/${selectedSession.sessionId}/pr-refs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ref }),
+          })
+            .then((r) => { if (!r.ok) prToken.classList.remove('prPinned'); })
+            .catch(() => { prToken.classList.remove('prPinned'); });
+        }
+        return;
+      }
       const jiraToken = (e.target as HTMLElement | null)?.closest('[data-jira-key]') as HTMLElement | null;
       if (jiraToken) {
         const key = jiraToken.getAttribute('data-jira-key');
@@ -2052,13 +2088,21 @@ const currentDisplayName =
     () => new Set(selectedSession?.jiraKeys ?? []),
     [selectedSession?.jiraKeys],
   );
+  // Same for PR tokens. Refs are case-insensitive on GitHub, so compare lowered.
+  const prRefSet = useMemo(
+    () => new Set((selectedSession?.prRefs ?? []).map((r) => r.toLowerCase())),
+    [selectedSession?.prRefs],
+  );
   useEffect(() => {
     const root = transcriptRef.current;
     if (!root) return;
     root.querySelectorAll<HTMLElement>('[data-jira-key]').forEach((el) => {
       el.classList.toggle('jiraPinned', jiraKeySet.has(el.getAttribute('data-jira-key') ?? ''));
     });
-  }, [jiraKeySet, selectedSession?.activityFeed, extraFeed, activeTab, transcriptRef]);
+    root.querySelectorAll<HTMLElement>('[data-pr-ref]').forEach((el) => {
+      el.classList.toggle('prPinned', prRefSet.has((el.getAttribute('data-pr-ref') ?? '').toLowerCase()));
+    });
+  }, [jiraKeySet, prRefSet, selectedSession?.activityFeed, extraFeed, activeTab, transcriptRef]);
 
   // Recompute jump pill state when transcript tab or target changes
   useEffect(() => {
@@ -2548,7 +2592,7 @@ const currentDisplayName =
         kind: 'tool',
         toolName: 'AskUserQuestion',
         content: selectedSession.pendingQuestion.questions.map(q => q.question).join(' · ').slice(0, 200),
-        inputJson: JSON.stringify({ questions: selectedSession.pendingQuestion.questions }),
+        inputJson: JSON.stringify({ questions: selectedSession.pendingQuestion.questions, kind: selectedSession.pendingQuestion.kind }),
       }
     : null;
   // The assistant text above the menu. Claude writes nothing of an AskUserQuestion
@@ -4031,6 +4075,18 @@ const currentDisplayName =
                           </span>
                         </div>
                       )}
+                      {selectedSession.prRefs && selectedSession.prRefs.length > 0 && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Pull requests</span>
+                          <span className={styles.fieldValue}>
+                            <PrChips
+                              refs={selectedSession.prRefs}
+                              sessionId={selectedSession.sessionId}
+                            />
+                          </span>
+                        </div>
+                      )}
+
                       {selectedSession.skillsUsed && selectedSession.skillsUsed.length > 0 && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Skills</span>

@@ -5,6 +5,7 @@ import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuest
 import { sessionStore } from './sessionStore.js';
 import { shadowPathFor } from './transcriptShadow.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
+import { parsePrUrl, prRefKey } from '../git/prRef.js';
 
 const JIRA_MAX_KEYS = 5;
 
@@ -21,8 +22,27 @@ function getJiraProjectRegex(): RegExp | null {
 }
 
 /**
- * Walk last30 transcript JSONL lines and return only text segments where a
- * JIRA reference would be intentional:
+ * Walk last30 transcript JSONL lines once and return two text slices:
+ *
+ *   `user` — non-meta user text only. What a JIRA key or a slash-command name
+ *            must come from (see the narrow-scan rationale below).
+ *   `wide` — the same user text plus assistant text and tool_result output.
+ *            What a PR *URL* may come from: `https://host/o/r/pull/819` is a
+ *            concrete artifact, not a passing mention, and it is overwhelmingly
+ *            printed by `gh pr create` / `gh pr view` (a tool_result) or
+ *            reported by the assistant — almost never typed by the user. The
+ *            ambiguity that forces the JIRA scan to stay narrow simply doesn't
+ *            exist for a full URL.
+ *
+ * Both slices exclude `isMeta` user messages and tool_use *input* — skill-doc
+ * expansions carry example ticket keys and PR links, and a Read of a doc is not
+ * intent.
+ *
+ * One pass, because this runs on every transcript poll and tool_result blocks
+ * are the largest thing in the file — a second JSON.parse sweep is not free.
+ *
+ * The `user` slice keeps only text segments where a JIRA reference would be
+ * intentional:
  *   - non-meta user text content, including `<command-args>` carried inline in
  *     the plain user string of a slash-command invocation
  *
@@ -42,8 +62,9 @@ function getJiraProjectRegex(): RegExp | null {
  * a major source of over-eager chips. The real command invocation (and its
  * `<command-args>` ticket) is a plain, non-meta user message and is kept.
  */
-function gatherJiraScanText(last30: string[]): string[] {
-  const out: string[] = [];
+export function gatherScanSegments(last30: string[]): { user: string[]; wide: string[] } {
+  const user: string[] = [];
+  const wide: string[] = [];
   for (const line of last30) {
     if (!line) continue;
     let parsed: { type?: string; isMeta?: boolean; message?: { content?: unknown } };
@@ -52,17 +73,46 @@ function gatherJiraScanText(last30: string[]): string[] {
       if (parsed.isMeta === true) continue;
       const c = parsed.message?.content;
       if (typeof c === 'string') {
-        out.push(c);
+        user.push(c);
+        wide.push(c);
+      } else if (Array.isArray(c)) {
+        for (const block of c as Array<{ type?: string; text?: string; content?: unknown }>) {
+          if (block.type === 'text' && typeof block.text === 'string') {
+            user.push(block.text);
+            wide.push(block.text);
+          } else if (block.type === 'tool_result') {
+            // wide-only: `gh pr create` prints the PR URL here
+            pushToolResultText(block.content, wide);
+          }
+        }
+      }
+    } else if (parsed.type === 'assistant') {
+      // wide-only — assistant prose is a major source of over-eager JIRA chips
+      // (see doc above) but is a legitimate source of PR links.
+      const c = parsed.message?.content;
+      if (typeof c === 'string') {
+        wide.push(c);
       } else if (Array.isArray(c)) {
         for (const block of c as Array<{ type?: string; text?: string }>) {
-          if (block.type === 'text' && typeof block.text === 'string') out.push(block.text);
-          // skip tool_result
+          if (block.type === 'text' && typeof block.text === 'string') wide.push(block.text);
+          // skip tool_use input, thinking
         }
       }
     }
-    // assistant text blocks are intentionally not scanned (see doc above)
   }
-  return out;
+  return { user, wide };
+}
+
+/** tool_result `content` is either a plain string or a block array. */
+function pushToolResultText(content: unknown, out: string[]): void {
+  if (typeof content === 'string') {
+    out.push(content);
+    return;
+  }
+  if (!Array.isArray(content)) return;
+  for (const block of content as Array<{ type?: string; text?: string }>) {
+    if (block?.type === 'text' && typeof block.text === 'string') out.push(block.text);
+  }
 }
 
 /**
@@ -89,6 +139,41 @@ export function extractJiraKeys(segments: string[], projectRegex: RegExp | null)
   return out;
 }
 
+const PR_REFS_MAX = 5;
+const URL_SWEEP = /https?:\/\/[^\s<>"'`\\)]+/g;
+
+/**
+ * Extract pull-request refs (`owner/repo#number`) from the wide scan slice.
+ *
+ * Last-occurrence wins, unlike extractJiraKeys' first-occurrence rule: in a long
+ * session the PR you're on is the one most recently printed, so when the cap
+ * bites we keep the newest mentions. The returned list is chronological
+ * (oldest → newest) so it merges stably with the persisted list.
+ */
+export function extractPrRefs(segments: string[]): string[] {
+  const found: string[] = [];
+  for (const segment of segments) {
+    if (!segment || !segment.includes('/pull/')) continue;
+    URL_SWEEP.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = URL_SWEEP.exec(segment)) !== null) {
+      const ref = parsePrUrl(m[0]);
+      if (ref) found.push(ref);
+    }
+  }
+  if (found.length === 0) return [];
+  const seen = new Set<string>();
+  const newestFirst: string[] = [];
+  for (let i = found.length - 1; i >= 0; i--) {
+    const key = prRefKey(found[i]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    newestFirst.push(found[i]);
+    if (newestFirst.length >= PR_REFS_MAX) break;
+  }
+  return newestFirst.reverse();
+}
+
 const SKILLS_USED_MAX = 12;
 // Built-in commands that aren't skills. Everything else arriving as a
 // <command-name> invocation is assumed to be a skill/workflow command.
@@ -99,7 +184,7 @@ const IGNORED_COMMANDS = new Set([
 
 /**
  * Extract skill/command names from slash-command invocations. Reuses the
- * segments from gatherJiraScanText: the real invocation is a plain, non-meta
+ * `user` segments from gatherScanSegments: the real invocation is a plain, non-meta
  * user message whose content STARTS with the command tags (either
  * `<command-name>` first or `<command-message>` first). Anchoring to the
  * segment start is load-bearing: user prose (e.g. compaction summaries) can
@@ -1003,6 +1088,8 @@ export function readTranscriptState(filePath: string): {
   backgroundTasks?: BackgroundTask[];
   // JIRA-shaped ticket keys mined from the transcript tail. Capped at 5.
   jiraKeys?: string[];
+  // `owner/repo#number` refs from PR URLs in the tail (wider scan). Capped at 5.
+  prRefs?: string[];
   // Skill/command names from slash-command invocations in the tail. Capped at 12.
   skillsUsed?: string[];
 } {
@@ -1295,12 +1382,19 @@ export function readTranscriptState(filePath: string): {
                   if (block.input && typeof block.input === 'object') {
                     const inp = block.input as Record<string, unknown>;
                     if (block.name === 'Edit') {
-                      if (typeof inp.old_string === 'string') item.oldString = inp.old_string.slice(0, MAX_CONTENT_LENGTH);
-                      if (typeof inp.new_string === 'string') item.newString = inp.new_string.slice(0, MAX_CONTENT_LENGTH);
+                      if (typeof inp.old_string === 'string') {
+                        item.oldString = inp.old_string.slice(0, MAX_CONTENT_LENGTH);
+                        if (inp.old_string.length > MAX_CONTENT_LENGTH) item.oldStringTruncated = true;
+                      }
+                      if (typeof inp.new_string === 'string') {
+                        item.newString = inp.new_string.slice(0, MAX_CONTENT_LENGTH);
+                        if (inp.new_string.length > MAX_CONTENT_LENGTH) item.newStringTruncated = true;
+                      }
                     } else if (block.name === 'Write') {
                       if (typeof inp.content === 'string') {
                         item.oldString = '';
                         item.newString = inp.content.slice(0, MAX_CONTENT_LENGTH);
+                        if (inp.content.length > MAX_CONTENT_LENGTH) item.newStringTruncated = true;
                       }
                     }
                     // Store trimmed input JSON (truncate large string values)
@@ -1530,9 +1624,10 @@ export function readTranscriptState(filePath: string): {
     }
     const backgroundTasks = Array.from(pendingBackgroundTasks.values());
 
-    const scanSegments = gatherJiraScanText(last30);
-    const jiraKeys = extractJiraKeys(scanSegments, getJiraProjectRegex());
-    const skillsUsed = unionSkillNames(extractSkillsUsed(scanSegments), extractSkillToolUses(last30));
+    const scanSegments = gatherScanSegments(last30);
+    const jiraKeys = extractJiraKeys(scanSegments.user, getJiraProjectRegex());
+    const prRefs = extractPrRefs(scanSegments.wide);
+    const skillsUsed = unionSkillNames(extractSkillsUsed(scanSegments.user), extractSkillToolUses(last30));
 
     const result = {
       state,
@@ -1555,6 +1650,7 @@ export function readTranscriptState(filePath: string): {
       scheduledWakeupReason,
       backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
+      prRefs: prRefs.length > 0 ? prRefs : undefined,
       skillsUsed: skillsUsed.length > 0 ? skillsUsed : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes, pendingBackgroundTasks });
@@ -1582,6 +1678,7 @@ function readCodexTranscriptState(filePath: string): {
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
   jiraKeys?: string[];
+  prRefs?: string[];
 } {
   try {
     const now = Date.now();
@@ -1755,7 +1852,9 @@ function readCodexTranscriptState(filePath: string): {
       }
     }
 
-    const jiraKeys = extractJiraKeys(gatherJiraScanText(last30), getJiraProjectRegex());
+    const codexSegments = gatherScanSegments(last30);
+    const jiraKeys = extractJiraKeys(codexSegments.user, getJiraProjectRegex());
+    const prRefs = extractPrRefs(codexSegments.wide);
 
     const result = {
       state,
@@ -1765,6 +1864,7 @@ function readCodexTranscriptState(filePath: string): {
       model,
       inputTokens,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
+      prRefs: prRefs.length > 0 ? prRefs : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     evictTranscriptCache(now);

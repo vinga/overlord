@@ -139,6 +139,58 @@ export function WorkerGlyph({ icon, gradientUrl, color }: GlyphProps & { icon: W
           <path d="M 20 39 C 22 41.5 22 44 20 47.5 C 18 44 18 41.5 20 39 Z" fill="rgba(255,255,255,0.75)" />
         </>
       );
+    case 'bug':
+      return (
+        <>
+          {/* Legs */}
+          <g stroke={color} strokeWidth="2.6" strokeLinecap="round" fill="none">
+            <path d="M 11 22 L 3 17" />
+            <path d="M 11 29 L 2.5 29" />
+            <path d="M 11 36 L 3.5 41" />
+            <path d="M 29 22 L 37 17" />
+            <path d="M 29 29 L 37.5 29" />
+            <path d="M 29 36 L 36.5 41" />
+          </g>
+          {/* Antennae */}
+          <g stroke={color} strokeWidth="2.4" strokeLinecap="round" fill="none">
+            <path d="M 16 12 L 12 5" />
+            <path d="M 24 12 L 28 5" />
+          </g>
+          {/* Head */}
+          <circle cx="20" cy="14" r="6.5" fill={gradientUrl} />
+          <circle cx="17.4" cy="13" r="1.6" fill="rgba(0,0,0,0.5)" />
+          <circle cx="22.6" cy="13" r="1.6" fill="rgba(0,0,0,0.5)" />
+          {/* Shell */}
+          <ellipse cx="20" cy="31" rx="11" ry="14" fill={gradientUrl} />
+          {/* Wing split */}
+          <line x1="20" y1="18" x2="20" y2="45" stroke="rgba(0,0,0,0.38)" strokeWidth="1.8" />
+          {/* Spots */}
+          <circle cx="14.8" cy="26" r="2.4" fill="rgba(0,0,0,0.32)" />
+          <circle cx="25.2" cy="30" r="2.4" fill="rgba(0,0,0,0.32)" />
+          <circle cx="15.6" cy="35.5" r="2" fill="rgba(0,0,0,0.32)" />
+        </>
+      );
+    case 'docs':
+      return (
+        <>
+          {/* Covers */}
+          <path d="M 3 8 L 18.5 11 L 18.5 44 L 3 41 Z" fill={gradientUrl} />
+          <path d="M 37 8 L 21.5 11 L 21.5 44 L 37 41 Z" fill={gradientUrl} />
+          {/* Spine */}
+          <rect x="18" y="10" width="4" height="34" rx="1.4" fill={color} />
+          {/* Text rows */}
+          <g fill="rgba(255,255,255,0.75)">
+            <rect x="6" y="16" width="10" height="2.2" rx="1.1" />
+            <rect x="6" y="21.5" width="10" height="2.2" rx="1.1" />
+            <rect x="6" y="27" width="7" height="2.2" rx="1.1" />
+            <rect x="24" y="16" width="10" height="2.2" rx="1.1" />
+            <rect x="24" y="21.5" width="10" height="2.2" rx="1.1" />
+            <rect x="24" y="27" width="7" height="2.2" rx="1.1" />
+          </g>
+          {/* Bookmark */}
+          <path d="M 28 8.5 L 33 7.5 L 33 18 L 30.5 15.5 L 28 19 Z" fill={color} />
+        </>
+      );
     case 'config':
       return (
         <>

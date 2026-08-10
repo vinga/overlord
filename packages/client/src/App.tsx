@@ -5,6 +5,7 @@ import { useCustomNames } from './hooks/useCustomNames';
 import { useRoomOrder } from './hooks/useRoomOrder';
 import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
 import { setJiraMeta } from './hooks/useJiraMeta';
+import { setPrMeta } from './hooks/usePrMeta';
 import { expandRoom } from './hooks/useRoomCollapsed';
 
 import type { ArchiveEntry, Session, SessionProvider, SessionReview, TerminalMessage, TerminalSpawnMode } from './types';
@@ -108,6 +109,10 @@ export function App() {
   useEffect(() => {
     setJiraMeta(snapshot?.jiraMeta);
   }, [snapshot?.jiraMeta]);
+
+  useEffect(() => {
+    setPrMeta(snapshot?.prMeta);
+  }, [snapshot?.prMeta]);
 
   // Feeds the inline-ticket matcher in the conversation feed. Clears the
   // markdown cache when the allowlist changes, so tokens follow the setting.

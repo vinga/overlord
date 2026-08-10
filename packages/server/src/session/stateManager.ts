@@ -2,11 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, SessionReview } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, SessionReview } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
 import { PrHistoryStore } from '../git/prHistoryStore.js';
+import { PrMetaCache } from '../git/prMetaCache.js';
+import { prRefKey, splitPrRef } from '../git/prRef.js';
 import { readGitAhead } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
@@ -300,6 +302,48 @@ export function mergeJiraKeys(
   return out.length > 0 ? out : undefined;
 }
 
+export const PR_REFS_MAX = 5;
+const PR_DISMISSED_MAX = 50;
+/** Union-merge for `owner/repo#number` refs. Same rules as mergeJiraKeys —
+ *  pinned first and exempt from the dismissed filter — but deduplication is
+ *  case-insensitive, since GitHub owner/repo names are, while the casing as
+ *  written is what gets stored and shown. */
+export function mergePrRefs(
+  existing: string[] | undefined,
+  fresh: string[] | undefined,
+  dismissed?: string[],
+  pinned?: string[],
+): string[] | undefined {
+  if (!existing?.length && !fresh?.length && !pinned?.length) return undefined;
+  const blocked = dismissed && dismissed.length > 0
+    ? new Set(dismissed.map(prRefKey))
+    : null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of pinned ?? []) {
+    const key = prRefKey(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+    if (out.length >= PR_REFS_MAX) return out;
+  }
+  for (const r of existing ?? []) {
+    const key = prRefKey(r);
+    if (seen.has(key) || (blocked && blocked.has(key))) continue;
+    seen.add(key);
+    out.push(r);
+    if (out.length >= PR_REFS_MAX) return out;
+  }
+  for (const r of fresh ?? []) {
+    const key = prRefKey(r);
+    if (seen.has(key) || (blocked && blocked.has(key))) continue;
+    seen.add(key);
+    out.push(r);
+    if (out.length >= PR_REFS_MAX) break;
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 const SKILLS_USED_MAX = 12;
 /** Union-merge for skill/command names — same shape as mergeJiraKeys, no dismissed list. */
 export function mergeSkillsUsed(
@@ -422,6 +466,7 @@ export class StateManager {
   private gitWatcher: GitWatcher;
   private prCache: PrCache;
   private prHistoryStore: PrHistoryStore;
+  private prMetaCache: PrMetaCache;
   private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
   private archivePrTimer: ReturnType<typeof setInterval> | null = null;
@@ -481,6 +526,7 @@ export class StateManager {
     this.gitWatcher = new GitWatcher(() => this.onChange());
     this.prHistoryStore = new PrHistoryStore();
     this.prCache = new PrCache(() => this.onChange(), this.prHistoryStore);
+    this.prMetaCache = new PrMetaCache(() => this.onChange(), this.prHistoryStore);
     // 30s, not 15s: the sweep is now one cheap spawn per room, and the ahead-count
     // is an advisory badge. Halving the cadence halves what is left of its cost.
     this.gitAheadTimer = setInterval(() => { void this.refreshGitAheadCache(); }, 30_000);
@@ -1167,6 +1213,12 @@ export class StateManager {
         sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
         sessionStore.getByOverlordId(overlordId)?.jiraKeysPinned,
       ),
+      prRefs: mergePrRefs(
+        existingSession?.prRefs ?? sessionStore.getByOverlordId(overlordId)?.prRefs,
+        transcript?.prRefs,
+        sessionStore.getByOverlordId(overlordId)?.prRefsDismissed,
+        sessionStore.getByOverlordId(overlordId)?.prRefsPinned,
+      ),
       skillsUsed: mergeSkillsUsed(
         existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
         transcript?.skillsUsed,
@@ -1801,7 +1853,14 @@ export class StateManager {
       saveReview(sessionId, {});
       session.jiraKeys = undefined;
       session.skillsUsed = undefined;
-      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, jiraKeysPinned: undefined, skillsUsed: undefined });
+      // PR refs collapse to the hand-pinned ones: the scanner's history died with
+      // the transcript, but a pinned PR is a statement about the work, not about
+      // the conversation, so it survives the clear.
+      const clearedPrPins = session.overlordId
+        ? sessionStore.getByOverlordId(session.overlordId)?.prRefsPinned
+        : undefined;
+      session.prRefs = mergePrRefs(undefined, undefined, undefined, clearedPrPins);
+      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, jiraKeysPinned: undefined, skillsUsed: undefined, prRefs: session.prRefs });
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
@@ -1819,6 +1878,10 @@ export class StateManager {
     const mergedSkillsUsed = result.transcriptTruncated
       ? (result.skillsUsed && result.skillsUsed.length > 0 ? result.skillsUsed : undefined)
       : mergeSkillsUsed(session.skillsUsed, result.skillsUsed);
+    // Same shape for PR refs: truncation wipes the scanner's history, pins stay.
+    const mergedPrRefs = result.transcriptTruncated
+      ? mergePrRefs(undefined, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned)
+      : mergePrRefs(session.prRefs, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned);
 
     let changed =
       session.state !== result.state ||
@@ -1835,6 +1898,7 @@ export class StateManager {
       session.slug !== slug ||
       session.proposedName !== proposedName ||
       !shallowArrayEquals(session.jiraKeys, mergedJiraKeys) ||
+      !shallowArrayEquals(session.prRefs, mergedPrRefs) ||
       !shallowArrayEquals(session.skillsUsed, mergedSkillsUsed) ||
       !shallowArrayEquals(session.subagents, subagents);
 
@@ -1989,6 +2053,10 @@ export class StateManager {
         session.jiraKeys = mergedJiraKeys;
         if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: mergedJiraKeys });
       }
+      if (!shallowArrayEquals(session.prRefs, mergedPrRefs)) {
+        session.prRefs = mergedPrRefs;
+        if (session.overlordId) sessionStore.patch(session.overlordId, { prRefs: mergedPrRefs });
+      }
       if (!shallowArrayEquals(session.skillsUsed, mergedSkillsUsed)) {
         session.skillsUsed = mergedSkillsUsed;
         if (session.overlordId) sessionStore.patch(session.overlordId, { skillsUsed: mergedSkillsUsed });
@@ -2067,6 +2135,57 @@ export class StateManager {
       jiraKeys: nextKeys,
       jiraKeysPinned: nextPinned,
       jiraKeysDismissed: nextDismissed.length > 0 ? nextDismissed : undefined,
+    });
+    this.onChange();
+    return true;
+  }
+
+  /** User clicked × on a PR chip. Mirrors dismissJiraKey: drop it from the live +
+   *  persisted list, blocklist it so the transcript scanner can't re-add it, and
+   *  strip any pin (pinned refs are exempt from the blocklist, so a surviving pin
+   *  would resurrect the ref on the next read). Idempotent. */
+  dismissPr(sessionId: string, ref: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.overlordId) return false;
+    const rec = sessionStore.getByOverlordId(session.overlordId);
+    if (!rec) return false;
+    const key = prRefKey(ref);
+    const nextRefs = (session.prRefs ?? []).filter(r => prRefKey(r) !== key);
+    const prevDismissed = rec.prRefsDismissed ?? [];
+    const nextDismissed = prevDismissed.some(r => prRefKey(r) === key)
+      ? prevDismissed
+      : [ref, ...prevDismissed].slice(0, PR_DISMISSED_MAX);
+    const nextPinned = (rec.prRefsPinned ?? []).filter(r => prRefKey(r) !== key);
+    session.prRefs = nextRefs.length > 0 ? nextRefs : undefined;
+    sessionStore.patch(session.overlordId, {
+      prRefs: nextRefs.length > 0 ? nextRefs : undefined,
+      prRefsDismissed: nextDismissed,
+      prRefsPinned: nextPinned.length > 0 ? nextPinned : undefined,
+    });
+    this.onChange();
+    return true;
+  }
+
+  /** User clicked + on a PR link in the conversation feed. Pins the ref so it
+   *  leads prRefs and survives every later scan, and clears any earlier
+   *  dismissal. Idempotent; returns false only for unknown sessions. */
+  pinPr(sessionId: string, ref: string): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.overlordId) return false;
+    const rec = sessionStore.getByOverlordId(session.overlordId);
+    if (!rec) return false;
+    const key = prRefKey(ref);
+    const prevPinned = rec.prRefsPinned ?? [];
+    const nextPinned = prevPinned.some(r => prRefKey(r) === key)
+      ? prevPinned
+      : [...prevPinned, ref].slice(-PR_REFS_MAX);
+    const nextDismissed = (rec.prRefsDismissed ?? []).filter(r => prRefKey(r) !== key);
+    const nextRefs = mergePrRefs(session.prRefs, undefined, nextDismissed, nextPinned);
+    session.prRefs = nextRefs;
+    sessionStore.patch(session.overlordId, {
+      prRefs: nextRefs,
+      prRefsPinned: nextPinned,
+      prRefsDismissed: nextDismissed.length > 0 ? nextDismissed : undefined,
     });
     this.onChange();
     return true;
@@ -2665,6 +2784,27 @@ export class StateManager {
       if (Object.keys(out).length > 0) jiraMeta = out;
     }
 
+    // PR refs attached to sessions → title/state for the chips. The room cwd is
+    // passed as a hint so the free prHistoryStore path can resolve before any
+    // network call happens.
+    const allRefs = new Map<string, string>(); // ref → cwd hint
+    for (const room of rooms) {
+      for (const s of room.sessions) {
+        if (!s.prRefs) continue;
+        for (const r of s.prRefs) if (!allRefs.has(r)) allRefs.set(r, room.cwd);
+      }
+    }
+    let prMeta: Record<string, PrRefMeta> | undefined;
+    if (allRefs.size > 0) {
+      const out: Record<string, PrRefMeta> = {};
+      for (const [ref, cwd] of allRefs) {
+        const m = this.prMetaCache.get(ref, cwd);
+        if (m && (m.title || m.state || m.url)) out[ref] = m;
+      }
+      if (Object.keys(out).length > 0) prMeta = out;
+    }
+    this.prMetaCache.retain(new Set(allRefs.keys()));
+
     const settings = globalSettingsStore.get();
     return {
       rooms,
@@ -2677,6 +2817,7 @@ export class StateManager {
         jiraApiToken: settings.jiraApiToken ? '***' : '',
       },
       jiraMeta,
+      prMeta,
     };
   }
 
@@ -2731,6 +2872,21 @@ export class StateManager {
    *  room-discovery logic (live sessions ∪ persisted records ∪ configured
    *  slugs) without building the full snapshot. Used by API endpoints that
    *  gate on "known cwd" to prevent arbitrary path probing. */
+  /** Every cwd currently surfaced as a room. Feeds `pathGuard`'s allowed-roots
+   *  list, which scopes files *under* a room cwd — `isKnownRoomCwd` only
+   *  answers for the cwd itself. */
+  listKnownRoomCwds(): string[] {
+    const out = new Set<string>();
+    for (const s of this.sessions.values()) {
+      if (this.isReplacedOvr(s)) continue;
+      if (s.cwd) out.add(s.cwd);
+    }
+    for (const rec of sessionStore.listAll()) {
+      if (rec.cwd) out.add(rec.cwd);
+    }
+    return [...out];
+  }
+
   isKnownRoomCwd(cwd: string): boolean {
     for (const s of this.sessions.values()) {
       if (this.isReplacedOvr(s)) continue;
@@ -2841,6 +2997,7 @@ export class StateManager {
         out.parkedAt = persistedReview.parkedAt;
       }
       out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
+      out.prRefs = overlord.prRefs ?? session.prRefs;
       out.skillsUsed = overlord.skillsUsed ?? session.skillsUsed;
     }
     if (latestPlan) out.latestPlan = latestPlan;
@@ -3217,6 +3374,7 @@ export class StateManager {
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
       jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, rec.jiraKeysPinned),
+      prRefs: mergePrRefs(rec.prRefs, transcriptState?.prRefs, rec.prRefsDismissed, rec.prRefsPinned),
       ...readReview(rec),
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),

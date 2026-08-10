@@ -71,6 +71,24 @@ export function clearLivePtyHeartbeat(): void {
   try { fs.unlinkSync(HEARTBEAT_FILE); } catch { /* ENOENT is the normal case */ }
 }
 
+/** Non-consuming read of the heartbeat, for the boot reaper. Deliberately does
+ *  NOT delete the file — `consumeLivePtyFallback` still owns that, and it runs
+ *  after the reaper so it can see the (now dead) pids and accept the set. */
+export function readLivePtyEntries(): LivePtyEntry[] {
+  try {
+    if (!fs.existsSync(HEARTBEAT_FILE)) return [];
+    const raw = JSON.parse(fs.readFileSync(HEARTBEAT_FILE, 'utf-8')) as { entries?: unknown };
+    if (!Array.isArray(raw.entries)) return [];
+    return raw.entries.filter((e): e is LivePtyEntry =>
+      !!e && typeof (e as LivePtyEntry).ovrId === 'string'
+        && typeof (e as LivePtyEntry).sessionId === 'string'
+        && typeof (e as LivePtyEntry).pid === 'number');
+  } catch (err) {
+    console.warn('[live-pty] failed to read heartbeat for reap:', (err as Error).message);
+    return [];
+  }
+}
+
 function isPidAlive(pid: number): boolean {
   if (!pid || pid <= 0) return false;
   try {
