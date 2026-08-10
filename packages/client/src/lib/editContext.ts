@@ -172,40 +172,66 @@ export function expandAfter(fileLines: string[], hunk: DiffHunk, count: number):
 
 const CACHE_MAX = 30;
 const CACHE_TTL_MS = 30_000;
-const cache = new Map<string, { text: string | null; at: number }>();
+
+export interface FetchedFile {
+  text: string | null;
+  /** Last-modified time, for deciding whether the context is contemporary with the edit. */
+  mtimeMs?: number;
+}
+
+const cache = new Map<string, { file: FetchedFile; at: number }>();
 
 export function clearFileCache(): void {
   cache.clear();
 }
 
-export async function fetchFileText(path: string): Promise<string | null> {
+export async function fetchFileText(path: string): Promise<FetchedFile> {
   const now = Date.now();
   const hit = cache.get(path);
   if (hit && now - hit.at < CACHE_TTL_MS) {
     // Refresh recency for the LRU eviction below.
     cache.delete(path);
     cache.set(path, hit);
-    return hit.text;
+    return hit.file;
   }
-  let text: string | null = null;
+  let file: FetchedFile = { text: null };
   try {
     const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
     if (res.ok) {
-      const body = await res.json() as { content?: string };
-      text = typeof body.content === 'string' ? body.content : null;
-    } else {
-      // 403 here means the server's path guard refused the file — worth seeing
-      // in the console, since the UI only shows "file unavailable".
-      if (res.status === 403) console.warn(`[diff] file context denied by server guard: ${path}`);
-      text = null;
+      const body = await res.json() as { content?: string; mtimeMs?: number };
+      file = {
+        text: typeof body.content === 'string' ? body.content : null,
+        mtimeMs: typeof body.mtimeMs === 'number' ? body.mtimeMs : undefined,
+      };
+    } else if (res.status === 403) {
+      // The server's path guard refused it — worth seeing in the console, since
+      // the UI only says "file unavailable".
+      console.warn(`[diff] file context denied by server guard: ${path}`);
     }
   } catch {
-    text = null;
+    file = { text: null };
   }
-  cache.set(path, { text, at: now });
+  cache.set(path, { file, at: now });
   if (cache.size > CACHE_MAX) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  return text;
+  return file;
+}
+
+/**
+ * Did the file change after this edit was made?
+ *
+ * When it did, the hunk itself is still right — `newString` was located
+ * uniquely — but the context lines and line numbers around it come from the
+ * file as it stands now, not as it stood at edit time. Worth saying out loud:
+ * nothing else in the fallback ladder catches an edit elsewhere in the file.
+ */
+export function contextIsStale(mtimeMs: number | undefined, editedAt: string | undefined): boolean {
+  if (mtimeMs === undefined || !editedAt) return false;
+  const edited = Date.parse(editedAt);
+  if (!Number.isFinite(edited)) return false;
+  // A couple of seconds of slack: the write that *is* this edit lands just
+  // after the transcript timestamp.
+  return mtimeMs > edited + 2000;
 }

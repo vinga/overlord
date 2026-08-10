@@ -78,7 +78,9 @@ const makeJiraAddButton = (doc: Document, key: string) =>
 const makePrAddButton = (doc: Document, ref: string) =>
   makeAddButton(doc, 'prAddBtn', `Add ${ref} to this session's pull requests`);
 
-function linkifyPaths(html: string, wrapFences = true): string {
+/** Exported for tests: turns rendered markdown HTML into the feed's final HTML —
+ *  fence action bars, file-path spans, ticket and PR tokens with their `+`. */
+export function linkifyPaths(html: string, wrapFences = true): string {
   if (typeof DOMParser === 'undefined') return html;
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
   const root = doc.body.firstChild as HTMLElement | null;
@@ -957,7 +959,7 @@ function parseTaskNotification(content: string): { summary: string; status: stri
 }
 
 interface ToolEntryProps {
-  tool: { toolName?: string; content?: string; inputJson?: string; resultJson?: string; isError?: boolean; durationMs?: number; oldString?: string; newString?: string; oldStringTruncated?: boolean; newStringTruncated?: boolean };
+  tool: { toolName?: string; content?: string; inputJson?: string; resultJson?: string; isError?: boolean; durationMs?: number; oldString?: string; newString?: string; oldStringTruncated?: boolean; newStringTruncated?: boolean; timestamp?: string };
   diffKey: string;
   argsKey: string;
   resultKey: string;
@@ -1130,6 +1132,7 @@ function ToolEntry({
           newStringTruncated={tool.newStringTruncated}
           // For Edit/Write the tool description IS the absolute file path.
           filePath={tool.content && isFilePath(tool.content) ? tool.content : undefined}
+          editedAt={tool.timestamp}
           wrap={wrap}
         />
       )}

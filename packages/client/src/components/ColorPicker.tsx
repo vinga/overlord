@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { WORKER_ICONS, type WorkerIcon } from '../types';
 import { WorkerAvatar } from './WorkerAvatar';
 import { WorkerGlyph } from './workerGlyphs';
+import { ICON_COLORS, DEFAULT_WORKER_COLOR } from './iconColors';
 import styles from './ColorPicker.module.css';
 
 const POPOVER_WIDTH = 264; // matches .popover min-width + padding
@@ -13,6 +14,8 @@ const POPOVER_HEIGHT = 350; // approximate (2 icon rows); used only for vertical
 const ICON_LABELS: Record<WorkerIcon, string> = {
   user: 'Worker',
   ticket: 'Refining ticket',
+  story: 'JIRA story',
+  task: 'JIRA task',
   done: 'Done',
   investigate: 'Investigating',
   bug: 'Bug',
@@ -46,7 +49,7 @@ const LIGHT_PRESETS: { label: string; l: number }[] = [
   { label: 'Light', l: 80 },
 ];
 
-const DEFAULT_COLOR = `hsl(30, 75%, 58%)`;
+const DEFAULT_COLOR = DEFAULT_WORKER_COLOR;
 
 function parseHsl(color: string): { h: number; s: number; l: number } {
   const m = color.match(/hsl\(\s*([\d.]+)[,\s]+([\d.]+)%[,\s]+([\d.]+)%/);
@@ -175,23 +178,29 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
                 {ICON_PRESETS.map((p) => {
                   const gradId = `grad-icon-preset-${sessionId}-${p.icon}`;
                   const isSelected = (icon ?? 'user') === p.icon;
+                  // Each preset previews in the colour picking it would apply,
+                  // so the swatch and the outcome always agree.
+                  const presetColor = ICON_COLORS[p.icon];
+                  const pc = parseHsl(presetColor);
                   return (
                     <button
                       key={p.icon}
                       type="button"
                       className={`${styles.iconPreset} ${isSelected ? styles.selected : ''}`}
-                      onClick={() => { onIconChange(p.icon); setOpen(false); }}
+                      // Popover stays open: the icon sets a colour, the user can
+                      // still override it from the hue/lightness rows below.
+                      onClick={() => { onIconChange(p.icon); onChange(presetColor); }}
                       data-label={p.label}
                       aria-label={p.label}
                     >
                       <svg width="23" height="30" viewBox="0 0 40 52" xmlns="http://www.w3.org/2000/svg">
                         <defs>
                           <linearGradient id={gradId} x1="0%" y1="0%" x2="60%" y2="100%">
-                            <stop offset="0%" stopColor={`hsl(${hue}, ${saturation}%, ${Math.min(100, lightness + 25)}%)`} />
-                            <stop offset="100%" stopColor={color} />
+                            <stop offset="0%" stopColor={`hsl(${pc.h}, ${pc.s}%, ${Math.min(100, pc.l + 25)}%)`} />
+                            <stop offset="100%" stopColor={presetColor} />
                           </linearGradient>
                         </defs>
-                        <WorkerGlyph icon={p.icon} gradientUrl={`url(#${gradId})`} color={color} />
+                        <WorkerGlyph icon={p.icon} gradientUrl={`url(#${gradId})`} color={presetColor} />
                       </svg>
                     </button>
                   );

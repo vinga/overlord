@@ -727,7 +727,7 @@ export function registerApiRoutes(
   // Pin a PR the user clicked `+` on in the conversation feed. Autodetection
   // already covers PRs mentioned in the tail window; this adopts one explicitly
   // and clears any earlier dismissal.
-  app.post('/api/sessions/:sessionId/pr-refs', (req, res) => {
+  app.post('/api/sessions/:sessionId/pr-refs', express.json(), (req, res) => {
     const ref = readPrRef(req.body);
     if (!ref) { res.status(400).json({ error: 'Invalid PR ref — expected owner/repo#number' }); return; }
     const ok = stateManager.pinPr(req.params.sessionId, ref);
@@ -737,7 +737,7 @@ export function registerApiRoutes(
 
   // Dismiss a PR chip — drops the ref and blocklists it so the scanner can't
   // re-add it on the next transcript read.
-  app.delete('/api/sessions/:sessionId/pr-refs', (req, res) => {
+  app.delete('/api/sessions/:sessionId/pr-refs', express.json(), (req, res) => {
     const ref = readPrRef(req.body);
     if (!ref) { res.status(400).json({ error: 'Invalid PR ref — expected owner/repo#number' }); return; }
     const ok = stateManager.dismissPr(req.params.sessionId, ref);
@@ -971,7 +971,11 @@ export function registerApiRoutes(
       const content = fs.readFileSync(filePath, 'utf8');
       let writable = false;
       try { fs.accessSync(filePath, fs.constants.W_OK); writable = true; } catch { /* read-only */ }
-      res.json({ content, writable });
+      // mtime lets the diff viewer say whether the surrounding context it is
+      // showing is the file as of the edit, or as of now.
+      let mtimeMs: number | undefined;
+      try { mtimeMs = fs.statSync(filePath).mtimeMs; } catch { /* best effort */ }
+      res.json({ content, writable, mtimeMs });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

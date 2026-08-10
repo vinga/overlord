@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { marked } from 'marked';
 import styles from './FileEditorOverlay.module.css';
+import { languageForPath, highlightToLines } from '../lib/highlightLines';
+import 'highlight.js/styles/github-dark.css';
 
 marked.use({
   hooks: {
@@ -57,9 +59,11 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const isMarkdown = path.toLowerCase().endsWith('.md');
   const isImage = isImagePath(path);
   const isDirty = !isImage && content !== original;
-  // A line reference gets a numbered read-only code view (even for markdown —
-  // rendered-markdown lines don't map back to source lines).
-  const hasLineView = line !== undefined && !isImage;
+  // Every text file gets the numbered, highlighted code view in preview mode.
+  // Markdown is the one exception — it renders as markdown instead — unless a
+  // line reference was passed, since rendered-markdown lines don't map back to
+  // source lines.
+  const hasLineView = !isImage && (!isMarkdown || line !== undefined);
   const highlightRef = useRef<HTMLDivElement | null>(null);
 
   // Repo-relative references (`/src/File.tsx`) 404 as-is; retry against the
@@ -99,8 +103,9 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
         setContent(data.content);
         setOriginal(data.content);
         setWritable(data.writable);
+        // Preview always wins on open — viewing a file is the common case, and
+        // landing in an editable textarea invites accidental edits.
         if (line !== undefined) setMode('preview');
-        else if (!isMarkdown) setMode('edit');
         setLoading(false);
       } catch (err) {
         if (!cancelled) { setSaveError(String(err)); setLoading(false); }
@@ -118,6 +123,14 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const codeLines = useMemo(
     () => (hasLineView && !loading ? content.split('\n') : null),
     [hasLineView, loading, content],
+  );
+
+  // Highlighted twin of `codeLines`: same length, or null when the language is
+  // unknown / the file is too big, in which case the plain lines are rendered.
+  const language = useMemo(() => languageForPath(effective.path), [effective.path]);
+  const highlighted = useMemo(
+    () => (codeLines ? highlightToLines(content, language) : null),
+    [codeLines, content, language],
   );
 
   const handleSave = useCallback(async () => {
@@ -190,7 +203,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
             </span>
           )}
           <div className={styles.controls}>
-            {(isMarkdown || hasLineView) && (
+            {!isImage && (
               <div className={styles.toggleGroup}>
                 <button
                   className={`${styles.toggleBtn} ${mode === 'preview' ? styles.active : ''}`}
@@ -259,7 +272,16 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
                   className={`${styles.codeLine} ${i + 1 === line ? styles.lineHighlight : ''}`}
                 >
                   <span className={styles.lineNum}>{i + 1}</span>
-                  <span className={styles.lineText}>{text}</span>
+                  {highlighted
+                    ? (
+                      // hljs output — the source is escaped by the highlighter,
+                      // pinned by the injection test in highlightLines.test.ts.
+                      <span
+                        className={styles.lineText}
+                        dangerouslySetInnerHTML={{ __html: highlighted[i] ?? '' }}
+                      />
+                    )
+                    : <span className={styles.lineText}>{text}</span>}
                 </div>
               ))}
             </div>

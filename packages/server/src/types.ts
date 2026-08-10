@@ -126,7 +126,7 @@ export interface PlanSummary {
  * cross-package import) — kept honest by the drift test in
  * `session/__tests__/spawnIcon.test.ts`.
  */
-export const WORKER_ICONS = ['user', 'ticket', 'done', 'investigate', 'bug', 'release', 'dashboard', 'teach', 'notes', 'btw', 'docs', 'config'] as const;
+export const WORKER_ICONS = ['user', 'ticket', 'story', 'bug', 'task', 'investigate', 'notes', 'done', 'btw', 'docs', 'config', 'teach', 'release', 'dashboard'] as const;
 
 /** Avatar glyph for a worker. `undefined` means 'user' (default person glyph). */
 export type WorkerIcon = typeof WORKER_ICONS[number];

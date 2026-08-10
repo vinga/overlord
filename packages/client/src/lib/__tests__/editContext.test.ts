@@ -6,6 +6,7 @@ import {
   expandAfter,
   fetchFileText,
   clearFileCache,
+  contextIsStale,
   MAX_CONTEXT_BYTES,
 } from '../editContext.js';
 
@@ -130,6 +131,26 @@ describe('context expansion', () => {
   });
 });
 
+describe('contextIsStale', () => {
+  const edited = '2026-08-10T10:00:00.000Z';
+  const editedMs = Date.parse(edited);
+
+  it('flags a file written well after the edit — context drifted', () => {
+    expect(contextIsStale(editedMs + 60_000, edited)).toBe(true);
+  });
+
+  it('does not flag the write that IS this edit', () => {
+    // The transcript timestamp precedes the actual disk write by a hair.
+    expect(contextIsStale(editedMs + 500, edited)).toBe(false);
+  });
+
+  it('stays quiet when either side is unknown', () => {
+    expect(contextIsStale(undefined, edited)).toBe(false);
+    expect(contextIsStale(editedMs + 60_000, undefined)).toBe(false);
+    expect(contextIsStale(editedMs + 60_000, 'not-a-date')).toBe(false);
+  });
+});
+
 describe('fetchFileText cache', () => {
   const original = globalThis.fetch;
   let calls = 0;
@@ -139,14 +160,14 @@ describe('fetchFileText cache', () => {
     calls = 0;
     globalThis.fetch = vi.fn(async () => {
       calls++;
-      return { ok: true, status: 200, json: async () => ({ content: 'hello' }) } as unknown as Response;
+      return { ok: true, status: 200, json: async () => ({ content: 'hello', mtimeMs: 123 }) } as unknown as Response;
     }) as unknown as typeof fetch;
   });
   afterEach(() => { globalThis.fetch = original; });
 
   it('issues one request for repeated reads of the same path', async () => {
-    expect(await fetchFileText('/a/b.ts')).toBe('hello');
-    expect(await fetchFileText('/a/b.ts')).toBe('hello');
+    expect(await fetchFileText('/a/b.ts')).toEqual({ text: 'hello', mtimeMs: 123 });
+    expect(await fetchFileText('/a/b.ts')).toEqual({ text: 'hello', mtimeMs: 123 });
     expect(calls).toBe(1);
   });
 
@@ -155,13 +176,13 @@ describe('fetchFileText cache', () => {
       calls++;
       return { ok: false, status: 403 } as unknown as Response;
     }) as unknown as typeof fetch;
-    expect(await fetchFileText('/secret/.env')).toBeNull();
-    expect(await fetchFileText('/secret/.env')).toBeNull();
+    expect((await fetchFileText('/secret/.env')).text).toBeNull();
+    expect((await fetchFileText('/secret/.env')).text).toBeNull();
     expect(calls).toBe(1);
   });
 
   it('survives a network rejection', async () => {
     globalThis.fetch = vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch;
-    expect(await fetchFileText('/a/c.ts')).toBeNull();
+    expect((await fetchFileText('/a/c.ts')).text).toBeNull();
   });
 });

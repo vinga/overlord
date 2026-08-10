@@ -45,18 +45,41 @@ export function WorkerGlyph({ icon, gradientUrl, color }: GlyphProps & { icon: W
     case 'ticket':
       return (
         <>
-          {/* Sparkle — refinement */}
-          <path d="M 32.5 3 L 34.4 7.6 L 39 9.5 L 34.4 11.4 L 32.5 16 L 30.6 11.4 L 26 9.5 L 30.6 7.6 Z" fill={color} />
-          {/* Ticket body */}
-          <rect x="2" y="16" width="36" height="24" rx="3.5" fill={gradientUrl} />
-          {/* Perforation between body and stub */}
-          <line x1="28.5" y1="19.5" x2="28.5" y2="36.5" stroke="rgba(0,0,0,0.38)" strokeWidth="1.6" strokeDasharray="2.4 2.6" strokeLinecap="round" />
-          {/* Text rows */}
-          <rect x="6.5" y="21" width="15" height="2.6" rx="1.3" fill="rgba(255,255,255,0.92)" />
-          <rect x="6.5" y="26.5" width="18" height="2.6" rx="1.3" fill="rgba(255,255,255,0.55)" />
-          <rect x="6.5" y="32" width="11" height="2.6" rx="1.3" fill="rgba(255,255,255,0.35)" />
-          {/* Check in stub */}
-          <path d="M 31 28.5 L 33 30.7 L 36.2 25.8" stroke="rgba(255,255,255,0.92)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          {/* Wand shaft */}
+          <line x1="8" y1="46" x2="27" y2="22" stroke={color} strokeWidth="7" strokeLinecap="round" />
+          {/* Grip band */}
+          <line x1="12.5" y1="40.5" x2="16.5" y2="35.5" stroke="rgba(255,255,255,0.8)" strokeWidth="7" />
+          {/* Star at the tip */}
+          <path d="M 29 4 L 32.2 12.8 L 40 16 L 32.2 19.2 L 29 28 L 25.8 19.2 L 18 16 L 25.8 12.8 Z" fill={gradientUrl} />
+          {/* Sparkles */}
+          <path d="M 11 8 L 12.2 11.3 L 15.5 12.5 L 12.2 13.7 L 11 17 L 9.8 13.7 L 6.5 12.5 L 9.8 11.3 Z" fill={gradientUrl} />
+          <circle cx="6.5" cy="25" r="2.2" fill={gradientUrl} />
+        </>
+      );
+    case 'story':
+      return (
+        <>
+          {/* Badge — JIRA story is a bookmark on a rounded square */}
+          <rect x="3" y="7" width="34" height="34" rx="8" fill={gradientUrl} />
+          <rect x="3" y="7" width="34" height="34" rx="8" stroke={color} strokeWidth="2" fill="none" />
+          {/* Bookmark */}
+          <path d="M 13.5 15 L 26.5 15 L 26.5 34 L 20 28.5 L 13.5 34 Z" fill="rgba(255,255,255,0.94)" />
+          {/* Stand */}
+          <rect x="17" y="41" width="6" height="5" rx="1.5" fill={color} />
+          <rect x="11" y="46" width="18" height="3.5" rx="1.75" fill={color} />
+        </>
+      );
+    case 'task':
+      return (
+        <>
+          {/* Badge — JIRA task is a check on a rounded square */}
+          <rect x="3" y="7" width="34" height="34" rx="8" fill={gradientUrl} />
+          <rect x="3" y="7" width="34" height="34" rx="8" stroke={color} strokeWidth="2" fill="none" />
+          {/* Check */}
+          <path d="M 12 24.5 L 18 30.5 L 28.5 18.5" stroke="rgba(255,255,255,0.94)" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          {/* Stand */}
+          <rect x="17" y="41" width="6" height="5" rx="1.5" fill={color} />
+          <rect x="11" y="46" width="18" height="3.5" rx="1.75" fill={color} />
         </>
       );
     case 'investigate':

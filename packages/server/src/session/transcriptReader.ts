@@ -873,7 +873,11 @@ function describeInput(input: unknown): string {
       .filter(Boolean);
     if (qs.length > 0) return qs.join(' · ').slice(0, 200);
   }
-  const val = obj.file_path ?? obj.description ?? obj.command ?? obj.pattern ?? obj.prompt ?? obj.query ?? '';
+  // file_path must survive intact: the client uses it verbatim to fetch the file
+  // for the diff viewer, so a 100-char cut turns into "File unavailable".
+  // PATH_MAX is 1024 on darwin/linux — that is the only bound needed here.
+  if (typeof obj.file_path === 'string') return obj.file_path.slice(0, 1024);
+  const val = obj.description ?? obj.command ?? obj.pattern ?? obj.prompt ?? obj.query ?? '';
   return String(val).slice(0, 100);
 }
 

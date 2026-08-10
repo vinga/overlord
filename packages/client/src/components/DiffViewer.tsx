@@ -4,6 +4,7 @@ import styles from './DiffViewer.module.css';
 import {
   buildEditContext,
   fetchFileText,
+  contextIsStale,
   expandBefore,
   expandAfter,
   REASON_LABEL,
@@ -20,6 +21,8 @@ interface Props {
   newStringTruncated?: boolean;
   /** Absolute file path from the tool call; without it there is no context to fetch. */
   filePath?: string;
+  /** ISO timestamp of the tool call — compared with the file's mtime to flag drifted context. */
+  editedAt?: string;
   wrap?: boolean;
 }
 
@@ -80,13 +83,16 @@ export const DiffViewer = React.memo(function DiffViewer({
   oldStringTruncated,
   newStringTruncated,
   filePath,
+  editedAt,
   wrap,
 }: Props) {
+  // A truncated string can never be located in the file, and a Write has no
+  // "before" to place — neither needs the file at all.
+  const needsFile = !!filePath && oldString !== '' && !oldStringTruncated && !newStringTruncated;
   // `undefined` means "still fetching". Cases that never fetch start at `null`
   // so they render the diff immediately instead of flashing "loading".
-  const [fileText, setFileText] = useState<string | null | undefined>(
-    () => (!filePath || oldString === '') ? null : undefined,
-  );
+  const [fileText, setFileText] = useState<string | null | undefined>(() => needsFile ? undefined : null);
+  const [mtimeMs, setMtimeMs] = useState<number | undefined>(undefined);
   const [extraBefore, setExtraBefore] = useState(0);
   const [extraAfter, setExtraAfter] = useState(0);
 
@@ -94,11 +100,15 @@ export const DiffViewer = React.memo(function DiffViewer({
   // never fires from a snapshot re-render.
   useEffect(() => {
     let cancelled = false;
-    if (!filePath || oldString === '') { setFileText(null); return; }
+    if (!needsFile) { setFileText(null); return; }
     setFileText(undefined);
-    fetchFileText(filePath).then(text => { if (!cancelled) setFileText(text); });
+    fetchFileText(filePath!).then(file => {
+      if (cancelled) return;
+      setFileText(file.text);
+      setMtimeMs(file.mtimeMs);
+    });
     return () => { cancelled = true; };
-  }, [filePath, oldString]);
+  }, [filePath, needsFile]);
 
   const ctx: EditContext | null = useMemo(() => {
     if (fileText === undefined) return null;
@@ -137,9 +147,19 @@ export const DiffViewer = React.memo(function DiffViewer({
       ?? expanded.hunks[expanded.hunks.length - 1]?.rows.reduce((n, r) => r.newLine ?? n, 0))
     : 0;
 
+  // The hunk is correct — newString was found uniquely — but the lines around
+  // it and their numbers are the file as it is now. Only fires on the 'ok' path;
+  // every other case already has its own banner.
+  const drifted = ctx.reason === 'ok' && contextIsStale(mtimeMs, editedAt);
+
   return (
     <div className={styles.wrap}>
       {label && <div className={styles.banner}>{label}</div>}
+      {drifted && (
+        <div className={styles.driftNote}>
+          File was modified after this edit — the change is accurate, surrounding context and line numbers are current.
+        </div>
+      )}
       <div className={`${styles.rows} ${wrap ? styles.rowWrap : ''}`}>
         {capped ? (
           <div className={styles.loading}>
