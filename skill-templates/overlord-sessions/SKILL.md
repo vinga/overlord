@@ -10,7 +10,7 @@ deep links so the user can jump straight to the worker.
 ## Configuration
 
 ```bash
-OVERLORD_BASE="${OVERLORD_HOST:-http://localhost:3000}"
+OVERLORD_BASE="${OVERLORD_HOST:-http://localhost:3173}"
 OVERLORD_UI="${OVERLORD_UI:-http://localhost:5173}"
 SESS_DIR="$HOME/.claude/overlord/overlord-sessions"
 ARCH_DIR="$HOME/.claude/overlord/overlord-sessions-archive"

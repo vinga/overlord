@@ -7,18 +7,18 @@ Plans are stored as artifacts with `kind=plan`. The API is `/api/artifacts`; thi
 ## Configuration
 
 ```bash
-OVERLORD_BASE="${OVERLORD_HOST:-http://localhost:3000}"
+OVERLORD_BASE="${OVERLORD_HOST:-http://localhost:3173}"
 ```
 
-`OVERLORD_HOST` may be set in the environment (e.g. `http://overlord.internal:3000`).
-If unset, defaults to `http://localhost:3000`.
+`OVERLORD_HOST` may be set in the environment (e.g. `http://overlord.internal:3173`).
+If unset, defaults to `http://localhost:3173`.
 
 ## Self-identification
 
 At the start of every invocation, resolve this session's overlordId:
 
 ```bash
-OVERLORD_BASE="${OVERLORD_HOST:-http://localhost:3000}"
+OVERLORD_BASE="${OVERLORD_HOST:-http://localhost:3173}"
 RESOLVE=$(curl -s "$OVERLORD_BASE/api/resolve?pid=$PPID")
 OVERLORD_ID=$(echo "$RESOLVE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['overlordId'])" 2>/dev/null)
 ```
