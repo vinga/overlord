@@ -4074,6 +4074,7 @@ const currentDisplayName =
                               keys={selectedSession.jiraKeys}
                               baseUrl={jiraBaseUrl}
                               sessionId={selectedSession.sessionId}
+                              onRename={(name) => onRename(selectedSession.sessionId, name)}
                             />
                           </span>
                         </div>

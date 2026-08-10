@@ -304,7 +304,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
         />
       )}
       {!minimal && !isSubagent && jiraKeys && jiraKeys.length > 0 && (
-        <JiraChips keys={jiraKeys} baseUrl={jiraBaseUrl} sessionId={sessionId} />
+        <JiraChips keys={jiraKeys} baseUrl={jiraBaseUrl} sessionId={sessionId} onRename={onRename} />
       )}
       {!minimal && !isSubagent && activeMonitors && activeMonitors.length > 0 && (
         <MonitoringPill monitors={activeMonitors} />
