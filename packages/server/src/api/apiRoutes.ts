@@ -833,13 +833,13 @@ export function registerApiRoutes(
     if (description !== undefined && typeof description !== 'string') { res.status(400).json({ error: 'description must be a string' }); return; }
     if (hidden !== undefined && typeof hidden !== 'boolean') { res.status(400).json({ error: 'hidden must be a boolean' }); return; }
     const validModes = ['embedded', 'bridge', 'plain', 'raw'] as const;
-    const validProviders = ['claude', 'opencode'] as const;
+    const validProviders = ['claude', 'opencode', 'codex'] as const;
     if (lastMode !== undefined && !validModes.includes(lastMode as typeof validModes[number])) {
       res.status(400).json({ error: 'lastMode must be embedded|bridge|plain|raw' });
       return;
     }
     if (lastProvider !== undefined && !validProviders.includes(lastProvider as typeof validProviders[number])) {
-      res.status(400).json({ error: 'lastProvider must be claude|opencode' });
+      res.status(400).json({ error: 'lastProvider must be claude|opencode|codex' });
       return;
     }
     if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }

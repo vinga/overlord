@@ -6,7 +6,7 @@ import styles from './SpawnDialog.module.css';
 
 /** UI-level provider — 'shell' maps to spawn mode 'raw' (no LLM), it never
  *  reaches the SessionProvider union. */
-type UiProvider = 'claude' | 'opencode' | 'shell';
+type UiProvider = 'claude' | 'opencode' | 'codex' | 'shell';
 
 interface Props {
   open: boolean;
@@ -82,6 +82,7 @@ function CopyBtn({ text, onAfterCopy }: { text: string; onAfterCopy?: () => void
 const PROVIDER_OPTIONS: { key: UiProvider; label: string; hint: string }[] = [
   { key: 'claude', label: 'Claude', hint: '' },
   { key: 'opencode', label: 'OpenCode', hint: '' },
+  { key: 'codex', label: 'Codex', hint: 'Embedded PTY running the `codex` CLI. Conversation appears once codex writes its first turn.' },
   { key: 'shell', label: 'Shell', hint: 'Embedded terminal running a plain shell — no Claude, no LLM. Useful for git, file ops, running scripts.' },
 ];
 
@@ -256,7 +257,8 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
   const handleSpawn = () => {
     if (!currentPath || !sessionName.trim()) return;
     const spawnMode: TerminalSpawnMode = uiProvider === 'shell' ? 'raw' : effectiveMode;
-    const provider: SessionProvider = uiProvider === 'opencode' ? 'opencode' : 'claude';
+    const provider: SessionProvider =
+      uiProvider === 'opencode' ? 'opencode' : uiProvider === 'codex' ? 'codex' : 'claude';
     onSpawn(currentPath, effPrefix + sessionName.trim(), spawnMode, provider, effPrefix);
   };
 

@@ -4,7 +4,7 @@ import * as os from 'os';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw';
-export type RoomLastProvider = 'claude' | 'opencode';
+export type RoomLastProvider = 'claude' | 'opencode' | 'codex';
 
 export interface RoomConfig {
   prefix: string;
@@ -87,7 +87,9 @@ function loadFromDisk(cwd: string): RoomConfig {
       lastMode: typeof parsed.lastMode === 'string' && VALID_MODES.has(parsed.lastMode as RoomLastMode)
         ? (parsed.lastMode as RoomLastMode)
         : undefined,
-      lastProvider: parsed.lastProvider === 'opencode' ? 'opencode' : parsed.lastProvider === 'claude' ? 'claude' : undefined,
+      lastProvider: parsed.lastProvider === 'opencode' || parsed.lastProvider === 'codex' || parsed.lastProvider === 'claude'
+        ? parsed.lastProvider
+        : undefined,
       hidden: parsed.hidden === true ? true : undefined,
     };
   } catch {

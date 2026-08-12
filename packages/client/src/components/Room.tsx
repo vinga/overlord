@@ -538,7 +538,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
         if (!cancelled && cfg) {
           setNamePrefix(ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '');
           if (cfg.lastMode) setLastMode(cfg.lastMode);
-          setLastProvider(cfg.lastProvider === 'opencode' ? 'opencode' : 'claude');
+          setLastProvider(cfg.lastProvider === 'opencode' || cfg.lastProvider === 'codex' ? cfg.lastProvider : 'claude');
         }
       })
       .catch(() => { /* ignore */ });
@@ -773,11 +773,11 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                   fresh = ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '';
                   setNamePrefix(fresh);
                   if (cfg.lastMode) { mode = cfg.lastMode; setLastMode(cfg.lastMode); }
-                  provider = cfg.lastProvider === 'opencode' ? 'opencode' : 'claude';
+                  provider = cfg.lastProvider === 'opencode' || cfg.lastProvider === 'codex' ? cfg.lastProvider : 'claude';
                   setLastProvider(provider);
                 }
               } catch { /* fall back to cached values */ }
-              if (provider === 'opencode') mode = 'embedded';
+              if (provider === 'opencode' || provider === 'codex') mode = 'embedded';
               fetch('/api/room-config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

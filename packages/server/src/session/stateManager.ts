@@ -1454,7 +1454,7 @@ export class StateManager {
     sessionId: string,
     cwd: string,
     pid: number,
-    provider: 'opencode',
+    provider: 'opencode' | 'codex',
     proposedName?: string,
     providerSessionId?: string,
   ): Session {
@@ -1797,6 +1797,22 @@ export class StateManager {
     if (session.overlordId) {
       sessionStore.patch(session.overlordId, { providerSessionId });
     }
+    this.onChange();
+  }
+
+  /**
+   * Link a managed provider session (codex) to the transcript it turned out to
+   * be writing. The 3s transcript poll then drives state + conversation for it
+   * exactly like a Claude session.
+   */
+  attachProviderTranscript(sessionId: string, transcriptPath: string, providerSessionId?: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.transcriptPath === transcriptPath && session.providerSessionId === providerSessionId) return;
+    session.transcriptPath = transcriptPath;
+    if (providerSessionId) session.providerSessionId = providerSessionId;
+    sessionStore.ensureFromLive(session);
+    this.refreshTranscript(sessionId);
     this.onChange();
   }
 
@@ -2509,9 +2525,12 @@ export class StateManager {
   updateAlivePids(pids: Set<number>): void {
     let anyChanged = false;
     for (const session of this.sessions.values()) {
-      if (session.provider === 'codex' || session.pid <= 0) continue;
+      // Codex sessions discovered from disk carry pid 0 — the `pid <= 0` guard
+      // skips them. A codex session we spawned has a real pid and is tracked
+      // exactly like opencode (PTY activity drives state, no transcript).
+      if (session.pid <= 0) continue;
       if (session.sessionType === 'raw') continue;
-      if (session.provider === 'opencode' && !session.transcriptPath && session.state !== 'closed') {
+      if ((session.provider === 'opencode' || session.provider === 'codex') && !session.transcriptPath && session.state !== 'closed') {
         const lastPtyAt = this.lastPtyActivityAt.get(session.sessionId);
         const shouldBeWorking = lastPtyAt != null && Date.now() - lastPtyAt < 5000;
         const nextState: WorkerState = shouldBeWorking ? 'working' : 'waiting';

@@ -369,7 +369,7 @@ export function wirePtyEvents(ctx: PtyEventsContext): void {
     if (exitedSession?.sessionType === 'raw') {
       ctx.stateManager.markClosed(ovrId);
       ctx.stateManager.setHistoryOnly?.(ovrId, true);
-    } else if (exitedSession?.provider === 'opencode') {
+    } else if (exitedSession?.provider === 'opencode' || exitedSession?.provider === 'codex') {
       ctx.stateManager.markClosed(ovrId);
     }
   });

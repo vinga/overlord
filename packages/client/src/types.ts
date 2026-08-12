@@ -422,7 +422,7 @@ interface ArtifactChangedEvent {
 }
 
 const SESSION_PROVIDERS: SessionProvider[] = ['claude', 'codex', 'aider', 'opencode'];
-const SPAWNABLE_SESSION_PROVIDERS: SessionProvider[] = ['claude', 'opencode'];
+const SPAWNABLE_SESSION_PROVIDERS: SessionProvider[] = ['claude', 'opencode', 'codex'];
 
 export type {
   WorkerState,

@@ -19,6 +19,7 @@ import { archiveManager } from '../archive/archiveManager.js';
 import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
+import { findLatestCodexRollout } from '../session/codexSession.js';
 import { sessionStore } from '../session/sessionStore.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from '../session/transcriptShadow.js';
 import { globalSettingsStore } from '../session/globalSettingsStore.js';
@@ -70,8 +71,20 @@ function stripInternalMarkers(name: string): string {
   return name.replace(/___(?:BRG|OVR):[A-Za-z0-9_-]*/g, '').replace(/[-_\s]+$/, '').trim();
 }
 
-function resolveCliProvider(provider?: string): 'claude' | 'opencode' {
-  return provider === 'opencode' ? 'opencode' : 'claude';
+function resolveCliProvider(provider?: string): 'claude' | 'opencode' | 'codex' {
+  if (provider === 'opencode') return 'opencode';
+  if (provider === 'codex') return 'codex';
+  return 'claude';
+}
+
+/** Providers spawned as a plain managed PTY (own binary, no `--name` marker,
+ *  no transcript link). Claude keeps its own marker-based spawn path. */
+function isManagedProvider(p: string | undefined): p is 'opencode' | 'codex' {
+  return p === 'opencode' || p === 'codex';
+}
+
+function managedProviderLabel(p: 'opencode' | 'codex'): string {
+  return p === 'opencode' ? 'OpenCode' : 'Codex';
 }
 
 // Returns { pid, killable } for an existing `claude --resume <sessionId>` process.
@@ -128,6 +141,36 @@ function scheduleOpencodeSessionIdCapture(
   }, 1000);
 }
 
+/**
+ * Codex writes its rollout jsonl only once the session is under way, so poll
+ * for it after spawn and attach it to the session. Without this the worker is
+ * terminal-only — no conversation, no transcript-driven state.
+ */
+function scheduleCodexTranscriptCapture(
+  stateManager: StateManager,
+  sessionId: string,
+  cwd: string,
+  startedAfterMs: number,
+): void {
+  // Codex only writes the rollout on the first turn, which may be minutes after
+  // spawn (or never, if the user just looks at the TUI). Poll fast at first,
+  // then back off to 10s and keep going until the session is linked or closed.
+  let attempts = 0;
+  const tick = () => {
+    attempts += 1;
+    const session = stateManager.getSession(sessionId);
+    if (!session || session.state === 'closed' || session.transcriptPath) return;
+    const found = findLatestCodexRollout(cwd, startedAfterMs);
+    if (found) {
+      stateManager.attachProviderTranscript(sessionId, found.transcriptPath, found.sessionId);
+      console.log(`[codex] linked ${sessionId.slice(0, 18)} → ${found.transcriptPath}`);
+      return;
+    }
+    setTimeout(tick, attempts < 30 ? 1000 : 10_000).unref?.();
+  };
+  setTimeout(tick, 1000).unref?.();
+}
+
 export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContext): void {
   const {
     stateManager,
@@ -147,6 +190,15 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
   } = ctx;
 
   let autoResumeTriggered = false;
+
+  // Codex sessions that outlived a server restart (or were spawned before the
+  // capture existed) carry no transcriptPath — re-run the link attempt for each.
+  for (const sessionId of stateManager.getAllSessionIds()) {
+    const session = stateManager.getSession(sessionId);
+    if (!session || session.provider !== 'codex') continue;
+    if (session.transcriptPath || session.state === 'closed' || session.pid <= 0) continue;
+    scheduleCodexTranscriptCapture(stateManager, sessionId, session.cwd, session.startedAt);
+  }
 
   // Per-WS visibility/subscription state lives in wsClientState.ts — shared
   // with index.ts, whose broadcast() skips hidden clients and
@@ -272,10 +324,10 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           console.log(`[spawn] created directory: ${cwd}`);
         }
 
-        if (provider === 'opencode') {
-          const sessionId = `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        if (isManagedProvider(provider)) {
+          const sessionId = `${provider}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           const startedAfterMs = Date.now() - 2_000;
-          stateManager.addManagedProviderSession(sessionId, cwd, 0, 'opencode', name);
+          stateManager.addManagedProviderSession(sessionId, cwd, 0, provider, name);
           ovrToPty.set(sessionId, sessionId);
           ptyToOvr.set(sessionId, sessionId);
 
@@ -284,12 +336,16 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
           broadcastRaw({ type: 'terminal:spawned', sessionId, pid: 0 });
           try {
-            ptyManager.spawn(sessionId, cwd, cols, rows, [], 'opencode');
+            ptyManager.spawn(sessionId, cwd, cols, rows, [], provider);
             const pid = ptyManager.getPid(sessionId) ?? 0;
             if (pid) stateManager.setPid(sessionId, pid);
-            log('pty:started', 'OpenCode PTY session started', { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
+            log('pty:started', `${managedProviderLabel(provider)} PTY session started`, { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
             broadcastRaw({ type: 'terminal:linked', ovrId: sessionId, ptySessionId: sessionId, claudeSessionId: sessionId });
-            scheduleOpencodeSessionIdCapture(stateManager, sessionId, cwd, startedAfterMs);
+            if (provider === 'opencode') {
+              scheduleOpencodeSessionIdCapture(stateManager, sessionId, cwd, startedAfterMs);
+            } else {
+              scheduleCodexTranscriptCapture(stateManager, sessionId, cwd, startedAfterMs);
+            }
           } catch (err) {
             stateManager.remove(sessionId);
             sessionStore.removeBySessionId(sessionId);
@@ -340,7 +396,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const targetSession = stateManager.getSession(resumeSessionId);
         const provider = resolveCliProvider(targetSession?.provider);
 
-        if (provider === 'opencode' && targetSession) {
+        if (isManagedProvider(provider) && targetSession) {
           const startedAfterMs = Date.now() - 2_000;
           const ptySessionId = resumeSessionId;
           const sessions = wsSessionMap.get(ws);
@@ -350,10 +406,13 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
           sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
           try {
-            ptyManager.spawn(ptySessionId, cwd, cols, rows, buildOpencodeResumeArgs(targetSession.providerSessionId), 'opencode');
+            const resumeArgs = provider === 'opencode'
+              ? buildOpencodeResumeArgs(targetSession.providerSessionId)
+              : ['resume', '--last'];
+            ptyManager.spawn(ptySessionId, cwd, cols, rows, resumeArgs, provider);
             const pid = ptyManager.getPid(ptySessionId) ?? 0;
             stateManager.reviveManagedProviderSession(resumeSessionId, pid);
-            log('pty:started', 'OpenCode PTY session resumed', {
+            log('pty:started', `${managedProviderLabel(provider)} PTY session resumed`, {
               sessionId: ptySessionId,
               sessionName: targetSession.proposedName ?? resumeSessionId.slice(0, 8),
             });
@@ -363,8 +422,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
               ptySessionId,
               claudeSessionId: resumeSessionId,
             });
-            if (!targetSession.providerSessionId) {
+            if (provider === 'opencode' && !targetSession.providerSessionId) {
               scheduleOpencodeSessionIdCapture(stateManager, resumeSessionId, cwd, startedAfterMs);
+            } else if (provider === 'codex') {
+              // `codex resume` continues into a fresh rollout file — re-link.
+              scheduleCodexTranscriptCapture(stateManager, resumeSessionId, cwd, startedAfterMs);
             }
           } catch (err) {
             ovrToPty.delete(ptySessionId);
@@ -515,10 +577,12 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
         const command = provider === 'opencode'
           ? `opencode ${session?.providerSessionId ? `--session ${session.providerSessionId}` : '--continue'}`
-          : `claude --resume ${externalResumeId} --name "${sessionName.replace(/"/g, '')}"`;
+          : provider === 'codex'
+            ? 'codex resume --last'
+            : `claude --resume ${externalResumeId} --name "${sessionName.replace(/"/g, '')}"`;
         console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
         stateManager.setSessionType(sessionId, 'plain');
-        openTerminalWindow(cwd, command, `${provider === 'opencode' ? 'OpenCode' : 'Claude'}: ${sessionName}`, sessionId)
+        openTerminalWindow(cwd, command, `${isManagedProvider(provider) ? managedProviderLabel(provider) : 'Claude'}: ${sessionName}`, sessionId)
           .then(() => sendToClient(ws, { type: 'terminal:external-opened', sessionId }))
           .catch((err) => sendToClient(ws, { type: 'terminal:error', sessionId, message: `Failed to open terminal: ${(err as Error).message}` }));
         return;
@@ -544,7 +608,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         }
         const resumeCmd = provider === 'opencode'
           ? `opencode ${session?.providerSessionId ? `--session ${session.providerSessionId}` : '--continue'}`
-          : `claude --resume ${bridgeResumeId} --name "${safeName}___BRG:${marker}"`;
+          : provider === 'codex'
+            ? 'codex resume --last'
+            : `claude --resume ${bridgeResumeId} --name "${safeName}___BRG:${marker}"`;
         const command = `"${bridgePath}" --pipe overlord-${marker} -- ${resumeCmd}`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
         openTerminalWindow(cwd, command, `Bridge: ${sessionName}`, undefined, false)
@@ -568,8 +634,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cwdName = name || cwd.split(/[\\/]/).pop() || 'New';
         const safeCwdName = cwdName.replace(/"/g, '');
         console.log(`[open-new] cwd=${cwd} name=${cwdName} mode=${mode ?? 'default'}`);
-        const command = provider === 'opencode' ? 'opencode' : `claude --name "${safeCwdName}"`;
-        openTerminalWindow(cwd, command, `${provider === 'opencode' ? 'OpenCode' : 'Claude'}: ${cwdName}`, undefined, mode !== 'plain')
+        const command = isManagedProvider(provider) ? provider : `claude --name "${safeCwdName}"`;
+        openTerminalWindow(cwd, command, `${isManagedProvider(provider) ? managedProviderLabel(provider) : 'Claude'}: ${cwdName}`, undefined, mode !== 'plain')
           .then(() => sendToClient(ws, { type: 'terminal:new-opened' }))
           .catch((err) => sendToClient(ws, { type: 'terminal:error', message: `Failed to open terminal: ${(err as Error).message}` }));
         return;
@@ -999,11 +1065,11 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const cols = Number(msg.cols ?? 80);
         const rows = Number(msg.rows ?? 24);
         const targetSession = stateManager.getSession(sessionId);
-        if (targetSession?.provider === 'opencode') {
+        if (isManagedProvider(targetSession?.provider)) {
           sendToClient(ws, {
             type: 'terminal:error',
             sessionId,
-            message: 'OpenCode clone is not supported yet.',
+            message: `${managedProviderLabel(targetSession!.provider as 'opencode' | 'codex')} clone is not supported yet.`,
           });
           return;
         }
