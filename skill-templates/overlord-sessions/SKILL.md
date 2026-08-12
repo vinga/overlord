@@ -161,8 +161,34 @@ curl -s -X POST "$OVERLORD_BASE/api/sessions/spawn" \
 - `cwd` (required): take it verbatim from a record's `cwd` field so the session lands in that room.
 - `name`: display name — pick one not already in use; match the room's naming style.
 - `prompt`: injected once the TUI is ready — this is how you hand the new worker its first task.
+  **Best-effort, not guaranteed — always verify (below).**
 - `icon`: avatar glyph, applied at creation (see below). An invalid value 400s the whole spawn.
 - `master: true`: crown session (oversight role). Rarely needed.
+
+### Verify the prompt landed — REQUIRED
+
+The spawn `prompt` is queued against the new PTY and fired on its first output (or a 1.5s fallback
+timer). It can silently not land: the queued entry expires after 120s if the PTY never produced
+output, the keystrokes can arrive before the input box accepts them, or the Enter may not confirm.
+The spawn still returns `{"ok":true}` — a session that came up idle looks identical to one that got
+its task. **A spawn is not done until you have seen the worker leave `waiting`.**
+
+```bash
+OVR=ovr-XXXX   # from the spawn response
+sleep 10
+curl -s "$OVERLORD_BASE/api/debug/state" \
+  | jq -r --arg o "$OVR" '.sessions[] | select(.overlordId==$o) | "\(.state)\t\(.sessionId)"'
+```
+
+`state` is `working` → the prompt landed, done. Still `waiting` (or `idle`) → it did not; inject it
+yourself with the **Claude sessionId** from that same line:
+
+```bash
+curl -s -X POST "$OVERLORD_BASE/api/sessions/<claudeSessionId>/inject" \
+  -H 'Content-Type: application/json' -d '{"text":"the same first task"}'
+```
+
+Then re-check `state` once more. Never report a spawned worker as started on the `{"ok":true}` alone.
 
 ### Choosing the room
 
