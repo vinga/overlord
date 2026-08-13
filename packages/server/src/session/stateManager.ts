@@ -1909,6 +1909,7 @@ export class StateManager {
       session.compactCount !== result.compactCount ||
       session.isCompacting !== result.isCompacting ||
       session.needsPermission !== result.needsPermission ||
+      !shallowArrayEquals(session.activeMonitors, result.activeMonitors) ||
       session.scheduledWakeupAt !== result.scheduledWakeupAt ||
       !backgroundTasksEqual(session.backgroundTasks, result.backgroundTasks) ||
       session.slug !== slug ||
@@ -2044,6 +2045,7 @@ export class StateManager {
       }
       // Update pendingQuestion: set when present, clear when gone
       session.pendingQuestion = result.pendingQuestion ?? undefined;
+      session.activeMonitors = result.activeMonitors;
       session.scheduledWakeupAt = result.scheduledWakeupAt;
       session.scheduledWakeupReason = result.scheduledWakeupReason;
       session.backgroundTasks = result.backgroundTasks;

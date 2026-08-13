@@ -1681,6 +1681,7 @@ function readCodexTranscriptState(filePath: string): {
   permissionPromptText?: string;
   permissionMode?: string;
   pendingQuestion?: PendingQuestionSet;
+  activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
   prRefs?: string[];
 } {
@@ -1721,6 +1722,10 @@ function readCodexTranscriptState(filePath: string): {
     let state: WorkerState = 'waiting';
 
     const callDurations = new Map<string, number>();
+    // A Codex function call and its output are separate rollout records.  Keep
+    // the completed ids so a long-running Monitor is surfaced only until it
+    // actually returns, just like the Claude transcript path above.
+    const completedCallIds = new Set<string>();
     for (const line of last30) {
       try {
         const parsed = JSON.parse(line) as {
@@ -1737,6 +1742,9 @@ function readCodexTranscriptState(filePath: string): {
           const nanos = parsed.payload.duration?.nanos ?? 0;
           callDurations.set(parsed.payload.call_id, Math.round((secs * 1000) + (nanos / 1_000_000)));
         }
+        if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call_output' && parsed.payload.call_id) {
+          completedCallIds.add(parsed.payload.call_id);
+        }
         if (parsed.type === 'event_msg' && parsed.payload?.type === 'token_count' && inputTokens === undefined) {
           const usage = parsed.payload.info?.last_token_usage;
           if (usage) inputTokens = (usage.input_tokens ?? 0) + (usage.cached_input_tokens ?? 0);
@@ -1750,6 +1758,8 @@ function readCodexTranscriptState(filePath: string): {
       }
     }
 
+    const activeMonitors: ActiveMonitor[] = [];
+    const seenMonitorCallIds = new Set<string>();
     for (let i = last30.length - 1; i >= 0; i--) {
       try {
         const parsed = JSON.parse(last30[i]) as {
@@ -1762,8 +1772,10 @@ function readCodexTranscriptState(filePath: string): {
             message?: string;
             name?: string;
             arguments?: string;
+            input?: string | Record<string, unknown>;
             call_id?: string;
             output?: string;
+            status?: string;
           };
         };
 
@@ -1785,7 +1797,7 @@ function readCodexTranscriptState(filePath: string): {
             ...capMessage(text),
             timestamp: parsed.timestamp,
           });
-        } else if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call' && parsed.payload.name) {
+        } else if (parsed.type === 'response_item' && (parsed.payload?.type === 'function_call' || parsed.payload?.type === 'custom_tool_call') && parsed.payload.name) {
           const item: ActivityItem = {
             kind: 'tool',
             toolName: parsed.payload.name,
@@ -1804,6 +1816,31 @@ function readCodexTranscriptState(filePath: string): {
           const durationMs = parsed.payload.call_id ? callDurations.get(parsed.payload.call_id) : undefined;
           if (durationMs !== undefined) item.durationMs = durationMs;
           activityFeed.unshift(item);
+
+          // Codex's tool calls use call_id rather than Claude's tool_use id.
+          // Both regular and custom calls occur in rollout files; a custom
+          // Monitor remains in_progress while it streams, whereas a regular
+          // function call is complete once its function_call_output is logged.
+          if (parsed.payload.name === 'Monitor' && parsed.payload.call_id
+              && !seenMonitorCallIds.has(parsed.payload.call_id)
+              && !completedCallIds.has(parsed.payload.call_id)
+              && parsed.payload.status !== 'completed') {
+            seenMonitorCallIds.add(parsed.payload.call_id);
+            let args: Record<string, unknown> = {};
+            const rawArgs = parsed.payload.arguments ?? parsed.payload.input;
+            if (typeof rawArgs === 'string') {
+              try { args = JSON.parse(rawArgs) as Record<string, unknown>; } catch { /* best effort */ }
+            } else if (rawArgs && typeof rawArgs === 'object') {
+              args = rawArgs;
+            }
+            const target = (typeof args.target === 'string' && args.target)
+              || (typeof args.threadName === 'string' && args.threadName)
+              || (typeof args.threadId === 'string' && args.threadId)
+              || (typeof args.id === 'string' && args.id)
+              || '';
+            const until = typeof args.until === 'string' ? args.until : undefined;
+            activeMonitors.push({ toolUseId: parsed.payload.call_id, target, startedAt: parsed.timestamp, until });
+          }
         } else if (parsed.type === 'event_msg' && parsed.payload?.type === 'agent_message' && parsed.payload.message && lastMessage === undefined) {
           lastMessage = parsed.payload.message.slice(0, 300);
         }
@@ -1867,6 +1904,7 @@ function readCodexTranscriptState(filePath: string): {
       activityFeed: activityFeed.length > 0 ? activityFeed : undefined,
       model,
       inputTokens,
+      activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
       prRefs: prRefs.length > 0 ? prRefs : undefined,
     };
