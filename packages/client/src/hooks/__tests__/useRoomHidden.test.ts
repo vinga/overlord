@@ -137,4 +137,30 @@ describe('server sync', () => {
     expect(mod.isRoomHidden('srv')).toBe(false);
     expect(JSON.parse(localStorage.store.get(STORAGE_KEY)!)).toEqual({ local: true });
   });
+
+  it('seedFromServer seeds rooms that only appear in a later snapshot', async () => {
+    const { mod } = await loadStore();
+    // First snapshot after a server restart is partial — hydration still running.
+    mod.seedFromServer([{ id: 'early', hidden: true }]);
+    expect(mod.isRoomHidden('early')).toBe(true);
+    // 'late' surfaces a few ticks later and must still get its persisted flag.
+    mod.seedFromServer([{ id: 'early', hidden: true }, { id: 'late', hidden: true }]);
+    expect(mod.isRoomHidden('late')).toBe(true);
+  });
+
+  it('seedFromServer does not re-hide a room unhidden after its first sighting', async () => {
+    const { mod } = await loadStore();
+    mod.seedFromServer([{ id: 'r1', hidden: true }]);
+    mod.unhideRoom('r1');
+    mod.seedFromServer([{ id: 'r1', hidden: true }, { id: 'new', hidden: true }]);
+    expect(mod.isRoomHidden('r1')).toBe(false);
+    expect(mod.isRoomHidden('new')).toBe(true);
+  });
+
+  it('an empty first snapshot does not consume seeding', async () => {
+    const { mod } = await loadStore();
+    mod.seedFromServer([]);
+    mod.seedFromServer([{ id: 'r1', hidden: true }]);
+    expect(mod.isRoomHidden('r1')).toBe(true);
+  });
 });

@@ -45,7 +45,11 @@ function syncToServer(cwd: string, hidden: boolean): void {
  * every mounted component must see that immediately.
  */
 let hiddenMap: RoomHiddenMap = readStorage();
-let seeded = false;
+/** Room ids already seeded from a server snapshot. Per-room, not a global
+ *  one-shot flag: the first snapshot after a server restart is often partial
+ *  (hydration still running), so rooms that surface a few ticks later must
+ *  still get their persisted `hidden` applied. */
+const seededRooms = new Set<string>();
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -99,14 +103,13 @@ export function unhideAll(rooms?: ReadonlyArray<{ id: string; cwd: string }>): v
 
 /**
  * Union-merge server-persisted hidden rooms into the local store, once per
- * page load. Server only adds at seed time — a locally-unhidden room stays
- * visible until the next snapshot-driven reload. After seeding, local actions
- * are authoritative and sync back via syncToServer.
+ * room per page load. Server only adds the first time a room is seen — after
+ * that the local store is authoritative and syncs back via syncToServer, so a
+ * locally-unhidden room never gets re-hidden by a later snapshot.
  */
 export function seedFromServer(rooms: ReadonlyArray<{ id: string; hidden?: boolean }>): void {
-  if (seeded) return;
-  seeded = true;
-  const additions = rooms.filter(r => r.hidden === true && !hiddenMap[r.id]);
+  const additions = rooms.filter(r => !seededRooms.has(r.id) && r.hidden === true && !hiddenMap[r.id]);
+  for (const room of rooms) seededRooms.add(room.id);
   if (additions.length === 0) return;
   const next = { ...hiddenMap };
   for (const room of additions) next[room.id] = true;

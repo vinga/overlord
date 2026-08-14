@@ -225,7 +225,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   // Merge server-persisted hidden rooms into the local store (once per page
   // load) so hidden state survives fresh browsers and cleared localStorage.
   useEffect(() => {
-    if (rooms.length > 0) seedFromServer(rooms);
+    seedFromServer(rooms);
   }, [rooms]);
 
   const visibleRooms = useMemo(() => {
@@ -263,13 +263,18 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     return sortRooms(filtered);
   }, [rooms, sortRooms, searchQuery, sessionMatches, activeOnly, hiddenMap]);
 
-  const { hiddenRooms, hiddenAttentionCount } = useMemo(() => {
-    const hr = rooms.filter(r => hiddenMap[r.id] && r.sessions.length > 0);
+  // `hiddenRooms` drives the pill list (session-less rooms have nothing to show).
+  // `allHiddenRooms` is what "Show all" must operate on: unhideAll only clears the
+  // server flag for rooms it is handed, so omitting session-less ones left them
+  // hidden on disk and they came back on the next reload.
+  const { hiddenRooms, allHiddenRooms, hiddenAttentionCount } = useMemo(() => {
+    const all = rooms.filter(r => hiddenMap[r.id]);
+    const hr = all.filter(r => r.sessions.length > 0);
     const n = hr.reduce(
       (acc, r) => acc + r.sessions.filter(s => s.state === 'waiting' && s.review == null).length,
       0,
     );
-    return { hiddenRooms: hr, hiddenAttentionCount: n };
+    return { hiddenRooms: hr, allHiddenRooms: all, hiddenAttentionCount: n };
   }, [rooms, hiddenMap]);
 
   // Register any room IDs not yet in persisted order (side-effect free from render)
@@ -372,7 +377,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           hiddenRooms={hiddenRooms}
           attentionCount={hiddenAttentionCount}
           onUnhide={unhide}
-          onUnhideAll={() => unhideAll(hiddenRooms)}
+          onUnhideAll={() => unhideAll(allHiddenRooms)}
         />
         {onOpenAdvancedSearch && (
           <button
@@ -409,7 +414,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             ) : hiddenRooms.length > 0 && !searchQuery.trim() ? (
               <>
                 <span className={styles.emptyText}>All rooms hidden</span>
-                <button className={styles.emptyShowAll} onClick={() => unhideAll(hiddenRooms)}>Show all</button>
+                <button className={styles.emptyShowAll} onClick={() => unhideAll(allHiddenRooms)}>Show all</button>
               </>
             ) : (
               <>
