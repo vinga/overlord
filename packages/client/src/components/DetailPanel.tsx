@@ -2949,7 +2949,7 @@ const currentDisplayName =
                             <span className={styles.roomCrumbSep} aria-hidden="true">›</span>
                           </span>
                         )}
-                        <h2 className={styles.sessionName} onDoubleClick={startEdit} title="Double-click to rename">{currentDisplayName}</h2>
+                        <h2 className={styles.sessionName} onClick={startEdit} title="Click to rename">{currentDisplayName}</h2>
                         <button
                           className={styles.nameBtn}
                           onClick={() => navigator.clipboard.writeText(`name: ${currentDisplayName} id: ${selectedSession.sessionId}${selectedSession.overlordId ? ` ovrId: ${selectedSession.overlordId}` : ''}`)}
