@@ -27,7 +27,7 @@ function normalize(p: string): string {
 
 /** Newest day directories (`YYYY/MM/DD`) — a spawn lands in today's; the
  *  second-newest branch at each level survives a midnight/month rollover. */
-function recentDayDirs(root: string): string[] {
+function recentDayDirs(root: string, dayBreadth = 2): string[] {
   const descend = (dir: string, depth: number): string[] => {
     let entries: fs.Dirent[];
     try {
@@ -35,7 +35,8 @@ function recentDayDirs(root: string): string[] {
     } catch {
       return [];
     }
-    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort().reverse().slice(0, 2);
+    const keep = depth === 0 ? dayBreadth : 2;
+    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort().reverse().slice(0, keep);
     if (depth === 0) return dirs.map(d => path.join(dir, d));
     return dirs.flatMap(d => descend(path.join(dir, d), depth - 1));
   };
@@ -88,9 +89,25 @@ function readMeta(filePath: string): { sessionId: string; cwd: string } | null {
  * so callers poll.
  */
 export function findLatestCodexRollout(cwd: string, startedAfterMs: number): CodexRollout | null {
-  const wanted = normalize(cwd);
+  return scanRollouts(rollout => normalize(rollout.cwd) === normalize(cwd), startedAfterMs);
+}
+
+/**
+ * The rollout belonging to a known codex session id, regardless of age. Used to
+ * re-link a session across a server restart, where "newest in this cwd" would
+ * happily claim a rollout that belongs to some other codex worker.
+ */
+export function findCodexRolloutBySessionId(codexSessionId: string): CodexRollout | null {
+  return scanRollouts(rollout => rollout.sessionId === codexSessionId, 0, 8);
+}
+
+function scanRollouts(
+  match: (meta: { sessionId: string; cwd: string }) => boolean,
+  startedAfterMs: number,
+  dayBreadth = 2,
+): CodexRollout | null {
   const candidates: { file: string; mtime: number }[] = [];
-  for (const dir of recentDayDirs(sessionsRoot())) {
+  for (const dir of recentDayDirs(sessionsRoot(), dayBreadth)) {
     let names: string[];
     try {
       names = fs.readdirSync(dir);
@@ -112,7 +129,7 @@ export function findLatestCodexRollout(cwd: string, startedAfterMs: number): Cod
   candidates.sort((a, b) => b.mtime - a.mtime);
   for (const { file } of candidates) {
     const meta = readMeta(file);
-    if (meta && normalize(meta.cwd) === wanted) {
+    if (meta && match(meta)) {
       return { sessionId: meta.sessionId, transcriptPath: file };
     }
   }

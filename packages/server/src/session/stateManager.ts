@@ -998,7 +998,21 @@ export class StateManager {
       // when claude --resume drops the --name marker on the floor and we
       // need a way to re-attach the new sid to its lineage.
       ?? (raw.pid ? this.consumeReservedOvrIdForPid(raw.pid) : undefined);
-    const stored = resolvedOverlordId ? sessionStore.getByOverlordId(resolvedOverlordId) : undefined;
+    // A managed-provider record (codex/opencode) owns exactly the ids its own
+    // spawn minted. Every resolution step above is a heuristic — cwd, pid, name
+    // marker — and a Claude sid landing on one of them would attach itself to
+    // the codex lineage as a 'clear', hijacking the record and blanking its
+    // conversation. Reject unless the sid is already part of that lineage.
+    const resolvedRecord = resolvedOverlordId ? sessionStore.getByOverlordId(resolvedOverlordId) : undefined;
+    const hijacksManagedProvider = resolvedRecord
+      && (resolvedRecord.provider === 'codex' || resolvedRecord.provider === 'opencode')
+      && raw.provider !== resolvedRecord.provider
+      && !resolvedRecord.lineage.history.some(h => h.sessionId === sessionId);
+    if (hijacksManagedProvider) {
+      console.warn(`[stateManager] refusing to attach ${sessionId.slice(0, 8)} to ${resolvedRecord.provider} record ${resolvedOverlordId}`);
+    }
+    const ovrIdForSession = hijacksManagedProvider ? undefined : resolvedOverlordId;
+    const stored = ovrIdForSession ? sessionStore.getByOverlordId(ovrIdForSession) : undefined;
     const storedName = stored?.proposedName?.startsWith('<local-command-caveat')
       ? undefined
       : stored?.proposedName;
@@ -1085,7 +1099,7 @@ export class StateManager {
         // Re-check if this process is still Overlord-spawned; if not, correct the label.
         // But never downgrade while a live PTY is still linked — the PTY link is the
         // authoritative signal that this is an embedded session.
-        const hasLivePty = resolvedOverlordId ? this.hasLivePtyFn(resolvedOverlordId) : false;
+        const hasLivePty = ovrIdForSession ? this.hasLivePtyFn(ovrIdForSession) : false;
         const stillOverlord = hasLivePty || (raw.pid > 0 && this.isSpawnedByOverlord(raw.pid));
         if (!stillOverlord) {
           sessionType = isIdeSession ? 'ide' : 'plain';
@@ -1101,7 +1115,7 @@ export class StateManager {
     // On resume, inherit the parent's ovrId so the new sessionId attaches to the
     // existing lineage rather than minting a duplicate OverlordSession record.
     // resolvedOverlordId was computed above for storedName lookup; reuse it.
-    const overlordId = resolvedOverlordId
+    const overlordId = ovrIdForSession
       ?? this.adoptArchivedOvrId(sessionId, raw.pid)
       ?? this.generateOvrId();
     color = this.sessionColorByOvrId(overlordId);
@@ -1808,11 +1822,44 @@ export class StateManager {
   attachProviderTranscript(sessionId: string, transcriptPath: string, providerSessionId?: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    if (session.transcriptPath === transcriptPath && session.providerSessionId === providerSessionId) return;
+    // Re-attaching the same path is not a no-op when the session has no feed
+    // yet — a closed session hydrated at boot needs its conversation seeded.
+    const samePath = session.transcriptPath === transcriptPath
+      && session.providerSessionId === providerSessionId
+      && (session.activityFeed?.length ?? 0) > 0;
+    if (samePath) return;
     session.transcriptPath = transcriptPath;
     if (providerSessionId) session.providerSessionId = providerSessionId;
-    sessionStore.ensureFromLive(session);
-    this.refreshTranscript(sessionId);
+    // ensureFromLive is a no-op once the record exists with this sessionId as
+    // current, so write the path onto the lineage entry directly — otherwise
+    // the link is in-memory only and a restart loses the conversation.
+    const ovrId = session.overlordId;
+    if (ovrId) {
+      const rec = sessionStore.getByOverlordId(ovrId);
+      if (rec) {
+        const history = rec.lineage.history.map(h =>
+          h.sessionId === sessionId ? { ...h, transcriptPath } : h,
+        );
+        sessionStore.patch(ovrId, {
+          lineage: { ...rec.lineage, history },
+          providerSessionId: providerSessionId ?? rec.providerSessionId,
+        });
+      }
+    }
+    // refreshTranscript bails on closed sessions, and a codex worker links most
+    // often exactly when it is closed (relink at boot, before a resume). Seed
+    // the feed straight from the transcript so the panel isn't blank.
+    if (session.state === 'closed') {
+      try {
+        const st = readTranscriptState(transcriptPath);
+        if (st.activityFeed) session.activityFeed = st.activityFeed;
+        if (st.lastMessage) session.lastMessage = st.lastMessage;
+        if (st.lastActivity) session.lastActivity = st.lastActivity;
+        if (st.model) session.model = st.model;
+      } catch { /* unreadable transcript — leave the session as-is */ }
+    } else {
+      this.refreshTranscript(sessionId);
+    }
     this.onChange();
   }
 
@@ -3346,7 +3393,13 @@ export class StateManager {
 
     this.undelete(sessionId);
 
-    const transcriptPath = findTranscriptPath(rec.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+    // Both lookups key on a Claude session UUID under ~/.claude/projects, so a
+    // managed-provider session (codex writes to ~/.codex/sessions under an id
+    // of its own) only ever resolves via the path stored on its lineage entry.
+    const storedTranscriptPath = rec.lineage.history.find(h => h.sessionId === sessionId)?.transcriptPath;
+    const transcriptPath = findTranscriptPath(rec.cwd, sessionId)
+      ?? findTranscriptPathAnywhere(sessionId)
+      ?? (storedTranscriptPath && fs.existsSync(storedTranscriptPath) ? storedTranscriptPath : undefined);
     if (transcriptPath) ensureShadow(rec.overlordId, sessionId, transcriptPath);
 
     let transcriptState: ReturnType<typeof readTranscriptState> | null = null;

@@ -19,7 +19,7 @@ import { archiveManager } from '../archive/archiveManager.js';
 import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
-import { findLatestCodexRollout } from '../session/codexSession.js';
+import { findCodexRolloutBySessionId, findLatestCodexRollout } from '../session/codexSession.js';
 import { sessionStore } from '../session/sessionStore.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from '../session/transcriptShadow.js';
 import { globalSettingsStore } from '../session/globalSettingsStore.js';
@@ -151,6 +151,10 @@ function scheduleCodexTranscriptCapture(
   sessionId: string,
   cwd: string,
   startedAfterMs: number,
+  // Resume: `codex resume` continues into a *new* rollout file, so the path
+  // already on the session is stale and must be replaced once the new one
+  // appears. Fresh spawns stop as soon as they have any path.
+  opts: { replaceExisting?: boolean } = {},
 ): void {
   // Codex only writes the rollout on the first turn, which may be minutes after
   // spawn (or never, if the user just looks at the TUI). Poll fast at first,
@@ -159,9 +163,15 @@ function scheduleCodexTranscriptCapture(
   const tick = () => {
     attempts += 1;
     const session = stateManager.getSession(sessionId);
-    if (!session || session.state === 'closed' || session.transcriptPath) return;
+    if (!session || session.state === 'closed') return;
+    if (session.transcriptPath && !opts.replaceExisting) return;
     const found = findLatestCodexRollout(cwd, startedAfterMs);
-    if (found) {
+    // Two codex workers in one directory both see the same "newest rollout".
+    // Whoever links first owns it; the other keeps polling for its own.
+    const claimedByOther = found && stateManager.getAllSessionIds().some(id =>
+      id !== sessionId && stateManager.getSession(id)?.transcriptPath === found.transcriptPath,
+    );
+    if (found && !claimedByOther) {
       stateManager.attachProviderTranscript(sessionId, found.transcriptPath, found.sessionId);
       console.log(`[codex] linked ${sessionId.slice(0, 18)} → ${found.transcriptPath}`);
       return;
@@ -191,13 +201,26 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
   let autoResumeTriggered = false;
 
-  // Codex sessions that outlived a server restart (or were spawned before the
-  // capture existed) carry no transcriptPath — re-run the link attempt for each.
+  // Codex sessions hydrated at boot without a transcript: re-link by codex
+  // session id where we know it. Deliberately NOT a "newest rollout in this
+  // cwd" scan — a session whose PTY died would otherwise claim the rollout of
+  // whichever codex worker starts next in the same directory.
   for (const sessionId of stateManager.getAllSessionIds()) {
     const session = stateManager.getSession(sessionId);
     if (!session || session.provider !== 'codex') continue;
-    if (session.transcriptPath || session.state === 'closed' || session.pid <= 0) continue;
-    scheduleCodexTranscriptCapture(stateManager, sessionId, session.cwd, session.startedAt);
+    if (session.transcriptPath && (session.activityFeed?.length ?? 0) > 0) continue;
+    // The path recorded on the lineage entry is authoritative; the id scan is
+    // the fallback for records written before the path was persisted.
+    const rec = session.overlordId ? sessionStore.getByOverlordId(session.overlordId) : undefined;
+    const storedPath = session.transcriptPath
+      ?? rec?.lineage.history.find(h => h.sessionId === sessionId)?.transcriptPath;
+    if (storedPath && fs.existsSync(storedPath)) {
+      stateManager.attachProviderTranscript(sessionId, storedPath, session.providerSessionId);
+      continue;
+    }
+    if (!session.providerSessionId) continue;
+    const found = findCodexRolloutBySessionId(session.providerSessionId);
+    if (found) stateManager.attachProviderTranscript(sessionId, found.transcriptPath, found.sessionId);
   }
 
   // Per-WS visibility/subscription state lives in wsClientState.ts — shared
@@ -426,7 +449,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
               scheduleOpencodeSessionIdCapture(stateManager, resumeSessionId, cwd, startedAfterMs);
             } else if (provider === 'codex') {
               // `codex resume` continues into a fresh rollout file — re-link.
-              scheduleCodexTranscriptCapture(stateManager, resumeSessionId, cwd, startedAfterMs);
+              scheduleCodexTranscriptCapture(stateManager, resumeSessionId, cwd, startedAfterMs, { replaceExisting: true });
             }
           } catch (err) {
             ovrToPty.delete(ptySessionId);
