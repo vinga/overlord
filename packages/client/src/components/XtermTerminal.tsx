@@ -17,6 +17,11 @@ interface XtermTerminalProps {
   fillHeight?: boolean;
   /** Whether this is a bridge session — used to show disconnect overlay if no content arrives. */
   isBridge?: boolean;
+  /** Tab-visibility hint. `true` focuses the terminal once it is shown; `false`
+   *  blurs it so a hidden (display:none) xterm textarea can't keep swallowing
+   *  keystrokes meant for the chat composer / question hotkeys. `undefined`
+   *  leaves focus alone (standalone raw-shell panel). */
+  active?: boolean;
 }
 
 export function XtermTerminal({
@@ -28,6 +33,7 @@ export function XtermTerminal({
   onResume,
   fillHeight,
   isBridge,
+  active,
 }: XtermTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -39,6 +45,18 @@ export function XtermTerminal({
   useEffect(() => { isExitedRef.current = isExited; }, [isExited]);
   useEffect(() => { onResumeRef.current = onResume; }, [onResume]);
   useEffect(() => { if (!isExited) setShowResumePrompt(false); }, [isExited]);
+
+  // Keep keyboard focus in step with tab visibility. Focus must wait a frame:
+  // the parent flips display:none → flex in the same commit, and a textarea
+  // inside a display:none subtree refuses focus.
+  useEffect(() => {
+    if (active === undefined) return;
+    const term = termRef.current;
+    if (!term) return;
+    if (!active) { term.blur(); return; }
+    const id = requestAnimationFrame(() => termRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [active]);
 
   useEffect(() => {
     if (!containerRef.current) return;

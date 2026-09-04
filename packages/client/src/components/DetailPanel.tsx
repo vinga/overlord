@@ -2001,6 +2001,25 @@ export function DetailPanel({
   const preHistoryDraft = useRef('');
   const [showSkillPicker, setShowSkillPicker] = useState(false);
   const sendTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus routing for choice prompts. Focus otherwise sits wherever the last
+  // click landed — often the xterm textarea — so digits/arrows went raw to the
+  // PTY and bypassed the question widget and the 1/2/3 hotkeys (which skip
+  // TEXTAREA targets). Hand the composer focus when the conversation tab is
+  // shown and when a question / permission prompt appears while it is shown.
+  // Only steal from body or the terminal, never from another input the user
+  // is typing in.
+  const hasChoicePrompt = !!selectedSession?.needsPermission
+    || (!!selectedSession?.pendingQuestion && !selectedSession.questionStale);
+  useEffect(() => {
+    if (activeTab !== 'conversation') return;
+    const id = requestAnimationFrame(() => {
+      const ae = document.activeElement as HTMLElement | null;
+      if (ae && ae !== document.body && !ae.closest('.xterm')) return;
+      sendTextareaRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [activeTab, hasChoicePrompt]);
   const [showConvMenu, setShowConvMenu] = useState(false);
   const [copiedConv, setCopiedConv] = useState(false);
   const convMenuRef = useRef<HTMLDivElement>(null);
@@ -3841,6 +3860,7 @@ const currentDisplayName =
                       }
                       fillHeight
                       isBridge={isBridgeSession?.(effectiveOvrId)}
+                      active={activeTab === 'terminal'}
                     />
                   </div>
                 )}
