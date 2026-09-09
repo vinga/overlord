@@ -412,8 +412,11 @@ interface DetailPanelProps {
   siblingActiveSessions?: Session[];
   onSelectSession?: (session: Session, subagentId?: string, timestamp?: string, query?: string) => void;
   customNames?: Record<string, string>;
-  panelWidth: number;
-  onPanelWidthChange?: (width: number) => void;
+  /** Which screen edge the panel docks to. Bottom = portrait / horizontal split. */
+  dock?: 'right' | 'bottom';
+  /** Width when right-docked, height when bottom-docked. */
+  panelSize: number;
+  onPanelSizeChange?: (size: number) => void;
   bridgePath?: string;
   platform?: string;
   /** Timestamp of an ActivityItem to scroll to (from search) */
@@ -1771,8 +1774,9 @@ export function DetailPanel({
   siblingActiveSessions,
   onSelectSession,
   customNames,
-  panelWidth,
-  onPanelWidthChange,
+  dock = 'right',
+  panelSize,
+  onPanelSizeChange,
   bridgePath,
   platform = 'darwin',
   scrollTarget,
@@ -1929,34 +1933,37 @@ export function DetailPanel({
   // Persist question stage across remounts (snapshot refreshes can unmount/remount QuestionPrompt)
   const questionStageRef = useRef<Map<string, number>>(new Map());
 
-  function setPanelWidth(next: number) {
-    onPanelWidthChange?.(next);
+  function setPanelSize(next: number) {
+    onPanelSizeChange?.(next);
   }
-  const dragStartX = useRef<number | null>(null);
-  const dragStartWidth = useRef<number>(panelWidth);
-  const currentDragWidth = useRef<number>(panelWidth);
+  const dragStartPos = useRef<number | null>(null);
+  const dragStartSize = useRef<number>(panelSize);
+  const currentDragSize = useRef<number>(panelSize);
 
   function onResizeMouseDown(e: React.MouseEvent) {
     e.preventDefault();
-    dragStartX.current = e.clientX;
-    dragStartWidth.current = panelWidth;
-    currentDragWidth.current = panelWidth;
+    // Right dock resizes horizontally, bottom dock vertically.
+    const horizontal = dock !== 'bottom';
+    dragStartPos.current = horizontal ? e.clientX : e.clientY;
+    dragStartSize.current = panelSize;
+    currentDragSize.current = panelSize;
 
     function onMouseMove(ev: MouseEvent) {
-      if (dragStartX.current === null) return;
-      const delta = dragStartX.current - ev.clientX;
-      const maxWidth = Math.max(900, window.innerWidth - 80);
-      const next = Math.max(320, Math.min(maxWidth, dragStartWidth.current + delta));
-      currentDragWidth.current = next;
-      setPanelWidth(next);
+      if (dragStartPos.current === null) return;
+      const delta = dragStartPos.current - (horizontal ? ev.clientX : ev.clientY);
+      const min = horizontal ? 320 : 240;
+      const max = horizontal ? Math.max(900, window.innerWidth - 80) : Math.max(240, window.innerHeight - 160);
+      const next = Math.max(min, Math.min(max, dragStartSize.current + delta));
+      currentDragSize.current = next;
+      setPanelSize(next);
     }
 
     function onMouseUp() {
-      dragStartX.current = null;
+      dragStartPos.current = null;
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
-      localStorage.setItem('overlord:panelWidth', String(currentDragWidth.current));
-      onPanelWidthChange?.(currentDragWidth.current);
+      localStorage.setItem(horizontal ? 'overlord:panelWidth' : 'overlord:panelHeight', String(currentDragSize.current));
+      onPanelSizeChange?.(currentDragSize.current);
     }
 
     document.addEventListener('mousemove', onMouseMove);
@@ -2705,13 +2712,16 @@ const currentDisplayName =
     <>
       {/* Panel */}
       <div
-        className={`${styles.panel} ${styles.panelOpen}`}
+        className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : ''} ${styles.panelOpen}`}
         role="dialog"
         aria-modal="true"
         aria-label="Session details"
-        style={{ width: panelWidth }}
+        style={dock === 'bottom' ? { height: panelSize } : { width: panelSize }}
       >
-        <div className={styles.resizeHandle} onMouseDown={onResizeMouseDown} />
+        <div
+          className={`${styles.resizeHandle} ${dock === 'bottom' ? styles.resizeHandleTop : ''}`}
+          onMouseDown={onResizeMouseDown}
+        />
         {!selectedSession && !isPendingPty && (
           <div className={styles.emptyPanel}>
             <div className={styles.emptyPanelIcon}>👁</div>

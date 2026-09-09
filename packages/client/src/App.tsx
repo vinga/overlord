@@ -3,6 +3,7 @@ import { useOfficeData } from './hooks/useOfficeData';
 import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
 import { useRoomOrder } from './hooks/useRoomOrder';
+import { useOrientation, useDockMode } from './hooks/useOrientation';
 import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
 import { setJiraMeta } from './hooks/useJiraMeta';
 import { setPrMeta } from './hooks/usePrMeta';
@@ -84,6 +85,18 @@ export function App() {
     const maxWidth = Math.max(900, window.innerWidth - 80);
     return saved ? Math.max(320, Math.min(maxWidth, parseInt(saved, 10))) : 680;
   });
+  const [panelHeight, setPanelHeight] = useState<number>(() => {
+    const saved = localStorage.getItem('overlord:panelHeight');
+    const maxHeight = Math.max(240, window.innerHeight - 160);
+    return saved ? Math.max(240, Math.min(maxHeight, parseInt(saved, 10))) : Math.round(window.innerHeight * 0.5);
+  });
+
+  // Dock side: preference wins; `auto` follows viewport orientation.
+  const orientation = useOrientation();
+  const [dockMode] = useDockMode();
+  const dock = dockMode === 'auto' ? (orientation === 'portrait' ? 'bottom' : 'right') : dockMode;
+  const panelSize = dock === 'bottom' ? panelHeight : panelWidth;
+  const setPanelSize = dock === 'bottom' ? setPanelHeight : setPanelWidth;
 
   // Use a ref so the WS handler always sees the latest terminal message handler,
   // with zero render-cycle delay (avoids losing terminal:spawned on fast responses)
@@ -548,7 +561,8 @@ export function App() {
         selectionNonce={selectionNonce}
         scrollOnSelect={selectionScroll}
         onSelectSessionQuiet={handleSelectSessionQuiet}
-        rightOffset={panelWidth}
+        rightOffset={dock === 'right' ? panelWidth : 0}
+        bottomOffset={dock === 'bottom' ? panelHeight : 0}
         onRoomClick={handleRoomClick}
         spawnCwd={spawnCwd}
         onSpawnNameChange={setPendingSpawnName}
@@ -626,8 +640,9 @@ export function App() {
           onRestart={(sessionId) => terminal.restartShell(sessionId)}
           onRename={rename}
           onClose={handleClose}
-          panelWidth={panelWidth}
-          onPanelWidthChange={setPanelWidth}
+          dock={dock}
+          panelSize={panelSize}
+          onPanelSizeChange={setPanelSize}
         />
       ) : <DetailPanel
         selectedSession={selectedSession}
@@ -666,8 +681,9 @@ export function App() {
           onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),
         }}
 
-        panelWidth={panelWidth}
-        onPanelWidthChange={setPanelWidth}
+        dock={dock}
+        panelSize={panelSize}
+        onPanelSizeChange={setPanelSize}
         siblingActiveSessions={
           selectedSession && selectedSession.state === 'closed'
             ? (snapshot?.rooms

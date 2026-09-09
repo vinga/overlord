@@ -519,3 +519,41 @@
   background: rgba(212, 175, 55, 0.22);
   border-color: rgba(212, 175, 55, 0.6);
 }
+
+/* ── Segmented control (Layout page) ─────────────────────── */
+
+.segmented {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.segmentBtn {
+  background: transparent;
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  color: #9a9aa4;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.segmentBtn:last-child {
+  border-right: none;
+}
+
+.segmentBtn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #d0d0d6;
+}
+
+.segmentBtnActive,
+.segmentBtnActive:hover {
+  background: rgba(212, 175, 55, 0.14);
+  color: #f0dda0;
+}

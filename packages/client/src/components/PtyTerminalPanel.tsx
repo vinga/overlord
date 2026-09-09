@@ -4,21 +4,26 @@ import { XtermTerminal } from './XtermTerminal';
 import { ColorPicker } from './ColorPicker';
 import styles from './PtyTerminalPanel.module.css';
 
-// Match DetailPanel's sizing and storage key so width persists across panel types.
-const STORAGE_KEY = 'overlord:panelWidth';
+// Match DetailPanel's sizing and storage keys so panel size persists across panel types.
+const WIDTH_KEY = 'overlord:panelWidth';
+const HEIGHT_KEY = 'overlord:panelHeight';
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 900;
 const DEFAULT_WIDTH = 680;
+const MIN_HEIGHT = 240;
 
-function getSavedWidth(): number {
+function getSavedSize(dock: 'right' | 'bottom'): number {
+  const key = dock === 'bottom' ? HEIGHT_KEY : WIDTH_KEY;
+  const min = dock === 'bottom' ? MIN_HEIGHT : MIN_WIDTH;
+  const max = dock === 'bottom' ? Math.max(MIN_HEIGHT, window.innerHeight - 160) : MAX_WIDTH;
   try {
-    const v = localStorage.getItem(STORAGE_KEY);
+    const v = localStorage.getItem(key);
     if (v) {
       const n = parseInt(v, 10);
-      if (n >= MIN_WIDTH && n <= MAX_WIDTH) return n;
+      if (n >= min && n <= max) return n;
     }
   } catch {}
-  return DEFAULT_WIDTH;
+  return dock === 'bottom' ? Math.round(window.innerHeight * 0.5) : DEFAULT_WIDTH;
 }
 
 const STATE_COLORS: Record<WorkerState, string> = {
@@ -56,8 +61,11 @@ interface PtyTerminalPanelProps {
   onRestart?: (sessionId: string) => void;
   onRename?: (sessionId: string, name: string) => void;
   onClose?: () => void;
-  panelWidth?: number;
-  onPanelWidthChange?: (width: number) => void;
+  /** Which screen edge the panel docks to. Bottom = portrait / horizontal split. */
+  dock?: 'right' | 'bottom';
+  /** Width when right-docked, height when bottom-docked. */
+  panelSize?: number;
+  onPanelSizeChange?: (size: number) => void;
 }
 
 export function PtyTerminalPanel({
@@ -72,19 +80,21 @@ export function PtyTerminalPanel({
   onRestart,
   onRename,
   onClose,
-  panelWidth,
-  onPanelWidthChange,
+  dock = 'right',
+  panelSize,
+  onPanelSizeChange,
 }: PtyTerminalPanelProps) {
   const [open, setOpen] = useState(false);
-  const controlled = panelWidth !== undefined;
-  const [internalWidth, setInternalWidth] = useState(getSavedWidth);
-  const width = controlled ? panelWidth! : internalWidth;
-  const setWidth = (next: number | ((prev: number) => number)) => {
+  const horizontal = dock !== 'bottom';
+  const controlled = panelSize !== undefined;
+  const [internalSize, setInternalSize] = useState(() => getSavedSize(dock));
+  const size = controlled ? panelSize! : internalSize;
+  const setSize = (next: number | ((prev: number) => number)) => {
     if (controlled) {
-      const resolved = typeof next === 'function' ? next(panelWidth!) : next;
-      onPanelWidthChange?.(resolved);
+      const resolved = typeof next === 'function' ? next(panelSize!) : next;
+      onPanelSizeChange?.(resolved);
     } else {
-      setInternalWidth(next);
+      setInternalSize(next);
     }
   };
   const [detailsOpen, setDetailsOpen] = useState(true);
@@ -93,8 +103,8 @@ export function PtyTerminalPanel({
   const [tick, setTick] = useState(0);
 
   const dragging = useRef(false);
-  const startX = useRef(0);
-  const startWidth = useRef(0);
+  const startPos = useRef(0);
+  const startSize = useRef(0);
 
   useEffect(() => {
     const id = requestAnimationFrame(() => setOpen(true));
@@ -110,27 +120,29 @@ export function PtyTerminalPanel({
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     dragging.current = true;
-    startX.current = e.clientX;
-    startWidth.current = width;
-    document.body.style.cursor = 'ew-resize';
+    startPos.current = horizontal ? e.clientX : e.clientY;
+    startSize.current = size;
+    document.body.style.cursor = horizontal ? 'ew-resize' : 'ns-resize';
     document.body.style.userSelect = 'none';
-  }, [width]);
+  }, [size, horizontal]);
 
   useEffect(() => {
+    const min = horizontal ? MIN_WIDTH : MIN_HEIGHT;
+    const max = horizontal ? MAX_WIDTH : Math.max(MIN_HEIGHT, window.innerHeight - 160);
     const onMove = (e: MouseEvent) => {
       if (!dragging.current) return;
-      const delta = startX.current - e.clientX;
-      const next = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, startWidth.current + delta));
-      setWidth(next);
+      const delta = startPos.current - (horizontal ? e.clientX : e.clientY);
+      const next = Math.max(min, Math.min(max, startSize.current + delta));
+      setSize(next);
     };
     const onUp = () => {
       if (!dragging.current) return;
       dragging.current = false;
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      setWidth(w => {
-        try { localStorage.setItem(STORAGE_KEY, String(w)); } catch {}
-        return w;
+      setSize(s => {
+        try { localStorage.setItem(horizontal ? WIDTH_KEY : HEIGHT_KEY, String(s)); } catch {}
+        return s;
       });
     };
     window.addEventListener('mousemove', onMove);
@@ -139,7 +151,7 @@ export function PtyTerminalPanel({
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
-  }, []);
+  }, [horizontal]);
 
   const displayName = customName ?? session?.proposedName ?? session?.slug ?? sessionId.slice(0, 12);
 
@@ -160,10 +172,13 @@ export function PtyTerminalPanel({
 
   return (
     <div
-      className={`${styles.panel} ${open ? styles.panelOpen : ''}`}
-      style={{ width }}
+      className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : ''} ${open ? styles.panelOpen : ''}`}
+      style={dock === 'bottom' ? { height: size } : { width: size }}
     >
-      <div className={styles.resizeHandle} onMouseDown={onMouseDown} />
+      <div
+        className={`${styles.resizeHandle} ${dock === 'bottom' ? styles.resizeHandleTop : ''}`}
+        onMouseDown={onMouseDown}
+      />
 
       {/* Header */}
       <div className={styles.header}>

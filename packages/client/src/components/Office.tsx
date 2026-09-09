@@ -28,6 +28,7 @@ interface OfficeProps {
   /** Rail row click: select without scrolling the grid. */
   onSelectSessionQuiet?: (session: Session) => void;
   rightOffset?: number;
+  bottomOffset?: number;
   onRoomClick?: (roomId: string) => void;
   spawnCwd?: string | null;
   onSpawnNameChange?: (name: string) => void;
@@ -185,7 +186,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, scrollOnSelect = true, onSelectSessionQuiet, rightOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onSetReview, onToggleRead, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, scrollOnSelect = true, onSelectSessionQuiet, rightOffset = 0, bottomOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onSetReview, onToggleRead, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
@@ -353,7 +354,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   }, []);
 
   return (
-    <div className={styles.office} style={{ paddingRight: rightOffset, paddingLeft: railWidth, transition: 'padding-right 200ms ease, padding-left 160ms ease' }}>
+    <div className={styles.office} style={{ paddingRight: rightOffset, paddingBottom: bottomOffset, paddingLeft: railWidth, transition: 'padding-right 200ms ease, padding-bottom 200ms ease, padding-left 160ms ease' }}>
       <QueueRail
         snapshot={snapshot}
         customNames={customNames}

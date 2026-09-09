@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { GlobalSettings } from '../types';
+import { useDockMode, type DockMode } from '../hooks/useOrientation';
 import styles from './SettingsModal.module.css';
 
 interface Props {
@@ -11,6 +12,7 @@ interface Props {
 type PageId =
   | 'general'
   | 'general.startup'
+  | 'general.layout'
   | 'general.conversation'
   | 'ai'
   | 'ai.intent'
@@ -32,6 +34,7 @@ const TREE: TreeNode[] = [
     keywords: 'general basics',
     children: [
       { id: 'general.startup', label: 'Startup & Resume', keywords: 'auto resume restart respawn terminal pty boot' },
+      { id: 'general.layout', label: 'Layout', keywords: 'layout dock panel bottom right side portrait landscape vertical monitor orientation split chat rooms' },
       { id: 'general.conversation', label: 'Conversation', keywords: 'sticky pinned user message feed prompt header detail panel' },
     ],
   },
@@ -71,6 +74,7 @@ function findNode(id: PageId): { node: TreeNode; parent?: TreeNode } | null {
 }
 
 export function SettingsModal({ settings, onUpdate, onClose }: Props) {
+  const [dockMode, setDockMode] = useDockMode();
   const [jiraBaseUrl, setLocalJiraBaseUrl] = useState(settings.jiraBaseUrl ?? '');
   const [jiraProjects, setLocalJiraProjects] = useState(settings.jiraProjects ?? '');
   const [jiraEmail, setLocalJiraEmail] = useState(settings.jiraEmail ?? '');
@@ -154,6 +158,38 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
             onToggle={() => onUpdate({ autoResumeOnRestart: !settings.autoResumeOnRestart })}
           />
         );
+
+      case 'general.layout': {
+        const dockOptions: { value: DockMode; label: string }[] = [
+          { value: 'auto', label: 'Auto' },
+          { value: 'right', label: 'Right' },
+          { value: 'bottom', label: 'Bottom' },
+        ];
+        return (
+          <div className={styles.row}>
+            <div className={styles.rowText}>
+              <div className={styles.rowLabel}>Detail panel dock</div>
+              <div className={styles.rowHint}>
+                Where the session panel opens. Auto docks it to the bottom on portrait (vertical)
+                monitors and to the right on landscape. Stored per browser, not synced.
+              </div>
+            </div>
+            <div className={styles.segmented} role="radiogroup" aria-label="Detail panel dock">
+              {dockOptions.map(o => (
+                <button
+                  key={o.value}
+                  className={`${styles.segmentBtn} ${dockMode === o.value ? styles.segmentBtnActive : ''}`}
+                  role="radio"
+                  aria-checked={dockMode === o.value}
+                  onClick={() => setDockMode(o.value)}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      }
 
       case 'general.conversation':
         return (

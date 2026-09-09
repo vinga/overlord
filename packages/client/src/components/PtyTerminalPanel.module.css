@@ -18,6 +18,21 @@
   transform: translateX(0);
 }
 
+/* Bottom dock (portrait / horizontal split): full width, pinned to the bottom edge. */
+.panelBottom {
+  top: auto;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  border-left: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  transform: translateY(100%);
+}
+
+.panelBottom.panelOpen {
+  transform: translateY(0);
+}
+
 .resizeHandle {
   position: absolute;
   left: 0;
@@ -33,6 +48,14 @@
 .resizeHandle:hover,
 .resizeHandle:active {
   background: rgba(88, 166, 255, 0.25);
+}
+
+/* Bottom dock: the drag edge is the panel's top border. */
+.resizeHandleTop {
+  right: 0;
+  width: 100%;
+  height: 5px;
+  cursor: row-resize;
 }
 
 /* ── Header ──────────────────────────────────────────────── */
