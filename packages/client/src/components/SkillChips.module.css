@@ -21,6 +21,22 @@
   line-height: 1.35;
 }
 
+.chipClickable {
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.chipClickable:hover {
+  color: #ffe9a8;
+  border-color: rgba(212, 175, 55, 0.45);
+  background: rgba(212, 175, 55, 0.1);
+}
+
+.chipClickable:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.45);
+}
+
 .more {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 12.5px;

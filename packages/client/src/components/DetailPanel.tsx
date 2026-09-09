@@ -2013,6 +2013,7 @@ export function DetailPanel({
   const [showHistoryMenu, setShowHistoryMenu] = useState(false);
   const preHistoryDraft = useRef('');
   const [showSkillPicker, setShowSkillPicker] = useState(false);
+  const [skillPickerInitial, setSkillPickerInitial] = useState<string | null>(null);
   const sendTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Focus routing for choice prompts. Focus otherwise sits wherever the last
@@ -4172,7 +4173,10 @@ const currentDisplayName =
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Skills</span>
                           <span className={styles.fieldValue}>
-                            <SkillChips skills={selectedSession.skillsUsed} />
+                            <SkillChips
+                              skills={selectedSession.skillsUsed}
+                              onSelect={(name) => { setSkillPickerInitial(name); setShowSkillPicker(true); }}
+                            />
                           </span>
                         </div>
                       )}
@@ -4392,10 +4396,12 @@ const currentDisplayName =
       {showSkillPicker && selectedSession && (
         <SkillPickerPopup
           cwd={selectedSession.cwd}
-          onClose={() => setShowSkillPicker(false)}
+          initialSkill={skillPickerInitial ?? undefined}
+          onClose={() => { setShowSkillPicker(false); setSkillPickerInitial(null); }}
           onPick={cmd => {
             setSendInput2(cmd);
             setShowSkillPicker(false);
+            setSkillPickerInitial(null);
             requestAnimationFrame(() => {
               const el = sendTextareaRef.current;
               if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }

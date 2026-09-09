@@ -13,6 +13,9 @@ interface SkillPickerPopupProps {
   cwd: string;
   onPick: (command: string) => void;
   onClose: () => void;
+  /** Open straight into this skill's detail view (e.g. from a clicked chip).
+   *  Falls back to pre-filling the filter when the name isn't in the list. */
+  initialSkill?: string;
 }
 
 // Trim the redundant `/<name>/SKILL.md` (or trailing filename) tail — the skill
@@ -34,11 +37,11 @@ function badgeClass(s?: string): string {
   return s === 'project' ? styles.badgeProject : styles.badgeUser;
 }
 
-export function SkillPickerPopup({ cwd, onPick, onClose }: SkillPickerPopupProps) {
+export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPickerPopupProps) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialSkill ?? '');
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [picked, setPicked] = useState<Skill | null>(null);
   const [args, setArgs] = useState('');
@@ -47,6 +50,7 @@ export function SkillPickerPopup({ cwd, onPick, onClose }: SkillPickerPopupProps
   const [contentError, setContentError] = useState<string | null>(null);
   const [truncated, setTruncated] = useState(false);
 
+  const initialApplied = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const argsRef = useRef<HTMLInputElement>(null);
@@ -64,13 +68,23 @@ export function SkillPickerPopup({ cwd, onPick, onClose }: SkillPickerPopupProps
         }
         return res.json() as Promise<{ skills?: Skill[] }>;
       })
-      .then(json => setSkills(Array.isArray(json.skills) ? json.skills : []))
+      .then(json => {
+        const list = Array.isArray(json.skills) ? json.skills : [];
+        setSkills(list);
+        // Jump straight to the requested skill once; a miss leaves the filter pre-filled.
+        if (initialSkill && !initialApplied.current) {
+          initialApplied.current = true;
+          const match = list.find(s => s.name === initialSkill)
+            ?? list.find(s => s.name.toLowerCase() === initialSkill.toLowerCase());
+          if (match) { setPicked(match); setQuery(''); }
+        }
+      })
       .catch(err => {
         if ((err as { name?: string }).name !== 'AbortError') setError((err as Error).message);
       })
       .finally(() => setLoading(false));
     return () => controller.abort();
-  }, [cwd]);
+  }, [cwd, initialSkill]);
 
   // Focus the right control for the current stage.
   useEffect(() => {
