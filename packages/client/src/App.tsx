@@ -660,6 +660,7 @@ export function App() {
           startWord={voiceCfg.startWord}
           stopWord={voiceCfg.stopWord}
           maxUtteranceMs={voiceCfg.maxUtteranceMs}
+          bottomOffset={dock === 'bottom' ? panelHeight + 56 : undefined}
         />
       )}
       <Office

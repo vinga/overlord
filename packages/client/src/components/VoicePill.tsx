@@ -10,6 +10,12 @@ interface Props {
   startWord: string;
   stopWord: string;
   maxUtteranceMs: number;
+  /**
+   * Distance from the viewport bottom. The default gutter (44px) assumes a
+   * right-docked panel; a bottom-docked panel covers the whole lower edge, so
+   * the pill must sit above its top edge or it lands on the composer.
+   */
+  bottomOffset?: number;
 }
 
 /**
@@ -18,7 +24,7 @@ interface Props {
  * and how much of the utterance cap is used — so a wrong target is obvious
  * before the stop word is said rather than after.
  */
-export function VoicePill({ voice, notice, startWord, stopWord, maxUtteranceMs }: Props) {
+export function VoicePill({ voice, notice, startWord, stopWord, maxUtteranceMs, bottomOffset }: Props) {
   // The settings may list several alternatives; the hint shows the first.
   const startLabel = startWord.split(',')[0].trim() || startWord;
   const stopLabel = stopWord.split(',')[0].trim() || stopWord;
@@ -56,7 +62,7 @@ export function VoicePill({ voice, notice, startWord, stopWord, maxUtteranceMs }
   const onActivate = needsPermission ? voice.requestPermission : voice.toggleMute;
 
   return (
-    <div className={styles.host}>
+    <div className={styles.host} style={bottomOffset !== undefined ? { bottom: bottomOffset } : undefined}>
       <div className={styles.wrap}>
         <div
           className={`${styles.pill} ${tone}`}
