@@ -23,9 +23,9 @@ import { injectViaMac } from '../pty/macInjector.js';
 import { scheduleInject, shouldUseExtraEnter } from '../pty/injectScheduler.js';
 import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, readTranscriptState, readScheduledWakeups } from '../session/transcriptReader.js';
-import { runClaudeQuery } from '../ai/claudeQuery.js';
+import { runClaudeQuery, NO_TOOLS_ARGS } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
-import { globalSettingsStore } from '../session/globalSettingsStore.js';
+import { globalSettingsStore, sanitizeVoiceOverride } from '../session/globalSettingsStore.js';
 import { scratchpadStore } from '../session/scratchpadStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
@@ -38,6 +38,12 @@ import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } fro
 import { WORKER_ICONS, isWorkerIcon } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
+
+const BTW_MAX_CHARS = 4000;
+const BTW_TIMEOUT_MS = 120_000;
+// Measured on a trivial prompt: default (opus-class) model ~9s, sonnet ~2.8s,
+// haiku ~2.5s — sonnet is the quality/latency sweet spot for a side question.
+const BTW_MODEL = process.env.OVERLORD_BTW_MODEL || 'sonnet';
 
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -140,11 +146,44 @@ export function registerApiRoutes(
     if (typeof body.jiraApiToken === 'string' && body.jiraApiToken !== '***') {
       partial.jiraApiToken = body.jiraApiToken;
     }
+    // Nested; every field inside is validated by the store's sanitizeVoice, and
+    // patch() merges it key-by-key so a single-field PATCH keeps the rest.
+    if (body.voiceInput && typeof body.voiceInput === 'object' && !Array.isArray(body.voiceInput)) {
+      partial.voiceInput = body.voiceInput;
+    }
     const next = globalSettingsStore.patch(partial);
     res.json({
       ...next,
       jiraApiToken: next.jiraApiToken ? '***' : '',
     });
+  });
+
+  // `/btw <question>` from the header search box: a one-shot internal agent
+  // answer surfaced as a toast. No session, no transcript — the query worker
+  // spawns a throwaway `claude -p` and the reply is returned inline.
+  app.post('/api/btw', express.json({ limit: '64kb' }), async (req, res) => {
+    const text = typeof (req.body ?? {}).text === 'string' ? req.body.text.trim() : '';
+    if (!text) return res.status(400).json({ error: 'text (string) required' });
+    if (text.length > BTW_MAX_CHARS) return res.status(413).json({ error: `text exceeds ${BTW_MAX_CHARS} chars` });
+    const prompt = [
+      'You are a quick side-question assistant inside a developer dashboard.',
+      'Answer the question below directly and concisely in plain text (no markdown headers, no code fences unless essential).',
+      'Aim for 1-4 short sentences; the reply is shown in a small toast notification.',
+      '',
+      `Question: ${text}`,
+    ].join('\n');
+    try {
+      const answer = await runClaudeQuery(prompt, BTW_TIMEOUT_MS, undefined, {
+        model: BTW_MODEL,
+        extraArgs: [...NO_TOOLS_ARGS],
+        priority: true,
+      });
+      res.json({ question: text, answer });
+    } catch (err) {
+      const message = (err as Error).message || 'btw query failed';
+      log('info', 'btw query failed', { extra: message });
+      res.status(502).json({ error: message });
+    }
   });
 
   app.get('/api/scratchpad', (_req, res) => {
@@ -1209,6 +1248,21 @@ export function registerApiRoutes(
     const ok = stateManager.setSessionIcon(sessionId, icon);
     if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
     res.json({ ok: true });
+  });
+
+  // Voice override: PUT /api/sessions/:sessionId/voice-override — per-session
+  // voice config merged over the global settings. `{}` clears it.
+  app.put('/api/sessions/:sessionId/voice-override', express.json(), (req, res) => {
+    const { sessionId } = req.params;
+    const raw = req.body?.override;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      res.status(400).json({ error: 'override object required' });
+      return;
+    }
+    const clean = sanitizeVoiceOverride(raw as Record<string, unknown>);
+    const ok = stateManager.setSessionVoiceOverride(sessionId, clean);
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true, override: clean });
   });
 
   app.put('/api/sessions/:sessionId/name', express.json(), (req, res) => {

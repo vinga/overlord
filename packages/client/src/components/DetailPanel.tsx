@@ -3,6 +3,7 @@ import { useTick } from '../hooks/useTick';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
 import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draftStore';
+import { subscribeDictation, subscribeDictationSubmit } from '../lib/dictationStore';
 import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
 import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
@@ -11,6 +12,8 @@ import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { ColorPicker } from './ColorPicker';
+import { VoiceOverrideBadge } from './VoiceOverrideBadge';
+import type { VoiceInputConfig } from '../lib/voiceConfig';
 import { Worker } from './Worker';
 import { ConsolePreview } from './ConsolePreview';
 import styles from './DetailPanel.module.css';
@@ -428,6 +431,8 @@ interface DetailPanelProps {
   onNavigateRoom?: (cwd: string, open: boolean) => void;
   /** Global setting: pin the governing user message atop the Conversation feed. */
   showStickyUserMessage?: boolean;
+  /** Global voice settings. Absent or disabled hides the per-worker override. */
+  voiceInput?: Partial<VoiceInputConfig>;
 }
 
 function isFilePath(s: string): boolean {
@@ -1784,6 +1789,7 @@ export function DetailPanel({
   onScrollTargetConsumed,
   onNavigateRoom,
   showStickyUserMessage = true,
+  voiceInput,
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
@@ -2060,6 +2066,38 @@ export function DetailPanel({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [showConvMenu]);
+  // Live dictation lands in the composer as it is heard, so the user sees and
+  // can edit the text before the stop word sends it. Only the worker the voice
+  // agent resolved as the target is written to; everyone else is untouched.
+  //
+  // It must never clobber text the user typed. Wake-word matching is fuzzy by
+  // design, so a false wake is expected — and a false wake that wipes a draft
+  // mid-sentence is far worse than one that is merely ignored. The composer is
+  // therefore written to only if it was empty when the utterance opened.
+  const dictationOwnsComposer = useRef(false);
+  const composerRef = useRef('');
+  composerRef.current = sendInput2;
+  useEffect(() => subscribeDictation((d) => {
+    if (!d.ovrId || d.ovrId !== effectiveOvrId) {
+      dictationOwnsComposer.current = false;
+      return;
+    }
+    if (!dictationOwnsComposer.current) {
+      if (composerRef.current.trim() !== '') return;   // user's draft wins
+      dictationOwnsComposer.current = true;
+    }
+    setSendInput2(d.text);
+    if (d.text === '') dictationOwnsComposer.current = false;
+  }), [effectiveOvrId]);
+
+  // The stop word sends through the composer, so it is indistinguishable from
+  // the user pressing Enter. A ref keeps the subscription off the render path.
+  const handleSendRef = useRef<(text?: string) => void>(() => {});
+  handleSendRef.current = handleSend;
+  useEffect(() => subscribeDictationSubmit((ovrId, text) => {
+    if (ovrId === effectiveOvrId) handleSendRef.current(text);
+  }), [effectiveOvrId]);
+
   const draftPerSession = useRef<Map<string, string>>(new Map());
   const localSentPerSession = useRef<Map<string, string[]>>(new Map());
   const realCountPerSession = useRef<Map<string, number | null>>(new Map());
@@ -2452,9 +2490,11 @@ const currentDisplayName =
     return sent;
   }
 
-  function handleSend() {
+  /** `overrideText` is used by voice dictation, which knows the final text
+   *  before the composer's state has caught up. */
+  function handleSend(overrideText?: string) {
     if (!selectedSession) return;
-    const text = sendInput2.trim();
+    const text = (overrideText ?? sendInput2).trim();
     if (!text && !pastedImage) return;
     // During compaction, preserve the draft — injection will be queued but may be swallowed
     if (selectedSession.isCompacting) return;
@@ -3144,6 +3184,13 @@ const currentDisplayName =
                         });
                       }}
                     />
+                    {voiceInput?.enabled && (
+                      <VoiceOverrideBadge
+                        sessionId={selectedSession.sessionId}
+                        global={voiceInput}
+                        override={selectedSession.voiceOverride}
+                      />
+                    )}
                     {(() => {
                       const l = getLaunchInfo(selectedSession, isPty);
                       const canFocus = !!(selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge);

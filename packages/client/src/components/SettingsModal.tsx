@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { GlobalSettings } from '../types';
 import { useDockMode, type DockMode } from '../hooks/useOrientation';
+import { resolveVoiceConfig, type VoiceInputConfig } from '../lib/voiceConfig';
 import styles from './SettingsModal.module.css';
 
 interface Props {
@@ -14,6 +15,7 @@ type PageId =
   | 'general.startup'
   | 'general.layout'
   | 'general.conversation'
+  | 'general.voice'
   | 'ai'
   | 'ai.intent'
   | 'integrations'
@@ -36,6 +38,7 @@ const TREE: TreeNode[] = [
       { id: 'general.startup', label: 'Startup & Resume', keywords: 'auto resume restart respawn terminal pty boot' },
       { id: 'general.layout', label: 'Layout', keywords: 'layout dock panel bottom right side portrait landscape vertical monitor orientation split chat rooms' },
       { id: 'general.conversation', label: 'Conversation', keywords: 'sticky pinned user message feed prompt header detail panel' },
+      { id: 'general.voice', label: 'Voice', keywords: 'voice mic microphone dictation speech stt start word stop word wake hands free language' },
     ],
   },
   {
@@ -75,6 +78,12 @@ function findNode(id: PageId): { node: TreeNode; parent?: TreeNode } | null {
 
 export function SettingsModal({ settings, onUpdate, onClose }: Props) {
   const [dockMode, setDockMode] = useDockMode();
+  const voice = resolveVoiceConfig(settings.voiceInput);
+  const [startWord, setLocalStartWord] = useState(voice.startWord);
+  const [stopWord, setLocalStopWord] = useState(voice.stopWord);
+  const [cancelWord, setLocalCancelWord] = useState(voice.cancelWord);
+  const [voiceLang, setLocalVoiceLang] = useState(voice.lang);
+
   const [jiraBaseUrl, setLocalJiraBaseUrl] = useState(settings.jiraBaseUrl ?? '');
   const [jiraProjects, setLocalJiraProjects] = useState(settings.jiraProjects ?? '');
   const [jiraEmail, setLocalJiraEmail] = useState(settings.jiraEmail ?? '');
@@ -94,6 +103,11 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
     try { localStorage.setItem(PAGE_KEY, page); } catch { /* storage unavailable */ }
   }, [page]);
 
+  useEffect(() => { setLocalStartWord(voice.startWord); }, [voice.startWord]);
+  useEffect(() => { setLocalStopWord(voice.stopWord); }, [voice.stopWord]);
+  useEffect(() => { setLocalCancelWord(voice.cancelWord); }, [voice.cancelWord]);
+  useEffect(() => { setLocalVoiceLang(voice.lang); }, [voice.lang]);
+
   useEffect(() => { setLocalJiraBaseUrl(settings.jiraBaseUrl ?? ''); }, [settings.jiraBaseUrl]);
   useEffect(() => { setLocalJiraProjects(settings.jiraProjects ?? ''); }, [settings.jiraProjects]);
   useEffect(() => { setLocalJiraEmail(settings.jiraEmail ?? ''); }, [settings.jiraEmail]);
@@ -110,6 +124,29 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
   // Absent in settings.json written before the setting existed → treat as on.
   const stickyOn = settings.showStickyUserMessage !== false;
   const intentOn = !settings.disableBackgroundLLM;
+
+  // The server rejects a word that collides with the other two; showing that
+  // inline beats letting the value silently snap back on the next snapshot.
+  const wordCollision = (which: 'start' | 'stop' | 'cancel', value: string): string | null => {
+    const parts = value.split(',').map(w => w.trim().toLowerCase()).filter(Boolean);
+    if (parts.length === 0) return 'Cannot be empty';
+    const others = {
+      start: [stopWord, cancelWord],
+      stop: [startWord, cancelWord],
+      cancel: [startWord, stopWord],
+    }[which].flatMap(w => w.split(',').map(x => x.trim().toLowerCase())).filter(Boolean);
+    const clash = parts.find(p => others.includes(p));
+    return clash ? `"${clash}" is already used by another word` : null;
+  };
+
+  const patchVoice = (partial: Partial<VoiceInputConfig>) =>
+    onUpdate({ voiceInput: { ...settings.voiceInput, ...partial } });
+
+  const commitWord = (which: 'start' | 'stop' | 'cancel', value: string) => {
+    if (wordCollision(which, value)) return;
+    const key = which === 'start' ? 'startWord' : which === 'stop' ? 'stopWord' : 'cancelWord';
+    if (value.trim().toLowerCase() !== voice[key]) patchVoice({ [key]: value });
+  };
 
   const commitJiraBaseUrl = () => {
     if (jiraBaseUrl !== (settings.jiraBaseUrl ?? '')) onUpdate({ jiraBaseUrl });
@@ -199,6 +236,161 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
             on={stickyOn}
             onToggle={() => onUpdate({ showStickyUserMessage: !stickyOn })}
           />
+        );
+
+      case 'general.voice':
+        return (
+          <>
+            <ToggleRow
+              label="Hands-free voice control"
+              hint={'Say the start word, speak, then say the stop word. Nothing is sent until the stop word — silence never commits.'}
+              on={voice.enabled}
+              onToggle={() => patchVoice({ enabled: !voice.enabled })}
+            />
+
+            <div className={styles.subgroup}>
+              <h4 className={styles.subgroupTitle}>Words</h4>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Start word</span>
+                <span className={styles.fieldHint}>
+                  Opens capture. Nothing you say is acted on until this is heard. Close
+                  mishearings are accepted automatically (<code>over lord</code>, <code>overload</code>).
+                  If your engine renders it some other way, add that spelling here as a
+                  comma-separated alternative — the pill shows what it actually heard.
+                </span>
+                <input
+                  className={styles.input}
+                  type="text"
+                  value={startWord}
+                  onChange={(e) => setLocalStartWord(e.target.value)}
+                  onBlur={() => commitWord('start', startWord)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                />
+                {wordCollision('start', startWord) && (
+                  <span className={styles.fieldHint}>{wordCollision('start', startWord)}</span>
+                )}
+              </label>
+
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Stop word</span>
+                <span className={styles.fieldHint}>
+                  Sends what you said. Counted only when spoken on its own after a short pause, so
+                  &ldquo;{stopWord.split(',')[0].trim()} ahead and fix it&rdquo; does not send. A phrase that
+                  never ends a real instruction is safest — <code>over and out</code> or
+                  <code>execute</code>. Comma-separated alternatives are allowed here too.
+                </span>
+                <input
+                  className={styles.input}
+                  type="text"
+                  value={stopWord}
+                  onChange={(e) => setLocalStopWord(e.target.value)}
+                  onBlur={() => commitWord('stop', stopWord)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                />
+                {wordCollision('stop', stopWord) && (
+                  <span className={styles.fieldHint}>{wordCollision('stop', stopWord)}</span>
+                )}
+              </label>
+
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Cancel word</span>
+                <span className={styles.fieldHint}>Throws away the utterance in flight. Same rule as the stop word.</span>
+                <input
+                  className={styles.input}
+                  type="text"
+                  value={cancelWord}
+                  onChange={(e) => setLocalCancelWord(e.target.value)}
+                  onBlur={() => commitWord('cancel', cancelWord)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                />
+                {wordCollision('cancel', cancelWord) && (
+                  <span className={styles.fieldHint}>{wordCollision('cancel', cancelWord)}</span>
+                )}
+              </label>
+            </div>
+
+            <div className={styles.subgroup}>
+              <h4 className={styles.subgroupTitle}>Addressing</h4>
+              <ToggleRow
+                label="Let a worker's name open capture"
+                hint="Saying a worker's name works like the start word and targets that worker. With this off, only the start word opens capture and the open worker always receives."
+                on={voice.wakeOnWorkerName}
+                onToggle={() => patchVoice({ wakeOnWorkerName: !voice.wakeOnWorkerName })}
+              />
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Language</span>
+                <span className={styles.fieldHint}>
+                  BCP-47 tag handed to the recognizer, e.g. <code>en-US</code>, <code>pl-PL</code>. Overridable per worker.
+                </span>
+                <input
+                  className={styles.input}
+                  type="text"
+                  value={voiceLang}
+                  onChange={(e) => setLocalVoiceLang(e.target.value)}
+                  onBlur={() => { if (voiceLang.trim() !== voice.lang) patchVoice({ lang: voiceLang.trim() }); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                />
+              </label>
+            </div>
+
+            <div className={styles.subgroup}>
+              <h4 className={styles.subgroupTitle}>Limits</h4>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Discard an unfinished utterance after</span>
+                <span className={styles.fieldHint}>
+                  Seconds. If the stop word never comes, what you said is thrown away — never sent.
+                </span>
+                <input
+                  className={styles.input}
+                  type="number"
+                  min={5}
+                  max={120}
+                  value={Math.round(voice.maxUtteranceMs / 1000)}
+                  onChange={(e) => {
+                    const secs = Number(e.target.value);
+                    if (Number.isFinite(secs)) patchVoice({ maxUtteranceMs: secs * 1000 });
+                  }}
+                />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Name match confidence</span>
+                <span className={styles.fieldHint}>
+                  0.5–1.0. How close a spoken name must be for <code>select</code> / <code>open</code> to accept it.
+                  Below the bar Overlord refuses rather than guessing.
+                </span>
+                <input
+                  className={styles.input}
+                  type="number"
+                  min={0.5}
+                  max={1}
+                  step={0.01}
+                  value={voice.nameMatchFloor}
+                  onChange={(e) => {
+                    const f = Number(e.target.value);
+                    if (Number.isFinite(f)) patchVoice({ nameMatchFloor: f });
+                  }}
+                />
+              </label>
+            </div>
+
+            <div className={styles.note}>
+              <div className={styles.noteTitle}>What to expect</div>
+              <ul className={styles.noteList}>
+                <li>Speech is recognized by <strong>Chrome&apos;s Web Speech API</strong>, which streams
+                    microphone audio to Google while capture is running. Nothing is sent to the Overlord server.</li>
+                <li>Stopping is the only way to release the microphone — use the pill or <code>Alt+M</code>.</li>
+                <li><code>Esc</code> throws away an utterance in flight; so does the cancel word.</li>
+                <li>Speaking at a busy worker is fine — its own prompt buffers the text until it is free.</li>
+                <li>A lone command word acts (<code>stop</code>, <code>yes</code>, <code>escape</code>,
+                    <code>select &lt;name&gt;</code>); anything longer is sent as a prompt.</li>
+              <li>The pill prints, in dim italics, whatever the engine returned while no start
+                  word matched — use it to find the spelling to add above.</li>
+              </ul>
+              <div className={styles.noteFoot}>
+                Requires Chrome. Other browsers hide this feature entirely.
+              </div>
+            </div>
+          </>
         );
 
       case 'ai.intent':

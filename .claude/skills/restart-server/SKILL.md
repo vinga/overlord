@@ -25,9 +25,14 @@ Treat `server:200` as the single source of truth. Bridge `ENOENT` spam in the lo
 
 ## macOS
 
-The entire kill+start sequence runs in a **detached subshell** (`nohup bash -c '...'`).
-This is critical: if the caller is an embedded PTY session, killing the server kills
-that session too. The detached subshell survives and finishes the restart.
+The entire kill+start sequence runs in a **fully detached script** launched via
+`python3 subprocess.Popen(start_new_session=True)`. This is critical: if the caller is an
+embedded Overlord PTY session, the server's shutdown runs `killProcessTree` over the whole
+ppid tree under that PTY — a plain `nohup … &` child of the calling shell is still in that
+tree and dies before it can start anything (symptom: server never comes back, no
+`/tmp/overlord-server.log` is written). `start_new_session` + the python parent exiting
+immediately reparents the script to launchd (ppid 1), outside the kill tree. macOS has no
+`setsid` binary, hence python.
 
 ```bash
 # Write the restart script to a temp file so it runs detached from this shell.
@@ -61,8 +66,15 @@ echo "server:$code  client:$client" > /tmp/overlord-restart-result.txt
 SCRIPT
 chmod +x /tmp/overlord-restart.sh
 
-# Launch detached — survives even if this shell/session dies
-nohup /tmp/overlord-restart.sh > /dev/null 2>&1 &
+# Launch detached in a NEW SESSION — reparents to launchd, so the server's
+# process-tree kill of this PTY cannot reach it. Verify: ps -o ppid= on the
+# printed pid must be 1 before the kill runs.
+python3 - <<'PY'
+import subprocess
+p = subprocess.Popen(['/tmp/overlord-restart.sh'], start_new_session=True,
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+print('restart script pid', p.pid)
+PY
 
 # Poll for the result file (written by the detached script)
 rm -f /tmp/overlord-restart-result.txt

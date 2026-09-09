@@ -1,3 +1,7 @@
+// VoiceInputConfig lives with the settings store that validates it; imported
+// type-only, so no runtime dependency and no cycle.
+import type { VoiceInputConfig } from './session/globalSettingsStore.js';
+
 export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 // Include 'aider' to support Aider provider sessions (MVP: detection/tracking only, no Overlord spawn).
 export type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
@@ -220,6 +224,9 @@ export interface Session {
   /** Skill/command names invoked in this session (union across transcript reads).
    *  Wiped on /clear (transcriptTruncated). */
   skillsUsed?: string[];
+  /** Per-session voice-control override, mirrored from the OverlordSession
+   *  record so the client can resolve the effective config without a fetch. */
+  voiceOverride?: Partial<VoiceInputConfig>;
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
    *  auto-clears on the next turn; 'parked' is deliberate and sticky — it
    *  survives new activity and only an explicit un-park clears it. */
@@ -367,6 +374,12 @@ export interface OverlordSession {
   /** Persisted skill/command names invoked in this session (union across
    *  transcript reads). Wiped on /clear. */
   skillsUsed?: string[];
+
+  /** Per-session voice-control override. Merged over the global `voiceInput`
+   *  settings (defaults < global < this). Mainly `lang`, for a worker you
+   *  dictate to in another language, and `enabled: false` to make a worker
+   *  unaddressable by voice. */
+  voiceOverride?: Partial<VoiceInputConfig>;
 
   /** Pending --resume targeting this lineage from `cwd` started at `at` (epoch ms).
    *  Replaces the legacy ~/.claude/overlord/pending-resumes.json file. Cleared

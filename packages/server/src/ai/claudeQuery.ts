@@ -27,6 +27,10 @@ function deleteWorkerSessionFile(pid: number): void {
 interface QueueItem {
   prompt: string;
   timeoutMs: number;
+  /** Model id passed to `--model`; `null` lets the claude CLI pick its default. */
+  model: string | null;
+  /** Extra CLI flags appended after the model (e.g. `--strict-mcp-config`). */
+  extraArgs: string[];
   validate?: () => boolean;
   resolve: (result: string) => void;
   reject: (err: Error) => void;
@@ -65,7 +69,10 @@ function processNext(): void {
 
   console.log(`[worker] new query — queue remaining: ${queue.length}`);
 
-  const child = spawn(bin, ['-p', item.prompt, '--model', 'claude-haiku-4-5-20251001'], {
+  const args = ['-p', item.prompt];
+  if (item.model) args.push('--model', item.model);
+  args.push(...item.extraArgs);
+  const child = spawn(bin, args, {
     encoding: 'utf-8',
     cwd: WORKER_CWD,
   } as Parameters<typeof spawn>[2]);
@@ -100,13 +107,35 @@ function processNext(): void {
   });
 }
 
+export const DEFAULT_QUERY_MODEL = 'claude-haiku-4-5-20251001';
+
+export interface ClaudeQueryOptions {
+  /** Defaults to the cheap classifier model; pass `null` for the CLI default. */
+  model?: string | null;
+  /** Extra CLI flags, e.g. `['--strict-mcp-config', '--tools', '']` to skip MCP/tool startup. */
+  extraArgs?: string[];
+  /** Jump ahead of queued background jobs (classifiers, intent summaries). */
+  priority?: boolean;
+}
+
+/**
+ * Flags that skip MCP server startup and tool registration. For a plain
+ * text answer that cuts ~2.5s of `claude -p` boot time. Not `--bare`: that
+ * also skips OAuth, so the worker would run as "not logged in".
+ */
+export const NO_TOOLS_ARGS: readonly string[] = ['--strict-mcp-config', '--tools', ''];
+
 export function runClaudeQuery(
   prompt: string,
   timeoutMs = 30_000,
   validate?: () => boolean,
+  options: ClaudeQueryOptions = {},
 ): Promise<string> {
+  const model = options.model === undefined ? DEFAULT_QUERY_MODEL : options.model;
+  const extraArgs = options.extraArgs ?? [];
   return new Promise((resolve, reject) => {
-    queue.push({ prompt, timeoutMs, validate, resolve, reject });
+    const item: QueueItem = { prompt, timeoutMs, model, extraArgs, validate, resolve, reject };
+    if (options.priority) queue.unshift(item); else queue.push(item);
     processNext();
   });
 }

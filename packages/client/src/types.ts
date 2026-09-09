@@ -1,3 +1,5 @@
+import type { VoiceInputConfig } from './lib/voiceConfig';
+
 type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
 type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 
@@ -128,6 +130,8 @@ interface Session {
   lastMessage?: string;   // last assistant message, max 300 chars
   activityFeed?: ActivityItem[];
   feedTruncated?: boolean;
+  /** Per-session voice-control override, merged over the global voiceInput. */
+  voiceOverride?: Partial<VoiceInputConfig>;
   /** True when this session has any activity at all. Sent for EVERY session;
    *  `activityFeed` is sent only for the focused one, so cards that used to test
    *  `activityFeed.length > 0` must use this instead. */
@@ -239,6 +243,9 @@ interface GlobalSettings {
   jiraEmail?: string;
   /** Masked from the server: "" when unset, "***" when set. */
   jiraApiToken?: string;
+  /** Hands-free voice control. Absent keys read as VOICE_DEFAULTS; see
+   *  `lib/voiceConfig.ts`. */
+  voiceInput?: Partial<VoiceInputConfig>;
 }
 
 /** Resolved metadata for a single Jira issue key. All fields optional. */

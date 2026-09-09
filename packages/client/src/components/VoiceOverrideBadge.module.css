@@ -1,0 +1,91 @@
+.wrap { position: relative; display: inline-flex; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(148, 163, 184, 0.08);
+  color: rgba(148, 163, 184, 0.9);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.badge:hover { border-color: rgba(148, 163, 184, 0.44); }
+
+.overridden {
+  border-color: rgba(251, 191, 36, 0.42);
+  background: rgba(251, 191, 36, 0.1);
+  color: rgba(253, 224, 138, 0.95);
+}
+
+/* Fixed, not absolute: the detail-panel header is its own stacking context,
+   so an absolute popup would paint under the sticky message bar. Coordinates
+   come from the button's measured rect. */
+.popup {
+  position: fixed;
+  z-index: 1300;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 208px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(17, 20, 26, 0.98);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.popupTitle {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.7);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: rgba(226, 232, 240, 0.9);
+  cursor: pointer;
+}
+
+.rowLabel { flex: 1; }
+
+.input {
+  width: 78px;
+  padding: 3px 6px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  color: rgba(226, 232, 240, 0.95);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 5px;
+}
+
+.input:focus { outline: none; border-color: rgba(96, 165, 250, 0.5); }
+
+.reset {
+  margin-top: 2px;
+  padding: 4px 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgba(148, 163, 184, 0.9);
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.reset:hover { color: rgba(226, 232, 240, 0.95); border-color: rgba(148, 163, 184, 0.4); }

@@ -16,7 +16,7 @@ import { sessionStore, scrubReplacedBy } from './sessionStore.js';
 import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
-import { globalSettingsStore } from './globalSettingsStore.js';
+import { globalSettingsStore, type VoiceInputConfig } from './globalSettingsStore.js';
 import { getCachedJiraMeta } from './jiraTitleCache.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
@@ -1237,6 +1237,7 @@ export class StateManager {
         existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
         transcript?.skillsUsed,
       ),
+      voiceOverride: sessionStore.getByOverlordId(overlordId)?.voiceOverride,
       ...reviewState,
       isWorker: raw.kind === 'haiku-worker',
       bridgePipeName: existingSession?.bridgePipeName,
@@ -3187,6 +3188,22 @@ export class StateManager {
 
   /** Set the avatar icon for a session (keyed by its ovrId) and persist to
    *  OverlordSession. Pass 'user' to reset — stored as undefined (the default). */
+  /** Per-session voice override. An empty object clears it, so the session
+   *  falls back to the global voiceInput settings. */
+  setSessionVoiceOverride(sessionId: string, override: Partial<VoiceInputConfig>): boolean {
+    let rec = sessionStore.getBySessionId(sessionId);
+    const live = this.sessions.get(sessionId);
+    if (!rec && live) rec = sessionStore.ensureFromLive(live);
+    if (!rec) return false;
+    const next = Object.keys(override).length > 0 ? override : undefined;
+    sessionStore.patch(rec.overlordId, { voiceOverride: next });
+    for (const s of this.sessions.values()) {
+      if (s.overlordId === rec.overlordId) s.voiceOverride = next;
+    }
+    this.onChange();
+    return true;
+  }
+
   setSessionIcon(sessionId: string, icon: WorkerIcon): boolean {
     let rec = sessionStore.getBySessionId(sessionId);
     const live = this.sessions.get(sessionId);

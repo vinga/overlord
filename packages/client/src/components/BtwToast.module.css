@@ -1,0 +1,104 @@
+.stack {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  background: #2a2a3d;
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: 10px;
+  padding: 10px 14px 11px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  animation: btwToastIn 0.15s ease;
+  transition: border-color 0.15s, background 0.15s;
+}
+.toast:hover {
+  border-color: rgba(212, 175, 55, 0.6);
+  background: #303048;
+}
+.toast.error {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #d4af37;
+}
+.toast.error .icon {
+  color: #ef4444;
+}
+
+.body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.question::before {
+  content: 'btw ';
+  color: rgba(212, 175, 55, 0.75);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.answer {
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.answer.pending {
+  color: rgba(255, 255, 255, 0.55);
+  font-style: italic;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(212, 175, 55, 0.25);
+  border-top-color: #d4af37;
+  animation: btwSpin 0.8s linear infinite;
+}
+
+@keyframes btwToastIn {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes btwSpin {
+  to { transform: rotate(360deg); }
+}

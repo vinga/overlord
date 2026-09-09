@@ -145,7 +145,7 @@
 .searchInput {
   margin-left: auto;
   margin-right: 6px;
-  width: 260px;
+  width: 400px;
   /* Shrinkable so the Hidden pill fits when the office column is narrow. */
   min-width: 64px;
   padding: 6px 12px;
@@ -168,6 +168,13 @@
 .searchInput:focus {
   border-color: rgba(212, 175, 55, 0.4);
   background: rgba(255, 255, 255, 0.06);
+}
+/* Command mode: the box is about to talk to the internal agent, not filter. */
+.searchInputBtw,
+.searchInputBtw:focus {
+  border-color: rgba(212, 175, 55, 0.7);
+  background: rgba(212, 175, 55, 0.07);
+  color: #f3e6b8;
 }
 
 .advSearchBtn {

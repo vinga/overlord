@@ -1,6 +1,6 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import type { WorkerState, Session, ActiveMonitor, BackgroundTask, WorkerIcon, SessionReview } from '../types';
-import { formatElapsed } from '../lib/queueBuckets';
+import { formatElapsed } from '../lib/formatElapsed';
 import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';

@@ -8,8 +8,13 @@ import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
 import { setJiraMeta } from './hooks/useJiraMeta';
 import { setPrMeta } from './hooks/usePrMeta';
 import { expandRoom } from './hooks/useRoomCollapsed';
+import { useVoiceAgent } from './hooks/useVoiceAgent';
+import { resolveVoiceConfig } from './lib/voiceConfig';
+import type { VoiceDispatch, VoiceWorker } from './lib/resolveVoiceTarget';
+import { VoicePill } from './components/VoicePill';
+import { setDictation, requestDictationSubmit } from './lib/dictationStore';
 
-import type { ArchiveEntry, Session, SessionProvider, SessionReview, TerminalMessage, TerminalSpawnMode } from './types';
+import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalSpawnMode } from './types';
 import { Office } from './components/Office';
 import { DetailPanel, setJiraProjects } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
@@ -64,7 +69,6 @@ export function App() {
   const [activePtySessionId, setActivePtySessionId] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<{ sessionId: string; timestamp: string; query?: string } | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
-  const [selectionScroll, setSelectionScroll] = useState(true);
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [pendingSpawnName, setPendingSpawnName] = useState('');
   const [spawnCwd, setSpawnCwd] = useState<string | null>(null);
@@ -333,23 +337,145 @@ export function App() {
       ? (snapshot?.rooms.find(r => r.id === selectedRoomId) ?? null)
       : null;
 
+  // ── Hands-free voice control ───────────────────────────────────────────────
+  // Effective config is defaults < global settings < the open worker's override.
+  const voiceCfg = useMemo(
+    () => resolveVoiceConfig(snapshot?.settings?.voiceInput, selectedSession?.voiceOverride),
+    [snapshot?.settings?.voiceInput, selectedSession?.voiceOverride],
+  );
+
+  // Rebuilt on every snapshot tick, so it must return the previous reference
+  // when nothing the voice agent cares about changed.
+  const voiceWorkersRef = useRef<VoiceWorker[]>([]);
+  const voiceWorkers = useMemo<VoiceWorker[]>(() => {
+    const next: VoiceWorker[] = [];
+    for (const room of snapshot?.rooms ?? []) {
+      for (const sess of room.sessions) {
+        const name = displayNames[sess.sessionId] ?? sess.proposedName ?? sess.slug ?? '';
+        if (!name) continue;   // an unnamed worker cannot be addressed by voice
+        next.push({ ovrId: sess.overlordId ?? sess.sessionId, name, state: sess.state });
+      }
+    }
+    const prev = voiceWorkersRef.current;
+    const unchanged = prev.length === next.length && prev.every((p, i) =>
+      p.ovrId === next[i].ovrId && p.name === next[i].name && p.state === next[i].state);
+    if (unchanged) return prev;
+    voiceWorkersRef.current = next;
+    return next;
+  }, [snapshot, displayNames]);
+
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
+
+  const handleVoiceDispatch = useCallback((dispatch: VoiceDispatch) => {
+    if (dispatch.kind === 'refused') {
+      setVoiceNotice(dispatch.candidates?.length
+        ? `${dispatch.reason} ${dispatch.candidates.join(', ')}`
+        : dispatch.reason);
+      return;
+    }
+
+    if (dispatch.kind === 'prompt') {
+      // When the target is the worker on screen, send through its composer so
+      // the stop word is indistinguishable from pressing Enter — same echo,
+      // same history, same draft handling. A worker addressed by name while a
+      // different one is open has no composer mounted, so that falls back to a
+      // direct inject. Either way the worker's own TUI buffers the text if it
+      // is mid-turn, so `queue` only affects what the HUD says.
+      if (dispatch.ovrId === selectedSessionId) {
+        requestDictationSubmit(dispatch.ovrId, dispatch.text);
+      } else {
+        terminal.injectText(dispatch.ovrId, dispatch.text, dispatch.text.includes('@'));
+      }
+      setVoiceNotice(null);
+      return;
+    }
+
+    switch (dispatch.verb) {
+      case 'select':
+      case 'open':
+        if (dispatch.ovrId) {
+          setSelectedSessionId(dispatch.ovrId);
+          setSelectedSubagentId(undefined);
+          setSelectionNonce(n => n + 1);
+        }
+        break;
+      // Keystroke answers to a worker's own prompt — the case where reaching for
+      // the keyboard is most annoying.
+      case 'yes':
+        if (selectedSessionId) terminal.sendInput(selectedSessionId, '\r');
+        break;
+      case 'no':
+      case 'escape':
+        if (selectedSessionId) terminal.sendInput(selectedSessionId, '\x1b');
+        break;
+      case 'stop':
+      case 'interrupt':
+        if (selectedSessionId) terminal.sendInput(selectedSessionId, '\x1b');
+        break;
+      default:
+        setVoiceNotice(`"${dispatch.verb}" is not wired up yet`);
+        return;
+    }
+    setVoiceNotice(null);
+  }, [terminal, selectedSessionId]);
+
+  const voice = useVoiceAgent({
+    cfg: voiceCfg,
+    workers: voiceWorkers,
+    selectedOvrId: selectedSessionId,
+    onDispatch: handleVoiceDispatch,
+  });
+
+  // Mirror what is being heard into the target worker's composer, so the text
+  // is visible and editable before the stop word sends it.
+  const dictationTargetRef = useRef<string | null>(null);
+  useEffect(() => {
+    const target = voice.state === 'listening' && voice.preview?.kind === 'prompt'
+      ? voice.preview.ovrId
+      : null;
+    if (target) {
+      dictationTargetRef.current = target;
+      setDictation(target, voice.captured);
+      return;
+    }
+    // Left the utterance (sent, cancelled or timed out) — empty the composer we
+    // were filling, then release it.
+    const prev = dictationTargetRef.current;
+    if (prev) {
+      setDictation(prev, '');
+      dictationTargetRef.current = null;
+    }
+    setDictation(null, '');
+  }, [voice.state, voice.captured, voice.preview]);
+
+  // Alt+M mutes; Esc abandons an utterance in flight.
+  useEffect(() => {
+    if (!voiceCfg.enabled) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.altKey && (e.key === 'm' || e.key === 'M')) {
+        e.preventDefault();
+        voice.toggleMute();
+      } else if (e.key === 'Escape' && voice.state === 'listening') {
+        voice.discard();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [voiceCfg.enabled, voice]);
+
+  // Clear a refusal notice a few seconds after it lands.
+  useEffect(() => {
+    if (!voiceNotice) return;
+    const id = setTimeout(() => setVoiceNotice(null), 4000);
+    return () => clearTimeout(id);
+  }, [voiceNotice]);
+
   function handleSelectSession(session: Session, subagentId?: string, timestamp?: string, query?: string) {
     // Use ovrId as the stable session key; fall back to sessionId for sessions without one
     const id = session.overlordId ?? session.sessionId;
     setSelectedSessionId(id);
     setSelectedSubagentId(subagentId);
     setScrollTarget(timestamp ? { sessionId: id, timestamp, query } : null);
-    setSelectionScroll(true);
-    setSelectionNonce(n => n + 1);
-  }
-
-  /** Inbox-rail selection: open the detail panel, leave the office grid alone. */
-  function handleSelectSessionQuiet(session: Session) {
-    const id = session.overlordId ?? session.sessionId;
-    setSelectedSessionId(id);
-    setSelectedSubagentId(undefined);
-    setScrollTarget(null);
-    setSelectionScroll(false);
     setSelectionNonce(n => n + 1);
   }
 
@@ -478,22 +604,6 @@ export function App() {
     }
   }
 
-  /** Set or clear the review marker. `reason` applies to 'parked' only. */
-  function handleSetReview(sessionId: string, review: SessionReview | null, reason?: string) {
-    fetch(`/api/sessions/${sessionId}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ review, reason }),
-    }).catch(console.error);
-  }
-
-  /** The rail's ✓ button — toggles 'read'; leaves a parked session alone. */
-  function handleToggleRead(sessionId: string) {
-    const s = snapshot?.rooms.flatMap(r => r.sessions).find(x => x.sessionId === sessionId);
-    if (s?.review === 'parked') return;
-    handleSetReview(sessionId, s?.review === 'read' ? null : 'read');
-  }
-
   function handleArchiveSession(sessionId: string) {
     fetch(`/api/archive/${sessionId}`, { method: 'POST' }).catch(console.error);
   }
@@ -543,6 +653,15 @@ export function App() {
 
   return (
     <>
+      {voiceCfg.enabled && (
+        <VoicePill
+          voice={voice}
+          notice={voiceNotice}
+          startWord={voiceCfg.startWord}
+          stopWord={voiceCfg.stopWord}
+          maxUtteranceMs={voiceCfg.maxUtteranceMs}
+        />
+      )}
       <Office
         snapshot={snapshot}
         connected={connected}
@@ -559,8 +678,6 @@ export function App() {
 
         selectedSessionId={selectedSessionId}
         selectionNonce={selectionNonce}
-        scrollOnSelect={selectionScroll}
-        onSelectSessionQuiet={handleSelectSessionQuiet}
         rightOffset={dock === 'right' ? panelWidth : 0}
         bottomOffset={dock === 'bottom' ? panelHeight : 0}
         onRoomClick={handleRoomClick}
@@ -573,8 +690,6 @@ export function App() {
         onCloneSession={handleCloneSession}
         onCloseSession={handleCloseSession}
         onArchiveSession={handleArchiveSession}
-        onSetReview={handleSetReview}
-        onToggleRead={handleToggleRead}
         onOpenArchive={handleOpenArchive}
         onDeleteArchive={handleDeleteArchived}
         onRenameSession={rename}
@@ -649,6 +764,7 @@ export function App() {
         selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}
         showStickyUserMessage={snapshot?.settings?.showStickyUserMessage !== false}
+        voiceInput={snapshot?.settings?.voiceInput}
         customName={displayNames[selectedSession?.sessionId ?? '']}
         onRename={rename}
         onClose={handleClose}

@@ -1,13 +1,14 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react';
-import type { OfficeSnapshot, Session, SessionProvider, SessionReview } from '../types';
+import type { OfficeSnapshot, Session, SessionProvider } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
-import { QueueRail } from './QueueRail';
 import { ScratchpadPopup } from './ScratchpadPopup';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
 import { expandRoom } from '../hooks/useRoomCollapsed';
 import { useRoomHidden, unhideRoom, seedFromServer } from '../hooks/useRoomHidden';
 import { HiddenRoomsPill } from './HiddenRoomsPill';
+import { BtwToastStack, type BtwEntry } from './BtwToast';
+import { parseBtwCommand, isBtwDraft } from '../lib/btwCommand';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import styles from './Office.module.css';
 
@@ -23,10 +24,6 @@ interface OfficeProps {
 
   selectedSessionId?: string | null;
   selectionNonce?: number;
-  /** False when the last selection came from the inbox rail — open, don't scroll. */
-  scrollOnSelect?: boolean;
-  /** Rail row click: select without scrolling the grid. */
-  onSelectSessionQuiet?: (session: Session) => void;
   rightOffset?: number;
   bottomOffset?: number;
   onRoomClick?: (roomId: string) => void;
@@ -38,9 +35,6 @@ interface OfficeProps {
   onDeleteSession?: (sessionId: string) => void;
   onCloseSession?: (sessionId: string) => void;
   onArchiveSession?: (sessionId: string) => void;
-  /** Inbox-rail row actions — same endpoints the DetailPanel StateBadge uses. */
-  onSetReview?: (sessionId: string, review: SessionReview | null, reason?: string) => void;
-  onToggleRead?: (sessionId: string) => void;
   onOpenArchive?: (entry: import('../types').ArchiveEntry) => void;
   onDeleteArchive?: (sessionId: string) => void;
   onRenameSession?: (sessionId: string, name: string) => void;
@@ -186,17 +180,38 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, scrollOnSelect = true, onSelectSessionQuiet, rightOffset = 0, bottomOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onSetReview, onToggleRead, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, bottomOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
   const [searchQuery, setSearchQuery] = useState('');
+  // A `/btw …` draft must not filter the grid — the box doubles as a command line.
+  const filterQuery = isBtwDraft(searchQuery) ? '' : searchQuery;
+  const [btwEntries, setBtwEntries] = useState<BtwEntry[]>([]);
+  const btwSeq = useRef(0);
+  const dismissBtw = useCallback((id: number) => {
+    setBtwEntries(prev => prev.filter(e => e.id !== id));
+  }, []);
+  const askBtw = useCallback((question: string) => {
+    const id = ++btwSeq.current;
+    setBtwEntries(prev => [...prev, { id, question }]);
+    const settle = (patch: Partial<BtwEntry>) =>
+      setBtwEntries(prev => prev.map(e => (e.id === id ? { ...e, ...patch } : e)));
+    fetch('/api/btw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: question }),
+    })
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${r.status}`);
+        settle({ answer: typeof data.answer === 'string' && data.answer ? data.answer : '(empty reply)' });
+      })
+      .catch((err: Error) => settle({ error: err.message || 'request failed' }));
+  }, []);
   const [activeOnly, setActiveOnly] = useState<boolean>(() => {
     try { return localStorage.getItem(ACTIVE_ONLY_STORAGE_KEY) === '1'; } catch { return false; }
   });
-  // Reported by QueueRail (34px collapsed strip / 288px open). The office pads
-  // itself by this so the fixed rail never overlaps the header or the grid.
-  const [railWidth, setRailWidth] = useState(34);
   const toggleActiveOnly = useCallback(() => {
     setActiveOnly(prev => {
       const next = !prev;
@@ -230,7 +245,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   }, [rooms]);
 
   const visibleRooms = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
+    const q = filterQuery.trim().toLowerCase();
     let filtered = rooms.filter(room => room.sessions.length > 0);
     // Hidden rooms leave the grid — except while a search is active, where a
     // match must surface regardless (the room gets a "hidden" badge instead).
@@ -262,7 +277,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         .filter((r): r is NonNullable<typeof r> => r !== null);
     }
     return sortRooms(filtered);
-  }, [rooms, sortRooms, searchQuery, sessionMatches, activeOnly, hiddenMap]);
+  }, [rooms, sortRooms, filterQuery, sessionMatches, activeOnly, hiddenMap]);
 
   // `hiddenRooms` drives the pill list (session-less rooms have nothing to show).
   // `allHiddenRooms` is what "Show all" must operate on: unhideAll only clears the
@@ -286,15 +301,10 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   // Scroll the selected worker's desk into view whenever selection changes
   // (e.g. clicking an agent icon in the DetailPanel, search, or task list).
   // Rooms are read via a ref so snapshot ticks don't re-trigger the scroll.
-  // The inbox rail selects quietly (scrollOnSelect=false) — it is its own list,
-  // so yanking the grid underneath it would be disorienting.
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
-  const scrollOnSelectRef = useRef(scrollOnSelect);
-  scrollOnSelectRef.current = scrollOnSelect;
   useEffect(() => {
     if (!selectedSessionId) return;
-    if (!scrollOnSelectRef.current) return;
     const scrollToDesk = () => {
       const sel = CSS.escape(selectedSessionId);
       const desk = document.querySelector(`[data-desk-ovr="${sel}"], [data-desk-sid="${sel}"]`);
@@ -354,25 +364,23 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   }, []);
 
   return (
-    <div className={styles.office} style={{ paddingRight: rightOffset, paddingBottom: bottomOffset, paddingLeft: railWidth, transition: 'padding-right 200ms ease, padding-bottom 200ms ease, padding-left 160ms ease' }}>
-      <QueueRail
-        snapshot={snapshot}
-        customNames={customNames}
-        onSelectSession={onSelectSessionQuiet ?? onSelectSession}
-        onSetReview={onSetReview}
-        onToggleRead={onToggleRead}
-        selectedSessionId={selectedSessionId}
-        onWidthChange={setRailWidth}
-      />
+    <div className={styles.office} style={{ paddingRight: rightOffset, paddingBottom: bottomOffset, transition: 'padding-right 200ms ease, padding-bottom 200ms ease' }}>
       <header className={styles.header}>
         <OverlordLogo />
         <input
           type="text"
-          className={styles.searchInput}
-          placeholder="Search agents, JIRA tickets…"
+          className={`${styles.searchInput} ${isBtwDraft(searchQuery) ? styles.searchInputBtw : ''}`}
+          placeholder="Search agents, JIRA tickets…  ·  /btw ask a quick question"
+          title="Filter rooms and agents. Type /btw <question> + Enter to ask the internal agent; the answer pops up as a toast."
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); } }}
+          onKeyDown={e => {
+            if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); return; }
+            if (e.key === 'Enter') {
+              const question = parseBtwCommand(searchQuery);
+              if (question) { e.preventDefault(); askBtw(question); setSearchQuery(''); }
+            }
+          }}
         />
         <HiddenRoomsPill
           hiddenRooms={hiddenRooms}
@@ -412,7 +420,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                 <span className={styles.emptyText}>Connecting to server</span>
                 <span className={styles.cursor} aria-hidden="true">_</span>
               </>
-            ) : hiddenRooms.length > 0 && !searchQuery.trim() ? (
+            ) : hiddenRooms.length > 0 && !filterQuery.trim() ? (
               <>
                 <span className={styles.emptyText}>All rooms hidden</span>
                 <button className={styles.emptyShowAll} onClick={() => unhideAll(allHiddenRooms)}>Show all</button>
@@ -460,7 +468,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                   platform={platform}
                   onRoomDragStart={e => handleDragStart(e, room.id)}
                   onRoomDragEnd={handleDragEnd}
-                  searchRevealed={searchQuery.trim().length > 0 && !!hiddenMap[room.id]}
+                  searchRevealed={filterQuery.trim().length > 0 && !!hiddenMap[room.id]}
                 />
               </div>
             ))}
@@ -479,6 +487,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           </span>
         )}
       </div>
+      <BtwToastStack entries={btwEntries} onDismiss={dismissBtw} />
     </div>
   );
 });
