@@ -4397,6 +4397,7 @@ const currentDisplayName =
         <SkillPickerPopup
           cwd={selectedSession.cwd}
           initialSkill={skillPickerInitial ?? undefined}
+          mode={skillPickerInitial ? 'view' : 'insert'}
           onClose={() => { setShowSkillPicker(false); setSkillPickerInitial(null); }}
           onPick={cmd => {
             setSendInput2(cmd);

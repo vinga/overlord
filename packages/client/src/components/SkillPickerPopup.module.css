@@ -70,6 +70,59 @@
   padding: 16px 18px;
 }
 
+.detailEditing {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor {
+  flex: 1;
+  min-height: 240px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  background: #0a0a0a;
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+  padding: 12px 14px;
+  color: #d4d0c4;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  outline: none;
+  tab-size: 2;
+}
+.editor:focus { border-color: rgba(212, 175, 55, 0.5); }
+
+.readOnly {
+  margin-left: 8px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.savedFlash {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #7ed6a0;
+  animation: skillFlashIn 160ms ease-out;
+}
+@keyframes skillFlashIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.footerSpacer { flex: 1; }
+
+.footerHint {
+  flex: 1;
+  align-self: center;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
 .detailTop {
   display: flex;
   align-items: center;
@@ -385,8 +438,17 @@
 
 .footerBtns {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.cancelBtn:disabled,
+.cancelBtn:disabled:hover {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: none;
+  border-color: rgba(255, 255, 255, 0.14);
 }
 
 .cancelBtn {

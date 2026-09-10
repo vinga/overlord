@@ -16,6 +16,9 @@ interface SkillPickerPopupProps {
   /** Open straight into this skill's detail view (e.g. from a clicked chip).
    *  Falls back to pre-filling the filter when the name isn't in the list. */
   initialSkill?: string;
+  /** `insert` (default) is the composer flow: args input + Insert. `view` is a
+   *  read/edit browser opened from a chip — no args input, Insert is secondary. */
+  mode?: 'insert' | 'view';
 }
 
 // Trim the redundant `/<name>/SKILL.md` (or trailing filename) tail — the skill
@@ -37,7 +40,7 @@ function badgeClass(s?: string): string {
   return s === 'project' ? styles.badgeProject : styles.badgeUser;
 }
 
-export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPickerPopupProps) {
+export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'insert' }: SkillPickerPopupProps) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,12 +51,19 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
   const [content, setContent] = useState<string | null>(null);
   const [contentLoading, setContentLoading] = useState(false);
   const [contentError, setContentError] = useState<string | null>(null);
-  const [truncated, setTruncated] = useState(false);
+  const [writable, setWritable] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveFlash, setSaveFlash] = useState(false);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const initialApplied = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const argsRef = useRef<HTMLInputElement>(null);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   // Load skills (project + user-global) from the brain endpoint.
   useEffect(() => {
@@ -89,37 +99,92 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
   // Focus the right control for the current stage.
   useEffect(() => {
     const t = setTimeout(() => {
-      if (picked) argsRef.current?.focus();
-      else searchRef.current?.focus();
+      if (editing) editorRef.current?.focus();
+      else if (picked && mode === 'insert') argsRef.current?.focus();
+      else if (!picked) searchRef.current?.focus();
     }, 20);
     return () => clearTimeout(t);
-  }, [picked]);
+  }, [picked, editing, mode]);
 
-  // Lazily load the picked skill's SKILL.md body.
+  // Lazily load the picked skill's SKILL.md body. `/api/file` returns the whole
+  // file (no 500-line cap) plus a writable flag, so the same payload backs editing.
   useEffect(() => {
-    if (!picked?.path) { setContent(null); setContentError(null); setTruncated(false); return; }
+    setEditing(false);
+    setSaveError(null);
+    if (!picked?.path) { setContent(null); setContentError(null); setWritable(false); return; }
     const controller = new AbortController();
     setContent(null);
     setContentError(null);
-    setTruncated(false);
+    setWritable(false);
     setContentLoading(true);
-    fetch(`/api/brain/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(picked.path)}`, {
-      signal: controller.signal,
-    })
+    // A symlinked skill can resolve outside the guarded roots; fall back to the
+    // brain read (scoped on the unresolved path) so the body still shows, read-only.
+    const readBrain = async (): Promise<{ content: string; writable: boolean }> => {
+      const res = await fetch(
+        `/api/brain/file?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(picked.path!)}`,
+        { signal: controller.signal },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const json = await res.json() as { content?: string; truncated?: boolean };
+      return { content: (json.content ?? '') + (json.truncated ? '\n\n_…truncated (first 500 lines)_' : ''), writable: false };
+    };
+    fetch(`/api/file?path=${encodeURIComponent(picked.path)}`, { signal: controller.signal })
       .then(async res => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({ error: res.statusText }));
-          throw new Error(body.error || `HTTP ${res.status}`);
-        }
-        return res.json() as Promise<{ content?: string; truncated?: boolean }>;
+        if (!res.ok) return readBrain();
+        const json = await res.json() as { content?: string; writable?: boolean };
+        return { content: json.content ?? '', writable: !!json.writable };
       })
-      .then(json => { setContent(json.content ?? ''); setTruncated(!!json.truncated); })
+      .then(r => { setContent(r.content); setWritable(r.writable); })
       .catch(err => {
         if ((err as { name?: string }).name !== 'AbortError') setContentError((err as Error).message);
       })
       .finally(() => setContentLoading(false));
     return () => controller.abort();
   }, [picked, cwd]);
+
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+
+  const isDirty = editing && draft !== (content ?? '');
+
+  const startEdit = useCallback(() => {
+    if (content === null) return;
+    setDraft(content);
+    setSaveError(null);
+    setEditing(true);
+  }, [content]);
+
+  const cancelEdit = useCallback(() => {
+    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
+    setEditing(false);
+    setSaveError(null);
+  }, [isDirty]);
+
+  const save = useCallback(async () => {
+    if (!picked?.path || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch('/api/file', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: picked.path, content: draft }),
+      });
+      if (res.status === 403) throw new Error('file is read-only');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setContent(draft);
+      setEditing(false);
+      setSaveFlash(true);
+      if (flashTimer.current) clearTimeout(flashTimer.current);
+      flashTimer.current = setTimeout(() => setSaveFlash(false), 2000);
+    } catch (err) {
+      setSaveError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }, [picked, draft, saving]);
 
   // Project (local, this repo) skills rank first, then user (global), then plugins.
   const sourceRank = (s?: string) => (s === 'project' ? 0 : s === 'user' ? 1 : 2);
@@ -156,8 +221,10 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
   }, []);
 
   const back = useCallback(() => {
+    if (editing && isDirty && !window.confirm('Discard unsaved changes?')) return;
+    setEditing(false);
     setPicked(null);
-  }, []);
+  }, [editing, isDirty]);
 
   const moveSelection = useCallback(
     (dir: 1 | -1) => {
@@ -179,13 +246,14 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.preventDefault();
-        if (picked) back();
+        if (editing) cancelEdit();
+        else if (picked) back();
         else onClose();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, picked, back]);
+  }, [onClose, picked, back, editing, cancelEdit]);
 
   const onSearchKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
@@ -198,17 +266,28 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
   };
 
   const handleBackdrop = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target !== e.currentTarget) return;
+    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
+    onClose();
   };
+
+  const onEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); void save(); }
+  };
+
+  const title = mode === 'view'
+    ? (picked ? (editing ? 'Edit skill' : 'Skill') : 'Skills')
+    : (picked ? 'Insert skill' : 'Insert a skill');
 
   return (
     <div className={styles.backdrop} onClick={handleBackdrop}>
-      <div className={styles.modal} role="dialog" aria-label="Insert a skill">
+      <div className={styles.modal} role="dialog" aria-label={title}>
         <div className={styles.header}>
           {picked && (
             <button className={styles.backBtn} onClick={back} title="Back (Esc)">←</button>
           )}
-          <h2 className={styles.title}>{picked ? 'Insert skill' : 'Insert a skill'}</h2>
+          <h2 className={styles.title}>{title}</h2>
+          {picked && saveFlash && <span className={styles.savedFlash}>Saved</span>}
           <button className={styles.closeBtn} onClick={onClose} title="Close">✕</button>
         </div>
 
@@ -277,7 +356,7 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
 
         {picked && (
           <>
-            <div className={styles.detail}>
+            <div className={`${styles.detail} ${editing ? styles.detailEditing : ''}`}>
               <div className={styles.detailTop}>
                 <span className={styles.detailName}>/{picked.name}</span>
                 <span className={`${styles.badge} ${badgeClass(picked.source)}`}>
@@ -287,36 +366,77 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill }: SkillPi
               {picked.path && <div className={styles.detailPath}>{locationOf(picked.path, picked.name)}</div>}
               {picked.description && <p className={styles.detailDesc}>{picked.description}</p>}
 
-              <div className={styles.contentLabel}>SKILL.md</div>
+              <div className={styles.contentLabel}>
+                SKILL.md
+                {!editing && content !== null && !writable && <span className={styles.readOnly}>read-only</span>}
+              </div>
               {contentLoading && <div className={styles.contentNote}>Loading content…</div>}
               {!contentLoading && contentError && (
                 <div className={styles.contentError}>Failed to load content: {contentError}</div>
               )}
-              {!contentLoading && !contentError && content !== null && (
-                <>
-                  <div
-                    className={styles.markdownContent}
-                    dangerouslySetInnerHTML={{ __html: renderMarkdown(stripFrontmatter(content)) }}
-                  />
-                  {truncated && <div className={styles.contentNote}>Content truncated (first 500 lines).</div>}
-                </>
+              {!contentLoading && !contentError && content !== null && !editing && (
+                <div
+                  className={styles.markdownContent}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(stripFrontmatter(content)) }}
+                />
               )}
+              {editing && (
+                <textarea
+                  ref={editorRef}
+                  className={styles.editor}
+                  value={draft}
+                  onChange={e => setDraft(e.target.value)}
+                  onKeyDown={onEditorKeyDown}
+                  spellCheck={false}
+                />
+              )}
+              {saveError && <div className={styles.contentError}>Save failed: {saveError}</div>}
             </div>
 
             <div className={styles.footer}>
-              <input
-                ref={argsRef}
-                type="text"
-                className={styles.argsInput}
-                placeholder="arguments (optional)"
-                value={args}
-                onChange={e => setArgs(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); insert(); } }}
-              />
-              <div className={styles.footerBtns}>
-                <button className={styles.cancelBtn} onClick={back}>Back</button>
-                <button className={styles.insertBtn} onClick={insert}>Insert</button>
-              </div>
+              {editing ? (
+                <div className={styles.footerBtns}>
+                  <span className={styles.footerHint}>⌘S to save</span>
+                  <button className={styles.cancelBtn} onClick={cancelEdit}>Cancel</button>
+                  <button className={styles.insertBtn} onClick={() => void save()} disabled={!isDirty || saving}>
+                    {saving ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {mode === 'insert' && (
+                    <input
+                      ref={argsRef}
+                      type="text"
+                      className={styles.argsInput}
+                      placeholder="arguments (optional)"
+                      value={args}
+                      onChange={e => setArgs(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); insert(); } }}
+                    />
+                  )}
+                  <div className={styles.footerBtns}>
+                    <button className={styles.cancelBtn} onClick={back}>Back</button>
+                    <span className={styles.footerSpacer} />
+                    {mode === 'view' && (
+                      <button className={styles.cancelBtn} onClick={insert} title="Insert /skill into the prompt">
+                        Insert into prompt
+                      </button>
+                    )}
+                    {content !== null && !contentError && (
+                      <button
+                        className={mode === 'view' ? styles.insertBtn : styles.cancelBtn}
+                        onClick={startEdit}
+                        disabled={!writable}
+                        title={writable ? 'Edit SKILL.md' : 'File is read-only'}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {mode === 'insert' && <button className={styles.insertBtn} onClick={insert}>Insert</button>}
+                  </div>
+                </>
+              )}
             </div>
           </>
         )}
