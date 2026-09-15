@@ -81,29 +81,38 @@ function processNext(): void {
   let stdout = '';
   let stderr = '';
 
+  // A timed-out child that ignores SIGTERM must not wedge the queue: settle the
+  // item, free the worker slot, and escalate to SIGKILL. `settled` keeps the
+  // later `close` from double-settling or advancing the queue twice.
+  let settled = false;
+  const finish = (fn: () => void): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    activeChild = null;
+    processing = false;
+    fn();
+    processNext();
+  };
+
   const timer = setTimeout(() => {
-    child.kill();
-    item.reject(new Error('claude query timed out'));
+    finish(() => item.reject(new Error('claude query timed out')));
+    try { child.kill(); } catch { /* already gone */ }
+    setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, 2_000).unref?.();
   }, item.timeoutMs);
 
   child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
   child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
   child.on('error', (err) => {
-    clearTimeout(timer);
-    activeChild = null;
-    processing = false;
-    item.reject(err);
-    processNext();
+    finish(() => item.reject(err));
   });
   child.on('close', (code) => {
-    clearTimeout(timer);
     // Delete the session file by PID — prevents accumulation in the UI
     if (child.pid) deleteWorkerSessionFile(child.pid);
-    activeChild = null;
-    processing = false;
-    if (code !== 0) item.reject(new Error(stderr.trim() || `claude exited with code ${String(code)}`));
-    else item.resolve(stdout.trim());
-    processNext();
+    finish(() => {
+      if (code !== 0) item.reject(new Error(stderr.trim() || `claude exited with code ${String(code)}`));
+      else item.resolve(stdout.trim());
+    });
   });
 }
 
