@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session, WorkerState } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { ColorPicker } from './ColorPicker';
+import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import styles from './PtyTerminalPanel.module.css';
 
 // Match DetailPanel's sizing and storage keys so panel size persists across panel types.
@@ -189,20 +190,8 @@ export function PtyTerminalPanel({
             size={34}
             isRaw
             icon={session.icon}
-            onChange={(newColor) => {
-              void fetch(`/api/sessions/${session.sessionId}/color`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ color: newColor }),
-              });
-            }}
-            onIconChange={(newIcon) => {
-              void fetch(`/api/sessions/${session.sessionId}/icon`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ icon: newIcon }),
-              });
-            }}
+            onChange={(newColor) => putSessionColor(session.sessionId, newColor)}
+            onIconChange={(newIcon) => putSessionIcon(session.sessionId, newIcon)}
           />
         )}
         <div className={styles.headerLeft}>

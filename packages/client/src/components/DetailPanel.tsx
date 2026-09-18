@@ -12,6 +12,7 @@ import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { ColorPicker } from './ColorPicker';
+import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import { VoiceOverrideBadge } from './VoiceOverrideBadge';
 import type { VoiceInputConfig } from '../lib/voiceConfig';
 import { Worker } from './Worker';
@@ -3003,24 +3004,8 @@ const currentDisplayName =
                       color={selectedSession.color}
                       size={44}
                       icon={selectedSession.icon}
-                      onChange={(newColor) => {
-                        void fetch(`/api/sessions/${selectedSession.sessionId}/color`, {
-                          method: 'PUT',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ color: newColor }),
-                        }).then(r => {
-                          if (!r.ok) console.warn('[color] PUT failed', r.status, selectedSession.sessionId);
-                        }).catch(e => console.warn('[color] PUT error', e));
-                      }}
-                      onIconChange={(newIcon) => {
-                        void fetch(`/api/sessions/${selectedSession.sessionId}/icon`, {
-                          method: 'PUT',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ icon: newIcon }),
-                        }).then(r => {
-                          if (!r.ok) console.warn('[icon] PUT failed', r.status, selectedSession.sessionId);
-                        }).catch(e => console.warn('[icon] PUT error', e));
-                      }}
+                      onChange={(newColor) => putSessionColor(selectedSession.sessionId, newColor)}
+                      onIconChange={(newIcon) => putSessionIcon(selectedSession.sessionId, newIcon)}
                     />
                   <div className={styles.headerMain}>
                   <div className={styles.nameRow}>

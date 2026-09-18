@@ -6,6 +6,8 @@ import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { MonitoringPill } from './MonitoringPill';
 import { JiraChips } from './JiraChips';
+import { ColorPicker } from './ColorPicker';
+import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import { selectAfterPrefix } from '../hooks/useRoomPrefix';
 
 interface WorkerProps {
@@ -145,6 +147,55 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
     setIsEditing(true);
   }, [onRename, isSubagent, label]);
 
+  const glyphSvg = (
+    isRaw && glyph === 'user' ? (
+      <svg
+        width="48"
+        height="63"
+        viewBox="0 0 48 63"
+        xmlns="http://www.w3.org/2000/svg"
+        className={styles.svg}
+      >
+        <defs>
+          <linearGradient id={`grad-${sessionId}`} x1="0%" y1="0%" x2="60%" y2="100%">
+            <stop offset="0%" stopColor={highlightColor} />
+            <stop offset="100%" stopColor={displayColor} />
+          </linearGradient>
+        </defs>
+        {/* Terminal window — centered vertically in 63px box */}
+        <g transform="translate(1, 14.5)">
+          <rect x="0" y="0" width="46" height="34" rx="4" fill={`url(#grad-${sessionId})`} />
+          {/* Title bar */}
+          <rect x="0" y="0" width="46" height="8" rx="4" fill="rgba(0,0,0,0.28)" />
+          {/* Traffic lights */}
+          <circle cx="5.5" cy="4.5" r="1.5" fill="rgba(255,255,255,0.55)" />
+          <circle cx="10.5" cy="4.5" r="1.5" fill="rgba(255,255,255,0.35)" />
+          <circle cx="15.5" cy="4.5" r="1.5" fill="rgba(255,255,255,0.2)" />
+          {/* Prompt chevron */}
+          <path d="M 8 15 L 14 21 L 8 27" stroke="rgba(255,255,255,0.92)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          {/* Cursor underscore */}
+          <rect x="18" y="25" width="14" height="2.2" rx="1" fill="rgba(255,255,255,0.92)" />
+        </g>
+      </svg>
+    ) : (
+      <svg
+        width="48"
+        height="63"
+        viewBox="0 0 40 52"
+        xmlns="http://www.w3.org/2000/svg"
+        className={styles.svg}
+      >
+        <defs>
+          <linearGradient id={`grad-${sessionId}`} x1="0%" y1="0%" x2="60%" y2="100%">
+            <stop offset="0%" stopColor={highlightColor} />
+            <stop offset="100%" stopColor={displayColor} />
+          </linearGradient>
+        </defs>
+        <WorkerGlyph icon={glyph} gradientUrl={`url(#grad-${sessionId})`} color={displayColor} />
+      </svg>
+    )
+  );
+
   const isScheduled = state === 'waiting' && scheduledWakeupAt != null && !needsPermission;
   const hasBackgroundTasks = backgroundTasks != null && backgroundTasks.length > 0;
   const isBackground = state === 'waiting' && hasBackgroundTasks && !isScheduled && !needsPermission;
@@ -214,52 +265,20 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       )}
       <div className={styles.body}>
       <div className={styles.iconWrap}>
-      {isRaw && glyph === 'user' ? (
-        <svg
-          width="48"
-          height="63"
-          viewBox="0 0 48 63"
-          xmlns="http://www.w3.org/2000/svg"
-          className={styles.svg}
+      {/* Full workers: the glyph doubles as the colour/icon picker trigger, same
+          as the detail-panel avatar. Subagents inherit the parent's colour. */}
+      {!isSubagent && !minimal ? (
+        <ColorPicker
+          sessionId={sessionId}
+          color={color}
+          icon={icon}
+          isRaw={isRaw}
+          onChange={(c) => putSessionColor(sessionId, c)}
+          onIconChange={(i) => putSessionIcon(sessionId, i)}
         >
-          <defs>
-            <linearGradient id={`grad-${sessionId}`} x1="0%" y1="0%" x2="60%" y2="100%">
-              <stop offset="0%" stopColor={highlightColor} />
-              <stop offset="100%" stopColor={displayColor} />
-            </linearGradient>
-          </defs>
-          {/* Terminal window — centered vertically in 63px box */}
-          <g transform="translate(1, 14.5)">
-            <rect x="0" y="0" width="46" height="34" rx="4" fill={`url(#grad-${sessionId})`} />
-            {/* Title bar */}
-            <rect x="0" y="0" width="46" height="8" rx="4" fill="rgba(0,0,0,0.28)" />
-            {/* Traffic lights */}
-            <circle cx="5.5" cy="4.5" r="1.5" fill="rgba(255,255,255,0.55)" />
-            <circle cx="10.5" cy="4.5" r="1.5" fill="rgba(255,255,255,0.35)" />
-            <circle cx="15.5" cy="4.5" r="1.5" fill="rgba(255,255,255,0.2)" />
-            {/* Prompt chevron */}
-            <path d="M 8 15 L 14 21 L 8 27" stroke="rgba(255,255,255,0.92)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-            {/* Cursor underscore */}
-            <rect x="18" y="25" width="14" height="2.2" rx="1" fill="rgba(255,255,255,0.92)" />
-          </g>
-        </svg>
-      ) : (
-        <svg
-          width="48"
-          height="63"
-          viewBox="0 0 40 52"
-          xmlns="http://www.w3.org/2000/svg"
-          className={styles.svg}
-        >
-          <defs>
-            <linearGradient id={`grad-${sessionId}`} x1="0%" y1="0%" x2="60%" y2="100%">
-              <stop offset="0%" stopColor={highlightColor} />
-              <stop offset="100%" stopColor={displayColor} />
-            </linearGradient>
-          </defs>
-          <WorkerGlyph icon={glyph} gradientUrl={`url(#grad-${sessionId})`} color={displayColor} />
-        </svg>
-      )}
+          {glyphSvg}
+        </ColorPicker>
+      ) : glyphSvg}
       </div>
 
       <div className={styles.content}>

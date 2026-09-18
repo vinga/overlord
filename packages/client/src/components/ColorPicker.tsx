@@ -65,9 +65,11 @@ interface Props {
   icon?: WorkerIcon;
   onChange: (color: string) => void;
   onIconChange?: (icon: WorkerIcon) => void;
+  /** Custom trigger (e.g. the room worker's own glyph). Defaults to a WorkerAvatar. */
+  children?: React.ReactNode;
 }
 
-export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, onChange, onIconChange }: Props) {
+export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, onChange, onIconChange, children }: Props) {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -158,10 +160,12 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
         ref={buttonRef}
         type="button"
         className={styles.avatarButton}
-        onClick={() => setOpen(v => !v)}
+        // The picker may sit inside a clickable card (room worker) — don't let
+        // the toggle or the portaled popover's clicks select that card.
+        onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
         title="Change color"
       >
-        <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} icon={icon} />
+        {children ?? <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} icon={icon} />}
       </button>
       {open && createPortal(
         <div
@@ -170,6 +174,8 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
           role="dialog"
           aria-label="Choose color"
           style={{ top: pos.top, left: pos.left }}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
         >
           {onIconChange && (
             <>
