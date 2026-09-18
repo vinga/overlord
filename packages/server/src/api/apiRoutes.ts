@@ -784,6 +784,15 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
+  // "Check now" for the Detail panel's ticket + PR chips. Both metadata caches
+  // are TTL'd (1h/5m Jira, 15m open PRs) — this drops this session's entries so
+  // the next snapshot tick refetches them.
+  app.post('/api/sessions/:sessionId/refresh-meta', (req, res) => {
+    const counts = stateManager.refreshSessionMeta(req.params.sessionId);
+    if (!counts) { res.status(404).json({ error: 'Session not found' }); return; }
+    res.json({ ok: true, ...counts });
+  });
+
   // On-demand ScheduleWakeup history for the Detail panel (newest first, max 10).
   // Deliberately NOT in the WS snapshot — fetched lazily when the user expands
   // the wakeups stats row. The snapshot carries only the scheduledWakeupAt scalar.

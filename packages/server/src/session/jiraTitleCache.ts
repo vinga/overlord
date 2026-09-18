@@ -170,6 +170,14 @@ export function getCachedJiraTitle(key: string): string | null {
   return getCachedJiraMeta(key)?.title ?? null;
 }
 
+/** Drop the cached entries for `keys` so the next `getCachedJiraMeta` treats
+ *  them as a miss and queues a refetch. Used by the Detail panel's manual
+ *  refresh — the TTLs (1h / 5m hot) are too coarse for "check now".
+ *  In-flight fetches are left alone: they are already fresh work. */
+export function invalidateJiraKeys(keys: string[]): void {
+  for (const key of keys) cache.delete(key);
+}
+
 /** Drop the in-process cache. Called when settings change so a fresh token
  *  takes effect immediately without a server restart. */
 export function clearJiraTitleCache(): void {

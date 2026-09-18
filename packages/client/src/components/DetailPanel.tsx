@@ -697,6 +697,48 @@ interface StateBadgeProps {
   onSetReview?: (review: SessionReview | null, reason?: string) => void;
 }
 
+/** Minimum spin time. The POST only invalidates caches — it returns in a few
+ *  ms, long before the refetched chips arrive, so an honest "in flight" spinner
+ *  would flicker and read as "nothing happened". */
+const META_REFRESH_SPIN_MS = 1200;
+
+/** "Check now" for the ticket + PR chips: server-side metadata is TTL cached
+ *  (1h/5m Jira, 15m open PRs), so a status that moved on the board can lag.
+ *  Refreshes both sets at once — it sits in whichever field label comes first. */
+function MetaRefreshButton({ sessionId, styles }: { sessionId: string; styles: Record<string, string> }) {
+  const [busy, setBusy] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  const refresh = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (busy) return;
+    setBusy(true);
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}/refresh-meta`, { method: 'POST' })
+      .catch((err) => console.warn('[meta-refresh] failed', err))
+      .finally(() => {
+        timer.current = setTimeout(() => { timer.current = null; setBusy(false); }, META_REFRESH_SPIN_MS);
+      });
+  };
+
+  return (
+    <button
+      type="button"
+      className={`${styles.metaRefresh} ${busy ? styles.metaRefreshBusy : ''}`}
+      onClick={refresh}
+      disabled={busy}
+      title="Refresh ticket & PR statuses"
+      aria-label="Refresh ticket and PR statuses"
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 3a5 5 0 1 0 4.546 2.914.75.75 0 1 1 1.364-.628A6.5 6.5 0 1 1 8 1.5V.42a.25.25 0 0 1 .4-.2l2.1 1.58a.25.25 0 0 1 0 .4L8.4 3.78a.25.25 0 0 1-.4-.2V3Z" />
+      </svg>
+    </button>
+  );
+}
+
 /**
  * The state pill, doubling as the review menu.
  *
@@ -4146,7 +4188,10 @@ const currentDisplayName =
                       })()}
                       {selectedSession.jiraKeys && selectedSession.jiraKeys.length > 0 && (
                         <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Tickets</span>
+                          <span className={styles.fieldLabel}>
+                            Tickets
+                            <MetaRefreshButton sessionId={selectedSession.sessionId} styles={styles} />
+                          </span>
                           <span className={styles.fieldValue}>
                             <JiraChips
                               keys={selectedSession.jiraKeys}
@@ -4159,7 +4204,14 @@ const currentDisplayName =
                       )}
                       {selectedSession.prRefs && selectedSession.prRefs.length > 0 && (
                         <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Pull requests</span>
+                          <span className={styles.fieldLabel}>
+                            Pull requests
+                            {/* One button refreshes both sets — it appears here only
+                                when there is no Tickets row above to carry it. */}
+                            {!(selectedSession.jiraKeys && selectedSession.jiraKeys.length > 0) && (
+                              <MetaRefreshButton sessionId={selectedSession.sessionId} styles={styles} />
+                            )}
+                          </span>
                           <span className={styles.fieldValue}>
                             <PrChips
                               refs={selectedSession.prRefs}

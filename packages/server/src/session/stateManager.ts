@@ -17,7 +17,7 @@ import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore, type VoiceInputConfig } from './globalSettingsStore.js';
-import { getCachedJiraMeta } from './jiraTitleCache.js';
+import { getCachedJiraMeta, invalidateJiraKeys } from './jiraTitleCache.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
@@ -2255,6 +2255,22 @@ export class StateManager {
     });
     this.onChange();
     return true;
+  }
+
+  /** User asked for fresh ticket + PR statuses on one session. Drops the cached
+   *  entries for its keys/refs; the next getSnapshot tick sees the miss and
+   *  schedules the refetch on the existing background paths, so nothing here
+   *  blocks or fetches. Returns how many of each were dropped, or null for an
+   *  unknown session. */
+  refreshSessionMeta(sessionId: string): { keys: number; refs: number } | null {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const keys = session.jiraKeys ?? [];
+    const refs = session.prRefs ?? [];
+    invalidateJiraKeys(keys);
+    this.prMetaCache.invalidate(refs);
+    this.onChange();
+    return { keys: keys.length, refs: refs.length };
   }
 
   /**

@@ -33,6 +33,8 @@ export class PrMetaCache {
   private entries = new Map<string, Entry>();
   private onUpdate: () => void;
   private historyStore: PrHistoryStore | undefined;
+  /** Keys whose next refresh must skip the on-disk history shortcut. */
+  private forceNetwork = new Set<string>();
 
   constructor(onUpdate: () => void, historyStore?: PrHistoryStore) {
     this.onUpdate = onUpdate;
@@ -55,12 +57,26 @@ export class PrMetaCache {
     return entry.value;
   }
 
+  /** Forget `refs` so the next `get` refetches them. The history shortcut is
+   *  suppressed for one round: `.pr-history.json` is itself stale data, and a
+   *  user-requested refresh has to reach GitHub. */
+  invalidate(refs: string[]): void {
+    for (const ref of refs) {
+      const key = prRefKey(ref);
+      this.entries.delete(key);
+      this.forceNetwork.add(key);
+    }
+  }
+
   /** Drop everything no longer attached to a session. */
   retain(refs: Set<string>): void {
     const keep = new Set<string>();
     for (const r of refs) keep.add(prRefKey(r));
     for (const key of this.entries.keys()) {
       if (!keep.has(key)) this.entries.delete(key);
+    }
+    for (const key of this.forceNetwork) {
+      if (!keep.has(key)) this.forceNetwork.delete(key);
     }
   }
 
@@ -77,8 +93,9 @@ export class PrMetaCache {
     this.entries.set(key, placeholder);
 
     // Free path first: the room's PR history already carries title + state for
-    // any PR the branch poller has seen.
-    const fromHistory = this.lookupHistory(ref, cwdHint);
+    // any PR the branch poller has seen. A forced refresh skips it once.
+    const forced = this.forceNetwork.delete(key);
+    const fromHistory = forced ? undefined : this.lookupHistory(ref, cwdHint);
     if (fromHistory) {
       this.entries.set(key, { value: fromHistory, fetchedAt: Date.now(), error: false });
       this.onUpdate();

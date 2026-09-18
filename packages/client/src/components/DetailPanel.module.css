@@ -726,6 +726,53 @@
   font-weight: 500;
 }
 
+/* "Check now" affordance in the Tickets / Pull requests label. Dim until the
+   row is hovered so it never competes with the chips themselves. */
+.metaRefresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 5px;
+  vertical-align: -4px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #555;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.field:hover .metaRefresh,
+.metaRefresh:focus-visible,
+.metaRefreshBusy {
+  opacity: 1;
+}
+
+.metaRefresh:hover {
+  color: #e8e8e8;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.metaRefresh:disabled {
+  cursor: default;
+}
+
+.metaRefreshBusy {
+  color: #888;
+}
+
+.metaRefreshBusy svg {
+  animation: meta-refresh-spin 0.9s linear infinite;
+}
+
+@keyframes meta-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
 .fieldValue {
   color: #e8e8e8;
   word-break: break-all;
