@@ -2054,9 +2054,16 @@ export class StateManager {
       }
       // Detect rate-limit text in the activity feed (for plain/bridge sessions where
       // permissionChecker can't read the screen). Check last 8 feed items.
-      const RATE_LIMIT_RE = /you'?ve hit your (daily )?limit|rate.?limit/i;
-      const feedHasRateLimit = result.state === 'waiting' &&
-        mergedFeed.slice(0, 8).some(item => item.content && RATE_LIMIT_RE.test(item.content));
+      // Match only Claude Code's own limit notice. A generic /rate.?limit/ also
+      // matched ordinary prose ("rate limits to agree" in a meeting summary) and
+      // surfaced the whole 8 KB message as a fake limit prompt.
+      const RATE_LIMIT_RE = /you'?ve hit your (?:daily |usage )?limit|usage limit reached/i;
+      // Feed is oldest-first — the notice, if any, is among the newest items.
+      const recentMessages = mergedFeed.slice(-8).filter(item => item.kind === 'message' && item.content);
+      const rateLimitItem = result.state === 'waiting'
+        ? recentMessages.find(item => RATE_LIMIT_RE.test(item.content))
+        : undefined;
+      const feedHasRateLimit = rateLimitItem !== undefined;
       // Only update needsPermission from transcript when it clears (goes false).
       // Setting it true is owned by transcriptReader/addOrUpdate; clearing is also
       // done here when the session advances (transcript no longer shows stale tool_use).
@@ -2072,11 +2079,9 @@ export class StateManager {
           session.needsPermission = true;
           session.isLimitPrompt = true;
           if (!session.permissionPromptText) {
-            // Extract rate-limit text from the matching feed item
-            const limitItem = mergedFeed.slice(0, 8).find(item =>
-              item.content && RATE_LIMIT_RE.test(item.content)
-            );
-            session.permissionPromptText = limitItem?.content ?? 'Rate limit reached';
+            // Show only the line carrying the notice, never the whole message.
+            const line = rateLimitItem.content.split('\n').find(l => RATE_LIMIT_RE.test(l))?.trim();
+            session.permissionPromptText = line ? line.slice(0, 300) : 'Rate limit reached';
           }
         }
       } else if (!session.needsPermission) {
