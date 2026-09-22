@@ -10,6 +10,8 @@ interface AdvancedSearchPopupProps {
   onSelectSession: (session: Session, timestamp?: string, query?: string) => void;
   onOpenArchive: (entry: ArchiveEntry, timestamp?: string, query?: string) => void;
   onClose: () => void;
+  /** Pre-filled query, e.g. handed over from the inline office search. */
+  initialQuery?: string;
 }
 
 interface ArchiveHit {
@@ -66,8 +68,9 @@ export function AdvancedSearchPopup({
   onSelectSession,
   onOpenArchive,
   onClose,
+  initialQuery = '',
 }: AdvancedSearchPopupProps) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [includeArchived, setIncludeArchived] = useState<boolean>(() => {
     try { return localStorage.getItem(INCLUDE_ARCHIVED_KEY) === '1'; } catch { return false; }

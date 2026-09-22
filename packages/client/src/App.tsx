@@ -76,6 +76,7 @@ export function App() {
   const [terminalSpawnMode, setTerminalSpawnMode] = useState<TerminalSpawnMode>('bridge');
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
   const [showAdvancedSearch, setShowAdvancedSearch] = useState(false);
+  const [advancedSearchInitialQuery, setAdvancedSearchInitialQuery] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [archivedSession, setArchivedSession] = useState<Session | null>(null);
@@ -675,7 +676,7 @@ export function App() {
         onLogsClick={() => setView('logs')}
         onSettingsClick={() => setShowSettings(true)}
         onStatsClick={() => setShowStats(true)}
-        onOpenAdvancedSearch={() => setShowAdvancedSearch(true)}
+        onOpenAdvancedSearch={(initialQuery) => { setAdvancedSearchInitialQuery(initialQuery ?? ''); setShowAdvancedSearch(true); }}
 
         selectedSessionId={selectedSessionId}
         selectionNonce={selectionNonce}
@@ -725,6 +726,7 @@ export function App() {
       )}
       {showAdvancedSearch && (
         <AdvancedSearchPopup
+          initialQuery={advancedSearchInitialQuery}
           snapshot={snapshot}
           customNames={displayNames}
           onSelectSession={(session, timestamp, query) => handleSelectSession(session, undefined, timestamp, query)}
