@@ -13,6 +13,7 @@ import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
+import { formatSessionRef } from '../lib/sessionRef';
 import { VoiceOverrideBadge } from './VoiceOverrideBadge';
 import type { VoiceInputConfig } from '../lib/voiceConfig';
 import { Worker } from './Worker';
@@ -3049,8 +3050,8 @@ const currentDisplayName =
                         <h2 className={styles.sessionName} onClick={startEdit} title="Click to rename">{currentDisplayName}</h2>
                         <button
                           className={styles.nameBtn}
-                          onClick={() => navigator.clipboard.writeText(`name: ${currentDisplayName} id: ${selectedSession.sessionId}${selectedSession.overlordId ? ` ovrId: ${selectedSession.overlordId}` : ''}`)}
-                          title={`Copy name + ID${selectedSession.overlordId ? ' + ovrId' : ''}`}
+                          onClick={() => navigator.clipboard.writeText(formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId }))}
+                          title={`Copy session reference (name + ${selectedSession.overlordId ? 'overlordId + ' : ''}claude sessionId)`}
                         >
                           <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                             <path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import type { Room as RoomType, Session, SessionProvider, TerminalSpawnMode, ArchiveEntry } from '../types';
 import { getLaunchInfo } from '../types';
+import { formatSessionRef, sessionDisplayName } from '../lib/sessionRef';
 import { WorkerGroup } from './WorkerGroup';
 import { SessionCommands } from './SessionCommands';
 import styles from './Room.module.css';
@@ -287,9 +288,11 @@ function SpawningDesk({ name }: { name: string }) {
   );
 }
 
-function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void }) {
+function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void; sessionRef: string }) {
   const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
+  const copiedTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   React.useEffect(() => {
     if (!open) return;
@@ -299,6 +302,16 @@ function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose }: { onDelete
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
+
+  React.useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
+
+  const handleCopyRef = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void navigator.clipboard.writeText(sessionRef);
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => { setCopied(false); setOpen(false); }, 900);
+  };
 
   return (
     <div ref={ref} style={{ position: 'absolute', top: 4, right: 4, zIndex: 10 }}>
@@ -326,6 +339,17 @@ function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose }: { onDelete
           border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 4,
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 100, minWidth: 140,
         }}>
+          <button
+            onClick={handleCopyRef}
+            title={sessionRef}
+            style={{
+              display: 'block', width: '100%', padding: '8px 14px',
+              background: 'none', border: 'none', color: copied ? '#22c55e' : 'rgba(255,255,255,0.7)',
+              fontSize: 13, textAlign: 'left' as const, cursor: 'pointer', whiteSpace: 'nowrap' as const,
+            }}
+            onMouseEnter={(e) => { if (!copied) { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!copied) e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+          >{copied ? '✓ Copied' : 'Copy session ID'}</button>
           {onClone && (
             <button
               onClick={(e) => { e.stopPropagation(); setOpen(false); onClone(); }}
@@ -902,6 +926,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
                   } : undefined}
                   onClose={onCloseSession && session.state !== 'closed' ? () => onCloseSession(session.sessionId) : undefined}
                   onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
+                  sessionRef={formatSessionRef({ name: sessionDisplayName(session, customNames[session.sessionId]), sessionId: session.sessionId, overlordId: session.overlordId })}
                 />
               )}
               <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} />
