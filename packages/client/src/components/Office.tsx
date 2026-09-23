@@ -185,8 +185,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
   const [searchQuery, setSearchQuery] = useState('');
-  // Query the last Enter was pressed on; a repeat Enter on it opens advanced search.
-  const searchEnterArmed = useRef<string | null>(null);
   // A `/btw …` draft must not filter the grid — the box doubles as a command line.
   const filterQuery = isBtwDraft(searchQuery) ? '' : searchQuery;
   const [btwEntries, setBtwEntries] = useState<BtwEntry[]>([]);
@@ -376,25 +374,19 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           placeholder="Search agents, JIRA tickets…  ·  /btw ask a quick question"
           title="Filter rooms and agents. Type /btw <question> + Enter to ask the internal agent; the answer pops up as a toast."
           value={searchQuery}
-          onChange={e => { setSearchQuery(e.target.value); searchEnterArmed.current = null; }}
+          onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => {
-            if (e.key === 'Escape') { setSearchQuery(''); searchEnterArmed.current = null; (e.currentTarget as HTMLInputElement).blur(); return; }
+            if (e.key === 'Escape') { setSearchQuery(''); (e.currentTarget as HTMLInputElement).blur(); return; }
             if (e.key === 'Enter') {
               const question = parseBtwCommand(searchQuery);
-              if (question) { e.preventDefault(); askBtw(question); setSearchQuery(''); searchEnterArmed.current = null; return; }
+              if (question) { e.preventDefault(); askBtw(question); setSearchQuery(''); return; }
               const q = searchQuery.trim();
-              if (!q) return;
-              // First Enter arms; a second Enter on the same query hands it
-              // over to advanced search and clears the inline filter.
-              if (searchEnterArmed.current === q && onOpenAdvancedSearch) {
-                e.preventDefault();
-                searchEnterArmed.current = null;
-                setSearchQuery('');
-                (e.currentTarget as HTMLInputElement).blur();
-                onOpenAdvancedSearch(q);
-                return;
-              }
-              searchEnterArmed.current = q;
+              if (!q || !onOpenAdvancedSearch) return;
+              // Enter hands the query over to advanced search and clears the inline filter.
+              e.preventDefault();
+              setSearchQuery('');
+              (e.currentTarget as HTMLInputElement).blur();
+              onOpenAdvancedSearch(q);
             }
           }}
         />
@@ -404,7 +396,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             className={styles.searchClear}
             onClick={e => {
               setSearchQuery('');
-              searchEnterArmed.current = null;
               (e.currentTarget.previousElementSibling as HTMLInputElement | null)?.focus();
             }}
             title="Clear search"
