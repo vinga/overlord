@@ -369,6 +369,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     <div className={styles.office} style={{ paddingRight: rightOffset, paddingBottom: bottomOffset, transition: 'padding-right 200ms ease, padding-bottom 200ms ease' }}>
       <header className={styles.header}>
         <OverlordLogo />
+        <div className={styles.searchWrap}>
         <input
           type="text"
           className={`${styles.searchInput} ${isBtwDraft(searchQuery) ? styles.searchInputBtw : ''}`}
@@ -397,6 +398,24 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             }
           }}
         />
+        {searchQuery && (
+          <button
+            type="button"
+            className={styles.searchClear}
+            onClick={e => {
+              setSearchQuery('');
+              searchEnterArmed.current = null;
+              (e.currentTarget.previousElementSibling as HTMLInputElement | null)?.focus();
+            }}
+            title="Clear search"
+            aria-label="Clear search"
+          >
+            <svg viewBox="0 0 12 12" width="10" height="10" fill="none">
+              <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
+        </div>
         <HiddenRoomsPill
           hiddenRooms={hiddenRooms}
           attentionCount={hiddenAttentionCount}

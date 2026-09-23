@@ -142,13 +142,19 @@
   font-variant-numeric: tabular-nums;
 }
 
-.searchInput {
+.searchWrap {
+  position: relative;
+  display: flex;
   margin-left: auto;
   margin-right: 6px;
   width: 400px;
   /* Shrinkable so the Hidden pill fits when the office column is narrow. */
   min-width: 64px;
-  padding: 6px 12px;
+}
+.searchInput {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 28px 6px 12px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
@@ -168,6 +174,35 @@
 .searchInput:focus {
   border-color: rgba(212, 175, 55, 0.4);
   background: rgba(255, 255, 255, 0.06);
+}
+/* Clear (x) — revealed on hover or while the box has focus. */
+.searchClear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.searchWrap:hover .searchClear,
+.searchInput:focus + .searchClear,
+.searchClear:focus-visible {
+  opacity: 1;
+}
+.searchClear:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #e8e8e8;
 }
 /* Command mode: the box is about to talk to the internal agent, not filter. */
 .searchInputBtw,
