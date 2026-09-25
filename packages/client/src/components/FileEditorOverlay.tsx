@@ -98,7 +98,13 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
         if (cancelled) return;
         setEffective(used);
         if (r.status === 413) { setTooLarge(true); setLoading(false); return; }
-        if (!r.ok) { setSaveError(`Error ${r.status}`); setLoading(false); return; }
+        if (!r.ok) {
+          const reason = await r.json().then((b: { error?: string }) => b.error).catch(() => undefined);
+          if (cancelled) return;
+          setSaveError(reason ? `Error ${r.status}: ${reason}` : `Error ${r.status}`);
+          setLoading(false);
+          return;
+        }
         const data = await r.json() as { content: string; writable: boolean };
         setContent(data.content);
         setOriginal(data.content);
