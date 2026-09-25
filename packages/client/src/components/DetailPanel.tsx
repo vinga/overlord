@@ -1003,10 +1003,26 @@ function QuestionEntry({ item, styles, stale }: { item: ActivityItem; styles: Re
   );
 }
 
-function parseTaskNotification(content: string): { summary: string; status: string } | null {
+interface ParsedTaskNotification {
+  summary: string;
+  status: string;
+  /** Present for a harness Monitor notification: what the watch is called, what
+   *  kind of notice this is, and the raw <event> payload (events + expiry). */
+  monitor?: { description: string; kind: 'event' | 'ended' | 'expired'; event?: string };
+}
+
+function parseTaskNotification(content: string): ParsedTaskNotification | null {
   if (!content.trimStart().startsWith('<task-notification>')) return null;
   const summary = content.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim() ?? 'Task completed';
   const status = content.match(/<status>([\s\S]*?)<\/status>/)?.[1]?.trim() ?? 'completed';
+  const event = content.match(/<event>([\s\S]*?)<\/event>/)?.[1]?.trim();
+  const ended = summary.match(/^Monitor \\?"([\s\S]*?)\\?" stream ended$/);
+  if (ended) return { summary, status, monitor: { description: ended[1], kind: 'ended' } };
+  const ev = summary.match(/^Monitor event: \\?"([\s\S]*?)\\?"$/);
+  if (ev) {
+    const kind = event?.startsWith('[Monitor expired') ? 'expired' : 'event';
+    return { summary, status, monitor: { description: ev[1], kind, event } };
+  }
   return { summary, status };
 }
 
@@ -1365,6 +1381,15 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
               </div>
             );
           }
+          if (seg.item.visible) {
+            // Visible narration (Fable / Mythos): the TUI prints this inline as
+            // dim text, so mirror that — no toggle, nothing hidden.
+            return (
+              <div key={segIdx} className={`${styles.thinkingBlock} ${styles.thinkingNarration}`} data-ts={seg.item.timestamp}>
+                <span className={styles.thinkingNarrationText}>{seg.item.content.trim()}</span>
+              </div>
+            );
+          }
           return (
             <div key={segIdx} className={styles.thinkingBlock} data-ts={seg.item.timestamp}>
               <button
@@ -1389,6 +1414,27 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
         }
         if (seg.type === 'message') {
           const notification = seg.item.role === 'user' ? parseTaskNotification(seg.item.content) : null;
+          if (notification?.monitor) {
+            // Monitor notice: name the watch, then show the event payload itself —
+            // the summary alone ("Monitor event: …") hides what actually happened.
+            const { description, kind, event } = notification.monitor;
+            const icon = kind === 'event' ? '◉' : kind === 'ended' ? '■' : '◷';
+            const verb = kind === 'event' ? 'event' : kind === 'ended' ? 'stream ended' : 'expired';
+            return (
+              <div key={segIdx} data-ts={seg.item.timestamp} className={`${styles.systemNotification} ${styles.monitorNotification} ${kind !== 'event' ? styles.monitorNotificationDone : ''}`}>
+                <div className={styles.monitorNotificationHead}>
+                  <span className={`${styles.systemNotificationIcon} ${styles.monitorNotificationIcon}`}>{icon}</span>
+                  <span className={styles.systemNotificationText}>
+                    Monitor <span className={styles.monitorNotificationName}>{description}</span> · {verb}
+                  </span>
+                  {seg.item.timestamp && (
+                    <span className={styles.monitorNotificationTime}>{formatFeedTimestamp(seg.item.timestamp)}</span>
+                  )}
+                </div>
+                {event && <div className={styles.monitorNotificationEvent}>{event}</div>}
+              </div>
+            );
+          }
           if (notification) {
             const icon = notification.status === 'completed' ? '✓' : notification.status === 'error' ? '✗' : '●';
             return (
@@ -1428,9 +1474,17 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                   )}
                 </ScrollOnClick>
               ) : (
-              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''}`}>
+              <div className={`${styles.transcriptBubble} ${isAfterTools ? styles.transcriptBubbleCompact : ''} ${seg.item.teammateId ? styles.transcriptBubbleTeammate : ''}`}>
                 {seg.item.role === 'assistant' || seg.item.role === 'user' ? (
                   <>
+                    {/* A relayed prompt did not come from the user — say who sent it.
+                        `content` is already the unwrapped body (see parseTeammateMessage). */}
+                    {seg.item.teammateId && (
+                      <div className={styles.teammateRelayHeader}>
+                        <span className={styles.teammateRelayIcon}>⇄</span>
+                        from teammate <span className={styles.teammateRelayId}>{seg.item.teammateId}</span>
+                      </div>
+                    )}
                     {isRaw ? (
                       <pre className={styles.rawContent}>{seg.item.content}</pre>
                     ) : seg.item.role === 'user' ? (

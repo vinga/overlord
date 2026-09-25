@@ -664,3 +664,33 @@
   font-weight: 600;
 }
 
+
+/* Teammate provenance: this worker's prompts arrive from another Claude session
+   (the lead), not from the user. Persistent identity, so it reads as a quiet
+   inline chip rather than one of the floating state badges. */
+.teammateChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: center;
+  margin-top: 3px;
+  padding: 1.5px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(129, 140, 248, 0.32);
+  background: rgba(129, 140, 248, 0.12);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: rgba(165, 180, 252, 0.95);
+  max-width: 163px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.teammateChipIcon {
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.8;
+}

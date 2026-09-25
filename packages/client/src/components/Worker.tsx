@@ -1,6 +1,7 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import type { WorkerState, Session, ActiveMonitor, BackgroundTask, WorkerIcon, SessionReview } from '../types';
 import { formatElapsed } from '../lib/formatElapsed';
+import { useTick } from '../hooks/useTick';
 import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
@@ -32,9 +33,12 @@ interface WorkerProps {
   icon?: WorkerIcon;
   ptyInputPendingSince?: number;
   scheduledWakeupAt?: number;
+  scheduledWakeupSetAt?: number;
   backgroundTasks?: BackgroundTask[];
   notesSummary?: string;
   intent?: string;
+  /** teammate_id of the Claude Code lead driving this session, when it is a teammate. */
+  teammateId?: string;
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
   jiraBaseUrl?: string;
@@ -49,11 +53,16 @@ interface WaitingIndicatorProps {
   needsPermission?: boolean;
   unknownCommand?: string;
   scheduledWakeupAt?: number;
+  scheduledWakeupSetAt?: number;
   backgroundTasks?: BackgroundTask[];
   styles: Record<string, string>;
 }
 
-function WaitingIndicator({ isSubagent, review, needsPermission, unknownCommand, scheduledWakeupAt, backgroundTasks, styles }: WaitingIndicatorProps) {
+function WaitingIndicator({ isSubagent, review, needsPermission, unknownCommand, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, styles }: WaitingIndicatorProps) {
+  // Elapsed badges (scheduled sleep, background command) drift without a WS tick
+  // on an idle session — re-render once a minute while one is showing.
+  const showsElapsed = scheduledWakeupAt != null || (backgroundTasks != null && backgroundTasks.length > 0);
+  useTick(showsElapsed ? 60_000 : null);
   if (isSubagent) return <span className={styles.subagentDoneCheck}>✓</span>;
   if (needsPermission) return <span className={styles.bubblePermission}>needs approval</span>;
   // Fresh event — show it even if the "waiting" bubble was acknowledged.
@@ -63,13 +72,15 @@ function WaitingIndicator({ isSubagent, review, needsPermission, unknownCommand,
   // Shown regardless of ack (replaces "waiting").
   if (scheduledWakeupAt) {
     const fireTime = new Date(scheduledWakeupAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    // Badge shows how long the session has been sleeping; the fire time moves to the tooltip.
+    const elapsed = formatElapsed(scheduledWakeupSetAt);
     return (
-      <span className={styles.bubbleScheduled} title={`Scheduled wakeup at ${fireTime}`}>
+      <span className={styles.bubbleScheduled} title={`Sleeping${elapsed ? ` for ${elapsed}` : ''} — scheduled wakeup at ${fireTime}`}>
         <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
           <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" strokeWidth="1.4" />
           <path d="M 6 3.2 L 6 6 L 8 7.4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
-        {fireTime}
+        {elapsed || fireTime}
       </span>
     );
   }
@@ -105,7 +116,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, scheduledWakeupAt, backgroundTasks, notesSummary, intent, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -255,6 +266,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
                   needsPermission={needsPermission}
                   unknownCommand={unknownCommand}
                   scheduledWakeupAt={scheduledWakeupAt}
+                  scheduledWakeupSetAt={scheduledWakeupSetAt}
                   backgroundTasks={backgroundTasks}
                   styles={styles}
                 />
@@ -305,6 +317,13 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
             {label}
           </span>
         )
+      )}
+      {/* Identity, not state: a teammate-run session is driven by another Claude,
+          not by the user, so the sender rides above the transient chips. */}
+      {!minimal && !isSubagent && teammateId && (
+        <span className={styles.teammateChip} title={`Driven by teammate ${teammateId}`}>
+          <span className={styles.teammateChipIcon}>⇄</span>{teammateId}
+        </span>
       )}
       {!minimal && !isSubagent && notesSummary && (
         <span className={styles.notesSummaryLine}><span className={styles.notesSummaryPrefix}>Notes:</span> {notesSummary}</span>

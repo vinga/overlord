@@ -121,6 +121,7 @@ import {
   readSubagents,
   readSlug,
   readProposedName,
+  readTeammateId,
   clearSessionCaches,
 } from './transcriptReader.js';
 import { ensureShadow } from './transcriptShadow.js';
@@ -1038,6 +1039,9 @@ export class StateManager {
     // Strip <local-command-caveat> prefix — treat it as no name so transferName can override
     const proposedName = resolvedName?.startsWith('<local-command-caveat') ? undefined : resolvedName;
 
+    // Cached head-read — a Map lookup after the first tick.
+    const teammateId = transcriptPath ? readTeammateId(sessionId, transcriptPath) : undefined;
+
     const subagents = readSubagents(cwd, sessionId, transcriptPath);
     // Color resolution deferred until after overlordId is computed below
     let color = this.sessionColor(sessionId);
@@ -1179,6 +1183,7 @@ export class StateManager {
       isCompacting: transcript?.isCompacting,
       ideName,
       sessionType,
+      teammateId,
       color,
       icon: spawnIcon ?? existingSession?.icon,
       subagents,
@@ -1219,6 +1224,7 @@ export class StateManager {
       screenQuestionAbsent: existingSession?.screenQuestionAbsent,
       activeMonitors: transcript?.activeMonitors,
       scheduledWakeupAt: transcript?.scheduledWakeupAt,
+      scheduledWakeupSetAt: transcript?.scheduledWakeupSetAt,
       scheduledWakeupReason: transcript?.scheduledWakeupReason,
       backgroundTasks: transcript?.backgroundTasks,
       jiraKeys: mergeJiraKeys(
@@ -1959,6 +1965,7 @@ export class StateManager {
       session.needsPermission !== result.needsPermission ||
       !shallowArrayEquals(session.activeMonitors, result.activeMonitors) ||
       session.scheduledWakeupAt !== result.scheduledWakeupAt ||
+      session.scheduledWakeupSetAt !== result.scheduledWakeupSetAt ||
       !backgroundTasksEqual(session.backgroundTasks, result.backgroundTasks) ||
       session.slug !== slug ||
       session.proposedName !== proposedName ||
@@ -2100,6 +2107,7 @@ export class StateManager {
       session.pendingQuestion = result.pendingQuestion ?? undefined;
       session.activeMonitors = result.activeMonitors;
       session.scheduledWakeupAt = result.scheduledWakeupAt;
+      session.scheduledWakeupSetAt = result.scheduledWakeupSetAt;
       session.scheduledWakeupReason = result.scheduledWakeupReason;
       session.backgroundTasks = result.backgroundTasks;
       if (session.slug !== slug) {
@@ -3473,6 +3481,8 @@ export class StateManager {
       isCompacting: false,
       proposedName: rec.proposedName,
       sessionType: rec.sessionType,
+      // Not persisted — re-derived from the transcript head on every boot.
+      teammateId: transcriptPath ? readTeammateId(sessionId, transcriptPath) : undefined,
       color: rec.color,
       icon: rec.icon,
       subagents: [],
@@ -3591,6 +3601,7 @@ export class StateManager {
           if (transcriptState.lastActivity && new Date(transcriptState.lastActivity) < oneDayAgo) continue;
 
           const proposedName = readProposedName(sessionId, transcriptPath);
+          const teammateId = readTeammateId(sessionId, transcriptPath);
           const subagents = readSubagents(cwd, sessionId, transcriptPath);
 
           const recoveredOvrId = this.generateOvrId();
@@ -3615,6 +3626,7 @@ export class StateManager {
             proposedName,
             ideName: undefined,
             sessionType: 'plain', // historical recovery — can't verify IDE parentage
+            teammateId,
             color,
             subagents,
             needsPermission: false,

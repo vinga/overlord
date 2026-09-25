@@ -21,6 +21,9 @@ export interface ActivityItem {
   oldStringTruncated?: boolean;
   newStringTruncated?: boolean;
   isRedacted?: boolean;
+  /** for kind='thinking': the text is a visible one-line narration the TUI
+   *  prints inline (Fable / Mythos), not collapsed reasoning. */
+  visible?: boolean;
   contentTruncated?: boolean;    // content was cut at MAX_MESSAGE_LENGTH; full text only in transcript
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
@@ -28,6 +31,9 @@ export interface ActivityItem {
   durationMs?: number;           // for kind='tool': how long the tool call took
   timestamp?: string;            // ISO timestamp of when this entry occurred
   compactMeta?: { trigger: string; preTokens: number }; // for kind='compact'
+  /** for kind='message', role='user': this turn was relayed from a Claude Code
+   *  teammate with this teammate_id. `content` is the unwrapped body. */
+  teammateId?: string;
 }
 
 export interface Subagent {
@@ -77,9 +83,19 @@ export interface PendingQuestionSet {
 /** An in-flight Monitor tool_use — emitted while the tool has no tool_result yet. */
 export interface ActiveMonitor {
   toolUseId: string;
-  target: string;        // best-effort: input.shellId ?? input.taskId ?? input.id ?? ''
+  target: string;        // best-effort: input.description ?? input.shellId ?? input.taskId ?? input.id ?? ''
   startedAt?: string;    // ISO timestamp of the tool_use
   until?: string;        // input.until regex, if any
+  /** Harness task id ("Monitor started (task X…") — join key with the
+   *  <task-id> of the event / stream-ended notifications. Absent for the
+   *  older streaming Monitor (no tool_result until it ends). */
+  taskId?: string;
+  /** Epoch ms when the harness expires the watch (input.timeout_ms, else the
+   *  "expires in Nm" of the launch result, else 30m). */
+  expiresAt?: number;
+  /** Newest `<event>` payload delivered for this monitor, and when. */
+  lastEvent?: string;
+  lastEventAt?: string;
 }
 
 /** A `Bash(run_in_background: true)` command that was launched and has not yet
@@ -173,6 +189,10 @@ export interface Session {
   isCompacting?: boolean;
   ideName?: string;
   sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  /** teammate_id of the Claude Code lead driving this session — set when the first
+   *  user turn is a `<teammate-message>` hand-off. Derived from the transcript head
+   *  on every read, never persisted. */
+  teammateId?: string;
   replacedBy?: string;
   color: string;
   icon?: WorkerIcon;
@@ -207,6 +227,9 @@ export interface Session {
    *  "waiting". Survives user interjections (the wakeup still fires); cleared
    *  by a newer ScheduleWakeup (incl. stop) or expiry (fire time + 30s). */
   scheduledWakeupAt?: number;
+  /** Epoch ms when that ScheduleWakeup call was made — the desk badge shows the
+   *  elapsed sleep time measured from here. */
+  scheduledWakeupSetAt?: number;
   /** The `reason` string of that pending wakeup — one sentence, shown in the UI. */
   scheduledWakeupReason?: string;
   /** In-flight `Bash(run_in_background: true)` commands. Present ⇒ the session is

@@ -77,6 +77,8 @@ describe('scheduledWakeupAt detection', () => {
     const r = readTranscriptState(fp);
     expect(r.state).toBe('waiting');
     expect(r.scheduledWakeupAt).toBe(callTs + 600_000);
+    // The badge renders elapsed sleep time measured from the call itself.
+    expect(r.scheduledWakeupSetAt).toBe(callTs);
   });
 
   it('ignores stop:true calls', () => {
@@ -176,6 +178,8 @@ describe('scheduledWakeupAt detection', () => {
 
     // Past fire time + 30s grace, file untouched → cleared by re-eval.
     vi.advanceTimersByTime(120_000);
-    expect(readTranscriptState(fp).scheduledWakeupAt).toBeUndefined();
+    const expired = readTranscriptState(fp);
+    expect(expired.scheduledWakeupAt).toBeUndefined();
+    expect(expired.scheduledWakeupSetAt).toBeUndefined();
   });
 });

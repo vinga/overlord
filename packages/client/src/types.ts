@@ -18,6 +18,7 @@ interface ActivityItem {
   oldStringTruncated?: boolean;  // server cut it at 10k — diff context can't be located
   newStringTruncated?: boolean;
   isRedacted?: boolean;          // for kind='thinking'
+  visible?: boolean;             // for kind='thinking': inline one-line narration (Fable/Mythos), shown as text, not collapsed
   contentTruncated?: boolean;    // message text was cut at 32k; full text only in the transcript/pty
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
@@ -26,6 +27,9 @@ interface ActivityItem {
   timestamp?: string;            // ISO timestamp of when this entry occurred
   pending?: boolean;             // optimistic locally-sent message, not yet processed
   compactMeta?: { trigger: string; preTokens: number }; // for kind='compact'
+  /** for kind='message', role='user': relayed from a Claude Code teammate with
+   *  this teammate_id. `content` is already the unwrapped body. */
+  teammateId?: string;
 }
 
 interface Subagent {
@@ -68,9 +72,13 @@ interface PendingQuestionSet {
 
 interface ActiveMonitor {
   toolUseId: string;
-  target: string;
+  target: string;          // Monitor description when the harness form; shell/task id otherwise
   startedAt?: string;
   until?: string;
+  taskId?: string;         // harness task id (join key with the <task-id> of its notifications)
+  expiresAt?: number;      // epoch ms the harness expires the watch
+  lastEvent?: string;      // newest <event> payload delivered
+  lastEventAt?: string;
 }
 
 /** A `Bash(run_in_background: true)` command still running — the session is idle
@@ -146,6 +154,9 @@ interface Session {
   isCompacting?: boolean;
   resumedFrom?: string;
   sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  /** teammate_id of the Claude Code lead driving this session — set when its first
+   *  user turn is a `<teammate-message>` hand-off. Derived, never persisted. */
+  teammateId?: string;
   /** True when sessionType==='embedded' and the server has a live PTY for this ovrId. */
   ptyAlive?: boolean;
   bridgeTty?: string;         // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
@@ -163,6 +174,7 @@ interface Session {
   questionStale?: boolean;
   activeMonitors?: ActiveMonitor[];
   scheduledWakeupAt?: number;  // epoch ms a pending ScheduleWakeup fires; present ⇒ show "scheduled" instead of "waiting"
+  scheduledWakeupSetAt?: number;  // epoch ms the ScheduleWakeup call was made; the badge shows elapsed since this
   scheduledWakeupReason?: string;  // why it's sleeping (the ScheduleWakeup `reason`)
   backgroundTasks?: BackgroundTask[];  // in-flight background Bash commands; present ⇒ show "running" instead of "waiting"
   jiraKeys?: string[];

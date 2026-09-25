@@ -211,6 +211,34 @@ export function extractSkillsUsed(segments: string[]): string[] {
 }
 
 /**
+ * Messages relayed from a Claude Code teammate arrive wrapped:
+ *   <teammate-message teammate_id="team-lead">\n…body…\n</teammate-message>
+ *
+ * The wrapper is transport, not content. It must never reach a display name
+ * (it eats the whole 50-char budget), an intent prompt (Haiku ends up
+ * summarizing XML), or a markdown renderer — `marked` passes it through as a
+ * raw HTML block and the browser turns it into an unknown custom element,
+ * swallowing the markdown inside.
+ */
+const TEAMMATE_MESSAGE_RE =
+  /^\s*<teammate-message\s+teammate_id="([^"]+)"\s*>([\s\S]*?)<\/teammate-message>\s*$/;
+/** Same shape, close tag missing — a tail-truncated or still-streaming entry. */
+const TEAMMATE_MESSAGE_OPEN_RE =
+  /^\s*<teammate-message\s+teammate_id="([^"]+)"\s*>([\s\S]*)$/;
+
+export function parseTeammateMessage(text: string): { teammateId: string; body: string } | null {
+  const m = TEAMMATE_MESSAGE_RE.exec(text) ?? TEAMMATE_MESSAGE_OPEN_RE.exec(text);
+  if (!m) return null;
+  return { teammateId: m[1], body: m[2].trim() };
+}
+
+/** The message body with any teammate wrapper stripped. Non-teammate text is returned as-is. */
+export function unwrapTeammateMessage(text: string): string {
+  const parsed = parseTeammateMessage(text);
+  return parsed ? parsed.body : text;
+}
+
+/**
  * Model-invoked skills: the assistant calls the `Skill` tool (input.skill) or
  * `SlashCommand` tool (input.command) without the user ever typing a slash, so
  * these never appear as `<command-name>` user entries.
@@ -280,6 +308,11 @@ interface TranscriptCache {
    *  entries are carried forward and dropped only on an observed
    *  <task-notification>, on /clear, or by TTL. See BACKGROUND_TASK_TTL_MS. */
   pendingBackgroundTasks?: Map<string, BackgroundTask>;
+  /** Active harness Monitors, keyed by task id. Sticky for the same reason as
+   *  background tasks: a 30m watch outlives the tail window while its events
+   *  keep streaming in. Dropped on the stream-ended / expired notification, on
+   *  /clear, or when expiresAt (+ grace) has passed. */
+  pendingMonitors?: Map<string, ActiveMonitor>;
 }
 const transcriptCache = new Map<string, TranscriptCache>();
 
@@ -352,6 +385,10 @@ const subagentsDirCache = new Map<string, SubagentsDirCache>();
 
 const proposedNameCache = new Map<string, string>();
 
+/** sessionId → teammate_id of the lead that drives it, or '' for "not a teammate".
+ *  Derived from the transcript head, so it is stable for the life of the session. */
+const teammateIdCache = new Map<string, string>();
+
 export function clearTranscriptCache(filePath: string): void {
   transcriptCache.delete(filePath);
   compactCountCache.delete(filePath);
@@ -364,6 +401,7 @@ export function clearSessionCaches(
   cwd?: string,
 ): void {
   proposedNameCache.delete(sessionId);
+  teammateIdCache.delete(sessionId);
   if (transcriptPath) {
     transcriptCache.delete(transcriptPath);
     compactCountCache.delete(transcriptPath);
@@ -452,6 +490,76 @@ function parseTaskNotificationToolUseId(parsed: {
   return TASK_NOTIFICATION_TOOL_USE_RE.exec(xml)?.[1];
 }
 
+// Models whose non-empty `thinking` text is a short visible narration (the
+// real reasoning arrives as an empty block carrying only a signature). Measured
+// across local transcripts: every non-empty thinking block is one of these, all
+// under ~450 chars; Opus / Haiku thinking text is always empty.
+const VISIBLE_THINKING_MODEL_RE = /^claude-(fable|mythos)/;
+export function isVisibleThinkingModel(model: string | undefined): boolean {
+  return typeof model === 'string' && VISIBLE_THINKING_MODEL_RE.test(model);
+}
+
+// Harness Monitor (Claude Code ≥ 2.1.27x): the tool_result confirms the launch
+// immediately — "Monitor started (task X, expires in 30m …)" — and each event
+// then arrives as a <task-notification> carrying <task-id> + <event>, with no
+// <tool-use-id>. The stream end / expiry are notifications on the same task id.
+const MONITOR_LAUNCH_RE = /^Monitor started \(task ([^,)\s]+)(?:, expires in (\d+)m)?/;
+const MONITOR_EVENT_SUMMARY_RE = /<summary>Monitor event: \\?"([\s\S]*?)\\?"<\/summary>/;
+const MONITOR_ENDED_SUMMARY_RE = /<summary>Monitor \\?"([\s\S]*?)\\?" stream ended<\/summary>/;
+const MONITOR_EXPIRED_EVENT_RE = /<event>\s*\[Monitor expired/;
+const MONITOR_DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+// Keep an expired-by-clock monitor briefly: the harness writes the expiry
+// notification a moment after the deadline, and that is the authoritative end.
+const MONITOR_EXPIRY_GRACE_MS = 60_000;
+
+export interface MonitorNotification {
+  taskId: string;
+  kind: 'event' | 'ended' | 'expired';
+  description?: string;
+  event?: string;
+  timestamp?: string;
+}
+
+/**
+ * The <task-notification> XML from any line shape that carries one: the
+ * queue-operation enqueue/remove, the attachment/queued_command, or the user
+ * turn the harness injects (string content, origin.kind = 'task-notification').
+ */
+function taskNotificationXml(parsed: {
+  type?: string;
+  content?: unknown;
+  attachment?: { commandMode?: string; prompt?: string };
+  message?: { content?: unknown };
+}): string | undefined {
+  let xml: string | undefined;
+  if (parsed.type === 'queue-operation' && typeof parsed.content === 'string') {
+    xml = parsed.content;
+  } else if (parsed.attachment?.commandMode === 'task-notification' && typeof parsed.attachment.prompt === 'string') {
+    xml = parsed.attachment.prompt;
+  } else if (parsed.type === 'user') {
+    const c = parsed.message?.content;
+    if (typeof c === 'string') xml = c;
+    else if (Array.isArray(c)) {
+      const t = (c as Array<{ type?: string; text?: string }>).find(b => b.type === 'text' && typeof b.text === 'string');
+      xml = t?.text;
+    }
+  }
+  return xml && xml.includes('<task-notification>') ? xml : undefined;
+}
+
+/** Classify a <task-notification> that belongs to a harness Monitor; undefined for any other task. */
+export function parseMonitorNotification(xml: string, timestamp?: string): MonitorNotification | undefined {
+  const taskId = /<task-id>([^<]+)<\/task-id>/.exec(xml)?.[1]?.trim();
+  if (!taskId) return undefined;
+  const ended = MONITOR_ENDED_SUMMARY_RE.exec(xml);
+  if (ended) return { taskId, kind: 'ended', description: ended[1], timestamp };
+  const ev = MONITOR_EVENT_SUMMARY_RE.exec(xml);
+  if (!ev) return undefined;
+  const event = /<event>([\s\S]*?)<\/event>/.exec(xml)?.[1]?.trim();
+  if (MONITOR_EXPIRED_EVENT_RE.test(xml)) return { taskId, kind: 'expired', description: ev[1], event, timestamp };
+  return { taskId, kind: 'event', description: ev[1], event, timestamp };
+}
+
 /**
  * Re-evaluate the time-dependent state from a cached stateHint without any file I/O.
  * Returns null if the state hasn't changed (caller can skip broadcasting).
@@ -499,6 +607,7 @@ function isCodexTranscript(filePath: string): boolean {
 
 export function clearProposedNameCache(sessionId: string): void {
   proposedNameCache.delete(sessionId);
+  teammateIdCache.delete(sessionId);
 }
 
 /** Look up shadow path for a sessionId via sessionStore (ovrId required). */
@@ -614,6 +723,9 @@ export function readFirstUserMessage(transcriptPath: string): string {
           const textBlock = arr.find((b: { type?: string; text?: string }) => b.type === 'text');
           text = (typeof textBlock?.text === 'string' ? textBlock.text : typeof c === 'string' ? c : '').trim();
           if (text.startsWith('<environment_details') || text.startsWith('<local-command') || text.startsWith('<command-name>')) text = '';
+          // A teammate hand-off carries the real task inside the wrapper — hand
+          // Haiku the task, not the XML.
+          text = unwrapTeammateMessage(text);
           // Strip trailing environment/system blocks appended to user messages
           const envIdx = text.indexOf('<environment_details');
           if (envIdx > 0) text = text.slice(0, envIdx).trim();
@@ -1084,6 +1196,8 @@ export function readTranscriptState(filePath: string): {
   activeMonitors?: ActiveMonitor[];
   // Epoch ms when a pending ScheduleWakeup fires — see the ScheduleWakeup block below.
   scheduledWakeupAt?: number;
+  // Epoch ms of the ScheduleWakeup call itself — the badge shows elapsed since this.
+  scheduledWakeupSetAt?: number;
   // The `reason` input of that pending call — one sentence, shown in the UI.
   scheduledWakeupReason?: string;
   // Launched-but-unfinished `Bash(run_in_background: true)` commands. Sticky across
@@ -1113,7 +1227,7 @@ export function readTranscriptState(filePath: string): {
           || reEval.needsPermission !== cached.result.needsPermission
           || isCompacting !== cached.result.isCompacting
           || scheduledWakeupAt !== cached.result.scheduledWakeupAt) {
-        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting, scheduledWakeupAt, scheduledWakeupReason: scheduledWakeupAt ? cached.result.scheduledWakeupReason : undefined };
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting, scheduledWakeupAt, scheduledWakeupSetAt: scheduledWakeupAt ? cached.result.scheduledWakeupSetAt : undefined, scheduledWakeupReason: scheduledWakeupAt ? cached.result.scheduledWakeupReason : undefined };
       }
       return cached.result;
     }
@@ -1138,7 +1252,7 @@ export function readTranscriptState(filePath: string): {
           || reEval.needsPermission !== cached.result.needsPermission
           || isCompacting !== cached.result.isCompacting
           || scheduledWakeupAt !== cached.result.scheduledWakeupAt) {
-        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting, scheduledWakeupAt, scheduledWakeupReason: scheduledWakeupAt ? cached.result.scheduledWakeupReason : undefined };
+        cached.result = { ...cached.result, state: reEval.state, needsPermission: reEval.needsPermission, isCompacting, scheduledWakeupAt, scheduledWakeupSetAt: scheduledWakeupAt ? cached.result.scheduledWakeupSetAt : undefined, scheduledWakeupReason: scheduledWakeupAt ? cached.result.scheduledWakeupReason : undefined };
       }
       return cached.result;
     }
@@ -1207,6 +1321,7 @@ export function readTranscriptState(filePath: string): {
     // expiry (fireAt + grace) plus the state gate (session is working while it
     // processes the fired prompt, and the badge only renders on 'waiting').
     let scheduledWakeupAt: number | undefined;
+    let scheduledWakeupSetAt: number | undefined;
     let scheduledWakeupReason: string | undefined;
     let scheduleWakeupChecked = false;
     // Background-task tracking. Starts found in this window, plus the tool-use-ids
@@ -1214,6 +1329,11 @@ export function readTranscriptState(filePath: string): {
     // pending map after the loop — see the merge block below.
     const backgroundStarts = new Map<string, BackgroundTask>();
     const terminatedToolUseIds = new Set<string>();
+    // Harness-Monitor tracking, same sticky pattern, keyed by task id. Reverse
+    // scan ⇒ the first event seen per task is the newest one.
+    const monitorStarts = new Map<string, ActiveMonitor>();
+    const endedMonitorTaskIds = new Set<string>();
+    const latestMonitorEvents = new Map<string, MonitorNotification>();
 
     // Extract model and inputTokens from the last assistant event
     let model: string | undefined;
@@ -1238,6 +1358,18 @@ export function readTranscriptState(filePath: string): {
         // enqueue + remove, then attachment/queued_command) — the Set dedupes.
         const notifiedToolUseId = parseTaskNotificationToolUseId(parsed);
         if (notifiedToolUseId) terminatedToolUseIds.add(notifiedToolUseId);
+        // Monitor events / stream end / expiry ride the same notification shapes.
+        const notifXml = taskNotificationXml(parsed);
+        if (notifXml) {
+          const mn = parseMonitorNotification(notifXml, parsed.timestamp ?? parsed.attachment?.timestamp);
+          if (mn) {
+            if (mn.kind === 'event') {
+              if (!latestMonitorEvents.has(mn.taskId)) latestMonitorEvents.set(mn.taskId, mn);
+            } else {
+              endedMonitorTaskIds.add(mn.taskId);
+            }
+          }
+        }
         if (parsed && parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
           activityFeed.unshift({
             kind: 'compact',
@@ -1281,7 +1413,17 @@ export function readTranscriptState(filePath: string): {
               text = textBlock?.text;
             }
             if (text) {
-              activityFeed.unshift({ kind: 'message', role: 'user', ...capMessage(text), timestamp: parsed.timestamp });
+              // Unwrap a teammate relay so the body renders as markdown (the raw
+              // wrapper reaches the client as a raw HTML block) and tag the item
+              // with its sender so the bubble can be labelled.
+              const relay = parseTeammateMessage(text);
+              activityFeed.unshift({
+                kind: 'message',
+                role: 'user',
+                ...capMessage(relay ? relay.body : text),
+                ...(relay ? { teammateId: relay.teammateId } : {}),
+                timestamp: parsed.timestamp,
+              });
             }
           } else if (parsed.type === 'assistant') {
             // Assistant message: extract text and tool_use blocks
@@ -1336,15 +1478,35 @@ export function readTranscriptState(filePath: string): {
                   // Reverse-chronological loop: first occurrence per id wins, superseded blocks with results are skipped.
                   if (block.name === 'Monitor') {
                     const toolUseId = (block as Record<string, unknown>).id as string | undefined;
-                    if (toolUseId && !seenMonitorIds.has(toolUseId) && !toolResults.has(toolUseId)) {
+                    if (toolUseId && !seenMonitorIds.has(toolUseId)) {
                       seenMonitorIds.add(toolUseId);
                       const inp = (block.input && typeof block.input === 'object') ? block.input as Record<string, unknown> : {};
-                      const target = (typeof inp.shellId === 'string' && inp.shellId)
+                      const target = (typeof inp.description === 'string' && inp.description)
+                        || (typeof inp.shellId === 'string' && inp.shellId)
                         || (typeof inp.taskId === 'string' && inp.taskId)
                         || (typeof inp.id === 'string' && inp.id)
                         || '';
                       const until = typeof inp.until === 'string' ? inp.until : undefined;
-                      activeMonitors.push({ toolUseId, target: target as string, startedAt: parsed.timestamp, until });
+                      const res = toolResults.get(toolUseId);
+                      if (!res) {
+                        // Streaming Monitor: in flight until its tool_result lands.
+                        activeMonitors.push({ toolUseId, target: target as string, startedAt: parsed.timestamp, until });
+                      } else if (!res.isError) {
+                        // Harness Monitor: the result confirms the launch and names the
+                        // task; events + the end arrive as notifications on that id.
+                        const launch = MONITOR_LAUNCH_RE.exec(res.content);
+                        if (launch) {
+                          const taskId = launch[1];
+                          const startedMs = parsed.timestamp ? Date.parse(parsed.timestamp) : NaN;
+                          const timeoutMs = typeof inp.timeout_ms === 'number' ? inp.timeout_ms
+                            : launch[2] ? Number(launch[2]) * 60_000
+                            : MONITOR_DEFAULT_TIMEOUT_MS;
+                          const expiresAt = Number.isFinite(startedMs) ? startedMs + timeoutMs : undefined;
+                          if (!monitorStarts.has(taskId)) {
+                            monitorStarts.set(taskId, { toolUseId, target: target as string, startedAt: parsed.timestamp, until, taskId, expiresAt });
+                          }
+                        }
+                      }
                     }
                   }
                   // Launched background Bash. The tool_result text is the confirmation
@@ -1376,9 +1538,11 @@ export function readTranscriptState(filePath: string): {
                     const res = toolUseId ? toolResults.get(toolUseId) : undefined;
                     if (inp.stop !== true && typeof inp.delaySeconds === 'number' && res && !res.isError && parsed.timestamp) {
                       const clampedDelay = Math.min(3600, Math.max(60, inp.delaySeconds));
-                      const fireAt = Date.parse(parsed.timestamp) + clampedDelay * 1000;
+                      const setAt = Date.parse(parsed.timestamp);
+                      const fireAt = setAt + clampedDelay * 1000;
                       if (Number.isFinite(fireAt) && Date.now() < fireAt + SCHEDULED_WAKEUP_GRACE_MS) {
                         scheduledWakeupAt = fireAt;
+                        scheduledWakeupSetAt = setAt;
                         scheduledWakeupReason = typeof inp.reason === 'string' ? inp.reason : undefined;
                       }
                     }
@@ -1401,11 +1565,13 @@ export function readTranscriptState(filePath: string): {
                         if (inp.content.length > MAX_CONTENT_LENGTH) item.newStringTruncated = true;
                       }
                     }
-                    // Store trimmed input JSON (truncate large string values)
+                    // Full input JSON. Only a pathological string value (a Write of a
+                    // whole file beyond the message cap) is cut — a long Bash command
+                    // must stay readable end to end.
                     const trimmed: Record<string, unknown> = {};
                     for (const [k, v] of Object.entries(inp)) {
-                      if (typeof v === 'string' && v.length > 500) {
-                        trimmed[k] = v.slice(0, 500) + '…';
+                      if (typeof v === 'string' && v.length > MAX_MESSAGE_LENGTH) {
+                        trimmed[k] = v.slice(0, MAX_MESSAGE_LENGTH) + '…';
                       } else {
                         trimmed[k] = v;
                       }
@@ -1434,10 +1600,16 @@ export function readTranscriptState(filePath: string): {
                 if (block.type === 'thinking') {
                   const thinkingText = typeof (block as Record<string, unknown>).thinking === 'string' ? (block as Record<string, unknown>).thinking as string : '';
                   if (thinkingText.trim().length > 0) {
+                    // Fable / Mythos ship encrypted reasoning (empty text + signature)
+                    // and, separately, a one-line *visible* narration that the TUI
+                    // prints inline, not collapsed. Flag it so the client shows it as
+                    // text instead of behind a "Show thinking" toggle.
+                    const visible = isVisibleThinkingModel(parsed.message?.model) || undefined;
                     activityFeed.unshift({
                       kind: 'thinking',
                       content: thinkingText.slice(0, MAX_CONTENT_LENGTH),
                       timestamp: parsed.timestamp,
+                      ...(visible ? { visible } : {}),
                     });
                   }
                 }
@@ -1628,6 +1800,28 @@ export function readTranscriptState(filePath: string): {
     }
     const backgroundTasks = Array.from(pendingBackgroundTasks.values());
 
+    // Same sticky merge for harness Monitors: carry forward, add launches seen in
+    // this window, drop the ones whose stream ended / expired, TTL by expiresAt,
+    // then pin the newest event onto each survivor.
+    const pendingMonitors = new Map<string, ActiveMonitor>(
+      transcriptTruncated ? [] : (cached?.pendingMonitors ?? []),
+    );
+    for (const [taskId, mon] of monitorStarts) {
+      if (!pendingMonitors.has(taskId)) pendingMonitors.set(taskId, mon);
+    }
+    for (const taskId of endedMonitorTaskIds) pendingMonitors.delete(taskId);
+    for (const [taskId, mon] of pendingMonitors) {
+      if (mon.expiresAt !== undefined && now > mon.expiresAt + MONITOR_EXPIRY_GRACE_MS) {
+        pendingMonitors.delete(taskId);
+        continue;
+      }
+      const ev = latestMonitorEvents.get(taskId);
+      if (ev?.event !== undefined && ev.event !== mon.lastEvent) {
+        pendingMonitors.set(taskId, { ...mon, lastEvent: ev.event.slice(0, 500), lastEventAt: ev.timestamp });
+      }
+    }
+    for (const mon of pendingMonitors.values()) activeMonitors.push(mon);
+
     const scanSegments = gatherScanSegments(last30);
     const jiraKeys = extractJiraKeys(scanSegments.user, getJiraProjectRegex());
     const prRefs = extractPrRefs(scanSegments.wide);
@@ -1651,13 +1845,14 @@ export function readTranscriptState(filePath: string): {
       detectedPlans: detectedPlans.length > 0 ? detectedPlans : undefined,
       activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
       scheduledWakeupAt,
+      scheduledWakeupSetAt,
       scheduledWakeupReason,
       backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
       prRefs: prRefs.length > 0 ? prRefs : undefined,
       skillsUsed: skillsUsed.length > 0 ? skillsUsed : undefined,
     };
-    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes, pendingBackgroundTasks });
+    transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes, pendingBackgroundTasks, pendingMonitors });
     evictTranscriptCache(now);
     return result;
   } catch {
@@ -2117,8 +2312,11 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
             text = block?.text;
           }
           if (text) {
-            // Clean up and truncate
-            const cleaned = text.replace(/\s+/g, ' ').trim();
+            // A teammate-relayed prompt is wrapped in <teammate-message …>; the
+            // wrapper alone is longer than the 50-char budget, so naming from the
+            // raw text yields `<teammate-message teammate_id="team-lead"> Commu`.
+            // Name from the body — the sender is surfaced separately, see readTeammateId.
+            const cleaned = unwrapTeammateMessage(text).replace(/\s+/g, ' ').trim();
             if (cleaned.length > 5) {
               const result = cleaned.slice(0, 50);
               proposedNameCache.set(sessionId, result);
@@ -2135,6 +2333,58 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
   }
 
   return undefined;
+}
+
+/**
+ * The teammate_id of the lead driving this session, or undefined for an ordinary one.
+ *
+ * Head-read, not tail-read: a teammate session's FIRST user message is the lead's
+ * task hand-off, and the tail window loses it within a few turns. Cached per
+ * sessionId (cleared by clearSessionCaches) so the per-tick cost is a Map lookup.
+ */
+export function readTeammateId(sessionId: string, transcriptPath: string): string | undefined {
+  const cached = teammateIdCache.get(sessionId);
+  if (cached !== undefined) return cached || undefined;
+  if (isCodexTranscript(transcriptPath)) {
+    teammateIdCache.set(sessionId, '');
+    return undefined;
+  }
+
+  let teammateId = '';
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    let content: string;
+    try {
+      const stat = fs.fstatSync(fd);
+      const readSize = Math.min(stat.size, 64 * 1024);
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, 0);
+      content = buf.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      let parsed: { type?: string; message?: { content?: string | Array<{ type?: string; text?: string }> } };
+      try { parsed = JSON.parse(line) as typeof parsed; } catch { continue; }
+      if (parsed.type !== 'user') continue;
+      const raw = parsed.message?.content;
+      const text = typeof raw === 'string'
+        ? raw
+        : Array.isArray(raw) ? raw.find(b => b.type === 'text')?.text : undefined;
+      if (!text?.trim()) continue;
+      // First substantive user turn decides. A teammate hand-off is always first;
+      // anything else means this session is driven by a human.
+      teammateId = parseTeammateMessage(text)?.teammateId ?? '';
+      break;
+    }
+  } catch {
+    // transcript unreadable — treat as not-a-teammate, but don't cache the miss
+    return undefined;
+  }
+
+  teammateIdCache.set(sessionId, teammateId);
+  return teammateId || undefined;
 }
 
 export function readSubagents(cwd: string, sessionId: string, transcriptPath?: string | null): Subagent[] {

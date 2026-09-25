@@ -2,9 +2,9 @@
  * Elapsed since a background command started. There is no fire time to count
  * down to, so the desk badge shows how long the task has been running instead.
  */
-export function formatElapsed(startedAt: string | undefined, now: number = Date.now()): string {
-  if (!startedAt) return '';
-  const started = Date.parse(startedAt);
+export function formatElapsed(startedAt: string | number | undefined, now: number = Date.now()): string {
+  if (startedAt === undefined || startedAt === '') return '';
+  const started = typeof startedAt === 'number' ? startedAt : Date.parse(startedAt);
   if (!Number.isFinite(started)) return '';
   const secs = Math.max(0, Math.floor((now - started) / 1000));
   if (secs < 60) return `${secs}s`;

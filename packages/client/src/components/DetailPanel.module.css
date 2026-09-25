@@ -1375,6 +1375,64 @@
   letter-spacing: 0.01em;
 }
 
+/* Harness Monitor notice: a left-aligned card so the event payload has room. */
+.monitorNotification {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 12px;
+  max-width: 92%;
+  min-width: 60%;
+  border-radius: 10px;
+  border-color: rgba(96, 165, 250, 0.22);
+  background: rgba(96, 165, 250, 0.06);
+}
+
+.monitorNotificationDone {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.monitorNotificationHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.monitorNotificationIcon {
+  color: rgba(96, 165, 250, 0.9);
+  font-size: 9px;
+}
+
+.monitorNotificationDone .monitorNotificationIcon {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.monitorNotificationName {
+  color: rgba(255, 255, 255, 0.62);
+  font-weight: 500;
+}
+
+.monitorNotificationTime {
+  margin-left: auto;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.22);
+  white-space: nowrap;
+}
+
+.monitorNotificationEvent {
+  font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.55);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+}
+
 .transcriptContent {
   font-size: 14px;
   color: inherit;
@@ -3236,6 +3294,22 @@
   font-style: italic;
 }
 
+/* Visible narration (Fable / Mythos): one dim inline line, mirrors the TUI. */
+.thinkingNarration {
+  padding: 2px 8px;
+}
+
+.thinkingNarrationText {
+  display: block;
+  color: rgba(255, 255, 255, 0.42);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  font-style: italic;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Permission prompt */
 .permissionPrompt {
   margin: 8px 16px 0;
@@ -4420,4 +4494,38 @@
   font-size: 11px;
   color: rgba(255, 255, 255, 0.5);
   font-style: italic;
+}
+
+/* A prompt relayed from a Claude Code teammate. It sits in the user lane
+   (it IS this session's prompt) but the sender is another Claude, not the
+   person reading the panel — so the bubble gets an indigo edge and a byline. */
+.transcriptBubbleTeammate {
+  background: rgba(129, 140, 248, 0.07) !important;
+  border-color: rgba(129, 140, 248, 0.28) !important;
+}
+
+.teammateRelayHeader {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(165, 180, 252, 0.72);
+  white-space: nowrap;
+}
+
+.teammateRelayIcon {
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.85;
+  text-transform: none;
+}
+
+.teammateRelayId {
+  color: rgba(199, 210, 254, 0.98);
+  text-transform: none;
+  letter-spacing: 0.02em;
 }
