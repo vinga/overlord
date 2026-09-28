@@ -1010,11 +1010,8 @@ export function registerApiRoutes(
   });
 
   // Inline file editor endpoints
-  // Reads use 'browse' scope ($HOME + roots): sessions routinely cite files in
-  // repos that are not rooms, and those links 403'd. The secret filter still applies;
-  // writes (PUT) stay limited to the narrower 'file' scope.
   app.get('/api/file', (req, res) => {
-    const guarded = guardPath(req.query.path, res, 'browse');
+    const guarded = guardPath(req.query.path, res);
     if (!guarded) return;
     const filePath = guarded;
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
@@ -1034,7 +1031,7 @@ export function registerApiRoutes(
 
   // Raw binary serving for the inline file viewer — image types only.
   app.get('/api/file-raw', (req, res) => {
-    const guarded = guardPath(req.query.path, res, 'browse');
+    const guarded = guardPath(req.query.path, res);
     if (!guarded) return;
     const filePath = guarded;
     const mime = IMAGE_MIME[extname(filePath).slice(1).toLowerCase()];
@@ -1065,7 +1062,7 @@ export function registerApiRoutes(
   // Open file endpoint: opens a file path in a JetBrains IDE (Windows) or default system editor
   app.post('/api/open-file', express.json(), (req, res) => {
     const { path: rawPath, ideName } = req.body as { path: string; ideName?: string };
-    const filePath = guardPath(rawPath, res, 'browse');
+    const filePath = guardPath(rawPath, res);
     if (!filePath) return;
     // execFile, not exec: the path reaches the launcher as an argv entry, so a
     // quote or `;` in a filename can no longer close the shell string and run.

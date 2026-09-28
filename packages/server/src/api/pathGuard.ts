@@ -106,7 +106,7 @@ export function resolveAllowedPath(
   }
   const target = realpathDeepest(raw);
   if (looksSecret(target)) {
-    return { ok: false, status: 403, reason: 'path looks like a secret' };
+    return { ok: false, status: 403, reason: 'file looks like a secret (.env, key, credentials) — not opened' };
   }
   const roots = allowedRoots();
   if (opts.mode === 'browse') {
@@ -116,7 +116,9 @@ export function resolveAllowedPath(
     return {
       ok: false,
       status: 403,
-      reason: 'path outside allowed roots (set OVERLORD_EXTRA_ROOTS to widen)',
+      reason: opts.mode === 'browse'
+        ? 'path outside your home folder and rooms (set OVERLORD_EXTRA_ROOTS to widen)'
+        : 'file is not inside any room — open a session in that repo to view it (or add it to OVERLORD_EXTRA_ROOTS)',
     };
   }
   return { ok: true, path: target };

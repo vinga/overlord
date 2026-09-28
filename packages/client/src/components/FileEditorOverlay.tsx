@@ -101,7 +101,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
         if (!r.ok) {
           const reason = await r.json().then((b: { error?: string }) => b.error).catch(() => undefined);
           if (cancelled) return;
-          setSaveError(reason ? `Error ${r.status}: ${reason}` : `Error ${r.status}`);
+          setSaveError(reason ? `Can't open: ${reason}` : `Error ${r.status}`);
           setLoading(false);
           return;
         }
