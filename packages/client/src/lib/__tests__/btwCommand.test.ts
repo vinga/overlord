@@ -21,4 +21,13 @@ describe('isBtwDraft', () => {
     expect(isBtwDraft('/btwx')).toBe(false);
     expect(isBtwDraft('search me')).toBe(false);
   });
+  it('treats a partial prefix as a draft so typing /btw never filters', () => {
+    expect(isBtwDraft('/')).toBe(true);
+    expect(isBtwDraft('/b')).toBe(true);
+    expect(isBtwDraft('/bt')).toBe(true);
+    expect(isBtwDraft('/BT')).toBe(true);
+    expect(isBtwDraft('/x')).toBe(false);
+    expect(isBtwDraft('b')).toBe(false);
+    expect(isBtwDraft('')).toBe(false);
+  });
 });

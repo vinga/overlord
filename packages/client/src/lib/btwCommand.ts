@@ -11,8 +11,12 @@ export function parseBtwCommand(input: string): string | null {
   return text.length > 0 ? text : null;
 }
 
-/** True while the user is typing a /btw command (even before any question text). */
+/** True while the user is typing a /btw command — including the partial
+ *  prefix (`/`, `/b`, `/bt`) so the grid does not flicker through a filter
+ *  on the way to the command. */
 export function isBtwDraft(input: string): boolean {
   const t = input.trimStart().toLowerCase();
+  if (t.length === 0) return false;
+  if (t.length < BTW_PREFIX.length) return BTW_PREFIX.startsWith(t);
   return t === BTW_PREFIX || t.startsWith(BTW_PREFIX + ' ');
 }
