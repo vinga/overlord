@@ -160,35 +160,40 @@ curl -s -X POST "$OVERLORD_BASE/api/sessions/spawn" \
 
 - `cwd` (required): take it verbatim from a record's `cwd` field so the session lands in that room.
 - `name`: display name — pick one not already in use; match the room's naming style.
-- `prompt`: injected once the TUI is ready — this is how you hand the new worker its first task.
-  **Best-effort, not guaranteed — always verify (below).**
+- `prompt`: passed to `claude` as its initial prompt at launch — this is how you hand the new
+  worker its first task. It arrives as a real first user message. **Still verify (below).**
 - `icon`: avatar glyph, applied at creation (see below). An invalid value 400s the whole spawn.
 - `master: true`: crown session (oversight role). Rarely needed.
 
 ### Verify the prompt landed — REQUIRED
 
-The spawn `prompt` is queued against the new PTY and fired on its first output (or a 1.5s fallback
-timer). It can silently not land: the queued entry expires after 120s if the PTY never produced
-output, the keystrokes can arrive before the input box accepts them, or the Enter may not confirm.
-The spawn still returns `{"ok":true}` — a session that came up idle looks identical to one that got
-its task. **A spawn is not done until you have seen the worker leave `waiting`.**
+The spawn still returns `{"ok":true}` even if the worker never started its task. **Do not judge by
+`state`:** `waiting` means both "never got the prompt" and "got it and is asking you a question".
+Check the transcript for a user message, and read the screen:
 
 ```bash
 OVR=ovr-XXXX   # from the spawn response
 sleep 10
-curl -s "$OVERLORD_BASE/api/debug/state" \
-  | jq -r --arg o "$OVR" '.sessions[] | select(.overlordId==$o) | "\(.state)\t\(.sessionId)"'
+SID=$(curl -s "$OVERLORD_BASE/api/debug/state" \
+  | jq -r --arg o "$OVR" '.sessions[] | select(.overlordId==$o) | .sessionId')
+T=$(ls ~/.claude/projects/*/"$SID".jsonl 2>/dev/null | head -1)
+echo "user messages: $(jq -c 'select(.type=="user" and .message.role=="user")' "$T" 2>/dev/null | wc -l)"
+curl -s "$OVERLORD_BASE/api/sessions/$SID/screen" | jq -r .text | tail -25
 ```
 
-`state` is `working` → the prompt landed, done. Still `waiting` (or `idle`) → it did not; inject it
-yourself with the **Claude sessionId** from that same line:
+- **User message present** → the prompt landed. If the screen ends in a question (y/n, a menu), the
+  worker is waiting on an answer — relay it to the user; do **not** re-send the task.
+- **No user message and the input line shows `[Pasted text …]`** → text arrived but Enter didn't
+  submit. Send a bare Enter: `-d '{"text":"\r"}'` to `/inject`. Do not re-send the text.
+- **No user message and an empty input box** → it really didn't land. Inject it with the Claude
+  sessionId:
 
 ```bash
-curl -s -X POST "$OVERLORD_BASE/api/sessions/<claudeSessionId>/inject" \
+curl -s -X POST "$OVERLORD_BASE/api/sessions/$SID/inject" \
   -H 'Content-Type: application/json' -d '{"text":"the same first task"}'
 ```
 
-Then re-check `state` once more. Never report a spawned worker as started on the `{"ok":true}` alone.
+Re-check the same way afterwards. Never report a spawned worker as started on the `{"ok":true}` alone.
 
 ### Choosing the room
 

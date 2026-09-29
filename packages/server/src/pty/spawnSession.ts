@@ -10,11 +10,11 @@ import { log } from '../logger.js';
  * the two never diverge.
  *
  * Mints a reserved ovrId against the PTY marker (adopted by addOrUpdate when the
- * live Claude session lands), registers the pty<->ovr maps, optionally queues an
- * initial prompt to be injected once the TUI is ready (see ptyEvents output
- * handler), broadcasts `terminal:spawned`, then spawns the PTY.
+ * live Claude session lands), registers the pty<->ovr maps, broadcasts
+ * `terminal:spawned`, then spawns the PTY with the optional initial prompt as
+ * claude's positional argument.
  *
- * On spawn failure the maps + queued prompt are cleaned up and the thrown Error
+ * On spawn failure the maps + queued icon are cleaned up and the thrown Error
  * is annotated with `.ovrId` so the caller can report it to the right worker.
  */
 export interface SpawnContext {
@@ -30,7 +30,7 @@ export interface SpawnOptions {
   name?: string;
   cols?: number;
   rows?: number;
-  /** Injected once the freshly spawned PTY produces output (TUI ready). */
+  /** First user message, passed to claude as its positional [prompt] arg. */
   prompt?: string;
   /** Avatar glyph. Applied when the live session adopts the reserved ovrId, so
    *  the first snapshot already carries it. 'user' is the default — no-op. */
@@ -68,13 +68,6 @@ export function spawnClaudeSession(
 
   if (opts.sessions) { opts.sessions.add(ovrId); opts.sessions.add(ptySessionId); }
 
-  // Queue the initial prompt BEFORE spawning. Marker-keyed (never cwd-keyed) so
-  // concurrent same-cwd spawns each get their own prompt. The ptyEvents output
-  // handler fires it once the TUI starts rendering.
-  if (opts.prompt?.trim()) {
-    ctx.stateManager.trackPendingInitialPrompt(ptySessionId, opts.prompt);
-  }
-
   // Queue the avatar icon against the reserved ovrId. 'user' is already the
   // default glyph, so queueing it would only write a redundant field.
   if (opts.icon && opts.icon !== 'user') {
@@ -87,12 +80,18 @@ export function spawnClaudeSession(
   // linking (ConPTY on Windows may give a wrapper PID that doesn't match
   // claude.exe). Prepend the user-provided name if any.
   const sessionName = name ? `${name}___OVR:${ptySessionId}` : `___OVR:${ptySessionId}`;
+  const args = ['--name', sessionName];
+  // Initial prompt goes in as claude's positional [prompt] arg, not typed into
+  // the PTY: a typed burst is paste-detected and wrapped in <pasted_content>,
+  // and the model then refuses to act on "pasted text with none of your own
+  // words". A leading space keeps a "-…" prompt from parsing as a flag.
+  const prompt = opts.prompt?.trim();
+  if (prompt) args.push(prompt.startsWith('-') ? ` ${prompt}` : prompt);
   try {
-    ctx.ptyManager.spawn(ptySessionId, cwd, cols, rows, ['--name', sessionName]);
+    ctx.ptyManager.spawn(ptySessionId, cwd, cols, rows, args);
   } catch (err) {
     ctx.ovrToPty.delete(ovrId);
     ctx.ptyToOvr.delete(ptySessionId);
-    ctx.stateManager.takePendingInitialPrompt(ptySessionId);
     ctx.stateManager.clearPendingSpawnIcon(ovrId);
     const e = err as Error & { ovrId?: string };
     e.ovrId = ovrId;
