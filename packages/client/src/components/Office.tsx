@@ -10,6 +10,8 @@ import { HiddenRoomsPill } from './HiddenRoomsPill';
 import { BtwToastStack, type BtwEntry } from './BtwToast';
 import { parseBtwCommand, isBtwDraft } from '../lib/btwCommand';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
+import { useStableCallback } from '../hooks/useStableCallback';
+import { useSharedValue } from '../hooks/useSharedValue';
 import styles from './Office.module.css';
 
 interface OfficeProps {
@@ -182,6 +184,34 @@ const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
 export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, bottomOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin' }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
+  // App passes plain (re-created every render) handlers; stable wrappers keep the
+  // memo'd Room from re-rendering on every snapshot tick. Not isPtySession: it is
+  // already a useCallback whose identity changes exactly when the PTY set does.
+  const roomOnSelectSession = useStableCallback(onSelectSession);
+  const roomOnSpawnSession = useStableCallback(onSpawnSession);
+  const roomOnSpawnDirect = useStableCallback(onSpawnDirect);
+  const roomOnNewTerminalSession = useStableCallback(onNewTerminalSession);
+  const roomOnRoomClick = useStableCallback(onRoomClick);
+  const roomOnSpawnNameChange = useStableCallback(onSpawnNameChange);
+  const roomOnSpawnCommit = useStableCallback(onSpawnCommit);
+  const roomOnTerminalSpawnCommit = useStableCallback(onTerminalSpawnCommit);
+  const roomOnDeleteSession = useStableCallback(onDeleteSession);
+  const roomOnCloseSession = useStableCallback(onCloseSession);
+  const roomOnArchiveSession = useStableCallback(onArchiveSession);
+  const roomOnOpenArchive = useStableCallback(onOpenArchive);
+  const roomOnDeleteArchive = useStableCallback(onDeleteArchive);
+  const roomOnRenameSession = useStableCallback(onRenameSession);
+  const roomOnCloneSession = useStableCallback(onCloneSession);
+  // App rebuilds the name map on every snapshot; keep the ref while content is equal.
+  const roomCustomNames = useSharedValue(customNames);
+  const pendingSpawnsByCwd = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof pendingSpawns>>();
+    for (const p of pendingSpawns ?? []) {
+      const list = map.get(p.cwd);
+      if (list) list.push(p); else map.set(p.cwd, [p]);
+    }
+    return map;
+  }, [pendingSpawns]);
   const { sortRooms, registerRooms, moveRoom } = useRoomsListOrder();
   const notesSummaries = useNotesSummaries();
   const [searchQuery, setSearchQuery] = useState('');
@@ -244,7 +274,8 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     seedFromServer(rooms);
   }, [rooms]);
 
-  const visibleRooms = useMemo(() => {
+  // Shared: the active-only / search filters copy rooms, which would defeat Room's memo.
+  const visibleRooms = useSharedValue(useMemo(() => {
     const q = filterQuery.trim().toLowerCase();
     let filtered = rooms.filter(room => room.sessions.length > 0);
     // Hidden rooms leave the grid — except while a search is active, where a
@@ -277,7 +308,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         .filter((r): r is NonNullable<typeof r> => r !== null);
     }
     return sortRooms(filtered);
-  }, [rooms, sortRooms, filterQuery, sessionMatches, activeOnly, hiddenMap]);
+  }, [rooms, sortRooms, filterQuery, sessionMatches, activeOnly, hiddenMap]));
 
   // `hiddenRooms` drives the pill list (session-less rooms have nothing to show).
   // `allHiddenRooms` is what "Show all" must operate on: unhideAll only clears the
@@ -469,29 +500,29 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
               >
                 <Room
                   room={room}
-                  onSelectSession={onSelectSession}
-                  customNames={customNames}
-                  onSpawnSession={onSpawnSession}
-                  onSpawnDirect={onSpawnDirect}
-                  onNewTerminalSession={onNewTerminalSession}
+                  onSelectSession={roomOnSelectSession}
+                  customNames={roomCustomNames}
+                  onSpawnSession={roomOnSpawnSession}
+                  onSpawnDirect={roomOnSpawnDirect}
+                  onNewTerminalSession={roomOnNewTerminalSession}
                   selectedSessionId={selectedSessionId}
-                  onRoomClick={onRoomClick}
+                  onRoomClick={roomOnRoomClick}
                   isSpawning={spawnCwd === room.cwd}
-                  onSpawnNameChange={onSpawnNameChange}
-                  onSpawnCommit={onSpawnCommit}
+                  onSpawnNameChange={roomOnSpawnNameChange}
+                  onSpawnCommit={roomOnSpawnCommit}
                   terminalSpawnCwd={terminalSpawnCwd}
-                  onTerminalSpawnCommit={onTerminalSpawnCommit}
-                  onDeleteSession={onDeleteSession}
-                  onCloseSession={onCloseSession}
-                  onArchiveSession={onArchiveSession}
-                  onOpenArchive={onOpenArchive}
-                  onDeleteArchive={onDeleteArchive}
-                  onRenameSession={onRenameSession}
-                  onCloneSession={onCloneSession}
+                  onTerminalSpawnCommit={roomOnTerminalSpawnCommit}
+                  onDeleteSession={roomOnDeleteSession}
+                  onCloseSession={roomOnCloseSession}
+                  onArchiveSession={roomOnArchiveSession}
+                  onOpenArchive={roomOnOpenArchive}
+                  onDeleteArchive={roomOnDeleteArchive}
+                  onRenameSession={roomOnRenameSession}
+                  onCloneSession={roomOnCloneSession}
                   isPtySession={isPtySession}
-                  pendingSpawns={pendingSpawns?.filter(p => p.cwd === room.cwd)}
+                  pendingSpawns={pendingSpawnsByCwd.get(room.cwd)}
                   platform={platform}
-                  onRoomDragStart={e => handleDragStart(e, room.id)}
+                  onRoomDragStart={handleDragStart}
                   onRoomDragEnd={handleDragEnd}
                   searchRevealed={filterQuery.trim().length > 0 && !!hiddenMap[room.id]}
                 />

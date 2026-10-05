@@ -4,6 +4,7 @@ import { Worker } from './Worker';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
 import { useRoomPrefix } from '../hooks/useRoomPrefix';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
+import { useTick } from '../hooks/useTick';
 import styles from './WorkerGroup.module.css';
 
 function lightenHsl(color: string, amount: number): string {
@@ -83,6 +84,9 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
     s.state === 'working' || s.state === 'thinking' ||
     ((s.state === 'waiting' || s.state === 'closed') && Date.now() - new Date(s.lastActivity).getTime() < 7 * 60 * 1000)
   );
+  // Idle subagents age out after 7 min; memo'd + shared snapshots no longer
+  // re-render this on every tick, so re-check once a minute while any are shown.
+  useTick(allRecentSubagents.some(s => s.state === 'waiting' || s.state === 'closed') ? 60_000 : null);
 
   const visibleSubagents = overflowExpanded ? allRecentSubagents : allRecentSubagents.slice(0, MAX_VISIBLE_SUBAGENTS);
   const displayName = customName ?? session.proposedName ?? session.slug ?? session.sessionId.slice(0, 8);

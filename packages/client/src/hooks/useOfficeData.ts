@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { OfficeSnapshot, TerminalMessage } from '../types';
+import { shareSnapshot } from '../lib/shareSnapshot';
 
 interface UseOfficeDataOptions {
   onTerminalMessage?: (msg: TerminalMessage) => void;
@@ -77,7 +78,8 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
 
           if (data.type === 'snapshot') {
             // New typed message format
-            setSnapshot(data as unknown as OfficeSnapshot);
+            // Reuse unchanged subtrees so memo'd rooms/workers skip the re-render.
+            setSnapshot(prev => shareSnapshot(prev, data as unknown as OfficeSnapshot));
           } else if (data.type && data.type.startsWith('terminal:')) {
             // Terminal message — dispatch to handler
             if (onTerminalMessageRef.current) {

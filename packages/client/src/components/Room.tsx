@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, memo } from 'react';
 import ReactDOM from 'react-dom';
 import type { Room as RoomType, Session, SessionProvider, TerminalSpawnMode, ArchiveEntry } from '../types';
 import { getLaunchInfo } from '../types';
@@ -244,7 +244,7 @@ interface RoomProps {
   isPtySession?: (sessionId: string) => boolean;
   pendingSpawns?: Array<{ id: string; cwd: string; fullName: string; startedAt: number }>;
   platform?: string;
-  onRoomDragStart?: (e: React.DragEvent) => void;
+  onRoomDragStart?: (e: React.DragEvent, roomId: string) => void;
   onRoomDragEnd?: () => void;
   /** True when this room is hidden but rendered because it matches an active search. */
   searchRevealed?: boolean;
@@ -477,7 +477,9 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
   );
 }
 
-export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd, searchRevealed = false }: RoomProps) {
+// memo: snapshots reuse unchanged room objects (shareSnapshot), so an idle room
+// skips the per-tick re-render. Its own 30s tick keeps the age labels fresh.
+export const Room = memo(function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd, searchRevealed = false }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -677,7 +679,7 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
           <span
             className={styles.roomDragHandle}
             draggable
-            onDragStart={onRoomDragStart}
+            onDragStart={e => onRoomDragStart(e, room.id)}
             onDragEnd={onRoomDragEnd}
             title="Drag to reorder room"
             aria-hidden="true"
@@ -1047,4 +1049,4 @@ export function Room({ room, onSelectSession, customNames, onSpawnSession, onSpa
       )}
     </div>
   );
-}
+});
