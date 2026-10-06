@@ -1,16 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { EditorContent, useEditor } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Link from '@tiptap/extension-link';
-import TaskList from '@tiptap/extension-task-list';
-import TaskItem from '@tiptap/extension-task-item';
-import Table from '@tiptap/extension-table';
-import TableRow from '@tiptap/extension-table-row';
-import TableCell from '@tiptap/extension-table-cell';
-import TableHeader from '@tiptap/extension-table-header';
-import Placeholder from '@tiptap/extension-placeholder';
-import { Markdown } from 'tiptap-markdown';
+import { useMarkdownEditor, MarkdownToolbar, MarkdownEditorContent } from './MarkdownEditor';
 import styles from './ScratchpadPopup.module.css';
 
 const OPEN_DELAY_MS = 150;
@@ -51,33 +41,10 @@ export function ScratchpadPopup() {
     saveTimer.current = window.setTimeout(flushSave, SAVE_DEBOUNCE_MS);
   }, [flushSave]);
 
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Link.configure({ openOnClick: false, autolink: true }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
-      Table,
-      TableRow,
-      TableHeader,
-      TableCell,
-      Placeholder.configure({ placeholder: 'Jot anything… bold, bullets, links' }),
-      Markdown.configure({ html: false, linkify: true, breaks: true }),
-    ],
-    editorProps: {
-      attributes: { class: styles.prose, spellcheck: 'false' },
-      // Click opens links; place the cursor via adjacent text or arrow keys.
-      handleClick(_view, _pos, event) {
-        const anchor = (event.target as HTMLElement).closest('a');
-        if (anchor?.href) {
-          window.open(anchor.href, '_blank', 'noopener');
-          return true;
-        }
-        return false;
-      },
-    },
-    onUpdate: ({ editor: e }) => {
-      contentRef.current = e.storage.markdown.getMarkdown();
+  const { editor, openLinkEditor, handleKeyDown: handlePopupKeyDown, linkBar } = useMarkdownEditor({
+    placeholder: 'Jot anything… bold, bullets, links',
+    onChange: (markdown) => {
+      contentRef.current = markdown;
       scheduleSave();
     },
   });
@@ -149,51 +116,6 @@ export function ScratchpadPopup() {
     }
   }, [open, pinned, close]);
 
-  const [linkOpen, setLinkOpen] = useState(false);
-  const [linkUrl, setLinkUrl] = useState('');
-  const linkInputRef = useRef<HTMLInputElement>(null);
-
-  const openLinkEditor = useCallback(() => {
-    if (!editor) return;
-    setLinkUrl(editor.getAttributes('link').href ?? '');
-    setLinkOpen(true);
-  }, [editor]);
-
-  useEffect(() => {
-    if (linkOpen) linkInputRef.current?.focus();
-  }, [linkOpen]);
-
-  const applyLink = useCallback(() => {
-    if (!editor) return;
-    const url = linkUrl.trim();
-    setLinkOpen(false);
-    if (!url) {
-      editor.chain().focus().extendMarkRange('link').unsetLink().run();
-      return;
-    }
-    const href = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`;
-    if (editor.state.selection.empty && !editor.isActive('link')) {
-      editor.chain().focus().insertContent({ type: 'text', text: href, marks: [{ type: 'link', attrs: { href } }] }).run();
-    } else {
-      editor.chain().focus().extendMarkRange('link').setLink({ href }).run();
-    }
-  }, [editor, linkUrl]);
-
-  const removeLink = useCallback(() => {
-    setLinkOpen(false);
-    editor?.chain().focus().extendMarkRange('link').unsetLink().run();
-  }, [editor]);
-
-  const handlePopupKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-      e.preventDefault();
-      openLinkEditor();
-    }
-  }, [openLinkEditor]);
-
-  const toolBtn = (active: boolean) =>
-    `${styles.toolBtn} ${active ? styles.toolBtnActive : ''}`;
-
   // Large mode portals to <body> to escape the sticky header's backdrop-filter
   // containing block, so hover open/close needs handlers on the popup itself.
   const popup = open && (
@@ -208,69 +130,7 @@ export function ScratchpadPopup() {
     >
           <div className={styles.popupHeader}>
             <span className={styles.popupTitle}>Scratchpad</span>
-            <div className={styles.toolbar}>
-              <button
-                className={toolBtn(!!editor?.isActive('bold'))}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => editor?.chain().focus().toggleBold().run()}
-                title="Bold (⌘B)"
-                aria-label="Bold"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4.5 2.5h5a2.5 2.5 0 010 5h-5zM4.5 7.5h5.8a2.7 2.7 0 010 5.4H4.5z" />
-                </svg>
-              </button>
-              <button
-                className={toolBtn(!!editor?.isActive('italic'))}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => editor?.chain().focus().toggleItalic().run()}
-                title="Italic (⌘I)"
-                aria-label="Italic"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <path d="M6.5 2.5h6M3.5 13.5h6M9.5 2.5l-3 11" />
-                </svg>
-              </button>
-              <button
-                className={toolBtn(!!editor?.isActive('bulletList'))}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => editor?.chain().focus().toggleBulletList().run()}
-                title="Bullet list"
-                aria-label="Bullet list"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <path d="M6 3.5h8M6 8h8M6 12.5h8" />
-                  <circle cx="2.7" cy="3.5" r="1" fill="currentColor" stroke="none" />
-                  <circle cx="2.7" cy="8" r="1" fill="currentColor" stroke="none" />
-                  <circle cx="2.7" cy="12.5" r="1" fill="currentColor" stroke="none" />
-                </svg>
-              </button>
-              <button
-                className={toolBtn(!!editor?.isActive('link'))}
-                onMouseDown={e => e.preventDefault()}
-                onClick={openLinkEditor}
-                title="Link (⌘K)"
-                aria-label="Link"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M6.5 9.5a3 3 0 004.3.2l2.3-2.3a3 3 0 00-4.2-4.2L7.6 4.5" />
-                  <path d="M9.5 6.5a3 3 0 00-4.3-.2L2.9 8.6a3 3 0 004.2 4.2l1.3-1.3" />
-                </svg>
-              </button>
-              <button
-                className={toolBtn(!!editor?.isActive('taskList'))}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => editor?.chain().focus().toggleTaskList().run()}
-                title="Todo list"
-                aria-label="Todo list"
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="1.5" y="1.5" width="5" height="5" rx="1" />
-                  <path d="M3 4l1.2 1.2L6.5 2.8M9.5 4h5M9.5 12h5" />
-                  <rect x="1.5" y="9.5" width="5" height="5" rx="1" />
-                </svg>
-              </button>
-            </div>
+            <MarkdownToolbar editor={editor} onLink={openLinkEditor} className={styles.toolbar} />
             {saveError && <span className={styles.saveError}>save failed</span>}
             <button
               className={styles.headerIconBtn}
@@ -294,36 +154,9 @@ export function ScratchpadPopup() {
               </svg>
             </button>
           </div>
-          {linkOpen && (
-            <div className={styles.linkBar}>
-              <input
-                ref={linkInputRef}
-                className={styles.linkInput}
-                placeholder="https://…"
-                value={linkUrl}
-                onChange={e => setLinkUrl(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    applyLink();
-                  } else if (e.key === 'Escape') {
-                    e.stopPropagation();
-                    setLinkOpen(false);
-                    editor?.commands.focus();
-                  }
-                }}
-                spellCheck={false}
-              />
-              <button className={styles.linkApply} onClick={applyLink}>Apply</button>
-              <button className={styles.headerIconBtn} onClick={removeLink} title="Remove link" aria-label="Remove link">
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <path d="M4 4l8 8M12 4l-8 8" />
-                </svg>
-              </button>
-            </div>
-          )}
+          {linkBar}
       {!loaded && <div className={styles.loading}>Loading…</div>}
-      <EditorContent editor={editor} className={`${styles.editorScroll} ${loaded ? '' : styles.hidden}`} />
+      <MarkdownEditorContent editor={editor} hidden={!loaded} />
     </div>
   );
 

@@ -4,9 +4,10 @@ import type { SessionProvider, TerminalSpawnMode } from '../types';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 import styles from './SpawnDialog.module.css';
 
-/** UI-level provider — 'shell' maps to spawn mode 'raw' (no LLM), it never
+/** UI-level provider — 'shell' maps to spawn mode 'raw' (no LLM) and
+ *  'notepad' to spawn mode 'note' (markdown note, no process); neither
  *  reaches the SessionProvider union. */
-type UiProvider = 'claude' | 'opencode' | 'codex' | 'shell';
+type UiProvider = 'claude' | 'opencode' | 'codex' | 'shell' | 'notepad';
 
 interface Props {
   open: boolean;
@@ -84,6 +85,7 @@ const PROVIDER_OPTIONS: { key: UiProvider; label: string; hint: string }[] = [
   { key: 'opencode', label: 'OpenCode', hint: '' },
   { key: 'codex', label: 'Codex', hint: 'Embedded PTY running the `codex` CLI. Conversation appears once codex writes its first turn.' },
   { key: 'shell', label: 'Shell', hint: 'Embedded terminal running a plain shell — no Claude, no LLM. Useful for git, file ops, running scripts.' },
+  { key: 'notepad', label: 'Notepad', hint: 'Markdown notepad — no terminal, no LLM.' },
 ];
 
 const MODE_TOOLTIPS: Record<string, string> = {
@@ -256,7 +258,8 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
 
   const handleSpawn = () => {
     if (!currentPath || !sessionName.trim()) return;
-    const spawnMode: TerminalSpawnMode = uiProvider === 'shell' ? 'raw' : effectiveMode;
+    const spawnMode: TerminalSpawnMode =
+      uiProvider === 'shell' ? 'raw' : uiProvider === 'notepad' ? 'note' : effectiveMode;
     const provider: SessionProvider =
       uiProvider === 'opencode' ? 'opencode' : uiProvider === 'codex' ? 'codex' : 'claude';
     onSpawn(currentPath, effPrefix + sessionName.trim(), spawnMode, provider, effPrefix);
@@ -269,6 +272,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
   ] as { key: TerminalSpawnMode; label: string; cmd: string | null }[];
   const visibleModeRows = modeRows.filter(row => availableModes.includes(row.key));
   const shellSelected = uiProvider === 'shell';
+  const notepadSelected = uiProvider === 'notepad';
 
   return ReactDOM.createPortal(
     <div className={styles.backdrop} onClick={onClose}>
@@ -386,8 +390,15 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
           </div>
         </div>
 
-        {/* Mode rows (hidden for Shell — a raw shell is always embedded) */}
-        {shellSelected ? (
+        {/* Mode rows (hidden for Shell / Notepad — neither has a launch mode) */}
+        {notepadSelected ? (
+          <div className={styles.modeRows}>
+            <div className={`${styles.modeRow} ${styles.modeRowActive}`}>
+              <span className={`${styles.modeRowLabel} ${styles.modeRowLabelActive}`}>Notepad</span>
+              <span className={styles.modeRowHint}>Markdown notepad — no terminal, no LLM</span>
+            </div>
+          </div>
+        ) : shellSelected ? (
           <div className={styles.modeRows}>
             <div className={`${styles.modeRow} ${styles.modeRowActive}`}>
               <span className={`${styles.modeRowLabel} ${styles.modeRowLabelActive}`}>Shell</span>
@@ -429,7 +440,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
             className={styles.spawnBtn}
             onClick={handleSpawn}
             disabled={!currentPath || !sessionName.trim()}
-          >Spawn</button>
+          >{notepadSelected ? 'Create' : 'Spawn'}</button>
         </div>
       </div>
     </div>,

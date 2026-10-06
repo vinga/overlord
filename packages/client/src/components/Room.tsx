@@ -871,6 +871,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           const sessionOrderKey = orderKey(session);
           const isDragging = draggedId === sessionOrderKey;
           const isDragOver = dragOverId === sessionOrderKey && draggedId !== sessionOrderKey;
+          const isNote = session.sessionType === 'note';
           return (
             <div
               key={session.sessionId}
@@ -917,7 +918,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                 <DeskMenu
                   onDelete={() => onDeleteSession(session.sessionId)}
                   onClone={onCloneSession && session.hasActivity ? () => onCloneSession(session.sessionId) : undefined}
-                  onClear={session.state !== 'closed' ? () => {
+                  onClear={session.state !== 'closed' && !isNote ? () => {
                     fetch(`/api/sessions/${session.sessionId}/inject`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },

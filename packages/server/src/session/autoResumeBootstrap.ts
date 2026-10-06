@@ -4,6 +4,7 @@ import type { PtyLinkageTracker } from './ptyLinkageTracker.js';
 import { resolveResumableSessionId } from './transcriptReader.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from './transcriptShadow.js';
 import { buildOpencodeResumeArgs } from './opencodeSession.js';
+import { buildCodexResumeArgs, scheduleCodexTranscriptCapture } from './codexSession.js';
 import { sessionStore } from './sessionStore.js';
 import type { LiveAtShutdownEntry } from './liveAtShutdownStore.js';
 
@@ -26,6 +27,9 @@ export interface AutoResumeDeps {
  *
  * Per session:
  *  - opencode: spawn with provider-specific args, revive via stateManager
+ *  - codex: `codex resume <providerSessionId>`, revive, re-link the new rollout.
+ *    Must never reach the claude path — `claude --resume codex-…` starts an
+ *    unrelated Claude session that then replaces the Codex card.
  *  - claude: resolve a resumable transcript (may fall back to ancestor sid),
  *    restore from shadow if needed, then spawn `claude --resume`. Reserve the
  *    lineage's existing ovrId against both marker and PID so the new sid
@@ -69,6 +73,23 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
         console.log(`[auto-resume] resumed OpenCode PTY ${sessionId.slice(0, 8)}`);
       } catch (err) {
         console.warn(`[auto-resume] failed to resume OpenCode PTY for ${sessionId.slice(0, 8)}:`, err);
+      }
+      return;
+    }
+    if (provider === 'codex') {
+      try {
+        // `codex resume` continues into a fresh rollout file; only rollouts
+        // written after the spawn are candidates for re-linking.
+        const startedAfterMs = Date.now() - 2_000;
+        ptyManager.spawn(sessionId, cwd, 220, 50, buildCodexResumeArgs(providerSessionId), 'codex');
+        const pid = ptyManager.getPid(sessionId) ?? 0;
+        stateManager.reviveManagedProviderSession(sessionId, pid);
+        ovrToPty.set(sessionId, sessionId);
+        ptyToOvr.set(sessionId, sessionId);
+        scheduleCodexTranscriptCapture(stateManager, sessionId, cwd, startedAfterMs, { replaceExisting: true });
+        console.log(`[auto-resume] resumed Codex PTY ${sessionId.slice(0, 18)}`);
+      } catch (err) {
+        console.warn(`[auto-resume] failed to resume Codex PTY for ${sessionId.slice(0, 18)}:`, err);
       }
       return;
     }

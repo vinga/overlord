@@ -4,6 +4,7 @@ import { join } from 'path';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { deleteLog as deleteShellHistoryLog } from '../pty/shellHistoryLog.js';
+import { noteStore, isNoteId } from './noteStore.js';
 import { sessionStore } from './sessionStore.js';
 import { bridgeManager } from '../pty/pipeInjector.js';
 import { log } from '../logger.js';
@@ -182,6 +183,8 @@ export function deleteSession(
     } catch (err) {
       console.warn(`[deleteSession] failed to delete shell history for ${sessionId}:`, (err as Error).message);
     }
+
+    if (isNoteId(sessionId)) noteStore.remove(sessionId);
 
     // Drop every ACTIVE OverlordSession record pointing at any sid in this
     // lineage — not just the one the sid index resolves to. Duplicate records

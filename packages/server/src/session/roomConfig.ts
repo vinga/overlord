@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import chokidar, { type FSWatcher } from 'chokidar';
 
-export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw';
+export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw' | 'note';
 export type RoomLastProvider = 'claude' | 'opencode' | 'codex';
 
 export interface RoomConfig {
@@ -17,7 +17,7 @@ export interface RoomConfig {
 
 const DEFAULT_CONFIG: RoomConfig = { prefix: '', description: '' };
 
-const VALID_MODES: ReadonlySet<RoomLastMode> = new Set(['embedded', 'bridge', 'plain', 'raw']);
+const VALID_MODES: ReadonlySet<RoomLastMode> = new Set(['embedded', 'bridge', 'plain', 'raw', 'note']);
 
 function cwdToRoomSlug(cwd: string): string {
   return cwd

@@ -82,9 +82,15 @@ export class PtyManager extends EventEmitter {
     let lastOutput = '';
     ptyProcess.onData((data) => {
       lastOutput = (lastOutput + data).slice(-500); // keep last 500 chars
+      // Displaced by a newer spawn under the same id: its frames would
+      // interleave with the live TUI's and make the terminal flicker.
+      if (this.sessions.get(sessionId) !== ptyProcess) return;
       this.emit('output', sessionId, data);
     });
     ptyProcess.onExit(({ exitCode }) => {
+      // A newer spawn under the same id owns the entry now — a displaced
+      // process exiting must not unlink (or report as exited) the live one.
+      if (this.sessions.get(sessionId) !== ptyProcess) return;
       this.sessions.delete(sessionId);
       const aliveMs = Date.now() - spawnedAt;
       // If PTY died within 3s, likely a ConPTY AttachConsole race — retry

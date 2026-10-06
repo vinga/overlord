@@ -188,7 +188,7 @@ export interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   ideName?: string;
-  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw' | 'note';
   /** teammate_id of the Claude Code lead driving this session — set when the first
    *  user turn is a `<teammate-message>` hand-off. Derived from the transcript head
    *  on every read, never persisted. */
@@ -349,7 +349,7 @@ export interface OverlordSession {
   };
 
   provider?: SessionProvider; // 'claude' | 'codex' | 'aider' | 'opencode'
-  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  sessionType: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw' | 'note';
   providerSessionId?: string;
   model?: string;
   slug?: string;
@@ -358,6 +358,8 @@ export interface OverlordSession {
   bridgeMarker?: string;
   bridgePipeName?: string;
   historyOnly?: boolean;
+  /** Notepad sessions only: user closed the note (card dims). Editing reopens it. */
+  noteClosed?: boolean;
 
   lastActivity?: string;
   lastMessage?: string;

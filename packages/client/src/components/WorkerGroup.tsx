@@ -111,6 +111,8 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           latestPlan={session.latestPlan}
           isWorker={session.isWorker}
           isRaw={session.sessionType === 'raw'}
+          isNote={session.sessionType === 'note'}
+          notePreview={session.sessionType === 'note' ? session.lastMessage : undefined}
           icon={session.icon}
           ptyInputPendingSince={session.ptyInputPendingSince}
           scheduledWakeupAt={session.scheduledWakeupAt}

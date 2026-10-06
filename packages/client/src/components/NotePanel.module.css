@@ -1,0 +1,122 @@
+.kind {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #d4af37;
+  line-height: 1;
+}
+
+.renamable {
+  cursor: text;
+}
+
+.headerBtn {
+  height: 26px;
+  width: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  transition: color 150ms, background 150ms;
+}
+.headerBtn:hover {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.deleteBtn {
+  height: 26px;
+  min-width: 26px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.4);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 150ms, background 150ms, border-color 150ms;
+}
+.deleteBtn:hover {
+  color: #e06c75;
+  background: rgba(224, 108, 117, 0.08);
+}
+.deleteBtnConfirm,
+.deleteBtnConfirm:hover {
+  color: #e06c75;
+  background: rgba(224, 108, 117, 0.12);
+  border-color: rgba(224, 108, 117, 0.4);
+}
+
+.toolbarRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.status {
+  margin-left: auto;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.32);
+  white-space: nowrap;
+}
+.statusError {
+  color: #e06c75;
+}
+
+.editorArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editorArea .editorScroll {
+  min-height: 0;
+}
+
+.loading {
+  padding: 20px 24px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+/* Roomier than the header scratchpad — this is the whole panel. */
+.editorArea .prose {
+  padding: 20px 28px 48px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.editorArea .editorScroll :global(h1) {
+  margin: 18px 0 8px;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.editorArea .editorScroll :global(h2) {
+  margin: 16px 0 6px;
+  font-size: 17px;
+}
+.editorArea .editorScroll :global(h3) {
+  margin: 14px 0 6px;
+  font-size: 15px;
+}
+.editorArea .editorScroll :global(p) {
+  margin: 0 0 10px;
+}
+.editorArea .editorScroll :global(li p) {
+  margin: 0;
+}

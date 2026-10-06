@@ -30,6 +30,9 @@ interface WorkerProps {
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   isWorker?: boolean;
   isRaw?: boolean;
+  /** Notepad session — no process, so no state indicator; shows `notePreview`. */
+  isNote?: boolean;
+  notePreview?: string;
   icon?: WorkerIcon;
   ptyInputPendingSince?: number;
   scheduledWakeupAt?: number;
@@ -116,7 +119,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, isNote, notePreview, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -218,7 +221,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
 
   return (
     <div
-      className={`${styles.worker} ${horizontal ? styles.horizontal : ''} ${stateClass}`}
+      className={`${styles.worker} ${horizontal ? styles.horizontal : ''} ${isNote && notePreview ? styles.noteWorker : ''} ${stateClass}`}
       style={{ '--agent-color': displayColor } as React.CSSProperties}
       onClick={onClick}
       role="button"
@@ -239,7 +242,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           ⏸ parked
         </div>
       )}
-      {!minimal && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting') && !(!isCompacting && state === 'waiting' && review != null && !needsPermission && !unknownCommand && !scheduledWakeupAt && !hasBackgroundTasks) && (
+      {!minimal && !isNote && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting') && !(!isCompacting && state === 'waiting' && review != null && !needsPermission && !unknownCommand && !scheduledWakeupAt && !hasBackgroundTasks) && (
         <div
           className={`${styles.indicator} ${isCompacting ? styles.indicator_compacting : styles[`indicator_${state}`]} ${isSubagent ? styles.indicatorSubagent : ''}`}
           onClick={!isSubagent && !needsPermission ? handleIndicatorClick : undefined}
@@ -294,7 +297,8 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       </div>
 
       <div className={styles.content}>
-      {!minimal && (
+      {/* A note's content is its identity — the preview replaces the name. */}
+      {!minimal && !(isNote && notePreview) && (
         isEditing ? (
           <input
             ref={inputRef}
@@ -323,6 +327,13 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {!minimal && !isSubagent && teammateId && (
         <span className={styles.teammateChip} title={`Driven by teammate ${teammateId}`}>
           <span className={styles.teammateChipIcon}>⇄</span>{teammateId}
+        </span>
+      )}
+      {!minimal && isNote && notePreview && (
+        <span className={styles.notePreview} title={name}>
+          {notePreview.split('\n').map((line, i) => (
+            <span key={i} className={i === 0 ? styles.notePreviewFirst : styles.notePreviewLine}>{line}</span>
+          ))}
         </span>
       )}
       {!minimal && !isSubagent && notesSummary && (

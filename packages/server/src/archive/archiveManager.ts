@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { sessionStore } from '../session/sessionStore.js';
+import { noteStore } from '../session/noteStore.js';
 import type { OverlordSession, ArchivedTranscript, PullRequestSnapshot } from '../types.js';
 
 /**
@@ -99,19 +100,22 @@ export class ArchiveManager {
     if (!rec) return null;                               // unknown overlord
     if (rec.archive) return toEntry(rec);                // already archived — idempotent
 
-    if (!params.sourceTranscriptPath || !fs.existsSync(params.sourceTranscriptPath)) {
+    // A note has no transcript — its content stays in noteStore, so the
+    // archive block carries no transcript copies.
+    const isNote = rec.sessionType === 'note';
+    if (!isNote && (!params.sourceTranscriptPath || !fs.existsSync(params.sourceTranscriptPath))) {
       return null;
     }
 
     const slug = cwdToSlug(params.cwd);
     const destDir = path.join(ARCHIVE_BASE, slug, rec.overlordId);
-    ensureDir(destDir);
 
     // Copy each lineage entry's transcript if it exists on disk.
     // Current session: use the resolved sourceTranscriptPath the caller passed
     // (which may have walked the --resume chain).
     const transcripts: ArchivedTranscript[] = [];
-    for (const h of rec.lineage.history) {
+    if (!isNote) ensureDir(destDir);
+    for (const h of isNote ? [] : rec.lineage.history) {
       const src = h.sessionId === params.sessionId ? params.sourceTranscriptPath : h.transcriptPath;
       if (!src || !fs.existsSync(src)) continue;
       const dest = path.join(destDir, `${h.sessionId}.jsonl`);
@@ -120,7 +124,7 @@ export class ArchiveManager {
         transcripts.push({ sessionId: h.sessionId, path: dest });
       } catch { /* skip this transcript */ }
     }
-    if (transcripts.length === 0) return null;
+    if (transcripts.length === 0 && !isNote) return null;
 
     // Also update durable fields from the caller (latest message/activity/model).
     sessionStore.patch(rec.overlordId, {
@@ -236,7 +240,7 @@ export class ArchiveManager {
   unarchiveForAdoption(sessionId: string): OverlordSession | undefined {
     const rec = sessionStore.getArchivedBySessionId(sessionId);
     if (!rec?.archive) return undefined;
-    if (!this.restoreTranscript(sessionId)) return undefined;
+    if (rec.sessionType !== 'note' && !this.restoreTranscript(sessionId)) return undefined;
     if (!this.remove(sessionId)) return undefined;
     return sessionStore.getByOverlordId(rec.overlordId);
   }
@@ -257,6 +261,7 @@ export class ArchiveManager {
     const slug = rec.archive.roomId;
     const overlordArchiveDir = path.join(ARCHIVE_BASE, slug, rec.overlordId);
     try { fs.rmdirSync(overlordArchiveDir); } catch { /* not empty or missing — ignore */ }
+    if (rec.sessionType === 'note') noteStore.remove(rec.overlordId);
     sessionStore.remove(rec.overlordId);
     return true;
   }

@@ -6,6 +6,7 @@ import { sessionStore } from './sessionStore.js';
 import { shadowPathFor } from './transcriptShadow.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
 import { parsePrUrl, prRefKey } from '../git/prRef.js';
+import { codexOutputText, summarizeCodexExec } from './codexExecSummary.js';
 
 const JIRA_MAX_KEYS = 5;
 
@@ -601,8 +602,35 @@ function reEvalStateFromCache(cached: TranscriptCache): { state: WorkerState; ne
   }
 }
 
+// Codex rollouts are not always read from ~/.codex/sessions: archive copies,
+// shadow copies and stray hard links in ~/.claude/projects carry the same bytes
+// under another path. Judging by path alone parses those as an empty Claude
+// feed, so fall back to the first record — a rollout always opens with
+// `session_meta`, a Claude transcript never does. Cached: the answer for a
+// path never changes.
+const codexSniffCache = new Map<string, boolean>();
+const CODEX_SNIFF_CACHE_MAX = 500;
+
 function isCodexTranscript(filePath: string): boolean {
-  return filePath.replace(/\\/g, '/').includes('/.codex/sessions/');
+  if (filePath.replace(/\\/g, '/').includes('/.codex/sessions/')) return true;
+  const cached = codexSniffCache.get(filePath);
+  if (cached !== undefined) return cached;
+  let isCodex = false;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(256);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const head = buf.toString('utf8', 0, n);
+    isCodex = /^\{[^\n]*"type":"session_meta"/.test(head);
+  } catch {
+    return false; // unreadable now — don't cache, it may appear later
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  if (codexSniffCache.size >= CODEX_SNIFF_CACHE_MAX) codexSniffCache.clear();
+  codexSniffCache.set(filePath, isCodex);
+  return isCodex;
 }
 
 export function clearProposedNameCache(sessionId: string): void {
@@ -1921,6 +1949,7 @@ function readCodexTranscriptState(filePath: string): {
     // the completed ids so a long-running Monitor is surfaced only until it
     // actually returns, just like the Claude transcript path above.
     const completedCallIds = new Set<string>();
+    const callOutputs = new Map<string, { text: string; wallMs?: number; isError: boolean }>();
     for (const line of last30) {
       try {
         const parsed = JSON.parse(line) as {
@@ -1928,6 +1957,7 @@ function readCodexTranscriptState(filePath: string): {
           payload?: {
             type?: string;
             call_id?: string;
+            output?: unknown;
             duration?: { secs?: number; nanos?: number };
             info?: { last_token_usage?: { input_tokens?: number; cached_input_tokens?: number } };
           };
@@ -1939,6 +1969,11 @@ function readCodexTranscriptState(filePath: string): {
         }
         if (parsed.type === 'response_item' && parsed.payload?.type === 'function_call_output' && parsed.payload.call_id) {
           completedCallIds.add(parsed.payload.call_id);
+        }
+        if (parsed.type === 'response_item'
+            && (parsed.payload?.type === 'function_call_output' || parsed.payload?.type === 'custom_tool_call_output')
+            && parsed.payload.call_id) {
+          callOutputs.set(parsed.payload.call_id, codexOutputText(parsed.payload.output));
         }
         if (parsed.type === 'event_msg' && parsed.payload?.type === 'token_count' && inputTokens === undefined) {
           const usage = parsed.payload.info?.last_token_usage;
@@ -1999,7 +2034,12 @@ function readCodexTranscriptState(filePath: string): {
             content: parsed.payload.name,
             timestamp: parsed.timestamp,
           };
-          if (parsed.payload.arguments) {
+          if (parsed.payload.name === 'exec' && typeof parsed.payload.input === 'string') {
+            const summary = summarizeCodexExec(parsed.payload.input);
+            item.toolName = summary.toolName;
+            item.content = summary.content;
+            item.inputJson = parsed.payload.input.slice(0, MAX_CONTENT_LENGTH);
+          } else if (parsed.payload.arguments) {
             item.inputJson = parsed.payload.arguments;
             try {
               const args = JSON.parse(parsed.payload.arguments) as Record<string, unknown>;
@@ -2008,7 +2048,12 @@ function readCodexTranscriptState(filePath: string): {
               item.content = parsed.payload.arguments.slice(0, 300);
             }
           }
-          const durationMs = parsed.payload.call_id ? callDurations.get(parsed.payload.call_id) : undefined;
+          const output = parsed.payload.call_id ? callOutputs.get(parsed.payload.call_id) : undefined;
+          if (output) {
+            if (output.text) item.resultJson = output.text.slice(0, 2000);
+            if (output.isError) item.isError = true;
+          }
+          const durationMs = (parsed.payload.call_id ? callDurations.get(parsed.payload.call_id) : undefined) ?? output?.wallMs;
           if (durationMs !== undefined) item.durationMs = durationMs;
           activityFeed.unshift(item);
 

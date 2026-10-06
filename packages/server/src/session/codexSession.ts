@@ -1,6 +1,31 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type { StateManager } from './stateManager.js';
+
+/**
+ * Every Codex session Overlord launches runs with full access: no sandbox, no
+ * approval prompts. Passed explicitly so a spawn doesn't depend on the user's
+ * `~/.codex/config.toml`. A ChatGPT workspace policy can still override it.
+ */
+const CODEX_FULL_ACCESS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
+
+export function buildCodexSpawnArgs(): string[] {
+  return [CODEX_FULL_ACCESS_FLAG];
+}
+
+/** Resume a specific Codex session by its id. `--last` is only a fallback: it
+ *  picks the newest session in the cwd, which is the wrong conversation once
+ *  two Codex workers share a directory. */
+export function buildCodexResumeArgs(providerSessionId?: string): string[] {
+  const target = providerSessionId && /^[0-9a-f-]{8,64}$/i.test(providerSessionId) ? providerSessionId : '--last';
+  return ['resume', target, CODEX_FULL_ACCESS_FLAG];
+}
+
+/** Shell form for external / bridged terminal windows. */
+export function buildCodexResumeCommand(providerSessionId?: string): string {
+  return ['codex', ...buildCodexResumeArgs(providerSessionId)].join(' ');
+}
 
 /**
  * Codex writes one rollout jsonl per session under
@@ -134,4 +159,44 @@ function scanRollouts(
     }
   }
   return null;
+}
+
+/**
+ * Codex writes its rollout jsonl only once the session is under way, so poll
+ * for it after spawn and attach it to the session. Without this the worker is
+ * terminal-only — no conversation, no transcript-driven state.
+ */
+export function scheduleCodexTranscriptCapture(
+  stateManager: StateManager,
+  sessionId: string,
+  cwd: string,
+  startedAfterMs: number,
+  // Resume: `codex resume` continues into a *new* rollout file, so the path
+  // already on the session is stale and must be replaced once the new one
+  // appears. Fresh spawns stop as soon as they have any path.
+  opts: { replaceExisting?: boolean } = {},
+): void {
+  // Codex only writes the rollout on the first turn, which may be minutes after
+  // spawn (or never, if the user just looks at the TUI). Poll fast at first,
+  // then back off to 10s and keep going until the session is linked or closed.
+  let attempts = 0;
+  const tick = () => {
+    attempts += 1;
+    const session = stateManager.getSession(sessionId);
+    if (!session || session.state === 'closed') return;
+    if (session.transcriptPath && !opts.replaceExisting) return;
+    const found = findLatestCodexRollout(cwd, startedAfterMs);
+    // Two codex workers in one directory both see the same "newest rollout".
+    // Whoever links first owns it; the other keeps polling for its own.
+    const claimedByOther = found && stateManager.getAllSessionIds().some(id =>
+      id !== sessionId && stateManager.getSession(id)?.transcriptPath === found.transcriptPath,
+    );
+    if (found && !claimedByOther) {
+      stateManager.attachProviderTranscript(sessionId, found.transcriptPath, found.sessionId);
+      console.log(`[codex] linked ${sessionId.slice(0, 18)} → ${found.transcriptPath}`);
+      return;
+    }
+    setTimeout(tick, attempts < 30 ? 1000 : 10_000).unref?.();
+  };
+  setTimeout(tick, 1000).unref?.();
 }

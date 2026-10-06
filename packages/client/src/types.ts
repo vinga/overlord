@@ -4,7 +4,7 @@ type WorkerState = 'working' | 'waiting' | 'thinking' | 'closed';
 type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 
 /** How a new terminal session should be spawned */
-type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw';
+type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw' | 'note';
 
 type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap';
 
@@ -153,7 +153,7 @@ interface Session {
   compactCount?: number;
   isCompacting?: boolean;
   resumedFrom?: string;
-  sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw';
+  sessionType?: 'embedded' | 'bridge' | 'plain' | 'ide' | 'raw' | 'note';
   /** teammate_id of the Claude Code lead driving this session — set when its first
    *  user turn is a `<teammate-message>` hand-off. Derived, never persisted. */
   teammateId?: string;
@@ -483,7 +483,7 @@ export type {
 
 // ── Session type helpers ──────────────────────────────────
 
-type LaunchCategory = 'pty' | 'bridge' | 'ide' | 'terminal' | 'shell';
+type LaunchCategory = 'pty' | 'bridge' | 'ide' | 'terminal' | 'shell' | 'note';
 
 interface LaunchInfo {
   category: LaunchCategory;
@@ -501,6 +501,9 @@ function getLaunchInfo(
 
   if (session.sessionType === 'raw') {
     return { category: 'shell', name: 'Shell' };
+  }
+  if (session.sessionType === 'note') {
+    return { category: 'note', name: 'Notepad' };
   }
   if (session.sessionType === 'bridge') {
     const ideLabel = session.ideName ? shortIde(session.ideName) : undefined;

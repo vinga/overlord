@@ -653,6 +653,45 @@
   font-style: normal;
 }
 
+.notePreview {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(200, 200, 215, 0.62);
+  max-width: 163px;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Each note line wraps like plan / Jira titles, capped so one long
+   paragraph can't swallow the card. */
+.notePreviewFirst,
+.notePreviewLine {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.notePreviewFirst {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(235, 235, 245, 0.9);
+  -webkit-line-clamp: 3;
+}
+
+/* Notes: small glyph pinned top-left so the text gets the card width. */
+.noteWorker.horizontal .body {
+  align-items: flex-start;
+  gap: 8px;
+}
+.noteWorker .iconWrap svg {
+  width: 26px;
+  height: 34px;
+}
+
 .intentDone {
   color: rgba(34, 197, 94, 0.65);
   font-style: normal;

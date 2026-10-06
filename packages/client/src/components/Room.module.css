@@ -382,6 +382,12 @@
   color: rgba(148, 163, 184, 0.85);
 }
 
+.deskLaunchBadge[data-category="note"] {
+  background: rgba(212, 175, 55, 0.08);
+  border-color: rgba(212, 175, 55, 0.3);
+  color: rgba(212, 175, 55, 0.85);
+}
+
 .deskLaunchBadge[data-category="codex"] {
   background: rgba(148, 163, 184, 0.1);
   border-color: rgba(148, 163, 184, 0.3);

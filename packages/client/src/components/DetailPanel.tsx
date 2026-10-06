@@ -1308,7 +1308,8 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   const [expandedDiffs, setExpandedDiffs] = useState<Set<string>>(new Set());
   const [rawSegments, setRawSegments] = useState<Set<number>>(new Set());
   const [copiedBubble, setCopiedBubble] = useState<number | null>(null);
-  const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
+  // Thinking is expanded by default — it carries real insight; the toggle collapses.
+  const [collapsedThinking, setCollapsedThinking] = useState<Set<number>>(new Set());
   const [expandedArgs, setExpandedArgs] = useState<Set<string>>(new Set());
   const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
   const [expandedInlineAgents, setExpandedInlineAgents] = useState<Set<number>>(new Set());
@@ -1373,7 +1374,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           );
         }
         if (seg.type === 'thinking') {
-          const isExpanded = expandedThinking.has(segIdx);
+          const isExpanded = !collapsedThinking.has(segIdx);
           if (seg.item.isRedacted) {
             return (
               <div key={segIdx} className={styles.thinkingBlock} data-ts={seg.item.timestamp}>
@@ -1394,7 +1395,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             <div key={segIdx} className={styles.thinkingBlock} data-ts={seg.item.timestamp}>
               <button
                 className={styles.thinkingToggle}
-                onClick={() => setExpandedThinking(prev => {
+                onClick={() => setCollapsedThinking(prev => {
                   const next = new Set(prev);
                   if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
                   return next;

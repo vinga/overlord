@@ -3275,14 +3275,12 @@
   background: rgba(255, 255, 255, 0.03);
   border-left: 2px solid rgba(255, 255, 255, 0.08);
   border-radius: 0 6px 6px 0;
-  color: rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.72);
   font-family: 'Inter', system-ui, sans-serif;
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 .thinkingRedacted {

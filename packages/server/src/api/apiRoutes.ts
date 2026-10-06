@@ -27,6 +27,7 @@ import { runClaudeQuery, NO_TOOLS_ARGS } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { globalSettingsStore, sanitizeVoiceOverride } from '../session/globalSettingsStore.js';
 import { scratchpadStore } from '../session/scratchpadStore.js';
+import { noteStore, isNoteId, notePreview } from '../session/noteStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
@@ -874,16 +875,47 @@ export function registerApiRoutes(
     res.json(readRoomConfig(cwd));
   });
 
+  app.post('/api/notes', express.json(), (req, res) => {
+    const { cwd, name } = (req.body ?? {}) as { cwd?: unknown; name?: unknown };
+    if (typeof cwd !== 'string' || !cwd) return res.status(400).json({ error: 'cwd required' });
+    if (name !== undefined && typeof name !== 'string') return res.status(400).json({ error: 'name must be a string' });
+    const noteId = `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    stateManager.addNoteSession(noteId, cwd, name?.trim() || undefined);
+    log('session:created', 'Notepad created', { sessionId: noteId, sessionName: name || 'note' });
+    res.json({ sessionId: noteId });
+  });
+
+  app.get('/api/notes/:id', (req, res) => {
+    const { id } = req.params;
+    if (!isNoteId(id)) return res.status(400).json({ error: 'invalid note id' });
+    res.json(noteStore.load(id));
+  });
+
+  app.put('/api/notes/:id', express.json({ limit: '1mb' }), (req, res) => {
+    const { id } = req.params;
+    if (!isNoteId(id)) return res.status(400).json({ error: 'invalid note id' });
+    if (stateManager.getSession(id)?.sessionType !== 'note') return res.status(404).json({ error: 'unknown note' });
+    const content = (req.body ?? {}).content;
+    if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
+    try {
+      const result = noteStore.save(id, content);
+      stateManager.touchNote(id, notePreview(content));
+      res.json(result);
+    } catch (err) {
+      res.status(413).json({ error: (err as Error).message });
+    }
+  });
+
   app.post('/api/room-config', express.json(), (req, res) => {
     const { cwd, prefix, description, lastMode, lastProvider, hidden } = (req.body ?? {}) as { cwd?: string; prefix?: string; description?: string; lastMode?: string; lastProvider?: string; hidden?: boolean };
     if (!cwd || typeof cwd !== 'string') { res.status(400).json({ error: 'cwd required' }); return; }
     if (prefix !== undefined && typeof prefix !== 'string') { res.status(400).json({ error: 'prefix must be a string' }); return; }
     if (description !== undefined && typeof description !== 'string') { res.status(400).json({ error: 'description must be a string' }); return; }
     if (hidden !== undefined && typeof hidden !== 'boolean') { res.status(400).json({ error: 'hidden must be a boolean' }); return; }
-    const validModes = ['embedded', 'bridge', 'plain', 'raw'] as const;
+    const validModes = ['embedded', 'bridge', 'plain', 'raw', 'note'] as const;
     const validProviders = ['claude', 'opencode', 'codex'] as const;
     if (lastMode !== undefined && !validModes.includes(lastMode as typeof validModes[number])) {
-      res.status(400).json({ error: 'lastMode must be embedded|bridge|plain|raw' });
+      res.status(400).json({ error: 'lastMode must be embedded|bridge|plain|raw|note' });
       return;
     }
     if (lastProvider !== undefined && !validProviders.includes(lastProvider as typeof validProviders[number])) {
@@ -1556,6 +1588,7 @@ export function registerApiRoutes(
       // Run git status + transcript read in parallel — they're independent.
       const [gitResult, transcriptResult] = await Promise.all([
         (async () => {
+          if (capturedSessionType === 'note') return { branch: undefined, pr: undefined };
           try {
             const git = await readGitStatus(capturedCwd, stateManager.getPrCache());
             const cachedPr = stateManager.getPrCache().get(capturedCwd, git?.branch ?? undefined);
@@ -1587,6 +1620,12 @@ export function registerApiRoutes(
 
       // Heavy work: transcript copy + process kill + file cleanup
       const entry = archiveManager.archive(archiveParams);
+      if (entry && capturedSessionType === 'note') {
+        // Nothing to kill or unlink — deleteSession would wipe the note's content.
+        if (broadcastRaw) broadcastRaw({ type: 'archive:added', entry });
+        log('session:killed', 'Notepad archived', { sessionId, sessionName: entry.name });
+        return;
+      }
       if (!entry) {
         deleteSession(sessionId, pidToKill, 'archive-failed');
         log('session:killed', 'Session archive failed (transcript missing)', { sessionId });

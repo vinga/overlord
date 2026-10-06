@@ -125,6 +125,7 @@ import {
   clearSessionCaches,
 } from './transcriptReader.js';
 import { ensureShadow } from './transcriptShadow.js';
+import { findCodexRolloutBySessionId } from './codexSession.js';
 import type { RawSession } from './sessionWatcher.js';
 import { saveReview, loadReview, readReview, normalizeParkReason, type ReviewState } from '../ai/taskStorage.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
@@ -387,16 +388,46 @@ function backgroundTasksEqual(a: BackgroundTask[] | undefined, b: BackgroundTask
   return true;
 }
 
-function resolveTranscriptPath(session: {
+/**
+ * Transcript for a codex/opencode session. A stored path under
+ * ~/.claude/projects is a stray hard link to the rollout — reading through it
+ * picks the Claude parser and yields an empty feed — so codex falls back to
+ * looking the rollout up by its own session id.
+ */
+function managedProviderTranscript(
+  provider: Session['provider'],
+  storedPath: string | undefined,
+  providerSessionId: string | undefined,
+): string | undefined {
+  const isStrayClaudeLink = (p: string) => p.replace(/\\/g, '/').includes('/.claude/projects/');
+  if (storedPath && !isStrayClaudeLink(storedPath) && fs.existsSync(storedPath)) return storedPath;
+  if (provider === 'codex' && providerSessionId) {
+    return findCodexRolloutBySessionId(providerSessionId)?.transcriptPath;
+  }
+  return undefined;
+}
+
+export function resolveTranscriptPath(session: {
   cwd: string;
   sessionId: string;
   resumedFrom?: string;
   transcriptPath?: string;
+  provider?: Session['provider'];
+  providerSessionId?: string;
 }): string | null {
   // Canonical sessionId-derived path always wins when it exists. A cached
   // transcriptPath may point to the parent file from --fork-session, set
   // before the new fork's jsonl was written; canonical must override it
   // once the fork file appears.
+  //
+  // Not for codex/opencode: their linked rollout is the only truth. A
+  // `~/.claude/projects/<slug>/<sid>.jsonl` under their sid is a stray hard link
+  // (shadow restore) to the same bytes, and the reader picks its parser by
+  // path — read via the .claude path, a codex rollout parses as an empty feed.
+  if (session.provider === 'codex' || session.provider === 'opencode') {
+    const managed = managedProviderTranscript(session.provider, session.transcriptPath, session.providerSessionId);
+    if (managed) return managed;
+  }
   const canonical = findTranscriptPath(session.cwd, session.sessionId);
   if (canonical) return canonical;
   if (session.transcriptPath && fs.existsSync(session.transcriptPath)) {
@@ -933,6 +964,7 @@ export class StateManager {
       sessionId,
       resumedFrom,
       transcriptPath: existingSession?.transcriptPath,
+      provider: existingSession?.provider ?? raw.provider,
     });
 
     const transcript = transcriptPath ? readTranscriptState(transcriptPath) : undefined;
@@ -1471,6 +1503,47 @@ export class StateManager {
     return session;
   }
 
+  /**
+   * Register a notepad session — a markdown note in the room, no process,
+   * no transcript. Content lives in noteStore; the record here only carries
+   * name / color / icon / room. Always 'waiting', never closed.
+   */
+  addNoteSession(sessionId: string, cwd: string, proposedName?: string): Session {
+    const now = Date.now();
+    const session: Session = {
+      sessionId,
+      overlordId: sessionId,
+      sessionHistory: [{ sessionId, attachedAt: now }],
+      provider: undefined,
+      providerSessionId: undefined,
+      proposedName,
+      pid: 0,
+      startedAt: now,
+      cwd,
+      state: 'waiting',
+      lastActivity: new Date(now).toISOString(),
+      sessionType: 'note',
+      color: this.sessionColorByOvrId(sessionId),
+      icon: 'notes',
+      subagents: [],
+    };
+    this.sessions.set(sessionId, session);
+    this.sessionsByOvrId.set(sessionId, sessionId);
+    sessionStore.ensureFromLive(session);
+    this.onChange();
+    return session;
+  }
+
+  /** Note saved — refresh the worker's preview line and freshness. */
+  touchNote(sessionId: string, preview: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.sessionType !== 'note') return;
+    const lastActivity = new Date().toISOString();
+    this.sessions.set(sessionId, { ...session, state: 'waiting', lastMessage: preview, lastActivity });
+    sessionStore.patch(sessionId, { lastMessage: preview, lastActivity, noteClosed: undefined });
+    this.onChange();
+  }
+
   addManagedProviderSession(
     sessionId: string,
     cwd: string,
@@ -1548,6 +1621,7 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (session && session.state !== 'closed') {
       session.state = 'closed';
+      if (session.sessionType === 'note') sessionStore.patch(sessionId, { noteClosed: true });
       this.onChange();
     }
   }
@@ -3443,9 +3517,15 @@ export class StateManager {
     // managed-provider session (codex writes to ~/.codex/sessions under an id
     // of its own) only ever resolves via the path stored on its lineage entry.
     const storedTranscriptPath = rec.lineage.history.find(h => h.sessionId === sessionId)?.transcriptPath;
-    const transcriptPath = findTranscriptPath(rec.cwd, sessionId)
+    const stored = storedTranscriptPath && fs.existsSync(storedTranscriptPath) ? storedTranscriptPath : undefined;
+    // Managed providers: the stored rollout wins. A ~/.claude/projects file
+    // under their sid is a stray link, and reading the rollout through that
+    // path parses it as an (empty) Claude transcript.
+    const managed = rec.provider === 'codex' || rec.provider === 'opencode';
+    const transcriptPath = (managed ? managedProviderTranscript(rec.provider, stored, rec.providerSessionId) : undefined)
+      ?? findTranscriptPath(rec.cwd, sessionId)
       ?? findTranscriptPathAnywhere(sessionId)
-      ?? (storedTranscriptPath && fs.existsSync(storedTranscriptPath) ? storedTranscriptPath : undefined);
+      ?? stored;
     if (transcriptPath) ensureShadow(rec.overlordId, sessionId, transcriptPath);
 
     let transcriptState: ReturnType<typeof readTranscriptState> | null = null;
@@ -3455,7 +3535,8 @@ export class StateManager {
 
     const existing = this.sessions.get(sessionId);
     if (existing) {
-      existing.state = 'closed';
+      // A note has no process to outlive — only the user closes it.
+      existing.state = existing.sessionType === 'note' && !rec.noteClosed ? 'waiting' : 'closed';
       if (transcriptState?.lastActivity) existing.lastActivity = transcriptState.lastActivity;
       this.onChange();
       return existing;
@@ -3466,13 +3547,15 @@ export class StateManager {
       sessionId,
       overlordId: rec.overlordId,
       sessionHistory: rec.lineage.history.map(h => ({ sessionId: h.sessionId, attachedAt: h.attachedAt })),
-      provider: rec.provider ?? 'claude',
+      provider: rec.sessionType === 'note' ? undefined : (rec.provider ?? 'claude'),
       providerSessionId: rec.providerSessionId,
       pid: 0,
       cwd: rec.cwd,
       startedAt,
-      state: 'closed',
-      lastActivity: transcriptState?.lastActivity ?? new Date(startedAt).toISOString(),
+      state: rec.sessionType === 'note' && !rec.noteClosed ? 'waiting' : 'closed',
+      lastActivity: transcriptState?.lastActivity
+        ?? (rec.sessionType === 'note' ? rec.lastActivity : undefined)
+        ?? new Date(startedAt).toISOString(),
       lastMessage: transcriptState?.lastMessage ?? rec.lastMessage,
       activityFeed: transcriptState?.activityFeed,
       model: transcriptState?.model ?? rec.model,

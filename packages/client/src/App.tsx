@@ -18,6 +18,7 @@ import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalS
 import { Office } from './components/Office';
 import { DetailPanel, setJiraProjects } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
+import { NotePanel } from './components/NotePanel';
 import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
 import { SpawnDialog } from './components/SpawnDialog';
@@ -547,8 +548,27 @@ export function App() {
     } else if (mode === 'raw') {
       terminal.spawnRawShell(cwd, 80, 24, name || undefined);
       if (name) addPendingSpawn(cwd, name);
+    } else if (mode === 'note') {
+      void createNote(cwd, name);
     } else {
       terminal.openNewTerminal(cwd, name || undefined, mode, provider);
+    }
+  }
+
+  async function createNote(cwd: string, name: string) {
+    try {
+      const res = await fetch('/api/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd, name: name || undefined }),
+      });
+      if (!res.ok) { console.error('note create failed', await res.text()); return; }
+      const { sessionId } = await res.json() as { sessionId: string };
+      setSelectedSessionId(sessionId);
+      setSelectedSubagentId(undefined);
+      setSelectionNonce(n => n + 1);
+    } catch (err) {
+      console.error('note create failed', err);
     }
   }
 
@@ -635,6 +655,20 @@ export function App() {
   }
 
   async function handleOpenArchive(entry: ArchiveEntry) {
+    // A note has no transcript to browse — opening it restores it to the room.
+    if (entry.sessionType === 'note') {
+      try {
+        const res = await fetch(`/api/archive/${entry.sessionId}/unarchive`, { method: 'POST' });
+        if (!res.ok) { console.error('unarchive failed', await res.text()); return; }
+        window.dispatchEvent(new CustomEvent('archive:changed', { detail: {} }));
+        setSelectedSessionId(entry.sessionId);
+        setSelectedSubagentId(undefined);
+        setSelectionNonce(n => n + 1);
+      } catch (err) {
+        console.error('unarchive error', err);
+      }
+      return;
+    }
     setSelectedSessionId(entry.sessionId);
     setSelectedSubagentId(undefined);
     // Show placeholder immediately so DetailPanel renders
@@ -742,7 +776,28 @@ export function App() {
         suggestedName={dirPickerSuggestedName}
         bridgePath={snapshot?.bridgePath}
       />
-      {(selectedSession?.sessionType === 'raw' || (selectedSessionId?.startsWith('raw-') && !selectedSession)) ? (
+      {(selectedSession?.sessionType === 'note' || (selectedSessionId?.startsWith('note-') && !selectedSession)) ? (
+        <NotePanel
+          key={selectedSessionId ?? selectedSession?.sessionId}
+          sessionId={selectedSessionId ?? selectedSession?.sessionId ?? ''}
+          session={selectedSession ?? undefined}
+          customName={displayNames[selectedSession?.sessionId ?? '']}
+          onRename={rename}
+          onDelete={(sessionId) => {
+            handleDeleteSession(sessionId);
+            handleClose();
+          }}
+          onCloseNote={handleCloseSession}
+          onArchive={(sessionId) => {
+            handleArchiveSession(sessionId);
+            handleClose();
+          }}
+          onClose={handleClose}
+          dock={dock}
+          panelSize={panelSize}
+          onPanelSizeChange={setPanelSize}
+        />
+      ) : (selectedSession?.sessionType === 'raw' || (selectedSessionId?.startsWith('raw-') && !selectedSession)) ? (
         <PtyTerminalPanel
           sessionId={selectedSessionId ?? selectedSession?.sessionId ?? ''}
           session={selectedSession ?? undefined}

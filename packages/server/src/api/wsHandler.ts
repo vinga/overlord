@@ -19,7 +19,13 @@ import { archiveManager } from '../archive/archiveManager.js';
 import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
-import { findCodexRolloutBySessionId, findLatestCodexRollout } from '../session/codexSession.js';
+import {
+  buildCodexResumeArgs,
+  buildCodexResumeCommand,
+  buildCodexSpawnArgs,
+  findCodexRolloutBySessionId,
+  scheduleCodexTranscriptCapture,
+} from '../session/codexSession.js';
 import { sessionStore } from '../session/sessionStore.js';
 import { restoreCanonicalFromShadow, SHADOW_ROOT_DIR } from '../session/transcriptShadow.js';
 import { globalSettingsStore } from '../session/globalSettingsStore.js';
@@ -139,46 +145,6 @@ function scheduleOpencodeSessionIdCapture(
       clearInterval(timer);
     }
   }, 1000);
-}
-
-/**
- * Codex writes its rollout jsonl only once the session is under way, so poll
- * for it after spawn and attach it to the session. Without this the worker is
- * terminal-only — no conversation, no transcript-driven state.
- */
-function scheduleCodexTranscriptCapture(
-  stateManager: StateManager,
-  sessionId: string,
-  cwd: string,
-  startedAfterMs: number,
-  // Resume: `codex resume` continues into a *new* rollout file, so the path
-  // already on the session is stale and must be replaced once the new one
-  // appears. Fresh spawns stop as soon as they have any path.
-  opts: { replaceExisting?: boolean } = {},
-): void {
-  // Codex only writes the rollout on the first turn, which may be minutes after
-  // spawn (or never, if the user just looks at the TUI). Poll fast at first,
-  // then back off to 10s and keep going until the session is linked or closed.
-  let attempts = 0;
-  const tick = () => {
-    attempts += 1;
-    const session = stateManager.getSession(sessionId);
-    if (!session || session.state === 'closed') return;
-    if (session.transcriptPath && !opts.replaceExisting) return;
-    const found = findLatestCodexRollout(cwd, startedAfterMs);
-    // Two codex workers in one directory both see the same "newest rollout".
-    // Whoever links first owns it; the other keeps polling for its own.
-    const claimedByOther = found && stateManager.getAllSessionIds().some(id =>
-      id !== sessionId && stateManager.getSession(id)?.transcriptPath === found.transcriptPath,
-    );
-    if (found && !claimedByOther) {
-      stateManager.attachProviderTranscript(sessionId, found.transcriptPath, found.sessionId);
-      console.log(`[codex] linked ${sessionId.slice(0, 18)} → ${found.transcriptPath}`);
-      return;
-    }
-    setTimeout(tick, attempts < 30 ? 1000 : 10_000).unref?.();
-  };
-  setTimeout(tick, 1000).unref?.();
 }
 
 export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContext): void {
@@ -359,7 +325,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
           broadcastRaw({ type: 'terminal:spawned', sessionId, pid: 0 });
           try {
-            ptyManager.spawn(sessionId, cwd, cols, rows, [], provider);
+            ptyManager.spawn(sessionId, cwd, cols, rows, provider === 'codex' ? buildCodexSpawnArgs() : [], provider);
             const pid = ptyManager.getPid(sessionId) ?? 0;
             if (pid) stateManager.setPid(sessionId, pid);
             log('pty:started', `${managedProviderLabel(provider)} PTY session started`, { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
@@ -427,11 +393,28 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           ovrToPty.set(ptySessionId, ptySessionId);
           ptyToOvr.set(ptySessionId, ptySessionId);
 
+          // Managed PTYs are keyed by the session id, so a second spawn would
+          // overwrite the map entry while the first TUI keeps running and
+          // painting into the same output stream — two agents on one thread
+          // and a flickering terminal. Reattach to the live one instead.
+          if (ptyManager.has(ptySessionId)) {
+            ptyManager.resize(ptySessionId, cols, rows);
+            sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: ptyManager.getPid(ptySessionId) ?? 0 });
+            broadcastRaw({
+              type: 'terminal:linked',
+              ovrId: targetSession.overlordId ?? resumeSessionId,
+              ptySessionId,
+              claudeSessionId: resumeSessionId,
+            });
+            console.log(`[terminal:resume] ${managedProviderLabel(provider)} PTY ${resumeSessionId.slice(0, 18)} already live — reattached`);
+            return;
+          }
+
           sendToClient(ws, { type: 'terminal:spawned', sessionId: ptySessionId, pid: 0 });
           try {
             const resumeArgs = provider === 'opencode'
               ? buildOpencodeResumeArgs(targetSession.providerSessionId)
-              : ['resume', '--last'];
+              : buildCodexResumeArgs(targetSession.providerSessionId);
             ptyManager.spawn(ptySessionId, cwd, cols, rows, resumeArgs, provider);
             const pid = ptyManager.getPid(ptySessionId) ?? 0;
             stateManager.reviveManagedProviderSession(resumeSessionId, pid);
@@ -601,7 +584,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const command = provider === 'opencode'
           ? `opencode ${session?.providerSessionId ? `--session ${session.providerSessionId}` : '--continue'}`
           : provider === 'codex'
-            ? 'codex resume --last'
+            ? buildCodexResumeCommand(session?.providerSessionId)
             : `claude --resume ${externalResumeId} --name "${sessionName.replace(/"/g, '')}"`;
         console.log(`[open-external] sessionId=${sessionId} cwd=${cwd}`);
         stateManager.setSessionType(sessionId, 'plain');
@@ -632,7 +615,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         const resumeCmd = provider === 'opencode'
           ? `opencode ${session?.providerSessionId ? `--session ${session.providerSessionId}` : '--continue'}`
           : provider === 'codex'
-            ? 'codex resume --last'
+            ? buildCodexResumeCommand(session?.providerSessionId)
             : `claude --resume ${bridgeResumeId} --name "${safeName}___BRG:${marker}"`;
         const command = `"${bridgePath}" --pipe overlord-${marker} -- ${resumeCmd}`;
         console.log(`[open-bridged] sessionId=${sessionId} marker=${marker}`);
