@@ -5,7 +5,7 @@ export const DEFAULT_WORKER_COLOR = 'hsl(30, 75%, 58%)';
 
 /**
  * Picking a glyph in the ColorPicker also applies this colour, so the office
- * grid reads at a glance (red = bug, green = ticket/done, blue = task…).
+ * grid reads at a glance (blue = JIRA ticket/story/bug/task, green = done…).
  * The session colour stays freely editable afterwards — hue/lightness presets
  * and the slider overwrite this without touching the icon.
  *
@@ -14,9 +14,9 @@ export const DEFAULT_WORKER_COLOR = 'hsl(30, 75%, 58%)';
  */
 export const ICON_COLORS: Record<WorkerIcon, string> = {
   user: DEFAULT_WORKER_COLOR,         // orange — the neutral default
-  ticket: 'hsl(272, 70%, 64%)',       // violet — refining magic
-  story: 'hsl(103, 52%, 47%)',        // grass green — JIRA story
-  bug: 'hsl(0, 72%, 55%)',            // red — broken
+  ticket: 'hsl(201, 72%, 55%)',       // blue — JIRA family
+  story: 'hsl(201, 72%, 55%)',        // blue — JIRA family
+  bug: 'hsl(201, 72%, 55%)',          // blue — JIRA family
   task: 'hsl(201, 72%, 55%)',         // blue — JIRA task
   investigate: DEFAULT_WORKER_COLOR,  // orange
   notes: DEFAULT_WORKER_COLOR,        // orange
