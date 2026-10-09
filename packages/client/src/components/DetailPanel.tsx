@@ -4,7 +4,7 @@ import { useRetainedFeed } from '../hooks/useRetainedFeed';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
 import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draftStore';
-import { subscribeDictation, subscribeDictationSubmit } from '../lib/dictationStore';
+import { mergeDictation, subscribeDictation, subscribeDictationSubmit, type DictationEdit } from '../lib/dictationStore';
 import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
 import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
 import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
@@ -436,6 +436,11 @@ interface DetailPanelProps {
   showStickyUserMessage?: boolean;
   /** Global voice settings. Absent or disabled hides the per-worker override. */
   voiceInput?: Partial<VoiceInputConfig>;
+  /** Starts dictation, or sends it when already dictating. Absent hides the
+   *  composer mic button (voice disabled or unsupported). */
+  onVoiceToggle?: () => void;
+  /** Drives the mic button's look and tooltip. */
+  voiceMic?: 'ready' | 'live' | 'muted' | 'blocked';
 }
 
 function isFilePath(s: string): boolean {
@@ -1890,6 +1895,8 @@ export function DetailPanel({
   onNavigateRoom,
   showStickyUserMessage = true,
   voiceInput,
+  onVoiceToggle,
+  voiceMic = 'ready',
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
   const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
@@ -2175,9 +2182,21 @@ export function DetailPanel({
   // design, so a false wake is expected — and a false wake that wipes a draft
   // mid-sentence is far worse than one that is merely ignored. The composer is
   // therefore written to only if it was empty when the utterance opened.
+  //
+  // Editing the composer mid-dictation is respected: the edited text becomes
+  // the base and only words heard afterwards are appended (see DictationEdit).
   const dictationOwnsComposer = useRef(false);
+  const dictationEdit = useRef<DictationEdit | null>(null);
+  const dictationWritten = useRef('');
+  const dictationHeard = useRef('');
   const composerRef = useRef('');
   composerRef.current = sendInput2;
+  // The composer differs from what dictation last wrote → the user edited it.
+  const noteComposerEdit = () => {
+    if (composerRef.current !== dictationWritten.current) {
+      dictationEdit.current = { base: composerRef.current, heardAt: dictationHeard.current };
+    }
+  };
   useEffect(() => subscribeDictation((d) => {
     if (!d.ovrId || d.ovrId !== effectiveOvrId) {
       dictationOwnsComposer.current = false;
@@ -2186,9 +2205,21 @@ export function DetailPanel({
     if (!dictationOwnsComposer.current) {
       if (composerRef.current.trim() !== '') return;   // user's draft wins
       dictationOwnsComposer.current = true;
+      dictationEdit.current = null;
+      dictationWritten.current = composerRef.current;
+      dictationHeard.current = '';
+    } else {
+      noteComposerEdit();
     }
-    setSendInput2(d.text);
-    if (d.text === '') dictationOwnsComposer.current = false;
+    const next = d.text === '' ? '' : mergeDictation(dictationEdit.current, d.text);
+    dictationHeard.current = d.text;
+    dictationWritten.current = next;
+    composerRef.current = next;   // a second result can land before the re-render
+    setSendInput2(next);
+    if (d.text === '') {
+      dictationOwnsComposer.current = false;
+      dictationEdit.current = null;
+    }
   }), [effectiveOvrId]);
 
   // The stop word sends through the composer, so it is indistinguishable from
@@ -2196,7 +2227,11 @@ export function DetailPanel({
   const handleSendRef = useRef<(text?: string) => void>(() => {});
   handleSendRef.current = handleSend;
   useEffect(() => subscribeDictationSubmit((ovrId, text) => {
-    if (ovrId === effectiveOvrId) handleSendRef.current(text);
+    if (ovrId !== effectiveOvrId) return;
+    // Send what the composer shows, edits included — not the raw transcript.
+    if (dictationOwnsComposer.current) noteComposerEdit();
+    const merged = mergeDictation(dictationEdit.current, text);
+    if (merged.trim() !== '') handleSendRef.current(merged);
   }), [effectiveOvrId]);
 
   const draftPerSession = useRef<Map<string, string>>(new Map());
@@ -2287,6 +2322,7 @@ const currentDisplayName =
   const reachedFeedStartRef = useRef(false);
   useEffect(() => {
     setExtraFeed([]);
+    reachedFeedStartRef.current = false;
     setHasMore(selectedSession?.feedTruncated ?? false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSession?.sessionId]);
@@ -2308,6 +2344,7 @@ const currentDisplayName =
       .then((data: { items?: ActivityItem[]; hasMore?: boolean }) => {
         setExtraFeed(data.items ?? []);
         setHasMore(data.hasMore ?? false);
+        reachedFeedStartRef.current = !data.hasMore;
       })
       .catch(() => { /* ignore aborts and errors */ });
     return () => controller.abort();
@@ -2326,7 +2363,6 @@ const currentDisplayName =
     setActiveTab('conversation');
 
     const feed = selectedSession.activityFeed ?? [];
-    reachedFeedStartRef.current = false;
     const targetIdx = feed.findIndex(item => item.timestamp === effectiveScrollTarget);
     const isNearTop = targetIdx >= 0 && targetIdx < 10;
     // Target may be in older history that's been trimmed out of activityFeed,
@@ -2342,9 +2378,9 @@ const currentDisplayName =
         .then((data: { items?: ActivityItem[]; hasMore?: boolean }) => {
           if (data.items && data.items.length > 0) setExtraFeed(data.items);
           setHasMore(data.hasMore ?? false);
+          reachedFeedStartRef.current = !data.hasMore;
         })
         .catch(() => { /* ignore */ });
-        reachedFeedStartRef.current = !data.hasMore;
     }
 
     // Scroll after a short delay to allow render (first pass). If the target
@@ -2378,7 +2414,6 @@ const currentDisplayName =
       const scrollables: HTMLElement[] = [];
       for (let p: HTMLElement | null = highlightEl.parentElement; p && p !== container; p = p.parentElement) {
         if (p.scrollHeight > p.clientHeight + 1) {
-          reachedFeedStartRef.current = !data.hasMore;
           const style = getComputedStyle(p);
           if (/(auto|scroll)/.test(style.overflowY)) scrollables.push(p);
         }
@@ -2732,6 +2767,7 @@ const currentDisplayName =
   const rawFeed = selectedSession?.activityFeed;
   // Stable reference when rawFeed is undefined — prevents downstream memos from busting every render.
   const realFeed = useMemo<ActivityItem[]>(() => rawFeed ?? [], [rawFeed]);
+  const retainedFeed = useRetainedFeed(selectedSession?.sessionId, rawFeed);
   const currentUserCount = realFeed.filter(i => i.role === 'user').length;
   const prevUserCount = realCountAtFirstSend.current ?? currentUserCount;
   // activityFeed is oldest-first — find the NEWEST user message by searching from the end
@@ -2767,7 +2803,6 @@ const currentDisplayName =
   // an unanswered AskUserQuestion (avoid double-showing).
   const lastRealItem = realFeed[realFeed.length - 1];
   const feedTrailsPendingQuestion = lastRealItem?.toolName === 'AskUserQuestion' && !lastRealItem.resultJson;
-  const retainedFeed = useRetainedFeed(selectedSession?.sessionId, rawFeed);
   const pendingQuestionItem: ActivityItem | null = (selectedSession?.pendingQuestion && !feedTrailsPendingQuestion)
     ? {
         kind: 'tool',
@@ -2795,6 +2830,7 @@ const currentDisplayName =
 
   const mergedFeed: ActivityItem[] = [
     ...extraFeed,
+    ...retainedFeed,
     ...realFeed,
     ...(confirmed ? [] : localSent.map(t => ({ kind: 'message' as const, role: 'user' as const, content: t, pending: true }))),
     ...(preambleItem ? [preambleItem] : []),
@@ -2830,7 +2866,6 @@ const currentDisplayName =
   const stateBarActiveSubagents = selectedSession
     ? selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking')
     : [];
-    ...retainedFeed,
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
   const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion && !selectedSession.questionStale;
   const isCompacting = selectedSession?.isCompacting === true;
@@ -3612,6 +3647,7 @@ const currentDisplayName =
                                                 setExtraFeed(prev => [...data.items!, ...prev]);
                                               }
                                               setHasMore(data.hasMore ?? false);
+                                              reachedFeedStartRef.current = !data.hasMore;
                                             })
                                             .catch(() => { /* ignore */ })
                                             .finally(() => setLoadingOlder(false));
@@ -3647,7 +3683,6 @@ const currentDisplayName =
                             <div className={styles.emptyFeedPrompt}>
                               <PermissionPrompt
                                 sessionId={selectedSession.sessionId}
-                                              reachedFeedStartRef.current = !data.hasMore;
                                 promptText={selectedSession.permissionPromptText}
                                 isLimitPrompt={selectedSession.isLimitPrompt}
                                 styles={styles}
@@ -3800,7 +3835,25 @@ const currentDisplayName =
                             <button className={styles.imageRemoveBtn} onClick={() => setPastedImage(null)}>✕</button>
                           </div>
                         )}
-                        <div className={styles.sendInputWrapper}>
+                        <div className={`${styles.sendInputWrapper} ${onVoiceToggle ? styles.withMic : ''}`}>
+                          {onVoiceToggle && (
+                            <button
+                              className={`${styles.micButton} ${voiceMic === 'live' ? styles.micButtonLive : ''} ${voiceMic === 'blocked' || voiceMic === 'muted' ? styles.micButtonOff : ''}`}
+                              onClick={onVoiceToggle}
+                              // Keep focus in the textarea so Enter still reaches the send path.
+                              onMouseDown={(e) => e.preventDefault()}
+                              title={voiceMic === 'live' ? 'Send dictation (Enter)'
+                                : voiceMic === 'blocked' ? 'Microphone blocked by Chrome — click to ask again, or allow it in site settings'
+                                : voiceMic === 'muted' ? 'Microphone muted — click to unmute (Alt+M)'
+                                : 'Dictate (Alt+V)'}
+                              aria-pressed={voiceMic === 'live'}
+                            >
+                              <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                                <rect x="4.5" y="1.5" width="5" height="7.5" rx="2.5" stroke="currentColor" strokeWidth="1.4"/>
+                                <path d="M2.5 7a4.5 4.5 0 0 0 9 0M7 11.5V13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          )}
                           <div className={styles.quickMenuAnchor} ref={quickMenuRef}>
                             <button
                               className={styles.quickMenuTrigger}

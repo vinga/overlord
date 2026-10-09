@@ -2,6 +2,17 @@
 // type-only, so no runtime dependency and no cycle.
 import type { VoiceInputConfig } from './session/globalSettingsStore.js';
 
+export interface DeskSpan { w: number; h: number }
+export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;
+
+export function isDeskSpan(v: unknown): v is DeskSpan {
+  if (!v || typeof v !== 'object') return false;
+  const { w, h } = v as Record<string, unknown>;
+  return Number.isInteger(w) && Number.isInteger(h)
+    && (w as number) >= 1 && (w as number) <= DESK_SPAN_MAX.w
+    && (h as number) >= 1 && (h as number) <= DESK_SPAN_MAX.h;
+}
+
 export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 // Include 'aider' to support Aider provider sessions (MVP: detection/tracking only, no Overlord spawn).
 export type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
@@ -196,6 +207,8 @@ export interface Session {
   replacedBy?: string;
   color: string;
   icon?: WorkerIcon;
+  /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
+  deskSpan?: DeskSpan;
   subagents: Subagent[];
   resumedFrom?: string;
   needsPermission?: boolean;
@@ -340,6 +353,8 @@ export interface OverlordSession {
   startedAt: number;
   color: string;
   icon?: WorkerIcon;
+  /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
+  deskSpan?: DeskSpan;
   proposedName?: string;
 
   /** Atomic unit — currentSessionId and history must stay in sync. */

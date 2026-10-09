@@ -243,11 +243,14 @@
   max-width: 360px;
 }
 
+/* Fixed-cell grid — cards span whole cells (see lib/deskGrid.ts, which
+   mirrors these numbers for the resize snap math). */
 .desks {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 250px);
+  grid-auto-rows: 140px;
+  grid-auto-flow: dense;
   gap: 14px;
-  align-items: flex-start;
 }
 
 .desk {
@@ -258,12 +261,100 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 6px;
-  min-width: 122px;
-  max-width: 250px;
+  min-width: 0;
+  min-height: 0;
   position: relative;
   transition: background 0.15s, border-color 0.15s;
+}
+
+/* Worker content fills the card. Un-resized cards grow to the rows their
+   content needs; a card resized smaller than its content fades out at the
+   bottom edge to hint it can be enlarged. */
+.deskBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.deskBody > div {
+  flex-shrink: 0;
+}
+.deskClipped .deskBody {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent);
+}
+
+/* "There's more below" marker on a clipped card. */
+.moreHint {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 14px;
+  letter-spacing: 1px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 5;
+}
+
+.resizeGrip {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  opacity: 0;
+  z-index: 6;
+  border-radius: 3px;
+  transition: opacity 0.15s;
+  background:
+    linear-gradient(135deg, transparent 55%, rgba(255, 255, 255, 0.35) 55%, rgba(255, 255, 255, 0.35) 62%, transparent 62%),
+    linear-gradient(135deg, transparent 75%, rgba(255, 255, 255, 0.35) 75%, rgba(255, 255, 255, 0.35) 82%, transparent 82%);
+  touch-action: none;
+}
+.desk:hover .resizeGrip,
+.deskResizing .resizeGrip {
+  opacity: 1;
+}
+.resizeGrip:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* Snap preview — anchored at the card's top-left, sized to the target span. */
+.resizeGhost {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  border: 1.5px dashed rgba(212, 175, 55, 0.7);
+  border-radius: 12px;
+  background: rgba(212, 175, 55, 0.05);
+  pointer-events: none;
+  z-index: 20;
+  transition: width 0.12s ease, height 0.12s ease;
+}
+.resizeGhostLabel {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(20, 20, 30, 0.85);
+  color: #d4af37;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.deskResizing {
+  z-index: 10;
 }
 
 .desk:hover {

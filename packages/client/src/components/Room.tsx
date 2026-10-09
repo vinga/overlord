@@ -13,6 +13,8 @@ import { useRoomHidden } from '../hooks/useRoomHidden';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
+import { useDeskResize } from '../hooks/useDeskResize';
+import { spanPx, DESK_CELL_W, DESK_CELL_H } from '../lib/deskGrid';
 
 // 300 distinctive names for new sessions — pick a random unused one
 export const SESSION_NAMES = [
@@ -572,6 +574,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   }, [room.cwd]);
 
   const spawnInputRef = useRef<HTMLInputElement>(null);
+  const deskResize = useDeskResize();
   const terminalSpawnInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (isSpawning) {
@@ -865,13 +868,16 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onDone={() => setClearToast(null)}
         />
       )}
-      {!collapsed && <div className={styles.desks}>
+      {!collapsed && <div className={styles.desks} ref={deskResize.desksRef}>
         {sortedSessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;
           const sessionOrderKey = orderKey(session);
           const isDragging = draggedId === sessionOrderKey;
           const isDragOver = dragOverId === sessionOrderKey && draggedId !== sessionOrderKey;
           const isNote = session.sessionType === 'note';
+          const span = deskResize.spanOf(session);
+          const ghostSpan = deskResize.ghost?.sessionId === session.sessionId ? deskResize.ghost.span : null;
+          const clipped = deskResize.isClipped(session.sessionId, span);
           return (
             <div
               key={session.sessionId}
@@ -882,8 +888,11 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                 isSelected ? styles.deskSelected : '',
                 isDragging ? styles.dragging : '',
                 isDragOver ? styles.dragOver : '',
+                ghostSpan ? styles.deskResizing : '',
+                clipped ? styles.deskClipped : '',
               ].filter(Boolean).join(' ')}
-              draggable={true}
+              style={span.w > 1 || span.h > 1 ? { gridColumn: `span ${span.w}`, gridRow: `span ${span.h}` } : undefined}
+              draggable={!deskResize.resizing}
               onDragStart={() => setDraggedId(sessionOrderKey)}
               onDragOver={(e) => { e.preventDefault(); setDragOverId(sessionOrderKey); }}
               onDrop={(e) => { e.preventDefault(); handleDrop(sessionOrderKey); }}
@@ -932,7 +941,28 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                   sessionRef={formatSessionRef({ name: sessionDisplayName(session, customNames[session.sessionId]), sessionId: session.sessionId, overlordId: session.overlordId })}
                 />
               )}
-              <WorkerGroup session={session} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} />
+              <div className={styles.deskBody}>
+                <div ref={deskResize.bodyRef(session.sessionId)}>
+                <WorkerGroup session={session} spanW={span.w} spanH={span.h} onSelectSession={onSelectSession} customName={customNames[session.sessionId]} onDeleteSession={onDeleteSession} onRename={onRenameSession} />
+                </div>
+              </div>
+              {clipped && (
+                <span className={styles.moreHint} title="More content — enlarge the card to see it" aria-hidden="true">⋯</span>
+              )}
+              <span
+                className={styles.resizeGrip}
+                title="Drag to resize · double-click to auto-size"
+                aria-label="Resize card"
+                {...deskResize.gripProps(session)}
+              />
+              {ghostSpan && (
+                <div
+                  className={styles.resizeGhost}
+                  style={{ width: spanPx(ghostSpan.w, DESK_CELL_W), height: spanPx(ghostSpan.h, DESK_CELL_H) }}
+                >
+                  <span className={styles.resizeGhostLabel}>{ghostSpan.w} × {ghostSpan.h}</span>
+                </div>
+              )}
             </div>
           );
         })}

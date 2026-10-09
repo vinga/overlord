@@ -58,16 +58,25 @@
   align-items: stretch;
 }
 
+.worker.horizontal.wide {
+  width: 100%;
+  /* Read by nested pills (WorkerArtifactPill) that cap themselves at 163px. */
+  --pill-max: 100%;
+}
+
 .horizontal .body {
   flex-direction: row;
-  /* Title-only cards read best with the text centred against the glyph. */
-  align-items: center;
+  /* Top-aligned: a tall card (or one clipped by its grid span) keeps the
+     glyph in view. Short text still centres against it via the content
+     column's min-height below. */
+  align-items: flex-start;
   gap: 12px;
 }
 
 .horizontal .content {
   align-items: flex-start;
   justify-content: center;
+  min-height: 63px;
   text-align: left;
   flex: 1 1 auto;
   /* Clear the desk's absolutely-positioned options burger (22px @ top/right 4px). */
@@ -761,4 +770,9 @@
   :global(:root[data-light-anim]) .workingDot {
     animation: none;
   }
+}
+
+/* Note glyph is small — no need to centre text against a 63px icon. */
+.noteWorker.horizontal .content {
+  min-height: 0;
 }

@@ -289,6 +289,16 @@
   line-height: 1.55;
 }
 
+.rowHint kbd {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: #c8c8d0;
+}
+
 .toggle {
   position: relative;
   width: 36px;

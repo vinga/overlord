@@ -36,7 +36,7 @@ import { PARK_REASON_MAX } from '../ai/taskStorage.js';
 import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
-import { WORKER_ICONS, isWorkerIcon } from '../types.js';
+import { WORKER_ICONS, isWorkerIcon, isDeskSpan } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
 
@@ -1274,6 +1274,21 @@ export function registerApiRoutes(
     const color = typeof req.body?.color === 'string' ? req.body.color.trim() : '';
     if (!color) { res.status(400).json({ error: 'color required' }); return; }
     const ok = stateManager.setSessionColor(sessionId, color);
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // Desk span: PUT /api/sessions/:sessionId/desk-span — card size in room grid
+  // cells. `{ auto: true }` clears it so the card sizes itself to its content.
+  app.put('/api/sessions/:sessionId/desk-span', express.json(), (req, res) => {
+    const { sessionId } = req.params;
+    const body = req.body;
+    const span = body?.auto === true ? null : body;
+    if (span !== null && !isDeskSpan(span)) {
+      res.status(400).json({ error: 'body must be { w: 1–3, h: 1–4 } integers or { auto: true }' });
+      return;
+    }
+    const ok = stateManager.setDeskSpan(sessionId, span);
     if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
     res.json({ ok: true });
   });

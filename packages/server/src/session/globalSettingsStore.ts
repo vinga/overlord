@@ -5,12 +5,18 @@ import * as path from 'path';
 /** Hands-free voice control. Two configurable words drive the whole flow: the
  *  start word opens capture, the stop word commits. Nothing commits on silence —
  *  the only automatic transition is `maxUtteranceMs`, and it discards. */
+export type VoiceActivation = 'push' | 'wake';
+
 export interface VoiceInputConfig {
   /** Master switch. When false nothing is mounted client-side: no `getUserMedia`,
    *  no mic permission prompt, no HUD pill. */
   enabled: boolean;
   /** Speech engine. Only 'webspeech' (Chrome Web Speech API) exists today. */
   provider: 'webspeech';
+  /** How capture opens. 'push': a shortcut or the composer mic button starts
+   *  and sends; recognition runs only while dictating. 'wake': always listening
+   *  for the start word. */
+  activation: VoiceActivation;
   /** BCP-47 tag handed to the recognizer, e.g. 'en-US', 'pl-PL'. */
   lang: string;
   /** Opens capture. Nothing leaves the client until this matches. */
@@ -28,11 +34,19 @@ export interface VoiceInputConfig {
   /** Fuzzy-match confidence floor for spoken worker names. Below it, the target
    *  is refused rather than guessed. */
   nameMatchFloor: number;
+  /** Quiet beeps when capture opens, sends, or is thrown away. */
+  soundCues: boolean;
+  /** Read a worker's reply aloud (browser speech synthesis) when it answers a
+   *  prompt that was sent by voice. */
+  speakReplies: boolean;
+  /** After a reply is read aloud, open a push-to-talk capture automatically. */
+  listenAfterReply: boolean;
 }
 
 export const VOICE_DEFAULTS: VoiceInputConfig = {
   enabled: false,
   provider: 'webspeech',
+  activation: 'push',
   lang: 'en-US',
   startWord: 'overlord',
   stopWord: 'go',
@@ -40,6 +54,9 @@ export const VOICE_DEFAULTS: VoiceInputConfig = {
   wakeOnWorkerName: true,
   maxUtteranceMs: 30000,
   nameMatchFloor: 0.72,
+  soundCues: true,
+  speakReplies: false,
+  listenAfterReply: false,
 };
 
 export interface GlobalSettings {
@@ -202,7 +219,11 @@ function sanitizeVoice(input: Partial<VoiceInputConfig>): Partial<VoiceInputConf
   const out: Partial<VoiceInputConfig> = {};
   if (typeof input.enabled === 'boolean') out.enabled = input.enabled;
   if (input.provider === 'webspeech') out.provider = input.provider;
+  if (input.activation === 'push' || input.activation === 'wake') out.activation = input.activation;
   if (typeof input.wakeOnWorkerName === 'boolean') out.wakeOnWorkerName = input.wakeOnWorkerName;
+  for (const key of ['soundCues', 'speakReplies', 'listenAfterReply'] as const) {
+    if (typeof input[key] === 'boolean') out[key] = input[key];
+  }
   if (typeof input.lang === 'string') {
     const lang = input.lang.trim();
     // Loose BCP-47: primary subtag plus optional region/script subtags.

@@ -9,14 +9,23 @@
  *
  * Nothing commits on silence. The only automatic transition is the cap, and it
  * discards: forgetting the stop word must never fire a half-thought at a worker.
+ *
+ * Push-to-talk ('push' activation) skips the start word: `begin()` opens
+ * capture and starts recognition, `commit()` sends, `discard()` drops. The
+ * microphone is released whenever capture closes, so nothing streams while
+ * idle. Stop and cancel words still work inside a push capture.
  */
 
 import { resolveVoiceTarget, type VoiceDispatch, type VoiceWorker } from './resolveVoiceTarget';
 import type { SpeechEvent, SpeechProvider } from './speechProvider';
-import type { VoiceInputConfig } from './voiceConfig';
-import { isCommitWord, matchStart, matchTrailingPhrase } from './voiceGrammar';
+import { INTERIM_STOP_PAUSE_MS, STOP_PAUSE_MS, type VoiceInputConfig } from './voiceConfig';
+import { matchStart, matchTrailingPhrase } from './voiceGrammar';
 
 export type VoiceState = 'off' | 'idle' | 'listening' | 'error';
+
+export type VoiceCue = 'start' | 'send' | 'cancel';
+
+type PendingCommit = 'send' | 'cancel';
 
 export type DiscardReason = 'cancel' | 'timeout' | 'manual';
 
@@ -33,6 +42,11 @@ export interface VoiceSnapshot {
   heard: string;
   muted: boolean;
   error: string | null;
+  /** True while a push-to-talk capture is open (as opposed to a wake-word one). */
+  manual: boolean;
+  /** The stop word was heard and the send fires after the pause unless more
+   *  words arrive. */
+  sending: boolean;
 }
 
 export interface VoiceAgentDeps {
@@ -43,6 +57,8 @@ export interface VoiceAgentDeps {
   getContext: () => { workers: readonly VoiceWorker[]; selectedOvrId: string | null };
   onDispatch: (dispatch: VoiceDispatch) => void;
   onChange: (snapshot: VoiceSnapshot) => void;
+  /** Audible feedback hook: capture opened, sent, or thrown away. */
+  onCue?: (cue: VoiceCue) => void;
   /** Injected clock, so tests can drive elapsed time. */
   now?: () => number;
 }
@@ -51,6 +67,11 @@ export interface VoiceAgentDeps {
  *  mid-sentence, short enough that an unattended mic never grows without
  *  bound. */
 const IDLE_BUFFER_WORDS = 40;
+
+/** How long `commit()` waits for the engine to deliver the last words. Chrome
+ *  reports a word a few hundred ms after it is spoken, so sending on the
+ *  keypress itself would cut off the end of the sentence. */
+export const COMMIT_SETTLE_MS = 400;
 
 function lastWords(text: string, n: number): string {
   const parts = text.split(/\s+/).filter(Boolean);
@@ -72,10 +93,24 @@ export class VoiceAgent {
    *  later offset means the speaker said the wake word again. */
   private wakeAt = -1;
   private capTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True while a push-to-talk capture is open. */
+  private manual = false;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Fires the send/cancel once the speaker has paused after the word. */
+  private pauseTimer: ReturnType<typeof setTimeout> | null = null;
+  private pending: PendingCommit | null = null;
 
   constructor(private deps: VoiceAgentDeps) {
     deps.provider.onResult(e => this.handleEvent(e));
     deps.provider.onError(msg => {
+      // A failed push capture is over; release the microphone rather than let
+      // the provider's auto-restart keep it open behind an error state.
+      if (this.manual) {
+        this.manual = false;
+        this.clearCap();
+        this.clearSettle();
+        this.releaseManualMic();
+      }
       this.error = msg;
       this.state = 'error';
       this.emit();
@@ -94,11 +129,19 @@ export class VoiceAgent {
     if (!shouldRun) {
       this.deps.provider.stop();
       this.clearCap();
+      this.clearSettle();
+      this.manual = false;
       this.resetBuffers();
       if (this.state !== 'off') { this.state = 'off'; this.emit(); }
       return;
     }
-    this.deps.provider.start(cfg.lang);
+    // Push-to-talk keeps the microphone closed until begin().
+    if (cfg.activation === 'push') {
+      if (!this.manual) this.deps.provider.stop();
+    } else {
+      this.manual = false;
+      this.deps.provider.start(cfg.lang);
+    }
     if (this.state === 'off') {
       this.state = 'idle';
       this.error = null;
@@ -115,15 +158,49 @@ export class VoiceAgent {
 
   isMuted(): boolean { return this.muted; }
 
+  /** Opens a push-to-talk capture. No-op when disabled, muted or already
+   *  capturing. Returns whether a capture is open afterwards. */
+  begin(): boolean {
+    const cfg = this.deps.getConfig();
+    if (!cfg.enabled || this.muted || this.state === 'off') return false;
+    if (this.state === 'listening') return true;
+    this.resetBuffers();
+    this.manual = true;
+    this.state = 'listening';
+    this.error = null;
+    this.captureOpenedAt = this.now();
+    this.armCap(cfg.maxUtteranceMs);
+    this.deps.provider.start(cfg.lang);
+    this.deps.onCue?.('start');
+    this.emit();
+    return true;
+  }
+
+  /** Sends the open capture. In push mode it first waits COMMIT_SETTLE_MS for
+   *  the engine's trailing words; in wake mode it sends what is captured. */
+  commit(): void {
+    if (this.state !== 'listening' || this.settleTimer) return;
+    this.clearPause();
+    // Enter right after saying "go" must not send the word itself.
+    const final = () => matchTrailingPhrase(this.captured, this.deps.getConfig().stopWord).stripped;
+    if (!this.manual) { this.send(final()); return; }
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      if (this.state === 'listening') this.send(final());
+    }, COMMIT_SETTLE_MS);
+  }
+
   /** Abandons an in-flight utterance without sending it. */
   discard(reason: DiscardReason = 'manual'): void {
     if (this.state !== 'listening') return;
     void reason;
-    this.toIdle();
+    this.cancelWithCue();
   }
 
   dispose(): void {
     this.clearCap();
+    this.clearSettle();
+    this.clearPause();
     this.deps.provider.dispose();
   }
 
@@ -136,6 +213,8 @@ export class VoiceAgent {
       heard: this.state === 'listening' ? '' : lastWords(this.transcript, 6),
       muted: this.muted,
       error: this.error,
+      manual: this.state === 'listening' && this.manual,
+      sending: this.state === 'listening' && this.pending === 'send',
     };
   }
 
@@ -157,11 +236,38 @@ export class VoiceAgent {
     if (this.capTimer) { clearTimeout(this.capTimer); this.capTimer = null; }
   }
 
+  private clearSettle(): void {
+    if (this.settleTimer) { clearTimeout(this.settleTimer); this.settleTimer = null; }
+  }
+
   private toIdle(): void {
     this.clearCap();
+    this.clearSettle();
+    this.clearPause();
     this.resetBuffers();
+    if (this.manual) {
+      this.manual = false;
+      this.releaseManualMic();
+    }
     this.state = 'idle';
     this.emit();
+  }
+
+  /** A push capture owns the microphone only while open. In wake mode the
+   *  recognizer was already running for the start word, so it stays on. */
+  private releaseManualMic(): void {
+    if (this.deps.getConfig().activation === 'push') this.deps.provider.stop();
+  }
+
+  /** Dispatches `text` (stop word already stripped) and closes capture. */
+  private send(text: string): void {
+    const trimmed = text.trim();
+    if (trimmed === '') { this.toIdle(); return; }
+    const dispatch = this.resolve(trimmed);
+    this.toIdle();
+    // A refused dispatch reached nobody, so it must not sound like a send.
+    this.deps.onCue?.(dispatch.kind === 'refused' ? 'cancel' : 'send');
+    this.deps.onDispatch(dispatch);
   }
 
   private resolve(rest: string): VoiceDispatch {
@@ -180,14 +286,23 @@ export class VoiceAgent {
     const cfg = this.deps.getConfig();
     if (!cfg.enabled) return;
 
+    if (this.manual) {
+      if (this.state !== 'listening') return;
+      // No start word to strip: the whole utterance is the prompt, and it is not
+      // capped to the idle buffer — dictation can run long.
+      this.transcript = e.transcript.trim();
+      this.captured = this.transcript;
+      this.checkCommit(cfg, e.isFinal);
+      if (this.state === 'listening') this.emit();
+      return;
+    }
+    // A stale event from a push capture that just closed.
+    if (cfg.activation === 'push') return;
+
     // `transcript` is the whole utterance, so the wake word is re-stripped from
     // scratch on every event. This is what makes a restated final harmless:
     // appending deltas is what previously let the wake word back into the text.
-    const prev = this.transcript;
     this.transcript = lastWords(e.transcript.trim(), IDLE_BUFFER_WORDS);
-    const chunk = this.transcript.startsWith(prev) && prev !== ''
-      ? this.transcript.slice(prev.length).trim()
-      : this.transcript;
 
     const listening = this.state === 'listening';
 
@@ -225,50 +340,65 @@ export class VoiceAgent {
       this.captureOpenedAt = this.now();
       this.armCap(cfg.maxUtteranceMs);
       if (restarted) this.viaName = undefined;   // re-woken by the start word
+      else this.deps.onCue?.('start');
     }
     if (!listening) this.viaName = start.viaName;
     this.wakeAt = start.at;
     this.captured = start.rest;
     // One breath can carry the wake word, the prompt and the stop word.
-    this.checkCommit(cfg, chunk, e.gapMsBefore, e.isFinal);
+    this.checkCommit(cfg, e.isFinal);
     this.emit();
   }
 
   /**
-   * A commit word counts in either of two shapes, because the recognizer uses
-   * both:
+   * The stop (or cancel) word commits when it ends the transcript and the
+   * speaker then pauses for STOP_PAUSE_MS. Timing it ourselves rather than
+   * waiting for the engine to finalize matters: Chrome finalizes erratically,
+   * so "go" used to send instantly on one utterance and never on the next.
    *
-   *  - its own chunk after a pause — highest confidence;
-   *  - the last words of a *finalized* chunk. The engine finalizes when the
-   *    speaker stops, so a final chunk ending in the stop word means they said
-   *    it and stopped. Without this, an utterance spoken in one breath never
-   *    commits at all, which is the worse failure: the text just sits there.
+   * Any later word — or the engine revising "go" into "goal" — lands as a new
+   * event, which re-decides from scratch, so "go ahead and fix it" never
+   * fires. Interim results count, since the pause is what carries the intent.
+   * The cost: a sentence genuinely ending in the stop word ("ready to go")
+   * sends after the pause.
    *
-   * The cost is that a sentence genuinely ending in the stop word ("ready to
-   * go") will send. Interim chunks are still ignored, so mid-sentence "go
-   * ahead and fix it" cannot fire.
+   * The pause is short only once the engine finalized the stop word; an
+   * interim "go" is often the start of a longer word and gets the long pause.
    */
-  private checkCommit(cfg: VoiceInputConfig, chunk: string, gapMsBefore: number, isFinal: boolean): void {
+  private checkCommit(cfg: VoiceInputConfig, isFinal: boolean): void {
     if (this.state !== 'listening') return;
+    // Every result event is speech activity, so whatever was pending is
+    // re-decided from the current transcript and the pause starts over.
+    this.clearPause();
 
-    // Both paths tolerate the engine mangling the word, exactly as the wake
-    // word does, and both strip whatever it actually returned.
-    const committed = (word: string) =>
-      isCommitWord(chunk, word, gapMsBefore) || (isFinal && matchTrailingPhrase(this.captured, word).hit);
+    const kind: PendingCommit | null = matchTrailingPhrase(this.captured, cfg.cancelWord).hit ? 'cancel'
+      : matchTrailingPhrase(this.captured, cfg.stopWord).hit ? 'send'
+      : null;
+    if (!kind) return;
 
-    if (committed(cfg.cancelWord)) {
-      this.toIdle();
-      return;
-    }
+    this.pending = kind;
+    this.pauseTimer = setTimeout(() => {
+      this.pauseTimer = null;
+      this.pending = null;
+      if (this.state !== 'listening') return;
+      const now = this.deps.getConfig();
+      if (kind === 'cancel') {
+        if (matchTrailingPhrase(this.captured, now.cancelWord).hit) this.cancelWithCue();
+        return;
+      }
+      const m = matchTrailingPhrase(this.captured, now.stopWord);
+      if (m.hit) this.send(m.stripped);
+    }, isFinal ? STOP_PAUSE_MS : INTERIM_STOP_PAUSE_MS);
+  }
 
-    if (!committed(cfg.stopWord)) return;
+  private clearPause(): void {
+    if (this.pauseTimer) { clearTimeout(this.pauseTimer); this.pauseTimer = null; }
+    this.pending = null;
+  }
 
-    const text = matchTrailingPhrase(this.captured, cfg.stopWord).stripped;
-    if (text === '') { this.toIdle(); return; }
-
-    const dispatch = this.resolve(text);
+  private cancelWithCue(): void {
     this.toIdle();
-    this.deps.onDispatch(dispatch);
+    this.deps.onCue?.('cancel');
   }
 
   private armCap(ms: number): void {
@@ -276,7 +406,7 @@ export class VoiceAgent {
     this.capTimer = setTimeout(() => {
       this.capTimer = null;
       // Discard, never send. An utterance with no stop word is unfinished.
-      if (this.state === 'listening') this.toIdle();
+      if (this.state === 'listening') this.cancelWithCue();
     }, ms);
   }
 }

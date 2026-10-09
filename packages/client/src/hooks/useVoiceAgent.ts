@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { VoiceAgent, type VoiceSnapshot } from '../lib/voiceAgent';
+import { VoiceAgent, type VoiceCue, type VoiceSnapshot } from '../lib/voiceAgent';
 import { WebSpeechProvider, isSpeechSupported, type SpeechProvider } from '../lib/speechProvider';
 import type { VoiceDispatch, VoiceWorker } from '../lib/resolveVoiceTarget';
 import type { VoiceInputConfig } from '../lib/voiceConfig';
@@ -22,6 +22,8 @@ const OFF: VoiceSnapshot = {
   heard: '',
   muted: false,
   error: null,
+  manual: false,
+  sending: false,
 };
 
 export interface UseVoiceAgentOptions {
@@ -29,6 +31,8 @@ export interface UseVoiceAgentOptions {
   workers: readonly VoiceWorker[];
   selectedOvrId: string | null;
   onDispatch: (dispatch: VoiceDispatch) => void;
+  /** Audible feedback for capture start / send / cancel. */
+  onCue?: (cue: VoiceCue) => void;
   /** Test seam. Defaults to the Web Speech provider. */
   createProvider?: () => SpeechProvider;
 }
@@ -41,6 +45,12 @@ export interface UseVoiceAgentResult extends VoiceSnapshot {
   permission: MicPermission;
   toggleMute: () => void;
   discard: () => void;
+  /** Push-to-talk: opens a capture. Returns false when voice is off or muted. */
+  begin: () => boolean;
+  /** Sends the open capture. */
+  commit: () => void;
+  /** begin() when idle, commit() when capturing — the single-key / single-button flow. */
+  toggleCapture: () => void;
   /** Forces Chrome's microphone prompt, then starts recognition on success. */
   requestPermission: () => void;
 }
@@ -51,7 +61,7 @@ export interface UseVoiceAgentResult extends VoiceSnapshot {
  * new snapshot never tears down recognition mid-utterance.
  */
 export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
-  const { cfg, workers, selectedOvrId, onDispatch, createProvider } = opts;
+  const { cfg, workers, selectedOvrId, onDispatch, onCue, createProvider } = opts;
 
   const supported = useMemo(() => isSpeechSupported(), []);
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>(OFF);
@@ -79,6 +89,8 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
   cfgRef.current = cfg;
   ctxRef.current = { workers, selectedOvrId };
   dispatchRef.current = onDispatch;
+  const cueRef = useRef(onCue);
+  cueRef.current = onCue;
 
   const agentRef = useRef<VoiceAgent | null>(null);
 
@@ -91,6 +103,7 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
       getContext: () => ctxRef.current,
       onDispatch: d => dispatchRef.current(d),
       onChange: setSnapshot,
+      onCue: c => cueRef.current?.(c),
     });
     agentRef.current = agent;
     return () => {
@@ -114,7 +127,7 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
     const blocked = permission === 'denied';
     agent.setMuted(muted || blocked);
     agent.sync();
-  }, [muted, permission, cfg.enabled, cfg.lang]);
+  }, [muted, permission, cfg.enabled, cfg.lang, cfg.activation]);
 
   // Tick the elapsed-time readout only while an utterance is open.
   useEffect(() => {
@@ -134,6 +147,15 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
     agentRef.current?.discard('manual');
   }, []);
 
+  const begin = useCallback(() => agentRef.current?.begin() ?? false, []);
+  const commit = useCallback(() => { agentRef.current?.commit(); }, []);
+  const toggleCapture = useCallback(() => {
+    const agent = agentRef.current;
+    if (!agent) return;
+    if (agent.snapshot().state === 'listening') agent.commit();
+    else agent.begin();
+  }, []);
+
   const requestPermission = useCallback(() => {
     // getUserMedia opens Chrome's prompt reliably; SpeechRecognition on its own
     // can fail to. The stream is released immediately — only the grant matters.
@@ -145,5 +167,5 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
       .catch(() => setPermission('denied'));
   }, []);
 
-  return { ...snapshot, muted, supported, permission, toggleMute, discard, requestPermission };
+  return { ...snapshot, muted, supported, permission, toggleMute, discard, begin, commit, toggleCapture, requestPermission };
 }

@@ -54,3 +54,31 @@ export function subscribeDictationSubmit(listener: SubmitListener): () => void {
   submitListeners.add(listener);
   return () => submitListeners.delete(listener);
 }
+
+/**
+ * A manual edit of the composer during dictation. From then on the composer
+ * shows `base` (the user's text) plus only what was heard after `heardAt` —
+ * so deleted words stay deleted instead of returning with the next result.
+ */
+export interface DictationEdit {
+  base: string;
+  /** Full transcript at the moment of the edit. */
+  heardAt: string;
+}
+
+/** The part of `heard` spoken after `heardAt`. The engine may revise earlier
+ *  words, so when `heardAt` is no longer a prefix the cut is by word count. */
+export function heardSince(heard: string, heardAt: string): string {
+  if (heard.startsWith(heardAt)) return heard.slice(heardAt.length).trim();
+  const skip = heardAt.trim() === '' ? 0 : heardAt.trim().split(/\s+/).length;
+  return heard.trim().split(/\s+/).slice(skip).join(' ');
+}
+
+/** Composer text for `heard`, honouring a manual edit if there was one. */
+export function mergeDictation(edit: DictationEdit | null, heard: string): string {
+  if (!edit) return heard;
+  const tail = heardSince(heard, edit.heardAt);
+  if (tail === '') return edit.base;
+  if (edit.base.trim() === '') return tail;
+  return /\s$/.test(edit.base) ? `${edit.base}${tail}` : `${edit.base} ${tail}`;
+}

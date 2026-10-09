@@ -17,7 +17,7 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
   cursor: pointer;
-  max-width: 163px;
+  max-width: var(--pill-max, 163px);
   min-width: 0;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }

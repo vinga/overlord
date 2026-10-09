@@ -32,6 +32,18 @@ describe('sanitizeVoiceOverride', () => {
     expect(sanitizeVoiceOverride({ enabled: 'yes', maxUtteranceMs: 'lots' })).toEqual({});
   });
 
+  it('keeps the spoken-reply toggles when boolean', () => {
+    expect(sanitizeVoiceOverride({ soundCues: false, speakReplies: true, listenAfterReply: true }))
+      .toEqual({ soundCues: false, speakReplies: true, listenAfterReply: true });
+    expect(sanitizeVoiceOverride({ speakReplies: 'yes' })).toEqual({});
+  });
+
+  it('keeps a known activation mode and drops an unknown one', () => {
+    expect(sanitizeVoiceOverride({ activation: 'wake' })).toEqual({ activation: 'wake' });
+    expect(sanitizeVoiceOverride({ activation: 'push' })).toEqual({ activation: 'push' });
+    expect(sanitizeVoiceOverride({ activation: 'clap' })).toEqual({});
+  });
+
   it('rejects an unknown provider', () => {
     expect(sanitizeVoiceOverride({ provider: 'whisper' })).toEqual({});
   });

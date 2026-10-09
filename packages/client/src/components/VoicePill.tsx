@@ -6,9 +6,9 @@ interface Props {
   voice: UseVoiceAgentResult;
   /** Transient message from the last dispatch — a refusal, or an unwired verb. */
   notice: string | null;
-  /** Words the user says to open and to commit — shown as the idle hint. */
-  startWord: string;
+  /** Words that commit / discard a capture, shown as the hint while listening. */
   stopWord: string;
+  cancelWord: string;
   maxUtteranceMs: number;
   /**
    * Distance from the viewport bottom. The default gutter (44px) assumes a
@@ -19,96 +19,54 @@ interface Props {
 }
 
 /**
- * The only always-visible sign that the microphone is on. It deliberately shows
- * three things at once while capturing — what was heard, who will receive it,
+ * Shown only while dictating (or for a few seconds after a refused dispatch).
+ * The idle, muted and blocked states live in the status-bar chip, so nothing
+ * floats over the office when the microphone is not in use.
+ *
+ * While capturing it shows what was heard, who will receive it, how to finish,
  * and how much of the utterance cap is used — so a wrong target is obvious
- * before the stop word is said rather than after.
+ * before sending rather than after.
  */
-export function VoicePill({ voice, notice, startWord, stopWord, maxUtteranceMs, bottomOffset }: Props) {
-  // The settings may list several alternatives; the hint shows the first.
-  const startLabel = startWord.split(',')[0].trim() || startWord;
-  const stopLabel = stopWord.split(',')[0].trim() || stopWord;
-  // A missing microphone grant is the one state that must always be visible:
-  // without it the recognizer runs but hears nothing, so the start word would
-  // silently do nothing.
-  const needsPermission = voice.permission === 'denied';
-  if (voice.state === 'off' && !voice.muted && !notice && !needsPermission) return null;
-
+export function VoicePill({ voice, notice, stopWord, cancelWord, maxUtteranceMs, bottomOffset }: Props) {
   const listening = voice.state === 'listening';
-  const errored = voice.state === 'error';
+  if (!listening && !notice) return null;
 
-  const tone = needsPermission ? styles.errored
-    : voice.muted ? styles.muted
-    : errored ? styles.errored
-    : listening ? styles.listening
-    : styles.idle;
+  const stopLabel = stopWord.split(',')[0].trim() || stopWord;
+  const cancelLabel = cancelWord.split(',')[0].trim() || cancelWord;
 
   const preview = voice.preview;
   const targetLabel = preview?.kind === 'prompt' ? preview.name
     : preview?.kind === 'control' ? (preview.name ?? preview.verb)
     : null;
   const refusal = preview?.kind === 'refused' ? preview.reason : null;
-
   const capPct = Math.min(100, (voice.elapsedMs / Math.max(1, maxUtteranceMs)) * 100);
-
-  const title = needsPermission
-    ? 'Microphone blocked for this site. Allow it in Chrome\u2019s site settings (padlock in the address bar), then reload.'
-    : voice.muted
-      ? 'Voice input muted — click or press Alt+M to unmute'
-      : listening
-        ? `Say "${stopLabel}" to send, "cancel" to discard`
-        : `Say "${startLabel}" to start`;
-
-  const onActivate = needsPermission ? voice.requestPermission : voice.toggleMute;
 
   return (
     <div className={styles.host} style={bottomOffset !== undefined ? { bottom: bottomOffset } : undefined}>
-      <div className={styles.wrap}>
-        <div
-          className={`${styles.pill} ${tone}`}
-          onClick={onActivate}
-          title={title}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onActivate(); }}
-        >
-          <span className={`${styles.dot} ${listening ? styles.pulsing : ''}`} />
+      <div className={`${styles.pill} ${listening ? styles.listening : styles.errored}`} role="status">
+        {!listening && <span className={styles.refused}>{notice}</span>}
 
-          {needsPermission && <span className={styles.label}>microphone blocked</span>}
-
-          {!needsPermission && voice.muted && <span className={styles.label}>mic off</span>}
-
-          {!needsPermission && !voice.muted && errored && (
-            <span className={styles.transcript}>{voice.error ?? 'voice error'}</span>
-          )}
-
-          {!needsPermission && !voice.muted && !errored && !listening && (
-            notice
-              ? <span className={styles.refused}>{notice}</span>
-              : <>
-                  <span className={styles.label}>say “{startLabel}”</span>
-                  {voice.heard && <span className={styles.heard}>{voice.heard}</span>}
-                </>
-          )}
-
-          {!needsPermission && !voice.muted && listening && (
-            <>
-              <span className={styles.label}>listening</span>
-              <span className={styles.transcript}>
-                {voice.captured.trim() === '' ? '…' : voice.captured}
-              </span>
-              {refusal
-                ? <span className={styles.refused}>{refusal}</span>
-                : targetLabel && <span className={styles.target}>{targetLabel}</span>}
-            </>
-          )}
-
-          {listening && (
+        {listening && (
+          <>
+            <span className={`${styles.dot} ${voice.sending ? '' : styles.pulsing}`} />
+            <span className={styles.transcript}>
+              {voice.captured.trim() === '' ? 'Listening…' : voice.captured}
+            </span>
+            {refusal
+              ? <span className={styles.refused}>{refusal}</span>
+              : targetLabel && <span className={styles.target}>→ {targetLabel}</span>}
+            <span className={styles.hint}>
+              {voice.sending ? <b>sending…</b> : voice.manual
+                ? <><kbd>Enter</kbd> send · <kbd>Esc</kbd> cancel</>
+                : <>“{stopLabel}” send · “{cancelLabel}” cancel</>}
+            </span>
+            <button className={styles.iconBtn} onClick={voice.commit} title="Send">↵</button>
+            <button className={styles.iconBtn} onClick={voice.discard} title="Cancel (Esc)">✕</button>
             <span className={styles.cap}>
               <span className={styles.capFill} style={{ width: `${capPct}%` }} />
             </span>
-          )}
-        </div>
+          </>
+        )}
       </div>
     </div>
   );

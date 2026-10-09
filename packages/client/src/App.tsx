@@ -12,6 +12,9 @@ import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { resolveVoiceConfig } from './lib/voiceConfig';
 import type { VoiceDispatch, VoiceWorker } from './lib/resolveVoiceTarget';
 import { VoicePill } from './components/VoicePill';
+import { VoiceStatusChip } from './components/VoiceStatusChip';
+import { useReplySpeaker, type ReplyWorker } from './hooks/useReplySpeaker';
+import { playCue } from './lib/voiceSounds';
 import { setDictation, requestDictationSubmit } from './lib/dictationStore';
 
 import type { ArchiveEntry, Session, SessionProvider, TerminalMessage, TerminalSpawnMode } from './types';
@@ -23,7 +26,7 @@ import { TaskListPanel } from './components/TaskListPanel';
 import { LogsPage } from './components/LogsPage';
 import { SpawnDialog } from './components/SpawnDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsModal, type PageId } from './components/SettingsModal';
 import type { GlobalSettings } from './types';
 import { SESSION_NAMES } from './components/Room';
 import type { Room } from './types';
@@ -368,6 +371,44 @@ export function App() {
 
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
 
+  // Replies to voice prompts, read aloud. Needs `lastMessage`, which changes far
+  // more often than the voice roster, so it is a separate list and stays a
+  // stable empty array while the feature is off.
+  const speakRepliesOn = voiceCfg.enabled && voiceCfg.speakReplies;
+  const replyWorkersRef = useRef<ReplyWorker[]>([]);
+  const replyWorkers = useMemo<ReplyWorker[]>(() => {
+    if (!speakRepliesOn) return replyWorkersRef.current.length === 0 ? replyWorkersRef.current : (replyWorkersRef.current = []);
+    const next: ReplyWorker[] = [];
+    for (const room of snapshot?.rooms ?? []) {
+      for (const sess of room.sessions) {
+        const name = displayNames[sess.sessionId] ?? sess.proposedName ?? sess.slug ?? 'worker';
+        next.push({ ovrId: sess.overlordId ?? sess.sessionId, name, state: sess.state, lastMessage: sess.lastMessage });
+      }
+    }
+    const prev = replyWorkersRef.current;
+    const unchanged = prev.length === next.length && prev.every((p, i) =>
+      p.ovrId === next[i].ovrId && p.state === next[i].state && p.lastMessage === next[i].lastMessage && p.name === next[i].name);
+    if (unchanged) return prev;
+    replyWorkersRef.current = next;
+    return next;
+  }, [snapshot, displayNames, speakRepliesOn]);
+
+  // The voice agent is created below and needs the speaker's markVoicePrompt;
+  // the speaker needs the agent's state. Refs break the cycle.
+  const voiceListeningRef = useRef(false);
+  const beginVoiceRef = useRef<() => boolean>(() => false);
+  const listenAfterReplyRef = useRef(voiceCfg.listenAfterReply);
+  listenAfterReplyRef.current = voiceCfg.listenAfterReply;
+  const replySpeaker = useReplySpeaker({
+    cfg: voiceCfg,
+    workers: replyWorkers,
+    isListening: () => voiceListeningRef.current,
+    onSpoken: (completed) => {
+      if (completed && listenAfterReplyRef.current) beginVoiceRef.current();
+    },
+  });
+  const { markVoicePrompt, stop: stopReply, speaking: replySpeaking } = replySpeaker;
+
   const handleVoiceDispatch = useCallback((dispatch: VoiceDispatch) => {
     if (dispatch.kind === 'refused') {
       setVoiceNotice(dispatch.candidates?.length
@@ -388,6 +429,7 @@ export function App() {
       } else {
         terminal.injectText(dispatch.ovrId, dispatch.text, dispatch.text.includes('@'));
       }
+      markVoicePrompt(dispatch.ovrId);
       setVoiceNotice(null);
       return;
     }
@@ -419,14 +461,17 @@ export function App() {
         return;
     }
     setVoiceNotice(null);
-  }, [terminal, selectedSessionId]);
+  }, [terminal, selectedSessionId, markVoicePrompt]);
 
   const voice = useVoiceAgent({
     cfg: voiceCfg,
     workers: voiceWorkers,
     selectedOvrId: selectedSessionId,
     onDispatch: handleVoiceDispatch,
+    onCue: voiceCfg.soundCues ? playCue : undefined,
   });
+  voiceListeningRef.current = voice.state === 'listening';
+  beginVoiceRef.current = voice.begin;
 
   // Mirror what is being heard into the target worker's composer, so the text
   // is visible and editable before the stop word sends it.
@@ -450,20 +495,79 @@ export function App() {
     setDictation(null, '');
   }, [voice.state, voice.captured, voice.preview]);
 
-  // Alt+M mutes; Esc abandons an utterance in flight.
+  // Alt+V starts / sends, Enter sends a push capture, Esc abandons, Alt+M mutes.
+  // Matched on `code`: on macOS Option+V types "√" and Option+M "µ", so `key`
+  // never reads "v"/"m". Capture phase, so Enter and Esc during dictation reach
+  // the agent before the composer sends its mirrored draft or a panel closes.
+  const voiceListening = voice.state === 'listening';
+  const voiceManual = voice.manual;
+  const { toggleCapture: agentToggleCapture, toggleMute: toggleVoiceMute, discard: discardVoice, commit: commitVoice } = voice;
+  // Starting to talk always silences a reply being read out.
+  const toggleCapture = useCallback(() => { stopReply(); agentToggleCapture(); }, [stopReply, agentToggleCapture]);
   useEffect(() => {
     if (!voiceCfg.enabled) return;
     function onKey(e: KeyboardEvent) {
-      if (e.altKey && (e.key === 'm' || e.key === 'M')) {
+      const plainAlt = e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+      if (plainAlt && e.code === 'KeyV') {
         e.preventDefault();
-        voice.toggleMute();
-      } else if (e.key === 'Escape' && voice.state === 'listening') {
-        voice.discard();
+        toggleCapture();
+      } else if (plainAlt && e.code === 'KeyM') {
+        e.preventDefault();
+        toggleVoiceMute();
+      } else if (replySpeaking && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        stopReply();
+      } else if (voiceListening && e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        discardVoice();
+      } else if (voiceListening && voiceManual && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        e.stopPropagation();
+        commitVoice();
       }
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [voiceCfg.enabled, voice]);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [voiceCfg.enabled, voiceListening, voiceManual, toggleCapture, toggleVoiceMute, discardVoice, commitVoice, replySpeaking, stopReply]);
+
+  // The composer mic button stays visible in every state, so it is always
+  // discoverable; when the mic cannot start, clicking it fixes the cause.
+  const voiceMic: 'ready' | 'live' | 'muted' | 'blocked' = voice.permission === 'denied' ? 'blocked'
+    : voice.muted ? 'muted'
+    : voice.state === 'listening' ? 'live'
+    : 'ready';
+  const { requestPermission: requestMic } = voice;
+  const handleMicButton = useCallback(() => {
+    if (voiceMic === 'blocked') requestMic();
+    else if (voiceMic === 'muted') toggleVoiceMute();
+    else toggleCapture();
+  }, [voiceMic, requestMic, toggleVoiceMute, toggleCapture]);
+
+  const [settingsPage, setSettingsPage] = useState<PageId | undefined>(undefined);
+  const openVoiceSettings = useCallback(() => {
+    setSettingsPage('general.voice');
+    setShowSettings(true);
+  }, []);
+
+  // Memoized so the memo'd Office does not re-render for unrelated voice ticks.
+  const voiceChip = useMemo(() => voiceCfg.enabled && voice.supported ? (
+    <VoiceStatusChip
+      state={voice.state}
+      muted={voice.muted}
+      permission={voice.permission}
+      error={voice.error}
+      cfg={voiceCfg}
+      speaking={replySpeaking}
+      onStopSpeaking={stopReply}
+      onToggleCapture={toggleCapture}
+      onToggleMute={voice.toggleMute}
+      onRequestPermission={voice.requestPermission}
+      onOpenSettings={openVoiceSettings}
+    />
+  ) : null, [voiceCfg, voice.supported, voice.state, voice.muted, voice.permission, voice.error,
+    toggleCapture, voice.toggleMute, voice.requestPermission, openVoiceSettings, replySpeaking, stopReply]);
 
   // Clear a refusal notice a few seconds after it lands.
   useEffect(() => {
@@ -688,12 +792,12 @@ export function App() {
 
   return (
     <>
-      {voiceCfg.enabled && (
+      {voiceCfg.enabled && (voice.state === 'listening' || voiceNotice) && (
         <VoicePill
           voice={voice}
           notice={voiceNotice}
-          startWord={voiceCfg.startWord}
           stopWord={voiceCfg.stopWord}
+          cancelWord={voiceCfg.cancelWord}
           maxUtteranceMs={voiceCfg.maxUtteranceMs}
           bottomOffset={dock === 'bottom' ? panelHeight + 56 : undefined}
         />
@@ -708,7 +812,8 @@ export function App() {
         onSpawnDirect={handleNewFolderSpawn}
         onNewTerminalSession={handleNewTerminalSession}
         onLogsClick={() => setView('logs')}
-        onSettingsClick={() => setShowSettings(true)}
+        onSettingsClick={() => { setSettingsPage(undefined); setShowSettings(true); }}
+        statusBarExtra={voiceChip}
         onStatsClick={() => setShowStats(true)}
         onOpenAdvancedSearch={(initialQuery) => { setAdvancedSearchInitialQuery(initialQuery ?? ''); setShowAdvancedSearch(true); }}
 
@@ -756,6 +861,7 @@ export function App() {
             });
           }}
           onClose={() => setShowSettings(false)}
+          initialPage={settingsPage}
         />
       )}
       {showAdvancedSearch && (
@@ -823,6 +929,8 @@ export function App() {
         selectedSubagentId={selectedSubagentId}
         showStickyUserMessage={snapshot?.settings?.showStickyUserMessage !== false}
         voiceInput={snapshot?.settings?.voiceInput}
+        onVoiceToggle={voiceCfg.enabled && voice.supported ? handleMicButton : undefined}
+        voiceMic={voiceMic}
         customName={displayNames[selectedSession?.sessionId ?? '']}
         onRename={rename}
         onClose={handleClose}

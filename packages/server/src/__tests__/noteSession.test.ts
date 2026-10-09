@@ -60,7 +60,8 @@ describe('notePreview', () => {
     expect(notePreview('\n\n## **Groceries** list\n\n- milk')).toBe('Groceries list\nmilk');
     expect(notePreview('- [ ] call [Bob](https://x.y)')).toBe('call Bob');
     expect(notePreview('   \n')).toBe('');
-    expect(notePreview('1\n2\n3\n4\n5\n6\n7').split('\n')).toHaveLength(5);
+    const many = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');
+    expect(notePreview(many).split('\n')).toHaveLength(20);
   });
 });
 

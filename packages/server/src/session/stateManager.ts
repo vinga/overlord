@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, SessionReview } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, SessionReview, DeskSpan } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -3144,6 +3144,7 @@ export class StateManager {
       out.proposedName = overlord.proposedName ?? session.proposedName;
       out.color = overlord.color ?? session.color;
       out.icon = overlord.icon ?? session.icon;
+      out.deskSpan = overlord.deskSpan;
       out.slug = overlord.slug ?? session.slug;
       out.model = overlord.model ?? session.model;
       out.intent = overlord.intent ?? session.intent;
@@ -3303,6 +3304,21 @@ export class StateManager {
     for (const s of this.sessions.values()) {
       if (s.overlordId === rec.overlordId) s.voiceOverride = next;
     }
+    this.onChange();
+    return true;
+  }
+
+  /** Set the desk card's grid size, or `null` to go back to auto-sizing (the
+   *  card takes the rows its content needs). An explicit 1×1 is kept — it is
+   *  a user choice, not the default. Lives on the OverlordSession record, so it
+   *  survives restart and archive. */
+  setDeskSpan(sessionId: string, span: DeskSpan | null): boolean {
+    let rec = sessionStore.getBySessionId(sessionId);
+    const live = this.sessions.get(sessionId);
+    if (!rec && live) rec = sessionStore.ensureFromLive(live);
+    if (!rec) return false;
+    const next = span ? { w: span.w, h: span.h } : undefined;
+    sessionStore.patch(rec.overlordId, { deskSpan: next });
     this.onChange();
     return true;
   }

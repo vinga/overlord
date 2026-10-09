@@ -14,7 +14,7 @@ export function isNoteId(id: string): boolean {
   return NOTE_ID_RE.test(id);
 }
 
-export const NOTE_PREVIEW_LINES = 5;
+export const NOTE_PREVIEW_LINES = 20;
 
 /** First non-empty lines, markdown markers stripped — the worker's preview. */
 export function notePreview(content: string): string {

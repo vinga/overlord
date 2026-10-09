@@ -147,6 +147,8 @@ interface Session {
   ideName?: string;
   color: string;          // e.g. "hsl(120, 65%, 55%)"
   icon?: WorkerIcon;      // avatar glyph; undefined = 'user'
+  /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
+  deskSpan?: DeskSpan;
   subagents: Subagent[];
   model?: string;
   inputTokens?: number;
@@ -443,7 +445,11 @@ interface ArtifactChangedEvent {
 const SESSION_PROVIDERS: SessionProvider[] = ['claude', 'codex', 'aider', 'opencode'];
 const SPAWNABLE_SESSION_PROVIDERS: SessionProvider[] = ['claude', 'opencode', 'codex'];
 
+/** Desk card size in room grid cells. */
+interface DeskSpan { w: number; h: number }
+
 export type {
+  DeskSpan,
   WorkerState,
   SessionProvider,
   ActivityItemKind,

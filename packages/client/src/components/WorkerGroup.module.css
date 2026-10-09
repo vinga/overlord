@@ -6,6 +6,12 @@
   position: relative;
 }
 
+/* Multi-column desk card: the worker stretches to the card width. */
+.groupWide,
+.groupWide .mainWorker {
+  align-items: stretch;
+}
+
 
 .mainWorker {
   z-index: 2;

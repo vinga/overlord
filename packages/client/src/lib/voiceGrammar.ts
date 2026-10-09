@@ -142,6 +142,9 @@ export function chunkIsPhrase(chunk: string, phrase: string): boolean {
  * text with that run removed. The shortest matching run wins, so a mangled stop
  * word is stripped without eating a word of the actual instruction.
  */
+/** Shorter stop/cancel phrases must match exactly. */
+const MIN_FUZZY_PHRASE_CHARS = 5;
+
 export function matchTrailingPhrase(text: string, setting: string): { hit: boolean; stripped: string } {
   const miss = { hit: false, stripped: text.trim() };
   const alternatives = phraseList(setting);
@@ -167,7 +170,10 @@ export function matchTrailingPhrase(text: string, setting: string): { hit: boole
       .filter(t => !skippable(t.word))
       .map(t => t.word)
       .join('');
-    if (joined === wanted || similarity(joined, wanted) >= WAKE_FUZZY_FLOOR) {
+    // Fuzzy only for longer phrases: one edit on a 2-letter word is half of it,
+    // so "ago" or "so" would pass for "go".
+    const fuzzy = wanted.length >= MIN_FUZZY_PHRASE_CHARS && similarity(joined, wanted) >= WAKE_FUZZY_FLOOR;
+    if (joined === wanted || fuzzy) {
       return { hit: true, stripped: text.slice(0, tokens[start].start).trim() };
     }
   }

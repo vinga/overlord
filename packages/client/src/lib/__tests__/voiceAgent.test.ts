@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { VoiceAgent, type VoiceSnapshot } from '../voiceAgent';
+import { COMMIT_SETTLE_MS, VoiceAgent, type VoiceSnapshot } from '../voiceAgent';
 import type { SpeechEvent, SpeechProvider } from '../speechProvider';
 import type { VoiceDispatch, VoiceWorker } from '../resolveVoiceTarget';
-import { VOICE_DEFAULTS, type VoiceInputConfig } from '../voiceConfig';
+import { INTERIM_STOP_PAUSE_MS, STOP_PAUSE_MS, VOICE_DEFAULTS, type VoiceInputConfig } from '../voiceConfig';
 
 const PAUSE = 500;
 
@@ -50,7 +50,8 @@ function setup(cfgOver: Partial<VoiceInputConfig> = {}, workersOver?: VoiceWorke
     { ovrId: 'ovr-1', name: 'morion', state: 'waiting' },
     { ovrId: 'ovr-2', name: 'atlas', state: 'waiting' },
   ];
-  let cfg: VoiceInputConfig = { ...VOICE_DEFAULTS, enabled: true, ...cfgOver };
+  // Wake-word mode unless a test opts into push-to-talk.
+  let cfg: VoiceInputConfig = { ...VOICE_DEFAULTS, enabled: true, activation: 'wake', ...cfgOver };
   let selectedOvrId: string | null = 'ovr-2';
 
   const agent = new VoiceAgent({
@@ -71,6 +72,8 @@ function setup(cfgOver: Partial<VoiceInputConfig> = {}, workersOver?: VoiceWorke
 }
 
 beforeEach(() => { vi.useFakeTimers(); });
+/** The speaker goes quiet long enough for a trailing stop/cancel word to fire. */
+const pause = () => vi.advanceTimersByTime(STOP_PAUSE_MS);
 afterEach(() => { vi.useRealTimers(); });
 
 describe('start word', () => {
@@ -112,7 +115,7 @@ describe('stop word', () => {
   it('dispatches the captured text without the stop word', () => {
     const { provider, dispatched } = setup();
     provider.say('overlord fix the enter bug');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]).toMatchObject({ kind: 'prompt', text: 'fix the enter bug', ovrId: 'ovr-2' });
   });
@@ -124,16 +127,27 @@ describe('stop word', () => {
     expect(agent.snapshot().state).toBe('listening');
   });
 
-  it('ignores an unfinalized stop word spoken without a pause', () => {
-    // An interim is still being revised, so only a real pause makes it
-    // trustworthy. Finalizing the same words then commits.
-    const { provider, dispatched } = setup();
+  it('waits for the pause before sending', () => {
+    const { agent, provider, dispatched } = setup();
     provider.say('overlord fix the enter bug');
-    provider.guess('go', 100);
-    expect(dispatched).toHaveLength(0);
     provider.say('go');
-    expect(dispatched).toHaveLength(1);
+    expect(dispatched).toHaveLength(0);
+    expect(agent.snapshot().sending).toBe(true);
+    vi.advanceTimersByTime(STOP_PAUSE_MS - 1);
+    expect(dispatched).toHaveLength(0);
+    vi.advanceTimersByTime(1);
     expect(dispatched[0]).toMatchObject({ text: 'fix the enter bug' });
+  });
+
+  it('a word spoken within the pause cancels the send', () => {
+    const { agent, provider, dispatched } = setup();
+    provider.say('overlord fix it');
+    provider.guess('go');
+    vi.advanceTimersByTime(STOP_PAUSE_MS - 100);
+    provider.guess('go ahead');
+    pause();
+    expect(dispatched).toHaveLength(0);
+    expect(agent.snapshot()).toMatchObject({ state: 'listening', sending: false });
   });
 
   it('commits a whole utterance spoken in one breath', () => {
@@ -141,15 +155,15 @@ describe('stop word', () => {
     // the stop word is a complete instruction. This is how most real dictation
     // arrives; requiring a separate chunk meant it never sent at all.
     const { dispatched, provider } = setup();
-    provider.say('overlord fix the enter bug go');
+    provider.say('overlord fix the enter bug go'); pause();
     expect(dispatched[0]).toMatchObject({ kind: 'prompt', text: 'fix the enter bug' });
   });
 
-  it('does NOT commit from an interim chunk ending in the stop word', () => {
-    // Interim results change as the engine revises; only a finalized chunk or a
-    // deliberate pause counts.
+  it('does not send when the engine revises the stop word away', () => {
     const { agent, dispatched, provider } = setup();
     provider.guess('overlord fix the enter bug go');
+    provider.guess('overlord fix the enter bug goal');
+    pause();
     expect(dispatched).toHaveLength(0);
     expect(agent.snapshot().state).toBe('listening');
   });
@@ -163,7 +177,7 @@ describe('stop word', () => {
 
   it('cancels from a one-breath utterance too', () => {
     const { agent, dispatched, provider } = setup();
-    provider.say('overlord fix the enter bug cancel');
+    provider.say('overlord fix the enter bug cancel'); pause();
     expect(dispatched).toHaveLength(0);
     expect(agent.snapshot().state).toBe('idle');
   });
@@ -171,23 +185,23 @@ describe('stop word', () => {
   it('returns to idle after dispatching', () => {
     const { agent, provider } = setup();
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(agent.snapshot()).toMatchObject({ state: 'idle', captured: '' });
   });
 
   it('does not carry text across utterances', () => {
     const { provider, dispatched } = setup();
     provider.say('overlord first thing');
-    provider.say('go');
+    provider.say('go'); pause();
     provider.say('overlord second thing');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched.map(d => (d.kind === 'prompt' ? d.text : ''))).toEqual(['first thing', 'second thing']);
   });
 
   it('discards a stop word with no payload', () => {
     const { agent, provider, dispatched } = setup();
     provider.say('overlord');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched).toHaveLength(0);
     expect(agent.snapshot().state).toBe('idle');
   });
@@ -196,17 +210,34 @@ describe('stop word', () => {
     const { provider, dispatched, setCfg } = setup();
     setCfg({ stopWord: 'over and out' });
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched).toHaveLength(0);
-    provider.say('over and out');
+    provider.say('over and out'); pause();
     expect(dispatched[0]).toMatchObject({ text: 'fix it go' });
   });
 
-  it('commits from an interim result, not just a finalized one', () => {
+  it('commits from an interim result after the longer interim pause', () => {
     const { dispatched, provider } = setup();
     provider.say('overlord fix it');
-    provider.guess('go');
+    provider.guess('go'); pause();
+    expect(dispatched).toHaveLength(0);
+    vi.advanceTimersByTime(INTERIM_STOP_PAUSE_MS - STOP_PAUSE_MS);
     expect(dispatched).toHaveLength(1);
+  });
+
+  it('does not send when an interim "go" grows into a longer word', () => {
+    const { dispatched, provider } = setup();
+    provider.say('overlord okay and sometimes I');
+    provider.guess('go'); pause();
+    provider.guess('got stuck');
+    vi.advanceTimersByTime(INTERIM_STOP_PAUSE_MS);
+    expect(dispatched).toHaveLength(0);
+  });
+
+  it('does not take "ago" for "go"', () => {
+    const { dispatched, provider } = setup();
+    provider.say('overlord it worked a minute ago'); pause();
+    expect(dispatched).toHaveLength(0);
   });
 });
 
@@ -217,7 +248,7 @@ describe('restated transcripts (the wake word leaking into the prompt)', () => {
     // "overlord say hi" to the worker.
     const { dispatched, provider } = setup();
     provider.guess('overlord say hi');
-    provider.say('overlord say hi go');
+    provider.say('overlord say hi go'); pause();
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]).toMatchObject({ kind: 'prompt', text: 'say hi' });
   });
@@ -233,8 +264,8 @@ describe('restated transcripts (the wake word leaking into the prompt)', () => {
 
   it('clears the engine transcript after a commit so the next utterance is clean', () => {
     const { dispatched, provider } = setup();
-    provider.say('overlord first thing go');
-    provider.say('overlord second thing go');
+    provider.say('overlord first thing go'); pause();
+    provider.say('overlord second thing go'); pause();
     expect(dispatched.map(d => (d.kind === 'prompt' ? d.text : ''))).toEqual(['first thing', 'second thing']);
     expect(provider.resets).toBeGreaterThan(0);
   });
@@ -256,7 +287,7 @@ describe('getting unstuck', () => {
     const { dispatched, provider } = setup();
     provider.say('overlord fix the wrong thing');
     provider.say('overlord fix the right thing');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]).toMatchObject({ text: 'fix the right thing' });
   });
@@ -292,7 +323,7 @@ describe('cancel', () => {
   it('discards the utterance on the cancel word', () => {
     const { agent, provider, dispatched } = setup();
     provider.say('overlord fix the enter bug');
-    provider.say('cancel');
+    provider.say('cancel'); pause();
     expect(dispatched).toHaveLength(0);
     expect(agent.snapshot()).toMatchObject({ state: 'idle', captured: '' });
   });
@@ -303,12 +334,15 @@ describe('cancel', () => {
     expect(agent.snapshot().state).toBe('listening');
   });
 
-  it('ignores an unfinalized cancel spoken without a pause', () => {
+  it('cancel also waits for the pause, and more words undo it', () => {
     const { agent, provider } = setup();
     provider.say('overlord fix it');
-    provider.guess('cancel', 100);
+    provider.guess('cancel');
     expect(agent.snapshot().state).toBe('listening');
-    provider.say('cancel');
+    provider.guess('cancel the old one');
+    pause();
+    expect(agent.snapshot().state).toBe('listening');
+    provider.say('cancel'); pause();
     expect(agent.snapshot().state).toBe('idle');
   });
 
@@ -333,7 +367,7 @@ describe('utterance cap', () => {
   it('does not fire after a successful dispatch', () => {
     const { provider, dispatched } = setup({ maxUtteranceMs: 30000 });
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     vi.advanceTimersByTime(60000);
     expect(dispatched).toHaveLength(1);
   });
@@ -342,7 +376,7 @@ describe('utterance cap', () => {
     const { agent, provider } = setup({ maxUtteranceMs: 10000 });
     provider.say('overlord fix it');
     vi.advanceTimersByTime(9000);
-    provider.say('cancel');
+    provider.say('cancel'); pause();
     provider.say('overlord fix it again');
     vi.advanceTimersByTime(9000);
     expect(agent.snapshot().state).toBe('listening');
@@ -364,7 +398,7 @@ describe('mute and enablement', () => {
     agent.setMuted(true);
     agent.setMuted(false);
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched).toHaveLength(1);
   });
 
@@ -392,7 +426,7 @@ describe('targeting through the agent', () => {
   it('falls back to the selected worker', () => {
     const { provider, dispatched } = setup();
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched[0]).toMatchObject({ ovrId: 'ovr-2' });
   });
 
@@ -400,21 +434,21 @@ describe('targeting through the agent', () => {
     const { provider, dispatched, setSelected } = setup();
     setSelected(null);
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched[0]).toMatchObject({ kind: 'refused', reason: 'no worker selected' });
   });
 
   it('queues instead of injecting into a busy worker', () => {
     const { provider, dispatched } = setup({}, [{ ovrId: 'ovr-2', name: 'atlas', state: 'working' }]);
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched[0]).toMatchObject({ kind: 'prompt', queue: true });
   });
 
   it('routes a lone bare verb as a command', () => {
     const { provider, dispatched } = setup();
     provider.say('overlord stop');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched[0]).toMatchObject({ kind: 'control', verb: 'stop' });
   });
 });
@@ -425,8 +459,176 @@ describe('errors', () => {
     provider.fail('audio-capture');
     expect(agent.snapshot()).toMatchObject({ state: 'error', error: 'audio-capture' });
     provider.say('overlord fix it');
-    provider.say('go');
+    provider.say('go'); pause();
     expect(dispatched).toHaveLength(1);
     expect(agent.snapshot().error).toBeNull();
+  });
+});
+
+describe('push-to-talk', () => {
+  const push = (over: Partial<VoiceInputConfig> = {}) => setup({ activation: 'push', ...over });
+
+  it('keeps the microphone closed until begin()', () => {
+    const { agent, provider } = push();
+    expect(provider.started).toBe(0);
+    expect(agent.snapshot().state).toBe('idle');
+  });
+
+  it('captures everything said, with no start word', () => {
+    const { agent, provider } = push();
+    agent.begin();
+    expect(provider.started).toBe(1);
+    provider.say('fix the flaky test');
+    expect(agent.snapshot()).toMatchObject({ state: 'listening', captured: 'fix the flaky test', manual: true });
+  });
+
+  it('commit() sends after the settle delay and releases the microphone', () => {
+    const { agent, provider, dispatched } = push();
+    agent.begin();
+    provider.say('fix the flaky');
+    agent.commit();
+    // The engine's last words arrive after the keypress.
+    provider.say('test');
+    expect(dispatched).toHaveLength(0);
+    vi.advanceTimersByTime(COMMIT_SETTLE_MS);
+    expect(dispatched[0]).toMatchObject({ kind: 'prompt', ovrId: 'ovr-2', text: 'fix the flaky test' });
+    expect(agent.snapshot().state).toBe('idle');
+    expect(provider.stopped).toBeGreaterThan(0);
+  });
+
+  it('commit() with nothing heard sends nothing', () => {
+    const { agent, dispatched } = push();
+    agent.begin();
+    agent.commit();
+    vi.advanceTimersByTime(COMMIT_SETTLE_MS);
+    expect(dispatched).toHaveLength(0);
+    expect(agent.snapshot().state).toBe('idle');
+  });
+
+  it('discard() drops the capture', () => {
+    const { agent, provider, dispatched } = push();
+    agent.begin();
+    provider.say('never mind');
+    agent.discard();
+    vi.advanceTimersByTime(COMMIT_SETTLE_MS);
+    expect(dispatched).toHaveLength(0);
+    expect(agent.snapshot().state).toBe('idle');
+  });
+
+  it('a discard during the settle delay wins over the commit', () => {
+    const { agent, provider, dispatched } = push();
+    agent.begin();
+    provider.say('fix it');
+    agent.commit();
+    agent.discard();
+    vi.advanceTimersByTime(COMMIT_SETTLE_MS);
+    expect(dispatched).toHaveLength(0);
+  });
+
+  it('the stop word still sends', () => {
+    const { agent, provider, dispatched } = push();
+    agent.begin();
+    provider.say('fix it');
+    provider.say('go'); pause();
+    expect(dispatched[0]).toMatchObject({ text: 'fix it' });
+    expect(agent.snapshot().state).toBe('idle');
+  });
+
+  it('ignores speech that arrives after capture closed', () => {
+    const { agent, provider, dispatched } = push();
+    agent.begin();
+    agent.discard();
+    provider.say('stray words');
+    provider.say('go'); pause();
+    expect(dispatched).toHaveLength(0);
+    expect(agent.snapshot().state).toBe('idle');
+  });
+
+  it('discards at the utterance cap', () => {
+    const { agent, provider, dispatched } = push({ maxUtteranceMs: 5000 });
+    agent.begin();
+    provider.say('fix it');
+    vi.advanceTimersByTime(5000);
+    expect(agent.snapshot().state).toBe('idle');
+    expect(dispatched).toHaveLength(0);
+  });
+
+  it('begin() does nothing while muted', () => {
+    const { agent, provider } = push();
+    agent.setMuted(true);
+    expect(agent.begin()).toBe(false);
+    expect(provider.started).toBe(0);
+  });
+
+  it('an error closes the capture and releases the microphone', () => {
+    const { agent, provider } = push();
+    agent.begin();
+    const stoppedBefore = provider.stopped;
+    provider.fail('network');
+    expect(agent.snapshot()).toMatchObject({ state: 'error', manual: false });
+    expect(provider.stopped).toBeGreaterThan(stoppedBefore);
+    // and the next begin() recovers
+    expect(agent.begin()).toBe(true);
+    expect(agent.snapshot().state).toBe('listening');
+  });
+
+  it('begin() in wake mode captures without the start word and keeps listening after', () => {
+    const { agent, provider, dispatched } = setup();
+    const stoppedBefore = provider.stopped;
+    agent.begin();
+    provider.say('fix it');
+    agent.commit();
+    vi.advanceTimersByTime(COMMIT_SETTLE_MS);
+    expect(dispatched[0]).toMatchObject({ text: 'fix it' });
+    expect(provider.stopped).toBe(stoppedBefore);
+    // The start word still works afterwards.
+    provider.say('overlord again');
+    expect(agent.snapshot().state).toBe('listening');
+  });
+
+  it('commit() right after the stop word does not send the word', () => {
+    const { agent, provider, dispatched } = setup({ activation: 'push' });
+    agent.begin();
+    provider.say('fix it go');
+    agent.commit();
+    vi.advanceTimersByTime(COMMIT_SETTLE_MS);
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toMatchObject({ text: 'fix it' });
+  });
+
+  it('emits sound cues for start, send and cancel', () => {
+    const provider = new FakeProvider();
+    const cues: string[] = [];
+    const agent = new VoiceAgent({
+      provider,
+      getConfig: () => ({ ...VOICE_DEFAULTS, enabled: true, activation: 'push' }),
+      getContext: () => ({ workers: [{ ovrId: 'ovr-2', name: 'atlas', state: 'waiting' }], selectedOvrId: 'ovr-2' }),
+      onDispatch: () => {},
+      onChange: () => {},
+      onCue: c => cues.push(c),
+    });
+    agent.sync();
+    agent.begin();
+    provider.say('fix it go'); pause();
+    agent.begin();
+    agent.discard();
+    expect(cues).toEqual(['start', 'send', 'start', 'cancel']);
+  });
+
+  it('a refused send sounds like a cancel, not a send', () => {
+    const provider = new FakeProvider();
+    const cues: string[] = [];
+    const agent = new VoiceAgent({
+      provider,
+      getConfig: () => ({ ...VOICE_DEFAULTS, enabled: true, activation: 'push' }),
+      getContext: () => ({ workers: [], selectedOvrId: null }),
+      onDispatch: () => {},
+      onChange: () => {},
+      onCue: c => cues.push(c),
+    });
+    agent.sync();
+    agent.begin();
+    provider.say('fix it go'); pause();
+    expect(cues).toEqual(['start', 'cancel']);
   });
 });

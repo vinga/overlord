@@ -59,8 +59,12 @@ interface WorkerGroupProps {
   customName?: string;
   onDeleteSession?: (sessionId: string) => void;
   onRename?: (sessionId: string, newName: string) => void;
+  /** Desk card size in grid cells — larger cards show more. */
+  spanW?: number;
+  spanH?: number;
 }
 
+/** Subagent rows shown per grid row of card height. */
 const MAX_VISIBLE_SUBAGENTS = 4;
 const STORAGE_KEY = 'overlord:subagentExpanded';
 
@@ -73,7 +77,8 @@ function readExpanded(sessionId: string): boolean {
   } catch { return true; }
 }
 
-export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename }: WorkerGroupProps) {
+export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename, spanW = 1, spanH = 1 }: WorkerGroupProps) {
+  const maxVisibleSubagents = MAX_VISIBLE_SUBAGENTS * spanH;
   const [expanded] = useState(() => readExpanded(session.sessionId));
   const [overflowExpanded, setOverflowExpanded] = useState(false);
   const notesMap = useNotesSummaries();
@@ -88,12 +93,12 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
   // re-render this on every tick, so re-check once a minute while any are shown.
   useTick(allRecentSubagents.some(s => s.state === 'waiting' || s.state === 'closed') ? 60_000 : null);
 
-  const visibleSubagents = overflowExpanded ? allRecentSubagents : allRecentSubagents.slice(0, MAX_VISIBLE_SUBAGENTS);
+  const visibleSubagents = overflowExpanded ? allRecentSubagents : allRecentSubagents.slice(0, maxVisibleSubagents);
   const displayName = customName ?? session.proposedName ?? session.slug ?? session.sessionId.slice(0, 8);
-  const extraCount = allRecentSubagents.length - MAX_VISIBLE_SUBAGENTS;
+  const extraCount = allRecentSubagents.length - maxVisibleSubagents;
 
   return (
-    <div className={styles.group}>
+    <div className={`${styles.group} ${spanW > 1 ? styles.groupWide : ''}`}>
       {/* Main worker */}
       <div className={styles.mainWorker}>
         <Worker
@@ -113,6 +118,8 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           isRaw={session.sessionType === 'raw'}
           isNote={session.sessionType === 'note'}
           notePreview={session.sessionType === 'note' ? session.lastMessage : undefined}
+          notePreviewLines={5 * spanH}
+          wide={spanW > 1}
           icon={session.icon}
           ptyInputPendingSince={session.ptyInputPendingSince}
           scheduledWakeupAt={session.scheduledWakeupAt}

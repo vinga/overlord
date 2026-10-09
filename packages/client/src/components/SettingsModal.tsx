@@ -8,9 +8,11 @@ interface Props {
   settings: GlobalSettings;
   onUpdate: (partial: Partial<GlobalSettings>) => void;
   onClose: () => void;
+  /** Opens on this page instead of the last one visited. */
+  initialPage?: PageId;
 }
 
-type PageId =
+export type PageId =
   | 'general'
   | 'general.startup'
   | 'general.layout'
@@ -76,7 +78,7 @@ function findNode(id: PageId): { node: TreeNode; parent?: TreeNode } | null {
   return null;
 }
 
-export function SettingsModal({ settings, onUpdate, onClose }: Props) {
+export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Props) {
   const [dockMode, setDockMode] = useDockMode();
   const voice = resolveVoiceConfig(settings.voiceInput);
   const [startWord, setLocalStartWord] = useState(voice.startWord);
@@ -90,6 +92,7 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
   const [jiraApiToken, setLocalJiraApiToken] = useState(settings.jiraApiToken ?? '');
 
   const [page, setPage] = useState<PageId>(() => {
+    if (initialPage) return initialPage;
     try {
       const saved = localStorage.getItem(PAGE_KEY);
       if (saved && ALL_IDS.has(saved)) return saved as PageId;
@@ -242,18 +245,66 @@ export function SettingsModal({ settings, onUpdate, onClose }: Props) {
         return (
           <>
             <ToggleRow
-              label="Hands-free voice control"
-              hint={'Say the start word, speak, then say the stop word. Nothing is sent until the stop word — silence never commits.'}
+              label="Voice control"
+              hint="Dictate prompts to the open worker. Recognition runs in Chrome and streams audio to Google while the microphone is on."
               on={voice.enabled}
               onToggle={() => patchVoice({ enabled: !voice.enabled })}
             />
+
+            <div className={styles.row}>
+              <div className={styles.rowText}>
+                <div className={styles.rowLabel}>How to start</div>
+                <div className={styles.rowHint}>
+                  {voice.activation === 'push'
+                    ? <>Press <kbd>Alt</kbd>+<kbd>V</kbd> or the 🎙 button in the composer, speak, then press <kbd>Enter</kbd> (or <kbd>Alt</kbd>+<kbd>V</kbd> again) to send — or say the stop word and pause. <kbd>Esc</kbd> cancels. The microphone is only on while you dictate.</>
+                    : <>Always listening. Say the start word, speak, then the stop word. Nothing is sent until the stop word — silence never commits.</>}
+                </div>
+              </div>
+              <div className={styles.segmented} role="radiogroup" aria-label="Voice activation">
+                {([['push', 'Push to talk'], ['wake', 'Wake word']] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    className={`${styles.segmentBtn} ${voice.activation === value ? styles.segmentBtnActive : ''}`}
+                    role="radio"
+                    aria-checked={voice.activation === value}
+                    onClick={() => patchVoice({ activation: value })}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className={styles.subgroup}>
+              <h4 className={styles.subgroupTitle}>Feedback</h4>
+              <ToggleRow
+                label="Sound cues"
+                hint="A quiet tick when dictation starts, a beep when it is sent, a low tone when it is cancelled."
+                on={voice.soundCues}
+                onToggle={() => patchVoice({ soundCues: !voice.soundCues })}
+              />
+              <ToggleRow
+                label="Read replies aloud"
+                hint="When a worker answers a prompt you sent by voice, its reply is read out in the recognition language. Code, links and paths are skipped; long replies are cut. Esc stops it."
+                on={voice.speakReplies}
+                onToggle={() => patchVoice({ speakReplies: !voice.speakReplies })}
+              />
+              {voice.speakReplies && (
+                <ToggleRow
+                  label="Listen after reading"
+                  hint="When a reply finishes, start dictating automatically — a hands-free back-and-forth."
+                  on={voice.listenAfterReply}
+                  onToggle={() => patchVoice({ listenAfterReply: !voice.listenAfterReply })}
+                />
+              )}
+            </div>
 
             <div className={styles.subgroup}>
               <h4 className={styles.subgroupTitle}>Words</h4>
               <label className={styles.field}>
                 <span className={styles.fieldLabel}>Start word</span>
                 <span className={styles.fieldHint}>
-                  Opens capture. Nothing you say is acted on until this is heard. Close
+                  Wake-word mode only. Opens capture. Nothing you say is acted on until this is heard. Close
                   mishearings are accepted automatically (<code>over lord</code>, <code>overload</code>).
                   If your engine renders it some other way, add that spelling here as a
                   comma-separated alternative — the pill shows what it actually heard.
