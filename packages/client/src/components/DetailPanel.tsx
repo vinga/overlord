@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { useTick } from '../hooks/useTick';
+import { useRetainedFeed } from '../hooks/useRetainedFeed';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import { useRoomPrefix, selectAfterPrefix } from '../hooks/useRoomPrefix';
 import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draftStore';
@@ -2280,11 +2281,18 @@ const currentDisplayName =
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSubagentId, subagentActiveTab, activeTab, selectedSession?.sessionId]);
 
-  // Clear extraFeed and reset hasMore when session changes
+  // Clear extraFeed and reset hasMore when session changes. Not on feedTruncated:
+  // it flips true the moment a live feed outgrows the snapshot tail, and that
+  // used to wipe the older messages the user had just loaded.
+  const reachedFeedStartRef = useRef(false);
   useEffect(() => {
     setExtraFeed([]);
     setHasMore(selectedSession?.feedTruncated ?? false);
-  }, [selectedSession?.sessionId, selectedSession?.feedTruncated]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSession?.sessionId]);
+  useEffect(() => {
+    if (selectedSession?.feedTruncated && !reachedFeedStartRef.current) setHasMore(true);
+  }, [selectedSession?.feedTruncated]);
 
   // Closed sessions: server drops activityFeed from the snapshot
   // (stateManager.composeSession), so fetch history once from disk.
@@ -2318,6 +2326,7 @@ const currentDisplayName =
     setActiveTab('conversation');
 
     const feed = selectedSession.activityFeed ?? [];
+    reachedFeedStartRef.current = false;
     const targetIdx = feed.findIndex(item => item.timestamp === effectiveScrollTarget);
     const isNearTop = targetIdx >= 0 && targetIdx < 10;
     // Target may be in older history that's been trimmed out of activityFeed,
@@ -2335,6 +2344,7 @@ const currentDisplayName =
           setHasMore(data.hasMore ?? false);
         })
         .catch(() => { /* ignore */ });
+        reachedFeedStartRef.current = !data.hasMore;
     }
 
     // Scroll after a short delay to allow render (first pass). If the target
@@ -2368,6 +2378,7 @@ const currentDisplayName =
       const scrollables: HTMLElement[] = [];
       for (let p: HTMLElement | null = highlightEl.parentElement; p && p !== container; p = p.parentElement) {
         if (p.scrollHeight > p.clientHeight + 1) {
+          reachedFeedStartRef.current = !data.hasMore;
           const style = getComputedStyle(p);
           if (/(auto|scroll)/.test(style.overflowY)) scrollables.push(p);
         }
@@ -2756,6 +2767,7 @@ const currentDisplayName =
   // an unanswered AskUserQuestion (avoid double-showing).
   const lastRealItem = realFeed[realFeed.length - 1];
   const feedTrailsPendingQuestion = lastRealItem?.toolName === 'AskUserQuestion' && !lastRealItem.resultJson;
+  const retainedFeed = useRetainedFeed(selectedSession?.sessionId, rawFeed);
   const pendingQuestionItem: ActivityItem | null = (selectedSession?.pendingQuestion && !feedTrailsPendingQuestion)
     ? {
         kind: 'tool',
@@ -2818,6 +2830,7 @@ const currentDisplayName =
   const stateBarActiveSubagents = selectedSession
     ? selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking')
     : [];
+    ...retainedFeed,
   const stateBarNeedsApproval = selectedSession?.needsPermission === true;
   const stateBarHasQuestion = !stateBarNeedsApproval && !!selectedSession?.pendingQuestion && !selectedSession.questionStale;
   const isCompacting = selectedSession?.isCompacting === true;
@@ -3634,6 +3647,7 @@ const currentDisplayName =
                             <div className={styles.emptyFeedPrompt}>
                               <PermissionPrompt
                                 sessionId={selectedSession.sessionId}
+                                              reachedFeedStartRef.current = !data.hasMore;
                                 promptText={selectedSession.permissionPromptText}
                                 isLimitPrompt={selectedSession.isLimitPrompt}
                                 styles={styles}
