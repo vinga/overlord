@@ -725,7 +725,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             aria-label={filesOpen ? 'Hide files' : 'Browse files'}
             aria-pressed={filesOpen}
           >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+            <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
               <path d="M1.5 4.5c0-.6.4-1 1-1h3.6l1.5 1.5h5.9c.6 0 1 .4 1 1v6.5c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" />
             </svg>
           </button>
