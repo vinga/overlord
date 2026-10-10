@@ -101,7 +101,7 @@ jq -r 'select(((.proposedName // "") + " " + (.intent // "")) | test("color pick
 jq -r 'select((.jiraKeys // []) | length > 0) | "\(.overlordId)\t\(.proposedName // "?")\t\(.jiraKeys | join(","))"' "$SESS_DIR"/*.json
 
 # sessions touching one ticket (active + archived)
-jq -r 'select((.jiraKeys // []) | index("BACKEND-1234")) | "\(.overlordId)\t\(.proposedName // "?")"' "$SESS_DIR"/*.json "$ARCH_DIR"/*.json
+jq -r 'select((.jiraKeys // []) | index("CORE-1234")) | "\(.overlordId)\t\(.proposedName // "?")"' "$SESS_DIR"/*.json "$ARCH_DIR"/*.json
 ```
 
 **Skills a session has used:**

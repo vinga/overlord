@@ -3,7 +3,7 @@ import { parsePrUrl, splitPrRef, prRefKey, prRefUrl, prRefLabel } from '../prRef
 
 describe('parsePrUrl', () => {
   it.each([
-    ['https://github.com/hypatos/prompting-service/pull/819', 'hypatos/prompting-service#819'],
+    ['https://github.com/exampleorg/demo-service/pull/819', 'exampleorg/demo-service#819'],
     ['https://github.com/o/r/pull/1', 'o/r#1'],
     ['http://github.com/o/r/pull/12', 'o/r#12'],
     ['https://github.com/o/r/pull/12/files', 'o/r#12'],
@@ -30,7 +30,7 @@ describe('parsePrUrl', () => {
     ['https://github.com/o/r/pull/', 'no number'],
     ['https://github.com/o/r/pull/abc', 'non-numeric'],
     ['https://github.com/o/r/pull/0', 'zero'],
-    ['https://github.com/o/r/tree/BACKEND-2278-fix', 'branch URL'],
+    ['https://github.com/o/r/tree/CORE-2278-fix', 'branch URL'],
     ['https://github.com/o/r/issues/12', 'issue, not PR'],
     ['https://github.com/o/pull/12', 'missing repo segment'],
     ['ftp://github.com/o/r/pull/12', 'non-http scheme'],
@@ -47,9 +47,9 @@ describe('parsePrUrl', () => {
 
 describe('splitPrRef', () => {
   it('splits a canonical ref', () => {
-    expect(splitPrRef('hypatos/prompting-service#819')).toEqual({
-      owner: 'hypatos',
-      repo: 'prompting-service',
+    expect(splitPrRef('exampleorg/demo-service#819')).toEqual({
+      owner: 'exampleorg',
+      repo: 'demo-service',
       number: 819,
     });
   });
@@ -71,7 +71,7 @@ describe('splitPrRef', () => {
 
 describe('helpers', () => {
   it('prRefKey lowercases for case-insensitive dedupe', () => {
-    expect(prRefKey('Hypatos/Prompting-Service#819')).toBe('hypatos/prompting-service#819');
+    expect(prRefKey('Exampleorg/Demo-Service#819')).toBe('exampleorg/demo-service#819');
   });
 
   it('prRefUrl falls back to github.com', () => {

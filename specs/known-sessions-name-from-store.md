@@ -75,7 +75,7 @@ _N/A_
 - [ ] Renaming a session via `PUT /api/sessions/:sessionId/name`, then `kill -9` on the server (ungraceful exit), then restart → the renamed name is present on the live session after boot.
 - [ ] Renaming a session, graceful SIGTERM restart → the renamed name is present on the live session after boot.
 - [ ] On first boot after this change, entries where `entry.proposedName` is missing from or differs from `sessionStore.proposedName` are reconciled into sessionStore; a second boot shows zero reconciliations.
-- [ ] Existing drifted session (`ovr-mmm8j49d`, named "Jade" in known-sessions, "ES BACKEND-2174 …" in sessionStore) is healed on first boot; session snapshot after boot carries `proposedName: "Jade"`.
+- [ ] Existing drifted session (`ovr-mmm8j49d`, named "Jade" in known-sessions, "ES CORE-2174 …" in sessionStore) is healed on first boot; session snapshot after boot carries `proposedName: "Jade"`.
 - [ ] Each of the three drift sites (`sessionEventHandlers.ts:70`, `stateManager.ts:948`, `stateManager.ts:1339`) patches sessionStore after mutating `session.proposedName`.
 - [ ] `packages/server/src/session/stateManager.ts` no longer references `readProposedName` inside `saveKnownSessions` (transcript backfill removed from this path).
 - [ ] Existing unit test `sidRevert.test.ts` ("saveKnownSessions — backfills proposedName from transcript") is either deleted or moved to cover sessionStore seeding instead, whichever matches the new backfill location.

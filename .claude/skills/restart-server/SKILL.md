@@ -37,9 +37,11 @@ immediately reparents the script to launchd (ppid 1), outside the kill tree. mac
 ```bash
 # Write the restart script to a temp file so it runs detached from this shell.
 # This survives embedded PTY session death (server kill = session kill).
+# Repo root, resolved here and inherited by the detached script below.
+export OVERLORD_ROOT="$(git rev-parse --show-toplevel)"
 cat > /tmp/overlord-restart.sh << 'SCRIPT'
 #!/bin/bash
-cd /Users/kamilamyczkowska/IdeaProjects/overlord
+cd "$OVERLORD_ROOT" || exit 1
 
 # Graceful shutdown: SIGTERM first, escalate to SIGKILL after 2s.
 srv_pids=$(lsof -ti:3173 2>/dev/null); cli_pids=$(lsof -ti:5173 2>/dev/null)

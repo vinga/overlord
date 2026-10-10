@@ -23,7 +23,7 @@ Order: Server → Verification. No Client section (spec is backend-only).
 - [ ] **V2** — Run server type-check (`npx tsc --noEmit -p packages/server/tsconfig.json`); confirm no compile errors.
 - [ ] **V3** — Run the server test suite (`npx vitest run`); confirm no regressions.
 - [ ] **V4** — Manual self-verify — backend only, no browser needed:
-  1. Before restarting, note that `ovr-mmm8j49d` shows "Jade" in known-sessions and "ES BACKEND…" in sessionStore.
+  1. Before restarting, note that `ovr-mmm8j49d` shows "Jade" in known-sessions and "ES CORE…" in sessionStore.
   2. Restart server, watch for `[migration] reconciled N proposedName entries into sessionStore`.
   3. After boot: `overlord-sessions/ovr-mmm8j49d.json` → `proposedName: "Jade"`.
   4. After boot: live snapshot carries `proposedName: "Jade"` for that session.

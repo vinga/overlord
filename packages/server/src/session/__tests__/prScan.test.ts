@@ -68,9 +68,9 @@ describe('gatherScanSegments', () => {
 describe('extractPrRefs', () => {
   it('detects a PR from gh pr create output', () => {
     const { wide } = gatherScanSegments([
-      toolResult('Creating pull request...\nhttps://github.com/hypatos/prompting-service/pull/819\n'),
+      toolResult('Creating pull request...\nhttps://github.com/exampleorg/demo-service/pull/819\n'),
     ]);
-    expect(extractPrRefs(wide)).toEqual(['hypatos/prompting-service#819']);
+    expect(extractPrRefs(wide)).toEqual(['exampleorg/demo-service#819']);
   });
 
   it('detects a PR from assistant prose', () => {

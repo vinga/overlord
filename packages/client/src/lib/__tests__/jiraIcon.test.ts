@@ -31,14 +31,14 @@ describe('jiraTypeToWorkerIcon', () => {
 
 describe('jiraSessionTitle', () => {
   it('joins key and summary', () => {
-    expect(jiraSessionTitle('BACKEND-1234', 'Fix null pointer'))
-      .toBe('BACKEND-1234 Fix null pointer');
+    expect(jiraSessionTitle('CORE-1234', 'Fix null pointer'))
+      .toBe('CORE-1234 Fix null pointer');
   });
 
   it('falls back to the bare key when the summary is missing', () => {
-    expect(jiraSessionTitle('BACKEND-1234')).toBe('BACKEND-1234');
-    expect(jiraSessionTitle('BACKEND-1234', '')).toBe('BACKEND-1234');
-    expect(jiraSessionTitle('BACKEND-1234', '   ')).toBe('BACKEND-1234');
+    expect(jiraSessionTitle('CORE-1234')).toBe('CORE-1234');
+    expect(jiraSessionTitle('CORE-1234', '')).toBe('CORE-1234');
+    expect(jiraSessionTitle('CORE-1234', '   ')).toBe('CORE-1234');
   });
 
   it('trims a padded summary', () => {

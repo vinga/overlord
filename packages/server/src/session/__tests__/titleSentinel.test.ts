@@ -45,7 +45,7 @@ describe('parseTitleSentinel', () => {
 
 describe('nextNameForTitle', () => {
   it('replaces a spawn-pool name outright', () => {
-    expect(nextNameForTitle('Simone', 'BACKEND-2459 Verify')).toBe('BACKEND-2459 Verify');
+    expect(nextNameForTitle('Simone', 'CORE-2459 Verify')).toBe('CORE-2459 Verify');
   });
 
   it('preserves a short uppercase grouping prefix', () => {
@@ -67,11 +67,11 @@ describe('shouldApplyTitleOnInsert', () => {
   // The ovr-hzs1ez74 case: worker adopted a closed session whose transcript
   // carries a sentinel that was consumed by a different (now archived) record.
   it('applies when the record has a sentinel in lastMessage but none stamped', () => {
-    expect(shouldApplyTitleOnInsert({}, wrap('BACKEND-2459 Verify'))).toBe(true);
+    expect(shouldApplyTitleOnInsert({}, wrap('CORE-2459 Verify'))).toBe(true);
   });
 
   it('is a no-op once titleSentinel is stamped — repeat inserts do not re-rename', () => {
-    expect(shouldApplyTitleOnInsert({ titleSentinel: 'anything' }, wrap('BACKEND-2459'))).toBe(false);
+    expect(shouldApplyTitleOnInsert({ titleSentinel: 'anything' }, wrap('CORE-2459'))).toBe(false);
   });
 
   it('is a no-op without a sentinel, or without a record', () => {

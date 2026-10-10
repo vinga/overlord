@@ -60,7 +60,7 @@ describe('archived sid ownership', () => {
     startedAt: 1000,
     color: '#abcdef',
     sessionType: 'plain',
-    proposedName: 'BACKEND-1 Real title',
+    proposedName: 'CORE-1 Real title',
     lineage: { currentSessionId: sid, history: [{ sessionId: sid, attachedAt: 1000 }] },
   });
 
@@ -80,7 +80,7 @@ describe('archived sid ownership', () => {
     store.upsertActive(record('ovr-a', 'sid-1'));
     store.archive('ovr-a', {
       roomId: 'room',
-      name: 'BACKEND-1 Real title',
+      name: 'CORE-1 Real title',
       transcripts: [],
     });
 
@@ -92,7 +92,7 @@ describe('archived sid ownership', () => {
     store.upsertActive(record('ovr-a', 'sid-1'));
     store.archive('ovr-a', {
       roomId: 'room',
-      name: 'BACKEND-1 Real title',
+      name: 'CORE-1 Real title',
       transcripts: [],
     });
     store.unarchive('ovr-a');
@@ -101,7 +101,7 @@ describe('archived sid ownership', () => {
     expect(store.listActive()).toHaveLength(1);
     expect(store.listArchived()).toHaveLength(0);
     // The whole point of adopting: the accumulated name survives.
-    expect(store.getBySessionId('sid-1')?.proposedName).toBe('BACKEND-1 Real title');
+    expect(store.getBySessionId('sid-1')?.proposedName).toBe('CORE-1 Real title');
   });
 
   // Active-wins indexing is what hides the archived record once a twin exists.
@@ -109,7 +109,7 @@ describe('archived sid ownership', () => {
     store.upsertActive(record('ovr-a', 'sid-1'));
     store.archive('ovr-a', {
       roomId: 'room',
-      name: 'BACKEND-1 Real title',
+      name: 'CORE-1 Real title',
       transcripts: [],
     });
     const twin = record('ovr-twin', 'sid-1');

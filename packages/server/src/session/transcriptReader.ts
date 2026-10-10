@@ -18,7 +18,7 @@ function getJiraProjectRegex(): RegExp | null {
     .map((s) => s.trim().toUpperCase())
     .filter((s) => /^[A-Z][A-Z0-9]{1,9}$/.test(s));
   if (tokens.length === 0) return null;
-  // One alternation matched anywhere in the line, e.g. /\b(PROJ|BACKEND|API)-(\d{1,6})\b/g
+  // One alternation matched anywhere in the line, e.g. /\b(PROJ|CORE|API)-(\d{1,6})\b/g
   return new RegExp(String.raw`\b(${tokens.join('|')})-(\d{1,6})\b`, 'g');
 }
 
@@ -49,12 +49,12 @@ function getJiraProjectRegex(): RegExp | null {
  *
  * Scans ONLY user-authored text. Assistant text blocks are deliberately NOT
  * scanned: the model frequently *mentions* a ticket in prose — often to dismiss
- * it ("a different ticket BACKEND-2279 — irrelevant") — and the raw regex has no
+ * it ("a different ticket CORE-2279 — irrelevant") — and the raw regex has no
  * notion of negation, so assistant prose was a major source of over-eager chips.
  * Tickets the user actually works on appear in their own messages / command args.
  *
  * Excludes tool_use input (file paths and skill-doc slugs cause false positives,
- * e.g. a Read of pr-start/SKILL.md picking up "BACKEND-2099-composer-integration"),
+ * e.g. a Read of pr-start/SKILL.md picking up "CORE-2099-composer-integration"),
  * tool_result content, thinking blocks, system events.
  *
  * Also excludes `isMeta` user messages: these are slash-command / skill-body

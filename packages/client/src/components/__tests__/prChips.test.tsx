@@ -17,11 +17,11 @@ describe('PrChips', () => {
   });
 
   it('degrades to a bare chip when metadata has not resolved', () => {
-    const html = render(<PrChips refs={['hypatos/prompting-service#819']} />);
+    const html = render(<PrChips refs={['exampleorg/demo-service#819']} />);
     expect(text(html)).toContain('#819');
-    expect(text(html)).toContain('hypatos/prompting-service');
+    expect(text(html)).toContain('exampleorg/demo-service');
     // Falls back to github.com so the chip is still clickable.
-    expect(html).toContain('href="https://github.com/hypatos/prompting-service/pull/819"');
+    expect(html).toContain('href="https://github.com/exampleorg/demo-service/pull/819"');
   });
 
   it('shows title and state once metadata resolves', () => {

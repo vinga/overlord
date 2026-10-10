@@ -100,7 +100,7 @@ export function splitPathLine(text: string): { path: string; line?: number } {
 }
 
 /** Path, bare-key and ticket-URL matches in one text node, left to right,
- *  overlaps dropped: a key inside a path (/repo/BACKEND-1/x) stays part of the
+ *  overlaps dropped: a key inside a path (/repo/CORE-1/x) stays part of the
  *  path, and a ticket URL beats the path buried inside it. */
 export function collectInlineMatches(text: string): InlineMatch[] {
   const found: InlineMatch[] = [];
@@ -113,7 +113,7 @@ export function collectInlineMatches(text: string): InlineMatch[] {
     if (!url) continue;
     urls.push([m.index, m.index + url.length]);
     // PR first: a PR URL routinely carries a ticket key in the branch segment
-    // (…/pull/12 from BACKEND-2278-fix), and it is a PR link, not a ticket link.
+    // (…/pull/12 from CORE-2278-fix), and it is a PR link, not a ticket link.
     const prRef = prUrlRef(url);
     if (prRef) {
       found.push({ index: m.index, text: url, kind: 'pr', key: prRef });

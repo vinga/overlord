@@ -20,7 +20,7 @@ function line(i: number): string {
     return JSON.stringify({
       type: 'user',
       timestamp: new Date(BASE - 60_000).toISOString(),
-      message: { content: `user turn ${i} about BACKEND-${1000 + i}` },
+      message: { content: `user turn ${i} about CORE-${1000 + i}` },
     });
   }
   if (i % 11 === 0) {

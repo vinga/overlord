@@ -9,7 +9,7 @@ vi.mock('node:child_process', () => ({
     gh.calls++;
     cb(null, {
       stdout: JSON.stringify({
-        html_url: 'https://github.com/hypatos/prompting-service/pull/732',
+        html_url: 'https://github.com/exampleorg/demo-service/pull/732',
         title: gh.title,
         state: 'open',
         draft: false,
@@ -21,14 +21,14 @@ vi.mock('node:child_process', () => ({
 const { PrMetaCache } = await import('../prMetaCache.js');
 type PrHistoryStore = import('../prHistoryStore.js').PrHistoryStore;
 
-const REF = 'hypatos/prompting-service#732';
+const REF = 'exampleorg/demo-service#732';
 const CWD = '/tmp/room';
 
 /** Stub store carrying one entry matching REF. */
 function historyStub(title: string): PrHistoryStore {
   return {
     list: () => [{
-      url: 'https://github.com/hypatos/prompting-service/pull/732',
+      url: 'https://github.com/exampleorg/demo-service/pull/732',
       title,
       state: 'OPEN',
       isDraft: false,
@@ -66,7 +66,7 @@ describe('PrMetaCache.invalidate', () => {
     cache.get(REF, CWD);
     expect(cache.get(REF, CWD)?.title).toBe('kept');
 
-    cache.invalidate(['hypatos/prompting-service#746']);
+    cache.invalidate(['exampleorg/demo-service#746']);
     expect(cache.get(REF, CWD)?.title).toBe('kept');
     expect(gh.calls).toBe(0);
   });
@@ -76,7 +76,7 @@ describe('PrMetaCache.invalidate', () => {
     cache.get(REF, CWD);
     expect(cache.get(REF, CWD)?.title).toBe('from history');
 
-    cache.invalidate(['HYPATOS/Prompting-Service#732']);
+    cache.invalidate(['EXAMPLEORG/Demo-Service#732']);
     expect(cache.get(REF, CWD)).toBeUndefined();
     await settle();
     expect(gh.calls).toBe(1);

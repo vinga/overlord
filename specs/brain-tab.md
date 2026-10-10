@@ -175,7 +175,7 @@ interface BrainContext {
 
 ### Open questions
 
-1. **Slug encoding for memory dir.** MEMORY.md shows `/Users/kamilamyczkowska/.claude/projects/-Users-kamilamyczkowska-IdeaProjects-overlord/memory/`. Confirm the encoding rule (replace `/` with `-`, leading `-`) is stable, or derive it by listing the `projects/` dir and matching by prefix.
+1. **Slug encoding for memory dir.** MEMORY.md shows `/Users/<user>/.claude/projects/-Users-<user>-IdeaProjects-overlord/memory/`. Confirm the encoding rule (replace `/` with `-`, leading `-`) is stable, or derive it by listing the `projects/` dir and matching by prefix.
 2. **Settings merge precedence.** Should project `.claude/settings.local.json` override project `.claude/settings.json`, which overrides user `~/.claude/settings.json`? (Assumed yes — matches Claude Code's own precedence.)
 3. **Large CLAUDE.md files.** Project CLAUDE.md can be thousands of lines. Should expanded content be capped (first 500 lines) with a "View full file" link that opens in a new window/route? (Suggest yes; confirm.)
 4. **Skill discovery scope.** Only `.claude/skills/*/SKILL.md`, or also built-in harness skills listed in system reminders? Built-in skills aren't on disk; we'd need a separate source. (Assumed: disk-only in v1.)

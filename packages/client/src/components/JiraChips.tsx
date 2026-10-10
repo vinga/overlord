@@ -175,7 +175,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename }: Props) {
               className={`${chipClass} ${styles.chipUnconfigured}`}
               title={tip}
               onClick={(e) => deferSingleClick(e, () => {
-                alert('Set the JIRA Base URL in Settings (gear icon) to make these chips clickable.\n\nExample: https://hypatos.atlassian.net');
+                alert('Set the JIRA Base URL in Settings (gear icon) to make these chips clickable.\n\nExample: https://exampleorg.atlassian.net');
               })}
               onDoubleClick={onChipDoubleClick}
             >

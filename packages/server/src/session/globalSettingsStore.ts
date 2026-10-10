@@ -68,7 +68,7 @@ export interface GlobalSettings {
    *  message that governs the visible stretch of the feed. Absent in files
    *  written before the setting existed — every read site treats that as true. */
   showStickyUserMessage: boolean;
-  /** Root URL of the JIRA instance, e.g. "https://hypatos.atlassian.net".
+  /** Root URL of the JIRA instance, e.g. "https://exampleorg.atlassian.net".
    *  Used to build chip links: `${jiraBaseUrl}/browse/PROJ-123`. */
   jiraBaseUrl?: string;
   /** Comma-separated allowlist of project key prefixes (e.g. "PROJ,PE,API").

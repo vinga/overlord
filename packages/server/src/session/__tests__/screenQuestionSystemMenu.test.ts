@@ -12,7 +12,7 @@ const RULE = '─'.repeat(76);
 const RESUME = [
   '⏺ CI all green — PR #706 is ready for human review.',
   '',
-  '  - PR: https://github.com/hypatos/prompting-service/pull/706 — all checks',
+  '  - PR: https://github.com/exampleorg/demo-service/pull/706 — all checks',
   '  passed incl. integration-tests.',
   '',
   '  Lifecycle state marked complete. Nothing left on my side.',

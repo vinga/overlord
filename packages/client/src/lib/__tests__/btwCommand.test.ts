@@ -7,7 +7,7 @@ describe('parseBtwCommand', () => {
     expect(parseBtwCommand('  /BTW  trims  ')).toBe('trims');
   });
   it('returns null for plain searches and bare /btw', () => {
-    expect(parseBtwCommand('BACKEND-123')).toBeNull();
+    expect(parseBtwCommand('CORE-123')).toBeNull();
     expect(parseBtwCommand('/btw')).toBeNull();
     expect(parseBtwCommand('/btw   ')).toBeNull();
     expect(parseBtwCommand('/btwx foo')).toBeNull();

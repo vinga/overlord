@@ -45,31 +45,31 @@ describe('invalidateJiraKeys', () => {
   });
 
   it('forces a refetch of the named key instead of serving the 1h TTL', async () => {
-    expect(getCachedJiraMeta('BACKEND-1')).toBeNull();  // miss → queues
+    expect(getCachedJiraMeta('CORE-1')).toBeNull();  // miss → queues
     await settle();
-    expect(getCachedJiraMeta('BACKEND-1')?.title).toBe('first summary');
+    expect(getCachedJiraMeta('CORE-1')?.title).toBe('first summary');
     expect(jira.calls).toBe(1);
 
     jira.summary = 'second summary';
     // Fresh entry — the TTL keeps the old title, no second call.
-    expect(getCachedJiraMeta('BACKEND-1')?.title).toBe('first summary');
+    expect(getCachedJiraMeta('CORE-1')?.title).toBe('first summary');
     expect(jira.calls).toBe(1);
 
-    invalidateJiraKeys(['BACKEND-1']);
-    expect(getCachedJiraMeta('BACKEND-1')).toBeNull();
+    invalidateJiraKeys(['CORE-1']);
+    expect(getCachedJiraMeta('CORE-1')).toBeNull();
     await settle();
-    expect(getCachedJiraMeta('BACKEND-1')?.title).toBe('second summary');
+    expect(getCachedJiraMeta('CORE-1')?.title).toBe('second summary');
     expect(jira.calls).toBe(2);
   });
 
   it('leaves keys it was not given alone', async () => {
-    getCachedJiraMeta('BACKEND-1');
-    getCachedJiraMeta('BACKEND-2');
+    getCachedJiraMeta('CORE-1');
+    getCachedJiraMeta('CORE-2');
     await settle();
     expect(jira.calls).toBe(2);
 
-    invalidateJiraKeys(['BACKEND-2']);
-    expect(getCachedJiraMeta('BACKEND-1')?.title).toBe('first summary');
+    invalidateJiraKeys(['CORE-2']);
+    expect(getCachedJiraMeta('CORE-1')?.title).toBe('first summary');
     await settle();
     expect(jira.calls).toBe(2);
   });
