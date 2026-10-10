@@ -223,7 +223,7 @@
   right: 0;
   top: 0;
   height: 100vh;
-  background: #0e0e18;
+  background: #151521;
   border-left: 1px solid rgba(255, 255, 255, 0.07);
   display: flex;
   flex-direction: column;
@@ -241,12 +241,13 @@
 /* Bottom dock (portrait / horizontal split): full width, pinned to the bottom edge. */
 .panelBottom {
   top: auto;
-  bottom: 0;
+  /* Office status bar (36px) stays at the very bottom. */
+  bottom: 36px;
   left: 0;
   right: 0;
   border-left: none;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
-  transform: translateY(100%);
+  transform: translateY(calc(100% + 36px));
 }
 
 .panelBottom.panelOpen {
@@ -358,7 +359,7 @@
   flex-shrink: 0;
   padding: 16px 52px 0 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: #0e0e18;
+  background: #151521;
   z-index: 1;
 }
 
@@ -2157,7 +2158,7 @@
   flex-shrink: 0;
   padding: 12px 24px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: #0e0e18;
+  background: #151521;
 }
 
 /* Delete icon button — shown on hover in nameRow */
@@ -2773,7 +2774,7 @@
   flex-shrink: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   padding: 10px 12px;
-  background: #0e0e18;
+  background: #151521;
 }
 
 .sendError {

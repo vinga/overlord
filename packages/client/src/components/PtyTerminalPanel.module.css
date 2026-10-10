@@ -21,12 +21,13 @@
 /* Bottom dock (portrait / horizontal split): full width, pinned to the bottom edge. */
 .panelBottom {
   top: auto;
-  bottom: 0;
+  /* Office status bar (36px) stays at the very bottom. */
+  bottom: 36px;
   left: 0;
   right: 0;
   border-left: none;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
-  transform: translateY(100%);
+  transform: translateY(calc(100% + 36px));
 }
 
 .panelBottom.panelOpen {

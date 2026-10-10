@@ -398,7 +398,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   }, []);
 
   return (
-    <div className={styles.office} style={{ paddingRight: rightOffset, paddingBottom: bottomOffset, transition: 'padding-right 200ms ease, padding-bottom 200ms ease' }}>
+    <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
       <header className={styles.header}>
         <OverlordLogo />
         <div className={styles.searchWrap}>
@@ -471,7 +471,8 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         />
         <ScratchpadPopup />
       </header>
-      <div className={styles.content}>
+      {/* Bottom dock: the panel sits above the status bar, so only the content makes room. */}
+      <div className={styles.content} style={{ marginBottom: bottomOffset, transition: 'margin-bottom 200ms ease' }}>
         {!hasRooms ? (
           <div className={styles.empty}>
             {connecting ? (
