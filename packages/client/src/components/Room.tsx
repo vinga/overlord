@@ -735,6 +735,21 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             );
           })()}
         </div>
+        {!collapsed && (
+          <button
+            className={`${styles.filesButton} ${filesOpen ? styles.filesButtonActive : ''}`}
+            onClick={(e) => { e.stopPropagation(); toggleFiles(room.id); }}
+            data-tooltip={filesOpen ? 'Hide files' : 'Browse files'}
+            data-tooltip-dir="down"
+            aria-label={filesOpen ? 'Hide files' : 'Browse files'}
+            aria-pressed={filesOpen}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+              <path d="M1.5 4.5c0-.6.4-1 1-1h3.6l1.5 1.5h5.9c.6 0 1 .4 1 1v6.5c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" />
+            </svg>
+            <span>Files</span>
+          </button>
+        )}
         {searchRevealed && (
           <span
             className={styles.hiddenBadge}
@@ -764,21 +779,6 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             pullRequest={room.pullRequest}
             gitAhead={room.gitAhead}
           />
-        )}
-        {!collapsed && (
-          <button
-            className={`${styles.filesButton} ${filesOpen ? styles.filesButtonActive : ''}`}
-            onClick={(e) => { e.stopPropagation(); toggleFiles(room.id); }}
-            data-tooltip={filesOpen ? 'Hide files' : 'Browse files'}
-            data-tooltip-dir="down"
-            aria-label={filesOpen ? 'Hide files' : 'Browse files'}
-            aria-pressed={filesOpen}
-          >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
-              <path d="M1.5 4.5c0-.6.4-1 1-1h3.6l1.5 1.5h5.9c.6 0 1 .4 1 1v6.5c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" />
-            </svg>
-            <span>Files</span>
-          </button>
         )}
         {onSpawnDirect && (
           <button
