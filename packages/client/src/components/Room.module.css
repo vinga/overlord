@@ -200,6 +200,11 @@
   background: rgba(212, 175, 55, 0.1);
 }
 
+/* Mouse clicks leave no focus ring; keyboard focus still shows one. */
+.filesButton:focus:not(:focus-visible) {
+  outline: none;
+}
+
 /* Open: the folder fills in. */
 .filesButtonActive svg {
   fill: rgba(212, 175, 55, 0.3);
@@ -254,7 +259,15 @@
   flex-shrink: 0;
 }
 
+.roomTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .roomDescription {
+  /* Lines up with the title, past the folder icon (20px + 2px padding x2 + 6px gap). */
+  padding-left: 30px;
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 12px;
   font-weight: 400;
