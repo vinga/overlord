@@ -184,7 +184,8 @@
 .filesButton {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.35);
+  /* Same gold as the room title, open or closed. */
+  color: #d4af37;
   cursor: pointer;
   padding: 2px;
   border-radius: 4px;
@@ -196,12 +197,12 @@
 }
 
 .filesButton:hover {
-  color: rgba(255, 255, 255, 0.75);
+  background: rgba(212, 175, 55, 0.1);
 }
 
-.filesButtonActive,
-.filesButtonActive:hover {
-  color: #d4af37;
+/* Open: the folder fills in. */
+.filesButtonActive svg {
+  fill: rgba(212, 175, 55, 0.3);
 }
 
 .quickSpawnButton {
