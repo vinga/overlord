@@ -39,6 +39,7 @@ import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } fro
 import { WORKER_ICONS, isWorkerIcon, isDeskSpan } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
+import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles } from './roomFiles.js';
 
 const BTW_MAX_CHARS = 4000;
 const BTW_TIMEOUT_MS = 120_000;
@@ -1071,7 +1072,82 @@ export function registerApiRoutes(
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
     try {
       res.setHeader('Content-Type', mime);
+      // An SVG opened directly would run its <script> in this origin, which
+      // holds the spawn/inject APIs. Sandbox it; <img> rendering is unaffected.
+      res.setHeader('Content-Security-Policy', 'sandbox');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.send(fs.readFileSync(filePath));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Room file browser. Every route re-checks the room and the file itself
+  // (see roomFiles.ts) — the tree is a view, not the access control.
+  const roomCwdOf = (raw: unknown, res: express.Response): string | null => {
+    if (typeof raw !== 'string' || !raw || !stateManager.isKnownRoomCwd(raw)) {
+      res.status(403).json({ error: 'not a room' });
+      return null;
+    }
+    return guardPath(raw, res);
+  };
+
+  app.get('/api/room-files', async (req, res) => {
+    const cwd = roomCwdOf(req.query.cwd, res);
+    if (!cwd) return;
+    try {
+      res.json(await listRoomFiles(cwd));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/room-file', async (req, res) => {
+    const cwd = roomCwdOf(req.query.cwd, res);
+    if (!cwd) return;
+    const verdict = await checkRoomFile(cwd, req.query.path);
+    if (!verdict.ok) { res.status(verdict.status).json({ error: verdict.reason }); return; }
+    try {
+      const read = readRoomFileText(verdict.abs);
+      if (!read.ok) { res.status(read.status).json({ error: read.reason }); return; }
+      let writable = false;
+      try { fs.accessSync(verdict.abs, fs.constants.W_OK); writable = true; } catch { /* read-only */ }
+      res.json({ content: read.content, writable, mtimeMs: fs.statSync(verdict.abs).mtimeMs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/room-file-raw', async (req, res) => {
+    const cwd = roomCwdOf(req.query.cwd, res);
+    if (!cwd) return;
+    const verdict = await checkRoomFile(cwd, req.query.path);
+    if (!verdict.ok) { res.status(verdict.status).json({ error: verdict.reason }); return; }
+    const mime = IMAGE_MIME[extname(verdict.abs).slice(1).toLowerCase()];
+    if (!mime) { res.status(415).json({ error: 'unsupported type' }); return; }
+    try {
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Security-Policy', 'sandbox');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(await fs.promises.readFile(verdict.abs));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.put('/api/room-file', express.json({ limit: '3mb' }), async (req, res) => {
+    const { cwd: rawCwd, path: rel, content } = (req.body ?? {}) as { cwd?: unknown; path?: unknown; content?: unknown };
+    const cwd = roomCwdOf(rawCwd, res);
+    if (!cwd) return;
+    const valid = validateRoomFileContent(content);
+    if (!valid.ok) { res.status(valid.status).json({ error: valid.reason }); return; }
+    const verdict = await checkRoomFile(cwd, rel);
+    if (!verdict.ok) { res.status(verdict.status).json({ error: verdict.reason }); return; }
+    try { fs.accessSync(verdict.abs, fs.constants.W_OK); } catch { res.status(403).json({ error: 'not writable' }); return; }
+    try {
+      await fs.promises.writeFile(verdict.abs, content as string, 'utf8');
+      invalidateRoomFiles(cwd);
+      res.status(204).send();
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

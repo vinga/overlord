@@ -10,6 +10,8 @@ import { SpawnDialog } from './SpawnDialog';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 import { useRoomHidden } from '../hooks/useRoomHidden';
+import { useRoomFilesOpen } from '../hooks/useRoomFilesOpen';
+import { RoomFilesPanel } from './RoomFilesPanel';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
@@ -526,6 +528,8 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   const collapsed = isCollapsed(room.id);
   const { isHidden, hide, unhide } = useRoomHidden();
   const hidden = isHidden(room.id);
+  const { isFilesOpen, toggleFiles } = useRoomFilesOpen();
+  const filesOpen = isFilesOpen(room.id);
 
   const isTerminalSpawning = terminalSpawnCwd === room.cwd;
 
@@ -761,6 +765,21 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             gitAhead={room.gitAhead}
           />
         )}
+        {!collapsed && (
+          <button
+            className={`${styles.filesButton} ${filesOpen ? styles.filesButtonActive : ''}`}
+            onClick={(e) => { e.stopPropagation(); toggleFiles(room.id); }}
+            data-tooltip={filesOpen ? 'Hide files' : 'Browse files'}
+            data-tooltip-dir="down"
+            aria-label={filesOpen ? 'Hide files' : 'Browse files'}
+            aria-pressed={filesOpen}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
+              <path d="M1.5 4.5c0-.6.4-1 1-1h3.6l1.5 1.5h5.9c.6 0 1 .4 1 1v6.5c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" />
+            </svg>
+            <span>Files</span>
+          </button>
+        )}
         {onSpawnDirect && (
           <button
             className={styles.spawnButton}
@@ -868,6 +887,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onDone={() => setClearToast(null)}
         />
       )}
+      {!collapsed && filesOpen && <RoomFilesPanel cwd={room.cwd} />}
       {!collapsed && <div className={styles.desks} ref={deskResize.desksRef}>
         {sortedSessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;

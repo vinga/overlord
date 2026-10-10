@@ -1,26 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { marked } from 'marked';
 import styles from './FileEditorOverlay.module.css';
 import { languageForPath, highlightToLines } from '../lib/highlightLines';
+import { renderMarkdown } from '../lib/renderMarkdown';
 import 'highlight.js/styles/github-dark.css';
-
-marked.use({
-  hooks: {
-    postprocess(html: string) {
-      return html.replace(/<a /g, '<a target="_blank" rel="noopener noreferrer" ');
-    },
-  },
-});
-
-const markdownCache = new Map<string, string>();
-function renderMarkdown(text: string): string {
-  const cached = markdownCache.get(text);
-  if (cached !== undefined) return cached;
-  const html = marked.parse(text, { breaks: true, async: false }) as string;
-  if (markdownCache.size > 200) markdownCache.clear();
-  markdownCache.set(text, html);
-  return html;
-}
 
 const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
 
@@ -32,6 +14,30 @@ function isImagePath(p: string): boolean {
   return IMAGE_EXTS.has(p.slice(dot + 1).toLowerCase());
 }
 
+/**
+ * Where the viewer reads and writes. The default goes through `/api/file`
+ * (absolute paths, room-root guard); the room file browser plugs in
+ * `/api/room-file`, which additionally refuses gitignored and deny-listed files.
+ */
+export interface FileSource {
+  load: (path: string) => Promise<Response>;
+  save: (path: string, content: string) => Promise<Response>;
+  imageUrl: (path: string) => string;
+  /** Absolute path for "Open in IDE"; null hides the button. */
+  absolutePath: (path: string) => string | null;
+}
+
+const DEFAULT_SOURCE: FileSource = {
+  load: (path) => fetch(`/api/file?path=${encodeURIComponent(path)}`),
+  save: (path, content) => fetch('/api/file', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  }),
+  imageUrl: (path) => `/api/file-raw?path=${encodeURIComponent(path)}`,
+  absolutePath: (path) => path,
+};
+
 interface Props {
   path: string;
   line?: number;
@@ -39,9 +45,57 @@ interface Props {
   onClose: () => void;
 }
 
+interface ViewProps {
+  path: string;
+  line?: number;
+  cwd?: string;
+  /** Omit for the default `/api/file` source (with cwd-relative retry). */
+  source?: FileSource;
+  /** Shows a close button; called after the unsaved-changes confirm. */
+  onClose?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
+  className?: string;
+}
+
 type Mode = 'preview' | 'edit';
 
 export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
+  const dirtyRef = useRef(false);
+  const onDirtyChange = useCallback((d: boolean) => { dirtyRef.current = d; }, []);
+
+  const handleClose = useCallback(() => {
+    if (dirtyRef.current && !window.confirm('Discard unsaved changes?')) return;
+    onClose();
+  }, [onClose]);
+
+  const handleBackdrop = useCallback((e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) handleClose();
+  }, [handleClose]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [handleClose]);
+
+  return (
+    <div className={styles.backdrop} onClick={handleBackdrop}>
+      <FileEditorView
+        className={styles.modal}
+        path={path}
+        line={line}
+        cwd={cwd}
+        onClose={handleClose}
+        onDirtyChange={onDirtyChange}
+      />
+    </div>
+  );
+}
+
+export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange, className }: ViewProps) {
+  const src = source ?? DEFAULT_SOURCE;
   const [content, setContent] = useState('');
   const [original, setOriginal] = useState('');
   const [writable, setWritable] = useState(false);
@@ -71,7 +125,9 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   // showing a guess, not the literal path that was clicked.
   const [effective, setEffective] = useState<{ path: string; inferred: boolean }>({ path, inferred: false });
   useEffect(() => { setEffective({ path, inferred: false }); }, [path, cwd]);
-  const cwdCandidate = cwd && !path.startsWith(cwd)
+  // Only the default source takes absolute paths; a custom source already
+  // resolves against its own root, so there is nothing to retry.
+  const cwdCandidate = !source && cwd && !path.startsWith(cwd)
     ? `${cwd.replace(/\/+$/, '')}${path.startsWith('/') ? '' : '/'}${path}`
     : null;
 
@@ -83,13 +139,14 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
     }
     setLoading(true);
     setTooLarge(false);
+    setSaveError('');
     let cancelled = false;
     (async () => {
       try {
-        let r = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+        let r = await src.load(path);
         let used = { path, inferred: false };
         if (r.status === 404 && cwdCandidate) {
-          const retry = await fetch(`/api/file?path=${encodeURIComponent(cwdCandidate)}`);
+          const retry = await src.load(cwdCandidate);
           if (retry.ok || retry.status === 413) {
             r = retry;
             used = { path: cwdCandidate, inferred: true };
@@ -97,7 +154,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
         }
         if (cancelled) return;
         setEffective(used);
-        if (r.status === 413) { setTooLarge(true); setLoading(false); return; }
+        if (r.status === 413 || r.status === 415) { setTooLarge(true); setLoading(false); return; }
         if (!r.ok) {
           const reason = await r.json().then((b: { error?: string }) => b.error).catch(() => undefined);
           if (cancelled) return;
@@ -118,7 +175,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [path, isMarkdown, isImage, line, cwdCandidate]);
+  }, [path, isMarkdown, isImage, line, cwdCandidate, src]);
 
   useEffect(() => {
     if (!loading && mode === 'preview' && hasLineView) {
@@ -143,13 +200,13 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
     setSaving(true);
     setSaveError('');
     try {
-      const r = await fetch('/api/file', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: effective.path, content }),
-      });
-      if (r.status === 403) { setSaveError('File is read-only'); setSaving(false); return; }
-      if (!r.ok) { setSaveError(`Error ${r.status}`); setSaving(false); return; }
+      const r = await src.save(effective.path, content);
+      if (!r.ok) {
+        const reason = await r.json().then((b: { error?: string }) => b.error).catch(() => undefined);
+        setSaveError(reason ?? (r.status === 403 ? 'File is read-only' : `Error ${r.status}`));
+        setSaving(false);
+        return;
+      }
       setOriginal(content);
       setSaveFlash('Saved');
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
@@ -158,29 +215,17 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
       setSaveError(String(err));
     }
     setSaving(false);
-  }, [effective.path, content]);
+  }, [effective.path, content, src]);
 
-  const handleClose = useCallback(() => {
-    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
-    onClose();
-  }, [isDirty, onClose]);
-
-  const handleBackdrop = useCallback((e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) handleClose();
-  }, [handleClose]);
+  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const handleModeChange = useCallback((m: Mode) => {
     setMode(m);
-    localStorage.setItem(FILE_EDITOR_MODE_KEY, m);
+    try { localStorage.setItem(FILE_EDITOR_MODE_KEY, m); } catch { /* storage blocked */ }
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [handleClose]);
+  const ideTarget = src.absolutePath(effective.path);
 
   useEffect(() => () => {
     if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
@@ -194,119 +239,121 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const filePart = displayPath.slice(dirPart.length);
 
   return (
-    <div className={styles.backdrop} onClick={handleBackdrop}>
-      <div className={styles.modal}>
-        <div className={styles.header}>
-          <div className={styles.filePath}>
-            {dirPart}<span>{filePart}</span>
-          </div>
-          {effective.inferred && (
-            <span
-              className={styles.inferredBadge}
-              title={`"${path}" was not found on disk — showing ${effective.path}, auto-inferred from the session workspace. It may be a different file.`}
-            >
-              ⚠ auto-inferred
-            </span>
-          )}
-          <div className={styles.controls}>
-            {!isImage && (
-              <div className={styles.toggleGroup}>
-                <button
-                  className={`${styles.toggleBtn} ${mode === 'preview' ? styles.active : ''}`}
-                  onClick={() => handleModeChange('preview')}
-                >Preview</button>
-                <button
-                  className={`${styles.toggleBtn} ${mode === 'edit' ? styles.active : ''}`}
-                  onClick={() => handleModeChange('edit')}
-                >Edit</button>
-              </div>
-            )}
-            {saveFlash && <span className={styles.saveFlash}>{saveFlash}</span>}
-            {saveError && !saveFlash && <span className={styles.saveError}>{saveError}</span>}
-            {!isImage && (
-              <button
-                className={styles.saveBtn}
-                onClick={handleSave}
-                disabled={!isDirty || !writable || saving}
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            )}
-            <button className={styles.closeBtn} onClick={handleClose} title="Close (Esc)">✕</button>
-          </div>
+    <div className={className}>
+      <div className={styles.header}>
+        <div className={styles.filePath}>
+          {dirPart}<span>{filePart}</span>
         </div>
+        {effective.inferred && (
+          <span
+            className={styles.inferredBadge}
+            title={`"${path}" was not found on disk — showing ${effective.path}, auto-inferred from the session workspace. It may be a different file.`}
+          >
+            ⚠ auto-inferred
+          </span>
+        )}
+        <div className={styles.controls}>
+          {!isImage && (
+            <div className={styles.toggleGroup}>
+              <button
+                className={`${styles.toggleBtn} ${mode === 'preview' ? styles.active : ''}`}
+                onClick={() => handleModeChange('preview')}
+              >Preview</button>
+              <button
+                className={`${styles.toggleBtn} ${mode === 'edit' ? styles.active : ''}`}
+                onClick={() => handleModeChange('edit')}
+              >Edit</button>
+            </div>
+          )}
+          {saveFlash && <span className={styles.saveFlash}>{saveFlash}</span>}
+          {saveError && !saveFlash && <span className={styles.saveError}>{saveError}</span>}
+          {!isImage && (
+            <button
+              className={styles.saveBtn}
+              onClick={handleSave}
+              disabled={!isDirty || !writable || saving}
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          )}
+          {onClose && (
+            <button className={styles.closeBtn} onClick={onClose} title="Close (Esc)">✕</button>
+          )}
+        </div>
+      </div>
 
-        <div className={styles.body}>
-          {loading && <div className={styles.loading}>Loading…</div>}
-          {tooLarge && (
-            <div className={styles.tooLarge}>
-              <span>File too large to edit inline (&gt;1MB)</span>
+      <div className={styles.body}>
+        {loading && <div className={styles.loading}>Loading…</div>}
+        {tooLarge && (
+          <div className={styles.tooLarge}>
+            <span>File too large or binary — can't show it inline</span>
+            {ideTarget && (
               <button
                 className={styles.openIdeBtn}
                 onClick={() => {
-                  void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
+                  void fetch('/api/open-file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: ideTarget }) });
                 }}
               >Open in IDE</button>
-            </div>
-          )}
-          {!loading && isImage && (
-            <div className={styles.imageWrap}>
-              {saveError
-                ? <span className={styles.saveError}>{saveError}</span>
-                : (
-                  <img
-                    className={styles.imageView}
-                    src={`/api/file-raw?path=${encodeURIComponent(effective.path)}`}
-                    alt={filePart}
-                    onError={() => {
-                      if (!effective.inferred && cwdCandidate) {
-                        setEffective({ path: cwdCandidate, inferred: true });
-                      } else {
-                        setSaveError('Failed to load image');
-                      }
-                    }}
-                  />
-                )}
-            </div>
-          )}
-          {!loading && !tooLarge && codeLines && mode === 'preview' && (
-            <div className={styles.codeView}>
-              {codeLines.map((text, i) => (
-                <div
-                  key={i}
-                  ref={i + 1 === line ? highlightRef : undefined}
-                  className={`${styles.codeLine} ${i + 1 === line ? styles.lineHighlight : ''}`}
-                >
-                  <span className={styles.lineNum}>{i + 1}</span>
-                  {highlighted
-                    ? (
-                      // hljs output — the source is escaped by the highlighter,
-                      // pinned by the injection test in highlightLines.test.ts.
-                      <span
-                        className={styles.lineText}
-                        dangerouslySetInnerHTML={{ __html: highlighted[i] ?? '' }}
-                      />
-                    )
-                    : <span className={styles.lineText}>{text}</span>}
-                </div>
-              ))}
-            </div>
-          )}
-          {!loading && !tooLarge && !isImage && !hasLineView && mode === 'preview' && isMarkdown && (
-            <div
-              className={styles.markdownContent}
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
-            />
-          )}
-          {!loading && !tooLarge && !isImage && mode === 'edit' && (
-            <textarea
-              className={styles.editTextarea}
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              spellCheck={false}
-            />
-          )}
-        </div>
+            )}
+          </div>
+        )}
+        {!loading && isImage && (
+          <div className={styles.imageWrap}>
+            {saveError
+              ? <span className={styles.saveError}>{saveError}</span>
+              : (
+                <img
+                  className={styles.imageView}
+                  src={src.imageUrl(effective.path)}
+                  alt={filePart}
+                  onError={() => {
+                    if (!effective.inferred && cwdCandidate) {
+                      setEffective({ path: cwdCandidate, inferred: true });
+                    } else {
+                      setSaveError('Failed to load image');
+                    }
+                  }}
+                />
+              )}
+          </div>
+        )}
+        {!loading && !tooLarge && codeLines && mode === 'preview' && (
+          <div className={styles.codeView}>
+            {codeLines.map((text, i) => (
+              <div
+                key={i}
+                ref={i + 1 === line ? highlightRef : undefined}
+                className={`${styles.codeLine} ${i + 1 === line ? styles.lineHighlight : ''}`}
+              >
+                <span className={styles.lineNum}>{i + 1}</span>
+                {highlighted
+                  ? (
+                    // hljs output — the source is escaped by the highlighter,
+                    // pinned by the injection test in highlightLines.test.ts.
+                    <span
+                      className={styles.lineText}
+                      dangerouslySetInnerHTML={{ __html: highlighted[i] ?? '' }}
+                    />
+                  )
+                  : <span className={styles.lineText}>{text}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+        {!loading && !tooLarge && !isImage && !hasLineView && mode === 'preview' && isMarkdown && (
+          <div
+            className={styles.markdownContent}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
+          />
+        )}
+        {!loading && !tooLarge && !isImage && mode === 'edit' && (
+          <textarea
+            className={styles.editTextarea}
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            spellCheck={false}
+          />
+        )}
       </div>
     </div>
   );

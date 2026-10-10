@@ -181,6 +181,31 @@
   background: rgba(212, 175, 55, 0.06);
 }
 
+.filesButton {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: pointer;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  flex-shrink: 0;
+  transition: color 150ms, border-color 150ms, background 150ms;
+}
+
+.filesButton:hover,
+.filesButtonActive {
+  color: #d4af37;
+  border-color: rgba(212, 175, 55, 0.4);
+  background: rgba(212, 175, 55, 0.06);
+}
+
 .quickSpawnButton {
   background: none;
   border: 1px solid rgba(255, 255, 255, 0.07);
