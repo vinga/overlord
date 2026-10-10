@@ -4,7 +4,7 @@ import { languageForPath, highlightToLines } from '../lib/highlightLines';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import 'highlight.js/styles/github-dark.css';
 
-const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
+export const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
@@ -55,6 +55,8 @@ interface ViewProps {
   onClose?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   className?: string;
+  /** localStorage key for the remembered preview/edit mode; defaults to the global one. */
+  modeStorageKey?: string;
 }
 
 type Mode = 'preview' | 'edit';
@@ -94,7 +96,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   );
 }
 
-export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange, className }: ViewProps) {
+export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange, className, modeStorageKey = FILE_EDITOR_MODE_KEY }: ViewProps) {
   const src = source ?? DEFAULT_SOURCE;
   const [content, setContent] = useState('');
   const [original, setOriginal] = useState('');
@@ -102,7 +104,8 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
   const [loading, setLoading] = useState(true);
   const [tooLarge, setTooLarge] = useState(false);
   const [mode, setMode] = useState<Mode>(() => {
-    const saved = localStorage.getItem(FILE_EDITOR_MODE_KEY);
+    let saved: string | null = null;
+    try { saved = localStorage.getItem(modeStorageKey); } catch { /* storage blocked */ }
     return (saved === 'edit' ? 'edit' : 'preview') as Mode;
   });
   const [saving, setSaving] = useState(false);
@@ -222,8 +225,8 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
 
   const handleModeChange = useCallback((m: Mode) => {
     setMode(m);
-    try { localStorage.setItem(FILE_EDITOR_MODE_KEY, m); } catch { /* storage blocked */ }
-  }, []);
+    try { localStorage.setItem(modeStorageKey, m); } catch { /* storage blocked */ }
+  }, [modeStorageKey]);
 
   const ideTarget = src.absolutePath(effective.path);
 

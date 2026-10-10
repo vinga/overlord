@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileEditorView, type FileSource } from './FileEditorOverlay';
+import { FileEditorView, FILE_EDITOR_MODE_KEY, type FileSource } from './FileEditorOverlay';
 import { buildTree, filterPaths, flattenTree } from '../lib/fileTree';
 import styles from './RoomFilesPanel.module.css';
 
@@ -228,6 +228,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
               path={selected}
               source={source}
               onDirtyChange={onDirtyChange}
+              modeStorageKey={`${FILE_EDITOR_MODE_KEY}:${cwd}`}
             />
           )
           : <div className={styles.placeholder}>Select a file to view or edit</div>}
