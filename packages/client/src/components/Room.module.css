@@ -183,27 +183,25 @@
 
 .filesButton {
   background: none;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 5px;
-  color: rgba(255, 255, 255, 0.55);
+  border: none;
+  color: rgba(255, 255, 255, 0.35);
   cursor: pointer;
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 500;
-  height: 22px;
+  padding: 2px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 8px;
+  justify-content: center;
   flex-shrink: 0;
-  transition: color 150ms, border-color 150ms, background 150ms;
+  transition: color 150ms;
 }
 
-.filesButton:hover,
-.filesButtonActive {
+.filesButton:hover {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.filesButtonActive,
+.filesButtonActive:hover {
   color: #d4af37;
-  border-color: rgba(212, 175, 55, 0.4);
-  background: rgba(212, 175, 55, 0.06);
 }
 
 .quickSpawnButton {
