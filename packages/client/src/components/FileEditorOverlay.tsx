@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import styles from './FileEditorOverlay.module.css';
 import { languageForPath, highlightToLines } from '../lib/highlightLines';
 import { renderMarkdown } from '../lib/renderMarkdown';
+import { FileDiff } from './DiffViewer';
 import 'highlight.js/styles/github-dark.css';
 
 export const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
@@ -57,9 +58,19 @@ interface ViewProps {
   className?: string;
   /** localStorage key for the remembered preview/edit mode; defaults to the global one. */
   modeStorageKey?: string;
+  /** Enables the Diff mode. `load` answers `{ original, modified, base }`. */
+  diff?: DiffSource | null;
+  /** File no longer exists on disk (deleted) — only the diff can be shown. */
+  missing?: boolean;
 }
 
-type Mode = 'preview' | 'edit';
+export interface DiffSource {
+  load: () => Promise<Response>;
+}
+
+interface DiffData { original: string; modified: string; base: string }
+
+type Mode = 'preview' | 'edit' | 'diff';
 
 export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const dirtyRef = useRef(false);
@@ -96,7 +107,7 @@ export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   );
 }
 
-export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange, className, modeStorageKey = FILE_EDITOR_MODE_KEY }: ViewProps) {
+export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange, className, modeStorageKey = FILE_EDITOR_MODE_KEY, diff, missing = false }: ViewProps) {
   const src = source ?? DEFAULT_SOURCE;
   const [content, setContent] = useState('');
   const [original, setOriginal] = useState('');
@@ -106,8 +117,11 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
   const [mode, setMode] = useState<Mode>(() => {
     let saved: string | null = null;
     try { saved = localStorage.getItem(modeStorageKey); } catch { /* storage blocked */ }
-    return (saved === 'edit' ? 'edit' : 'preview') as Mode;
+    return (saved === 'edit' || saved === 'diff' ? saved : 'preview') as Mode;
   });
+  // A remembered 'diff' falls back to preview on files with nothing to diff;
+  // a deleted file has nothing but the diff.
+  const viewMode: Mode = missing ? 'diff' : mode === 'diff' && !diff ? 'preview' : mode;
   const [saving, setSaving] = useState(false);
   const [saveFlash, setSaveFlash] = useState('');
   const [saveError, setSaveError] = useState('');
@@ -135,7 +149,7 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
     : null;
 
   useEffect(() => {
-    if (isImage) {
+    if (isImage || missing) {
       setLoading(false);
       setTooLarge(false);
       return;
@@ -178,13 +192,13 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
       }
     })();
     return () => { cancelled = true; };
-  }, [path, isMarkdown, isImage, line, cwdCandidate, src]);
+  }, [path, isMarkdown, isImage, missing, line, cwdCandidate, src]);
 
   useEffect(() => {
-    if (!loading && mode === 'preview' && hasLineView) {
+    if (!loading && viewMode === 'preview' && hasLineView) {
       highlightRef.current?.scrollIntoView({ block: 'center' });
     }
-  }, [loading, mode, hasLineView, line, path]);
+  }, [loading, viewMode, hasLineView, line, path]);
 
   const codeLines = useMemo(
     () => (hasLineView && !loading ? content.split('\n') : null),
@@ -228,6 +242,25 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
     try { localStorage.setItem(modeStorageKey, m); } catch { /* storage blocked */ }
   }, [modeStorageKey]);
 
+  // Refetched after a save (`original` changes), so the diff tracks what is on disk.
+  const [diffData, setDiffData] = useState<DiffData | null>(null);
+  const [diffError, setDiffError] = useState('');
+  useEffect(() => {
+    if (viewMode !== 'diff' || !diff) return;
+    let cancelled = false;
+    setDiffData(null);
+    setDiffError('');
+    diff.load()
+      .then(async r => {
+        const body = await r.json().catch(() => ({})) as Partial<DiffData> & { error?: string };
+        if (cancelled) return;
+        if (!r.ok) setDiffError(body.error ?? `Error ${r.status}`);
+        else setDiffData({ original: body.original ?? '', modified: body.modified ?? '', base: body.base ?? '' });
+      })
+      .catch(err => { if (!cancelled) setDiffError(String(err)); });
+    return () => { cancelled = true; };
+  }, [viewMode, diff, original]);
+
   const ideTarget = src.absolutePath(effective.path);
 
   useEffect(() => () => {
@@ -256,21 +289,34 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
           </span>
         )}
         <div className={styles.controls}>
+          {viewMode === 'diff' && diffData?.base && (
+            <span className={styles.diffBase} title={`Compared with ${diffData.base}`}>vs {diffData.base}</span>
+          )}
           {!isImage && (
             <div className={styles.toggleGroup}>
-              <button
-                className={`${styles.toggleBtn} ${mode === 'preview' ? styles.active : ''}`}
-                onClick={() => handleModeChange('preview')}
-              >Preview</button>
-              <button
-                className={`${styles.toggleBtn} ${mode === 'edit' ? styles.active : ''}`}
-                onClick={() => handleModeChange('edit')}
-              >Edit</button>
+              {!missing && (
+                <button
+                  className={`${styles.toggleBtn} ${viewMode === 'preview' ? styles.active : ''}`}
+                  onClick={() => handleModeChange('preview')}
+                >Preview</button>
+              )}
+              {!missing && (
+                <button
+                  className={`${styles.toggleBtn} ${viewMode === 'edit' ? styles.active : ''}`}
+                  onClick={() => handleModeChange('edit')}
+                >Edit</button>
+              )}
+              {diff && (
+                <button
+                  className={`${styles.toggleBtn} ${viewMode === 'diff' ? styles.active : ''}`}
+                  onClick={() => handleModeChange('diff')}
+                >Diff</button>
+              )}
             </div>
           )}
           {saveFlash && <span className={styles.saveFlash}>{saveFlash}</span>}
           {saveError && !saveFlash && <span className={styles.saveError}>{saveError}</span>}
-          {!isImage && (
+          {!isImage && !missing && (
             <button
               className={styles.saveBtn}
               onClick={handleSave}
@@ -320,7 +366,7 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
               )}
           </div>
         )}
-        {!loading && !tooLarge && codeLines && mode === 'preview' && (
+        {!loading && !tooLarge && codeLines && viewMode === 'preview' && (
           <div className={styles.codeView}>
             {codeLines.map((text, i) => (
               <div
@@ -343,13 +389,20 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
             ))}
           </div>
         )}
-        {!loading && !tooLarge && !isImage && !hasLineView && mode === 'preview' && isMarkdown && (
+        {!loading && !tooLarge && !isImage && !hasLineView && viewMode === 'preview' && isMarkdown && (
           <div
             className={styles.markdownContent}
             dangerouslySetInnerHTML={{ __html: renderMarkdown(content) }}
           />
         )}
-        {!loading && !tooLarge && !isImage && mode === 'edit' && (
+        {!loading && !isImage && viewMode === 'diff' && (
+          diffError
+            ? <div className={styles.loading}>{diffError}</div>
+            : diffData
+              ? <FileDiff before={diffData.original} after={diffData.modified} />
+              : <div className={styles.loading}>Loading diff…</div>
+        )}
+        {!loading && !tooLarge && !isImage && viewMode === 'edit' && (
           <textarea
             className={styles.editTextarea}
             value={content}

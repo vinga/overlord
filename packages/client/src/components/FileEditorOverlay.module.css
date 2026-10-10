@@ -120,6 +120,13 @@
   cursor: default;
 }
 
+.diffBase {
+  font-size: 11px;
+  font-family: 'Fira Mono', 'Consolas', monospace;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+}
+
 .saveFlash {
   font-size: 11px;
   font-family: 'Inter', system-ui, sans-serif;

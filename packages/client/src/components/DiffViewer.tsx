@@ -9,6 +9,7 @@ import {
   expandAfter,
   REASON_LABEL,
   DEFAULT_CONTEXT,
+  snippetDiff,
   type DiffHunk,
   type DiffRow,
   type EditContext,
@@ -195,6 +196,30 @@ export const DiffViewer = React.memo(function DiffViewer({
           </button>
         </div>
       )}
+    </div>
+  );
+});
+
+/** Whole-file diff with both sides in hand — the room file browser's Diff
+ *  mode. No file fetch: `before`/`after` already are the full texts. */
+export const FileDiff = React.memo(function FileDiff({ before, after, wrap }: { before: string; after: string; wrap?: boolean }) {
+  const hunks = useMemo(() => (before === after ? [] : snippetDiff(before, after)), [before, after]);
+  const totalRows = hunks.reduce((n, h) => n + h.rows.length, 0);
+  return (
+    <div className={styles.fileDiff}>
+      <div className={`${styles.rows} ${styles.fileDiffRows} ${wrap ? styles.rowWrap : ''}`}>
+        {hunks.length === 0 && <div className={styles.loading}>No changes</div>}
+        {totalRows > MAX_ROWS
+          ? <div className={styles.loading}>{totalRows.toLocaleString()} changed lines — too many to render.</div>
+          : hunks.map((hunk, i) => (
+            <React.Fragment key={i}>
+              <div className={styles.expander} style={{ cursor: 'default' }}>
+                @@ -{hunk.oldStart} +{hunk.newStart} @@
+              </div>
+              <HunkRows hunk={hunk} />
+            </React.Fragment>
+          ))}
+      </div>
     </div>
   );
 });

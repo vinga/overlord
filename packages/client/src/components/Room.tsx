@@ -887,7 +887,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onDone={() => setClearToast(null)}
         />
       )}
-      {!collapsed && filesOpen && <RoomFilesPanel cwd={room.cwd} />}
+      {!collapsed && filesOpen && <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} />}
       {!collapsed && <div className={styles.desks} ref={deskResize.desksRef}>
         {sortedSessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;

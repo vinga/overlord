@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileEditorView, FILE_EDITOR_MODE_KEY, type FileSource } from './FileEditorOverlay';
+import { FileEditorView, FILE_EDITOR_MODE_KEY, type DiffSource, type FileSource } from './FileEditorOverlay';
 import { buildTree, filterPaths, flattenTree } from '../lib/fileTree';
 import styles from './RoomFilesPanel.module.css';
 
@@ -7,13 +7,39 @@ type ChangeCode = 'M' | 'A' | 'D' | '?' | 'R';
 
 interface RoomFilesResponse {
   files: string[];
+  /** Uncommitted, vs HEAD. */
   changed: Record<string, ChangeCode>;
+  /** Branch work vs the merge-base with `base`; absent on the base branch. */
+  prChanged?: Record<string, ChangeCode>;
+  base?: string;
   truncated: boolean;
   git: boolean;
 }
 
 interface Props {
   cwd: string;
+  /** Labels the branch scope "In PR" instead of "In branch". */
+  hasPr?: boolean;
+}
+
+type Scope = 'all' | 'uncommitted' | 'pr';
+
+const SCOPE_KEY = 'overlord:roomFilesScope';
+const LAST_FILE_KEY = 'overlord:roomFilesLast';
+
+function readStored(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function writeStored(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+  } catch { /* storage blocked */ }
+}
+
+function ancestors(path: string): string[] {
+  const parts = path.split('/');
+  return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
 }
 
 /** Rows past this are not rendered — a one-letter filter on a big repo would otherwise mount 20k buttons. */
@@ -42,14 +68,27 @@ function roomSource(cwd: string): FileSource {
  * editor on the right. Only mounted while the room's Files section is open,
  * and only fetches on mount / refresh — git spawns are too costly for a timer.
  */
-export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
+export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false }: Props) {
   const [data, setData] = useState<RoomFilesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [changedOnly, setChangedOnly] = useState(false);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const [selected, setSelected] = useState<string | null>(null);
+  const [scope, setScopeState] = useState<Scope>(() => {
+    const saved = readStored(`${SCOPE_KEY}:${cwd}`);
+    return saved === 'uncommitted' || saved === 'pr' ? saved : 'all';
+  });
+  const [selected, setSelectedState] = useState<string | null>(() => readStored(`${LAST_FILE_KEY}:${cwd}`));
+  // The restored file's folders start open, so it is visible in the tree.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(selected ? ancestors(selected) : []));
+
+  const setScope = useCallback((s: Scope) => {
+    setScopeState(s);
+    writeStored(`${SCOPE_KEY}:${cwd}`, s);
+  }, [cwd]);
+  const setSelected = useCallback((p: string | null) => {
+    setSelectedState(p);
+    writeStored(`${LAST_FILE_KEY}:${cwd}`, p);
+  }, [cwd]);
   const dirtyRef = useRef(false);
   const reqRef = useRef(0);
 
@@ -80,18 +119,48 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
 
   useEffect(() => { void load(); }, [load]);
 
+  // A remembered file that has since vanished (and is not a deletion we can
+  // still diff) is dropped rather than shown as an error.
+  useEffect(() => {
+    if (!data || !selected) return;
+    if (data.files.includes(selected) || data.changed[selected] || data.prChanged?.[selected]) return;
+    setSelected(null);
+  }, [data, selected, setSelected]);
+
+  // 'pr' remembered for a room now sitting on its base branch reads as 'all'.
+  const activeScope: Scope = scope === 'pr' && !data?.prChanged ? 'all' : scope;
+  const changes: Record<string, ChangeCode> = useMemo(() => {
+    if (!data) return {};
+    return activeScope === 'pr' ? data.prChanged ?? {} : data.changed;
+  }, [data, activeScope]);
+
   const visiblePaths = useMemo(() => {
     if (!data) return [];
-    const base = changedOnly ? Object.keys(data.changed) : data.files;
+    const base = activeScope === 'all' ? data.files : Object.keys(changes);
     return filterPaths(base, query);
-  }, [data, changedOnly, query]);
+  }, [data, activeScope, changes, query]);
 
   const tree = useMemo(() => buildTree(visiblePaths), [visiblePaths]);
-  const expandAll = query.trim() !== '' || changedOnly;
+  const expandAll = query.trim() !== '' || activeScope !== 'all';
   const rows = useMemo(() => flattenTree(tree, expanded, expandAll), [tree, expanded, expandAll]);
   const shownRows = rows.length > MAX_ROWS ? rows.slice(0, MAX_ROWS) : rows;
 
   const changedCount = data ? Object.keys(data.changed).length : 0;
+  const prCount = data?.prChanged ? Object.keys(data.prChanged).length : 0;
+
+  // Diff vs HEAD for uncommitted work, vs the merge-base for branch work. In
+  // 'all', an uncommitted change wins — it is the more recent question.
+  const diffScope: 'head' | 'pr' | null = !selected || !data
+    ? null
+    : activeScope === 'pr'
+      ? (data.prChanged?.[selected] ? 'pr' : null)
+      : data.changed[selected]
+        ? 'head'
+        : data.prChanged?.[selected] ? 'pr' : null;
+  const diffSource: DiffSource | null = useMemo(() => (selected && diffScope ? {
+    load: () => fetch(`/api/room-file-diff?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(selected)}&scope=${diffScope}`),
+  } : null), [cwd, selected, diffScope]);
+  const selectedMissing = !!selected && (changes[selected] ?? data?.changed[selected]) === 'D';
 
   const toggleDir = useCallback((path: string) => {
     setExpanded(prev => {
@@ -106,7 +175,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
     if (dirtyRef.current && !window.confirm('Discard unsaved changes?')) return;
     dirtyRef.current = false;
     setSelected(path);
-  }, [selected]);
+  }, [selected, setSelected]);
 
   const onDirtyChange = useCallback((d: boolean) => { dirtyRef.current = d; }, []);
 
@@ -148,13 +217,34 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
         {data?.git && (
           <div className={styles.filterRow}>
             <button
-              className={`${styles.chip} ${changedOnly ? styles.chipActive : ''}`}
-              onClick={() => setChangedOnly(v => !v)}
-              aria-pressed={changedOnly}
+              className={`${styles.chip} ${activeScope === 'all' ? styles.chipActive : ''}`}
+              onClick={() => setScope('all')}
+              aria-pressed={activeScope === 'all'}
             >
-              Changed only
+              All
+            </button>
+            <button
+              className={`${styles.chip} ${activeScope === 'uncommitted' ? styles.chipActive : ''}`}
+              onClick={() => setScope('uncommitted')}
+              aria-pressed={activeScope === 'uncommitted'}
+              data-tooltip="Uncommitted changes, vs HEAD"
+              data-tooltip-dir="down"
+            >
+              Uncommitted
               <span className={styles.chipCount}>{changedCount}</span>
             </button>
+            {data.prChanged && (
+              <button
+                className={`${styles.chip} ${activeScope === 'pr' ? styles.chipActive : ''}`}
+                onClick={() => setScope('pr')}
+                aria-pressed={activeScope === 'pr'}
+                data-tooltip={`Changed on this branch vs ${data.base ?? 'base'}, uncommitted included`}
+                data-tooltip-dir="down"
+              >
+                {hasPr ? 'In PR' : 'In branch'}
+                <span className={styles.chipCount}>{prCount}</span>
+              </button>
+            )}
             <span className={styles.fileCount}>{visiblePaths.length} files</span>
           </div>
         )}
@@ -163,7 +253,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
           {error && <div className={styles.empty}>{error}</div>}
           {!error && loading && !data && <div className={styles.empty}>Loading…</div>}
           {!error && data && rows.length === 0 && (
-            <div className={styles.empty}>{changedOnly ? 'No changed files' : 'No matching files'}</div>
+            <div className={styles.empty}>{activeScope === 'all' || query ? 'No matching files' : 'No changed files'}</div>
           )}
           {shownRows.map(row => {
             const pad = { paddingLeft: 8 + row.depth * 12 };
@@ -187,7 +277,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
                 </button>
               );
             }
-            const change = data?.changed[row.path];
+            const change = changes[row.path];
             const deleted = change === 'D';
             return (
               <button
@@ -195,8 +285,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
                 className={`${styles.row} ${row.path === selected ? styles.rowSelected : ''} ${deleted ? styles.rowDeleted : ''}`}
                 style={pad}
                 onClick={() => selectFile(row.path)}
-                disabled={deleted}
-                title={row.path}
+                title={deleted ? `${row.path} — deleted, diff only` : row.path}
                 role="treeitem"
                 aria-selected={row.path === selected}
               >
@@ -229,6 +318,8 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd }: Props) {
               source={source}
               onDirtyChange={onDirtyChange}
               modeStorageKey={`${FILE_EDITOR_MODE_KEY}:${cwd}`}
+              diff={diffSource}
+              missing={selectedMissing}
             />
           )
           : <div className={styles.placeholder}>Select a file to view or edit</div>}

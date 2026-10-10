@@ -39,7 +39,7 @@ import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } fro
 import { WORKER_ICONS, isWorkerIcon, isDeskSpan } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
-import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles } from './roomFiles.js';
+import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles, readRoomFileDiff } from './roomFiles.js';
 
 const BTW_MAX_CHARS = 4000;
 const BTW_TIMEOUT_MS = 120_000;
@@ -1113,6 +1113,21 @@ export function registerApiRoutes(
       let writable = false;
       try { fs.accessSync(verdict.abs, fs.constants.W_OK); writable = true; } catch { /* read-only */ }
       res.json({ content: read.content, writable, mtimeMs: fs.statSync(verdict.abs).mtimeMs });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  app.get('/api/room-file-diff', async (req, res) => {
+    const cwd = roomCwdOf(req.query.cwd, res);
+    if (!cwd) return;
+    const scope = req.query.scope;
+    if (scope !== 'head' && scope !== 'pr') { res.status(400).json({ error: 'scope must be head or pr' }); return; }
+    try {
+      const diff = await readRoomFileDiff(cwd, req.query.path, scope);
+      if (!diff.ok) { res.status(diff.status).json({ error: diff.reason }); return; }
+      const { ok: _ok, ...body } = diff;
+      res.json(body);
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }

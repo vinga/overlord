@@ -29,7 +29,12 @@ export type ChangeCode = 'M' | 'A' | 'D' | '?' | 'R';
 
 export interface RoomFileList {
   files: string[];
+  /** Uncommitted changes, vs HEAD. */
   changed: Record<string, ChangeCode>;
+  /** Branch changes vs the merge-base with `base`, working tree included. Absent on the base branch. */
+  prChanged?: Record<string, ChangeCode>;
+  /** The ref `prChanged` is measured against, e.g. `origin/main`. */
+  base?: string;
   truncated: boolean;
   git: boolean;
 }
@@ -50,6 +55,15 @@ function git(cwd: string, args: string[]): Promise<{ code: number; stdout: strin
     execFile('git', ['-C', cwd, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 10_000 }, (err, stdout) => {
       const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0;
       res({ code, stdout: stdout ?? '' });
+    });
+  });
+}
+
+function gitBuf(cwd: string, args: string[]): Promise<{ code: number; stdout: Buffer }> {
+  return new Promise(res => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 10_000 }, (err, stdout) => {
+      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0;
+      res({ code, stdout: stdout ?? Buffer.alloc(0) });
     });
   });
 }
@@ -141,6 +155,49 @@ export function parsePorcelain(out: string, prefix: string): Record<string, Chan
   return changed;
 }
 
+/** `git diff --name-status -z` output → path → code. Renames/copies carry
+ *  two paths; the new one is the file that exists now. */
+export function parseNameStatus(out: string): Record<string, ChangeCode> {
+  const changed: Record<string, ChangeCode> = {};
+  const parts = out.split('\0');
+  for (let i = 0; i < parts.length; i++) {
+    const st = parts[i];
+    if (!st) continue;
+    if (st[0] === 'R' || st[0] === 'C') {
+      const to = parts[i + 2];
+      i += 2;
+      if (to) changed[to] = 'R';
+      continue;
+    }
+    const path = parts[++i];
+    if (!path) continue;
+    changed[path] = st[0] === 'A' ? 'A' : st[0] === 'D' ? 'D' : 'M';
+  }
+  return changed;
+}
+
+export interface BaseInfo { ref: string; mergeBase: string }
+
+/** The branch this room's work will merge into, from local refs only — no
+ *  fetch, no GitHub. Null when there is no remote base or HEAD is on it. */
+export async function resolveBase(cwd: string): Promise<BaseInfo | null> {
+  let ref = '';
+  const sym = await git(cwd, ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD']);
+  if (sym.code === 0 && sym.stdout.trim()) ref = sym.stdout.trim();
+  if (!ref) {
+    for (const cand of ['origin/main', 'origin/master']) {
+      if ((await git(cwd, ['rev-parse', '--verify', '-q', `${cand}^{commit}`])).code === 0) { ref = cand; break; }
+    }
+  }
+  if (!ref) return null;
+  const branch = (await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+  if (branch && `origin/${branch}` === ref) return null;
+  const mb = await git(cwd, ['merge-base', 'HEAD', ref]);
+  const mergeBase = mb.stdout.trim();
+  if (mb.code !== 0 || !/^[0-9a-f]{40,64}$/.test(mergeBase)) return null;
+  return { ref, mergeBase };
+}
+
 const listCache = new Map<string, { at: number; value: RoomFileList }>();
 
 export function invalidateRoomFiles(cwd: string): void {
@@ -170,6 +227,18 @@ export async function listRoomFiles(cwdRaw: string): Promise<RoomFileList> {
       truncated: all.length > MAX_LISTED_FILES,
       git: true,
     };
+    const base = await resolveBase(cwd);
+    if (base) {
+      const diff = await git(cwd, ['diff', '-z', '--name-status', '-M', '--relative', base.mergeBase, '--']);
+      if (diff.code === 0) {
+        const prChanged = parseNameStatus(diff.stdout);
+        // Untracked files are part of the branch's work too, but not in `git diff`.
+        for (const [k, code] of Object.entries(changed)) if (code === '?' && !prChanged[k]) prChanged[k] = 'A';
+        for (const k of Object.keys(prChanged)) if (isDeniedRel(k)) delete prChanged[k];
+        value.prChanged = prChanged;
+        value.base = base.ref;
+      }
+    }
   } else {
     const w = walk(cwd);
     w.files.sort();
@@ -238,4 +307,62 @@ export function validateRoomFileContent(content: unknown): { ok: true } | { ok: 
   if (Buffer.byteLength(content, 'utf8') > MAX_ROOM_FILE_BYTES) return { ok: false, status: 413, reason: 'content too large' };
   if (content.includes('\0')) return { ok: false, status: 415, reason: 'binary content' };
   return { ok: true };
+}
+
+// ── diff ────────────────────────────────────────────────────────────────────
+
+export type DiffScope = 'head' | 'pr';
+
+export type RoomFileDiff =
+  | { ok: true; original: string; modified: string; originalMissing: boolean; modifiedMissing: boolean; base: string }
+  | { ok: false; status: number; reason: string };
+
+function textOrError(buf: Buffer): { ok: true; text: string } | { ok: false; status: number; reason: string } {
+  if (buf.length > MAX_ROOM_FILE_BYTES) return { ok: false, status: 413, reason: 'file too large' };
+  if (buf.subarray(0, 8192).includes(0)) return { ok: false, status: 415, reason: 'binary file' };
+  return { ok: true, text: buf.toString('utf8') };
+}
+
+/** Both sides of one file's diff. The revision comes from `scope`, never the
+ *  request; a file deleted on disk only gets the path-string checks, since
+ *  realpath/check-ignore need it to exist. */
+export async function readRoomFileDiff(cwdRaw: string, rel: unknown, scope: DiffScope): Promise<RoomFileDiff> {
+  if (typeof rel !== 'string' || !rel || rel.includes('\0') || isAbsolute(rel)) {
+    return { ok: false, status: 400, reason: 'relative path required' };
+  }
+  const cwd = realOrResolved(cwdRaw);
+  const requested = resolve(cwd, rel);
+  if (!requested.startsWith(cwd.endsWith(sep) ? cwd : cwd + sep)) return { ok: false, status: 403, reason: 'path is outside the room' };
+  const relReq = relative(cwd, requested).split(sep).join('/');
+  if (isDeniedRel(relReq)) return { ok: false, status: 403, reason: 'file is hidden from the browser' };
+
+  let modified = '';
+  let modifiedMissing = true;
+  if (fs.existsSync(requested)) {
+    const verdict = await checkRoomFile(cwd, relReq);
+    if (!verdict.ok) return verdict;
+    const read = readRoomFileText(verdict.abs);
+    if (!read.ok) return read;
+    modified = read.content;
+    modifiedMissing = false;
+  }
+
+  let rev = 'HEAD';
+  let baseLabel = 'HEAD';
+  if (scope === 'pr') {
+    const base = await resolveBase(cwd);
+    if (!base) return { ok: false, status: 409, reason: 'no base branch to compare with' };
+    rev = base.mergeBase;
+    baseLabel = base.ref;
+  }
+  const shown = await gitBuf(cwd, ['show', `${rev}:./${relReq}`]);
+  let original = '';
+  const originalMissing = shown.code !== 0;
+  if (!originalMissing) {
+    const t = textOrError(shown.stdout);
+    if (!t.ok) return t;
+    original = t.text;
+  }
+  if (originalMissing && modifiedMissing) return { ok: false, status: 404, reason: 'not found' };
+  return { ok: true, original, modified, originalMissing, modifiedMissing, base: baseLabel };
 }

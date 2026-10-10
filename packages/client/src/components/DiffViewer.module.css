@@ -145,3 +145,13 @@
   font-size: 10px;
   color: rgba(255, 255, 255, 0.3);
 }
+
+/* Whole-file diff fills its container, which does the scrolling. */
+.fileDiff {
+  min-height: 100%;
+}
+
+.fileDiffRows {
+  max-height: none;
+  overflow: visible;
+}

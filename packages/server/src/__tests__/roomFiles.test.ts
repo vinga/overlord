@@ -6,6 +6,7 @@ import { execFileSync } from 'child_process';
 import {
   listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent,
   parseGitignore, parsePorcelain, invalidateRoomFiles, MAX_ROOM_FILE_BYTES,
+  parseNameStatus, resolveBase, readRoomFileDiff,
 } from '../api/roomFiles.js';
 
 // Real repos on disk: listing shells out to git and the gate resolves symlinks.
@@ -160,5 +161,62 @@ describe('parsers', () => {
   it('parsePorcelain strips the cwd prefix and skips rename sources', () => {
     const out = ' M pkg/a.ts\0?? pkg/new.ts\0R  pkg/b.ts\0pkg/old.ts\0 M other/c.ts\0';
     expect(parsePorcelain(out, 'pkg/')).toEqual({ 'a.ts': 'M', 'new.ts': '?', 'b.ts': 'R' });
+  });
+});
+
+describe('PR scope', () => {
+  let feat: string;
+
+  beforeAll(() => {
+    feat = join(sandbox, 'home', 'feat');
+    write(join(feat, 'keep.ts'), 'base\n');
+    write(join(feat, 'gone.ts'), 'old\n');
+    write(join(feat, 'edit.ts'), 'one\n');
+    gitIn(feat, 'init', '-q', '-b', 'main');
+    gitIn(feat, 'add', '.');
+    gitIn(feat, 'commit', '-qm', 'base');
+    gitIn(feat, 'update-ref', 'refs/remotes/origin/main', 'HEAD');
+    gitIn(feat, 'checkout', '-qb', 'feature');
+    write(join(feat, 'edit.ts'), 'two\n');
+    write(join(feat, 'added.ts'), 'new\n');
+    fs.rmSync(join(feat, 'gone.ts'));
+    write(join(feat, '.env'), 'S=1');
+    gitIn(feat, 'add', '-A');
+    gitIn(feat, 'add', '-f', '.env');
+    gitIn(feat, 'commit', '-qm', 'work');
+    write(join(feat, 'edit.ts'), 'three\n');   // uncommitted on top
+    write(join(feat, 'scratch.ts'), 'wip\n');  // untracked
+  });
+
+  it('resolveBase finds origin/main and is null on the base branch', async () => {
+    expect((await resolveBase(feat))?.ref).toBe('origin/main');
+    expect(await resolveBase(repo)).toBeNull();          // no remote
+  });
+
+  it('prChanged covers committed, uncommitted and untracked branch work', async () => {
+    invalidateRoomFiles(feat);
+    const r = await listRoomFiles(feat);
+    expect(r.base).toBe('origin/main');
+    expect(r.prChanged).toEqual({ 'edit.ts': 'M', 'added.ts': 'A', 'gone.ts': 'D', 'scratch.ts': 'A' });
+    expect(r.changed).toEqual({ 'edit.ts': 'M', 'scratch.ts': '?' });
+  });
+
+  it('diffs vs HEAD and vs merge-base', async () => {
+    expect(await readRoomFileDiff(feat, 'edit.ts', 'head')).toMatchObject({ ok: true, original: 'two\n', modified: 'three\n' });
+    expect(await readRoomFileDiff(feat, 'edit.ts', 'pr')).toMatchObject({ ok: true, original: 'one\n', modified: 'three\n', base: 'origin/main' });
+    expect(await readRoomFileDiff(feat, 'added.ts', 'pr')).toMatchObject({ ok: true, originalMissing: true, modified: 'new\n' });
+    expect(await readRoomFileDiff(feat, 'gone.ts', 'pr')).toMatchObject({ ok: true, original: 'old\n', modifiedMissing: true });
+  });
+
+  it('diff applies the same gate', async () => {
+    for (const [rel, status] of [['.env', 403], ['../repo/README.md', 403], ['nope.ts', 404]] as const) {
+      expect(await readRoomFileDiff(feat, rel, 'pr')).toMatchObject({ ok: false, status });
+    }
+    expect(await readRoomFileDiff(repo, 'src/a.ts', 'pr')).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it('parseNameStatus keeps the new side of renames', () => {
+    expect(parseNameStatus('M\0a.ts\0R087\0old.ts\0new.ts\0D\0x.ts\0A\0y.ts\0'))
+      .toEqual({ 'a.ts': 'M', 'new.ts': 'R', 'x.ts': 'D', 'y.ts': 'A' });
   });
 });
