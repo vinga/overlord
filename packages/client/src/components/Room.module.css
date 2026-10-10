@@ -266,8 +266,8 @@
 }
 
 .roomDescription {
-  /* Lines up with the title, past the folder icon (20px + 2px padding x2 + 6px gap). */
-  padding-left: 30px;
+  /* Lines up with the title, past the folder icon (16px + 2px padding x2 + 6px gap). */
+  padding-left: 26px;
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 12px;
   font-weight: 400;
