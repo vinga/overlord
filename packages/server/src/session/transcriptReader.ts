@@ -62,10 +62,15 @@ function getJiraProjectRegex(): RegExp | null {
  * which carry example ticket IDs and curl payloads with related-issue links —
  * a major source of over-eager chips. The real command invocation (and its
  * `<command-args>` ticket) is a plain, non-meta user message and is kept.
+ *
+ *   `created` — JIRA keys from issue-create responses in tool_result output
+ *            (see JIRA_CREATE_RESPONSE). A session that files a ticket owns it,
+ *            even though the user never typed the key.
  */
-export function gatherScanSegments(last30: string[]): { user: string[]; wide: string[] } {
+export function gatherScanSegments(last30: string[]): { user: string[]; wide: string[]; created: string[] } {
   const user: string[] = [];
   const wide: string[] = [];
+  const created: string[] = [];
   for (const line of last30) {
     if (!line) continue;
     let parsed: { type?: string; isMeta?: boolean; message?: { content?: unknown } };
@@ -83,7 +88,9 @@ export function gatherScanSegments(last30: string[]): { user: string[]; wide: st
             wide.push(block.text);
           } else if (block.type === 'tool_result') {
             // wide-only: `gh pr create` prints the PR URL here
+            const from = wide.length;
             pushToolResultText(block.content, wide);
+            for (let i = from; i < wide.length; i++) pushCreatedJiraKeys(wide[i], created);
           }
         }
       }
@@ -101,7 +108,21 @@ export function gatherScanSegments(last30: string[]): { user: string[]; wide: st
       }
     }
   }
-  return { user, wide };
+  return { user, wide, created };
+}
+
+/**
+ * Jira's POST /issue response: `{"id":"150408","key":"BACKEND-2728","self":".../rest/api/3/issue/150408"}`
+ * (also each entry of a bulk create's `issues` array). Field order is the
+ * discriminator: GET /issue and search results serialize `self` *before* `key`,
+ * so reading or listing a ticket does not count as creating it.
+ */
+const JIRA_CREATE_RESPONSE =
+  /\{\s*"id"\s*:\s*"\d+"\s*,\s*"key"\s*:\s*"([A-Z][A-Z0-9]{1,9}-\d{1,6})"\s*,\s*"self"\s*:\s*"[^"]*\/rest\/api\/\d+\/issue\/\d+"/g;
+
+function pushCreatedJiraKeys(text: string, out: string[]): void {
+  if (!text.includes('"key"')) return;
+  for (const m of text.matchAll(JIRA_CREATE_RESPONSE)) out.push(m[1]);
 }
 
 /** tool_result `content` is either a plain string or a block array. */
@@ -1851,7 +1872,7 @@ export function readTranscriptState(filePath: string): {
     for (const mon of pendingMonitors.values()) activeMonitors.push(mon);
 
     const scanSegments = gatherScanSegments(last30);
-    const jiraKeys = extractJiraKeys(scanSegments.user, getJiraProjectRegex());
+    const jiraKeys = extractJiraKeys([...scanSegments.user, ...scanSegments.created], getJiraProjectRegex());
     const prRefs = extractPrRefs(scanSegments.wide);
     const skillsUsed = unionSkillNames(extractSkillsUsed(scanSegments.user), extractSkillToolUses(last30));
 
@@ -2134,7 +2155,7 @@ function readCodexTranscriptState(filePath: string): {
     }
 
     const codexSegments = gatherScanSegments(last30);
-    const jiraKeys = extractJiraKeys(codexSegments.user, getJiraProjectRegex());
+    const jiraKeys = extractJiraKeys([...codexSegments.user, ...codexSegments.created], getJiraProjectRegex());
     const prRefs = extractPrRefs(codexSegments.wide);
 
     const result = {
