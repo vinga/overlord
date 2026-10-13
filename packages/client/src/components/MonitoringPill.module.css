@@ -12,6 +12,8 @@
   border: 1px solid rgba(96, 165, 250, 0.28);
   background: rgba(96, 165, 250, 0.08);
   white-space: nowrap;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .dot {
@@ -26,9 +28,25 @@
 
 .label {
   letter-spacing: 0.2px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @keyframes monitorPulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.78); }
+}
+
+/* Background-command variant (BackgroundTasksPill) — teal, matching the
+   worker's background bubble. */
+.background {
+  color: rgba(45, 212, 191, 0.95);
+  border-color: rgba(45, 212, 191, 0.28);
+  background: rgba(45, 212, 191, 0.08);
+}
+
+.background .dot {
+  background: #2dd4bf;
+  box-shadow: 0 0 4px rgba(45, 212, 191, 0.6);
 }

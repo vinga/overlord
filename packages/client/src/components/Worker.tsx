@@ -6,6 +6,7 @@ import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { MonitoringPill } from './MonitoringPill';
+import { BackgroundTasksPill } from './BackgroundTasksPill';
 import { JiraChips } from './JiraChips';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
@@ -361,6 +362,9 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       )}
       {!minimal && !isSubagent && activeMonitors && activeMonitors.length > 0 && (
         <MonitoringPill monitors={activeMonitors} />
+      )}
+      {!minimal && !isSubagent && backgroundTasks && backgroundTasks.length > 0 && (
+        <BackgroundTasksPill tasks={backgroundTasks} />
       )}
       </div>
       </div>
