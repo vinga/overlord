@@ -45,6 +45,7 @@ import {
 } from '../lib/jiraInline';
 import { useStickyUserMessage, type StickyUserMessage } from '../hooks/useStickyUserMessage';
 import { marked } from 'marked';
+import { isImagePath, localImageSrc } from '../lib/localImage';
 
 marked.setOptions({ breaks: true });
 
@@ -203,6 +204,22 @@ export function linkifyPaths(html: string, wrapFences = true): string {
     if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
     tn.parentNode?.replaceChild(frag, tn);
   }
+  // `![alt](/abs/path.png)` — the browser cannot load a filesystem path, so
+  // route it through the guarded file endpoint; a click opens it full size.
+  root.querySelectorAll('img').forEach((img) => {
+    const src = localImageSrc(img.getAttribute('src') ?? '');
+    if (!src) return;
+    img.setAttribute('src', src);
+    img.setAttribute('loading', 'lazy');
+    img.classList.add('feedImage');
+    if (img.closest('a')) return;
+    const link = doc.createElement('a');
+    link.setAttribute('href', src);
+    link.setAttribute('target', '_blank');
+    link.setAttribute('rel', 'noopener noreferrer');
+    img.parentNode?.replaceChild(link, img);
+    link.appendChild(img);
+  });
   return root.innerHTML;
 }
 function renderMarkdown(text: string, wrapFences = true): string {
@@ -1094,6 +1111,15 @@ function ToolEntry({
     [tool.resultJson, breakNewlines, isResultExpanded],
   );
   const showTextToggles = (isArgsExpanded && tool.inputJson) || (isResultExpanded && tool.resultJson);
+  const readImageSrc = useMemo(() => {
+    if (tool.toolName !== 'Read') return null;
+    let path = tool.content && isFilePath(tool.content) ? tool.content : '';
+    if (!path && tool.inputJson) {
+      try { path = (JSON.parse(tool.inputJson) as { file_path?: string }).file_path ?? ''; } catch { /* partial json */ }
+    }
+    return path && isImagePath(path) ? localImageSrc(path) : null;
+  }, [tool.toolName, tool.content, tool.inputJson]);
+  const [imageOpen, setImageOpen] = useState(false);
   return (
     <div className={styles.toolEntry}>
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
@@ -1133,6 +1159,15 @@ function ToolEntry({
             })}
           >
             {tool.isError ? 'error' : 'result'}
+          </button>
+        )}
+        {readImageSrc && (
+          <button
+            className={`${styles.diffToggle} ${imageOpen ? styles.resultToggle : ''}`}
+            onClick={(e) => { e.stopPropagation(); setImageOpen(v => !v); }}
+            title={imageOpen ? 'Hide image' : 'Show image'}
+          >
+            image
           </button>
         )}
         {showRunning && sessionState === 'working' && tool.durationMs === undefined && (
@@ -1197,6 +1232,11 @@ function ToolEntry({
       )}
       {isResultExpanded && resultText && (
         <pre className={`${styles.argsView} ${wrap ? styles.argsViewWrap : ''} ${tool.isError ? styles.resultViewError : styles.resultView}`}>{resultText}</pre>
+      )}
+      {readImageSrc && imageOpen && (
+        <a href={readImageSrc} target="_blank" rel="noopener noreferrer" className={styles.toolImageLink}>
+          <img src={readImageSrc} alt={tool.content ?? 'image'} className={styles.toolImage} loading="lazy" />
+        </a>
       )}
       {hasDiff && isDiffExpanded && (
         <DiffViewer
