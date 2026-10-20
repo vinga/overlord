@@ -1,6 +1,8 @@
 import { EventEmitter } from 'events';
 import { execSync } from 'child_process';
+import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import { killProcessTree } from './processTree.js';
 
 let pty: typeof import('node-pty') | null = null;
@@ -57,6 +59,21 @@ function sanitizedSpawnEnv(): Record<string, string> {
   return env;
 }
 
+// `claude --resume` restores the transcript's last permission mode, which beats
+// `permissions.defaultMode` — a session once toggled to acceptEdits resumes there
+// forever, and bypassPermissions then drops out of the Shift+Tab cycle entirely.
+// Re-assert the user's configured default on every resume spawn.
+export function withDefaultPermissionMode(args: string[]): string[] {
+  if (!args.includes('--resume')) return args;
+  if (args.some(a => a === '--permission-mode' || a === '--dangerously-skip-permissions')) return args;
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8'));
+    const mode = settings?.permissions?.defaultMode;
+    if (typeof mode === 'string' && mode) return [...args, '--permission-mode', mode];
+  } catch { /* no settings — keep claude's own resume behavior */ }
+  return args;
+}
+
 export class PtyManager extends EventEmitter {
   private sessions = new Map<string, import('node-pty').IPty>();
 
@@ -70,7 +87,7 @@ export class PtyManager extends EventEmitter {
     const bin = executable ?? CLAUDE_BIN;
     // Raw shells don't retry on quick exit — user may deliberately type `exit`.
     const allowRetry = executable === undefined;
-    const ptyProcess = pty.spawn(bin, args, {
+    const ptyProcess = pty.spawn(bin, executable === undefined ? withDefaultPermissionMode(args) : args, {
       name: 'xterm-color',
       cols,
       rows,
