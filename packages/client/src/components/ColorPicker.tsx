@@ -67,12 +67,27 @@ interface Props {
   onIconChange?: (icon: WorkerIcon) => void;
   /** Custom trigger (e.g. the room worker's own glyph). Defaults to a WorkerAvatar. */
   children?: React.ReactNode;
+  /** Triggerless mode: no avatar button; the popover opens at this element
+   *  (e.g. a card's Options menu) and is controlled via open/onOpenChange. */
+  anchorRef?: React.RefObject<HTMLElement>;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** 'dblclick': a single click passes through (e.g. selects the card) and only
+   *  a double click opens the popover. */
+  openOn?: 'click' | 'dblclick';
 }
 
-export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, onChange, onIconChange, children }: Props) {
-  const [open, setOpen] = useState(false);
+export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, onChange, onIconChange, children, anchorRef, open: openProp, onOpenChange, openOn = 'click' }: Props) {
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
+  const setOpen = (next: boolean | ((prev: boolean) => boolean)) => {
+    const value = typeof next === 'function' ? next(open) : next;
+    if (openProp === undefined) setOpenState(value);
+    onOpenChange?.(value);
+  };
   const wrapperRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const spanRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [draftHue, setDraftHue] = useState<number | null>(null);
@@ -81,7 +96,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
   // Position the portaled popover relative to the avatar button, clamped to the
   // viewport and flipped upward if there's no room below.
   const reposition = () => {
-    const btn = buttonRef.current;
+    const btn = anchorRef?.current ?? buttonRef.current ?? spanRef.current;
     if (!btn) return;
     const r = btn.getBoundingClientRect();
     const margin = 8;
@@ -108,6 +123,7 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (wrapperRef.current?.contains(t)) return;
+      if (anchorRef?.current?.contains(t)) return;
       if (popoverRef.current?.contains(t)) return;
       setOpen(false);
     };
@@ -154,9 +170,19 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
     }
   };
 
+  const trigger = children ?? <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} icon={icon} />;
+
   return (
-    <div className={styles.wrapper} ref={wrapperRef}>
-      <button
+    <div className={anchorRef ? undefined : styles.wrapper} ref={wrapperRef}>
+      {!anchorRef && openOn === 'dblclick' && <span
+        ref={spanRef}
+        className={styles.avatarButton}
+        onDoubleClick={(e) => { e.stopPropagation(); setOpen(true); }}
+        title="Double-click to change icon & color"
+      >
+        {trigger}
+      </span>}
+      {!anchorRef && openOn === 'click' && <button
         ref={buttonRef}
         type="button"
         className={styles.avatarButton}
@@ -165,8 +191,8 @@ export function ColorPicker({ sessionId, color, size = 44, isRaw = false, icon, 
         onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
         title="Change color"
       >
-        {children ?? <WorkerAvatar sessionId={sessionId} color={color} size={size} isRaw={isRaw} icon={icon} />}
-      </button>
+        {trigger}
+      </button>}
       {open && createPortal(
         <div
           ref={popoverRef}

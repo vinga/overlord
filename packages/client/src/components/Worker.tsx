@@ -285,14 +285,15 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       )}
       <div className={styles.body}>
       <div className={styles.iconWrap}>
-      {/* Full workers: the glyph doubles as the colour/icon picker trigger, same
-          as the detail-panel avatar. Subagents inherit the parent's colour. */}
+      {/* A click selects the card like the rest of it; a double click opens the
+          icon/colour picker. Subagents inherit the parent's colour. */}
       {!isSubagent && !minimal ? (
         <ColorPicker
           sessionId={sessionId}
           color={color}
           icon={icon}
           isRaw={isRaw}
+          openOn="dblclick"
           onChange={(c) => putSessionColor(sessionId, c)}
           onIconChange={(i) => putSessionIcon(sessionId, i)}
         >

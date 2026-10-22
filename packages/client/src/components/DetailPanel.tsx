@@ -3148,6 +3148,7 @@ const currentDisplayName =
                       color={selectedSession.color}
                       size={44}
                       icon={selectedSession.icon}
+                      openOn="dblclick"
                       onChange={(newColor) => putSessionColor(selectedSession.sessionId, newColor)}
                       onIconChange={(newIcon) => putSessionIcon(selectedSession.sessionId, newIcon)}
                     />
