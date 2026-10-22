@@ -26,8 +26,8 @@ export function TaskListPanel({ room, customNames, onClose }: TaskListPanelProps
   }, [onClose]);
 
   return (
-    <div className={styles.backdrop} onClick={onClose} role="presentation">
-    <div className={styles.panel} onClick={e => e.stopPropagation()} role="dialog" aria-modal="true">
+    <div className={styles.backdrop} role="presentation">
+    <div className={styles.panel} role="dialog" aria-modal="true">
 
       {/* Room identity header */}
       <div className={styles.panelHeader}>
