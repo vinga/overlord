@@ -141,8 +141,20 @@
   padding: 6px 8px 5px;
 }
 
+/* With session lists, chips sit in equal-width columns. */
 .strip:has(.withSessions) {
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  align-items: start;
+}
+
+.strip:has(.withSessions) .tab {
+  min-width: 0;
+}
+
+.strip:has(.withSessions) .tabBtn {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .sessions {
@@ -185,7 +197,8 @@
 }
 
 .sessionName {
-  max-width: 200px;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
