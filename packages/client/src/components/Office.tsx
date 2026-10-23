@@ -1,4 +1,5 @@
-import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
+import ReactDOM from 'react-dom';
 import type { OfficeSnapshot, Session, SessionProvider } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
@@ -59,14 +60,32 @@ interface OfficeProps {
 function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onToggleActiveOnly }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void; activeOnly: boolean; onToggleActiveOnly: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
     }
+    function onResize() { setOpen(false); }
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [open]);
+
+  // Portaled to <body>: the sticky header's stacking context (z 10) sits below the
+  // detail panel (z 101), so a bottom-docked panel would cover an in-header dropdown.
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) { setMenuPos(null); return; }
+    const r = btnRef.current.getBoundingClientRect();
+    setMenuPos({ top: r.bottom + 6, right: window.innerWidth - r.right });
   }, [open]);
 
   if (!onNewSession && !onLogs && !onSettings && !onStats) return null;
@@ -74,6 +93,7 @@ function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onT
   return (
     <div ref={ref} className={styles.headerMenu}>
       <button
+        ref={btnRef}
         className={styles.headerMenuBtn}
         onClick={() => setOpen(o => !o)}
         title="Menu"
@@ -87,8 +107,8 @@ function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onT
           <rect y="10.25" width="14" height="1.75" rx="0.875" />
         </svg>
       </button>
-      {open && (
-        <div className={styles.headerMenuDropdown} role="menu">
+      {open && menuPos && ReactDOM.createPortal(
+        <div ref={menuRef} className={styles.headerMenuDropdown} style={{ position: 'fixed', top: menuPos.top, right: menuPos.right }} role="menu">
           <button
             className={styles.headerMenuItem}
             onClick={() => { setOpen(false); onToggleActiveOnly(); }}
@@ -170,7 +190,8 @@ function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onT
               <span className={styles.headerMenuItemHint}>Session counts</span>
             </button>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
