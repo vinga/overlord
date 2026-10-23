@@ -293,6 +293,69 @@ function SpawningDesk({ name }: { name: string }) {
   );
 }
 
+/** Quick spawn replays only real session modes; older room-config files may still hold raw/note. */
+function isSessionMode(mode: TerminalSpawnMode | undefined): mode is TerminalSpawnMode {
+  return !!mode && mode !== 'raw' && mode !== 'note';
+}
+
+/** ▾ next to the spawn buttons: non-session items (note, plain shell). */
+function RoomNewMenu({ onNewNote, onNewShell }: { onNewNote: () => void; onNewShell: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
+    document.addEventListener('mousedown', handler);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const pick = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); setOpen(false); fn(); };
+
+  return (
+    <div ref={ref} className={styles.newMenuWrap}>
+      <button
+        className={`${styles.spawnButton} ${open ? styles.spawnButtonOpen : ''}`}
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        data-tooltip="New note or shell"
+        data-tooltip-dir="down"
+        data-tooltip-align="right"
+        aria-label="New note or shell"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2.5 4l2.5 2.5L7.5 4" />
+        </svg>
+      </button>
+      {open && (
+        <div className={styles.newMenu} role="menu">
+          <button className={styles.newMenuItem} role="menuitem" onClick={pick(onNewNote)}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3.5 1.8h6l3 3v9.4h-9z M9.5 1.8v3h3 M5.5 8.5h5 M5.5 11h3.5" />
+            </svg>
+            New note
+          </button>
+          <button className={styles.newMenuItem} role="menuitem" onClick={pick(onNewShell)}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="1.8" y="2.5" width="12.4" height="11" rx="1.6" />
+              <path d="M4.5 6.5l2 1.8-2 1.8 M8 10.5h3.5" />
+            </svg>
+            New shell
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' }: { cwd: string; onSpawnEmbedded: () => void; onSpawnTerminal?: (mode?: TerminalSpawnMode) => void; platform?: string }) {
   const [open, setOpen] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
@@ -458,7 +521,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
       .then(cfg => {
         if (!cancelled && cfg) {
           setNamePrefix(ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '');
-          if (cfg.lastMode) setLastMode(cfg.lastMode);
+          if (isSessionMode(cfg.lastMode)) setLastMode(cfg.lastMode);
           setLastProvider(cfg.lastProvider === 'opencode' || cfg.lastProvider === 'codex' ? cfg.lastProvider : 'claude');
         }
       })
@@ -717,7 +780,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                   const cfg = await r.json() as { prefix?: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider };
                   fresh = ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '';
                   setNamePrefix(fresh);
-                  if (cfg.lastMode) { mode = cfg.lastMode; setLastMode(cfg.lastMode); }
+                  if (isSessionMode(cfg.lastMode)) { mode = cfg.lastMode; setLastMode(cfg.lastMode); }
                   provider = cfg.lastProvider === 'opencode' || cfg.lastProvider === 'codex' ? cfg.lastProvider : 'claude';
                   setLastProvider(provider);
                 }
@@ -742,6 +805,13 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
               <path d="M6 1L3.5 5.5h3L2 10" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </button>
+        )}
+        {onSpawnDirect && (
+          // Notes and shells skip room-config: they must not become the quick-spawn default.
+          <RoomNewMenu
+            onNewNote={() => onSpawnDirect(room.cwd, '', 'note', 'claude')}
+            onNewShell={() => onSpawnDirect(room.cwd, namePrefix + getNextName(''), 'raw', 'claude')}
+          />
         )}
       </div>
       {showSpawnPanel && onSpawnDirect && (

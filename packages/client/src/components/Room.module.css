@@ -181,6 +181,51 @@
   background: rgba(212, 175, 55, 0.06);
 }
 
+.spawnButtonOpen {
+  color: #d4af37;
+  border-color: rgba(212, 175, 55, 0.4);
+  background: rgba(212, 175, 55, 0.06);
+}
+
+.newMenuWrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.newMenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  min-width: 150px;
+  padding: 4px;
+  background: #1e1e2e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.newMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.7);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.newMenuItem:hover {
+  background: rgba(212, 175, 55, 0.1);
+  color: #d4af37;
+}
+
 .filesButton {
   background: none;
   border: none;
