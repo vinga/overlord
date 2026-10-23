@@ -51,8 +51,11 @@ function setup(cfgOver: Partial<VoiceInputConfig> = {}, workersOver?: VoiceWorke
     { ovrId: 'ovr-1', name: 'morion', state: 'waiting' },
     { ovrId: 'ovr-2', name: 'atlas', state: 'waiting' },
   ];
-  // Wake-word mode unless a test opts into push-to-talk.
-  let cfg: VoiceInputConfig = { ...VOICE_DEFAULTS, enabled: true, activation: 'wake', ...cfgOver };
+  // Wake-word mode unless a test opts into push-to-talk. Words are pinned so
+  // the tests read the same whatever the shipped defaults are.
+  let cfg: VoiceInputConfig = {
+    ...VOICE_DEFAULTS, enabled: true, activation: 'wake', startWord: 'overlord', stopWord: 'go', ...cfgOver,
+  };
   let selectedOvrId: string | null = 'ovr-2';
 
   const agent = new VoiceAgent({
@@ -645,7 +648,7 @@ describe('push-to-talk', () => {
     const cues: string[] = [];
     const agent = new VoiceAgent({
       provider,
-      getConfig: () => ({ ...VOICE_DEFAULTS, enabled: true, activation: 'push' }),
+      getConfig: () => ({ ...VOICE_DEFAULTS, enabled: true, activation: 'push', stopWord: 'go' }),
       getContext: () => ({ workers: [{ ovrId: 'ovr-2', name: 'atlas', state: 'waiting' }], selectedOvrId: 'ovr-2' }),
       onDispatch: () => {},
       onChange: () => {},
@@ -664,7 +667,7 @@ describe('push-to-talk', () => {
     const cues: string[] = [];
     const agent = new VoiceAgent({
       provider,
-      getConfig: () => ({ ...VOICE_DEFAULTS, enabled: true, activation: 'push' }),
+      getConfig: () => ({ ...VOICE_DEFAULTS, enabled: true, activation: 'push', stopWord: 'go' }),
       getContext: () => ({ workers: [], selectedOvrId: null }),
       onDispatch: () => {},
       onChange: () => {},

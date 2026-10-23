@@ -50,8 +50,10 @@ export const VOICE_DEFAULTS: VoiceInputConfig = {
   provider: 'webspeech',
   activation: 'push',
   lang: 'en-US',
-  startWord: 'overlord',
-  stopWord: 'go',
+  // Spellings Chrome often hears for the start word.
+  startWord: 'overlord, overload, over lord',
+  // "go" is misheard as "goal" (and is a common Polish word); "over" is not.
+  stopWord: 'over',
   cancelWord: 'cancel',
   wakeOnWorkerName: true,
   maxUtteranceMs: 30000,
