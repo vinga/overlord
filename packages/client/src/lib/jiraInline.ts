@@ -14,6 +14,12 @@
 // Absolute Unix paths (/a/b/c) and Windows paths (C:\a\b or C:/a/b) with optional :line or :line:col.
 export const PATH_REGEX = /(?:\/[\w.\-+@]+){2,}(?::\d+(?::\d+)?)?|[A-Za-z]:[\\/](?:[\w.\-+@]+[\\/]?)+(?::\d+(?::\d+)?)?/g;
 
+// Relative paths. Conservative on purpose — prose is full of slashes
+// (`and/or`, `km/h`): a bare one needs a directory AND a file extension; a
+// `./`, `../` or `~/` prefix is explicit enough on its own. The lookbehind keeps
+// it from starting mid-token (inside an absolute path, a word, a domain).
+export const REL_PATH_REGEX = /(?<![\w./~@-])(?:(?:~|\.{1,2})\/[\w.\-+@/]*[\w\-+@]|(?:[\w.\-+@]+\/)+[\w\-+@]+(?:\.[\w\-+@]+)*\.[A-Za-z][A-Za-z0-9]{0,9})(?::\d+(?::\d+)?)?(?![\w/])/g;
+
 // Any URL. Used as a suppression range: PATH_REGEX happily reads
 // `/host.tld/browse/KEY` out of one and would turn it into an "open file" link.
 const URL_REGEX = /https?:\/\/[^\s<>"']+/g;
@@ -88,7 +94,7 @@ export function prUrlRef(url: string): string | null {
   return `${m[1]}/${m[2]}#${number}`;
 }
 
-export type InlineMatch = { index: number; text: string; kind: 'path' | 'jira' | 'pr'; key?: string };
+export type InlineMatch = { index: number; text: string; kind: 'path' | 'jira' | 'pr'; key?: string; relative?: boolean };
 
 /** Split a matched path token into the bare path and the optional trailing
  *  `:line(:col)` reference. The Windows drive colon never matches — it is
@@ -97,6 +103,22 @@ export function splitPathLine(text: string): { path: string; line?: number } {
   const m = /:(\d+)(?::\d+)?$/.exec(text);
   if (!m) return { path: text };
   return { path: text.slice(0, m.index), line: parseInt(m[1], 10) };
+}
+
+// The rest of a segment, then a glob metachar: `dev-` in `dev-*.png`.
+const GLOB_TAIL = /^\/?[\w.\-+@]*[*?[{]/;
+
+/** A path the regexes stopped short of a glob (`~/dl/x/dev-*.png`) links to
+ *  the last whole folder before it (`~/dl/x`); the glob part stays plain text.
+ *  Non-glob paths come back unchanged; null when no folder is left. */
+function globParent(path: string, after: string): string | null {
+  if (!GLOB_TAIL.test(after)) return path;
+  // Stopped at a separator (`src` + `/*.ts`) → the match already is the folder.
+  if (after.startsWith('/')) return path;
+  const cut = path.lastIndexOf('/');
+  if (cut <= 0) return null;
+  const folder = path.slice(0, cut);
+  return folder === '.' || folder === '..' || folder === '~' || folder.includes('/') ? folder : null;
 }
 
 /** Path, bare-key and ticket-URL matches in one text node, left to right,
@@ -123,10 +145,19 @@ export function collectInlineMatches(text: string): InlineMatch[] {
     if (key) found.push({ index: m.index, text: url, kind: 'jira', key });
   }
   const insideUrl = (i: number) => urls.some(([s, e]) => i >= s && i < e);
+  const pushPath = (index: number, raw: string, relative: boolean) => {
+    const path = globParent(raw, text.slice(index + raw.length));
+    if (path) found.push({ index, text: path, kind: 'path', ...(relative ? { relative } : {}) });
+  };
   PATH_REGEX.lastIndex = 0;
   while ((m = PATH_REGEX.exec(text))) {
     if (insideUrl(m.index)) continue;
-    found.push({ index: m.index, text: m[0], kind: 'path' });
+    pushPath(m.index, m[0], false);
+  }
+  REL_PATH_REGEX.lastIndex = 0;
+  while ((m = REL_PATH_REGEX.exec(text))) {
+    if (insideUrl(m.index)) continue;
+    pushPath(m.index, m[0], true);
   }
   if (jiraKeyRegex) {
     jiraKeyRegex.lastIndex = 0;

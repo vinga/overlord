@@ -95,6 +95,16 @@
   background: rgba(212, 175, 55, 0.12);
 }
 
+/* Path the server could not find anywhere (set after a hover/click resolve). */
+.inlineFilePath.inlineFilePathMissing,
+.inlineFilePathCode.inlineFilePathMissing {
+  color: inherit;
+  opacity: 0.55;
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+  border-bottom-color: transparent;
+}
+
 /* Inline JIRA key / pull request in the conversation feed. Quiet by default;
    hovering reveals a `+` that adds it to the session's context. Entries already
    attached get .jiraPinned / .prPinned (applied by DetailPanel after render)

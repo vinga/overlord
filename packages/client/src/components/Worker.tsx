@@ -2,6 +2,8 @@ import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
 import type { WorkerState, Session, ActiveMonitor, BackgroundTask, WorkerIcon, SessionReview } from '../types';
 import { formatElapsed } from '../lib/formatElapsed';
 import { useTick } from '../hooks/useTick';
+import { useNoteMarkdown } from '../hooks/useNoteMarkdown';
+import { renderMarkdown } from '../lib/renderMarkdown';
 import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
@@ -34,6 +36,10 @@ interface WorkerProps {
   /** Notepad session — no process, so no state indicator; shows `notePreview`. */
   isNote?: boolean;
   notePreview?: string;
+  /** User-set note title; shown above the preview. Absent → first line acts as title. */
+  noteTitle?: string;
+  /** Changes on every note save (lastActivity) — refetches the card's markdown. */
+  noteVersion?: string;
   /** Max preview lines — grows with the desk card's height. */
   notePreviewLines?: number;
   /** Desk card spans more than one column: lift the narrow text caps. */
@@ -124,12 +130,13 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, isNote, notePreview, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
   const glyph: WorkerIcon = icon ?? 'user';
   const label = isWorker ? 'AI Worker' : (isSubagent && agentType ? agentType : (name ?? sessionId.slice(0, 8)));
+  const noteMarkdown = useNoteMarkdown(isNote && !minimal ? sessionId : undefined, noteVersion);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(label);
@@ -300,6 +307,15 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           {glyphSvg}
         </ColorPicker>
       ) : glyphSvg}
+      {/* Plan sits in the free space under the glyph, not on its own content line. */}
+      {!minimal && latestPlan && (
+        <WorkerArtifactPill
+          artifactId={latestPlan.artifactId}
+          title={latestPlan.title ?? 'Plan'}
+          planStatus={latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
+          timestamp={latestPlan.updatedAt}
+        />
+      )}
       </div>
 
       <div className={styles.content}>
@@ -336,11 +352,18 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
         </span>
       )}
       {!minimal && isNote && notePreview && (
-        <span className={styles.notePreview} title={name}>
-          {notePreview.split('\n').slice(0, notePreviewLines).map((line, i) => (
-            <span key={i} className={i === 0 ? styles.notePreviewFirst : styles.notePreviewLine}>{line}</span>
+        <div className={styles.notePreview} title={name}>
+          {noteTitle && <span className={styles.notePreviewFirst}>{noteTitle}</span>}
+          {noteMarkdown !== undefined ? (
+            // The desk card clips overflow; the slice only bounds render cost.
+            <div
+              className={styles.noteMarkdown}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(noteMarkdown.split('\n').slice(0, notePreviewLines * 3).join('\n')) }}
+            />
+          ) : notePreview.split('\n').slice(0, noteTitle ? notePreviewLines - 1 : notePreviewLines).map((line, i) => (
+            <span key={i} className={i === 0 && !noteTitle ? styles.notePreviewFirst : styles.notePreviewLine}>{line}</span>
           ))}
-        </span>
+        </div>
       )}
       {!minimal && !isSubagent && notesSummary && (
         <span className={styles.notesSummaryLine}><span className={styles.notesSummaryPrefix}>Notes:</span> {notesSummary}</span>
@@ -349,14 +372,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
         <span className={`${styles.requestSummary} ${state === 'closed' ? styles.intentDone : ''}`}>
           <span className={styles.notesSummaryPrefix}>Intent:</span> {intent}
         </span>
-      )}
-      {!minimal && latestPlan && (
-        <WorkerArtifactPill
-          artifactId={latestPlan.artifactId}
-          title={latestPlan.title ?? 'Plan'}
-          planStatus={latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
-          timestamp={latestPlan.updatedAt}
-        />
       )}
       {!minimal && !isSubagent && jiraKeys && jiraKeys.length > 0 && (
         <JiraChips keys={jiraKeys} baseUrl={jiraBaseUrl} sessionId={sessionId} onRename={onRename} />

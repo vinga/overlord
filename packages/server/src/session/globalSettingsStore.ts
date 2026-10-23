@@ -68,6 +68,9 @@ export interface GlobalSettings {
    *  message that governs the visible stretch of the feed. Absent in files
    *  written before the setting existed — every read site treats that as true. */
   showStickyUserMessage: boolean;
+  /** When true, each room tab chip lists the room's open sessions as clickable
+   *  dots. Absent in older files — read sites treat that as true. */
+  showRoomTabSessions: boolean;
   /** Root URL of the JIRA instance, e.g. "https://exampleorg.atlassian.net".
    *  Used to build chip links: `${jiraBaseUrl}/browse/PROJ-123`. */
   jiraBaseUrl?: string;
@@ -90,6 +93,7 @@ const DEFAULTS: GlobalSettings = {
   disableBackgroundLLM: false,
   autoResumeOnRestart: false,
   showStickyUserMessage: true,
+  showRoomTabSessions: true,
 };
 
 const SETTINGS_DIR = path.join(os.homedir(), '.claude', 'overlord');
@@ -159,6 +163,7 @@ function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   if (typeof input.disableBackgroundLLM === 'boolean') out.disableBackgroundLLM = input.disableBackgroundLLM;
   if (typeof input.autoResumeOnRestart === 'boolean') out.autoResumeOnRestart = input.autoResumeOnRestart;
   if (typeof input.showStickyUserMessage === 'boolean') out.showStickyUserMessage = input.showStickyUserMessage;
+  if (typeof input.showRoomTabSessions === 'boolean') out.showRoomTabSessions = input.showRoomTabSessions;
   if (typeof input.jiraBaseUrl === 'string') {
     const trimmed = input.jiraBaseUrl.trim().replace(/\/+$/, '');
     if (trimmed === '' || /^https?:\/\//i.test(trimmed)) {
@@ -316,6 +321,7 @@ function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
   return a.disableBackgroundLLM === b.disableBackgroundLLM
     && a.autoResumeOnRestart === b.autoResumeOnRestart
     && a.showStickyUserMessage === b.showStickyUserMessage
+    && a.showRoomTabSessions === b.showRoomTabSessions
     && (a.jiraBaseUrl ?? '') === (b.jiraBaseUrl ?? '')
     && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
     && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')

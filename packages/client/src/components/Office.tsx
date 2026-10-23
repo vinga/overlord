@@ -7,6 +7,7 @@ import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
 import { expandRoom } from '../hooks/useRoomCollapsed';
 import { useRoomHidden, unhideRoom, seedFromServer } from '../hooks/useRoomHidden';
 import { HiddenRoomsPill } from './HiddenRoomsPill';
+import { RoomTabs } from './RoomTabs';
 import { BtwToastStack, type BtwEntry } from './BtwToast';
 import { parseBtwCommand, isBtwDraft } from '../lib/btwCommand';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
@@ -27,7 +28,8 @@ interface OfficeProps {
   selectedSessionId?: string | null;
   selectionNonce?: number;
   rightOffset?: number;
-  bottomOffset?: number;
+  /** Height of the session panel pinned under the header (vertical dock). */
+  topOffset?: number;
   onRoomClick?: (roomId: string) => void;
   spawnCwd?: string | null;
   onSpawnNameChange?: (name: string) => void;
@@ -185,7 +187,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, bottomOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin', statusBarExtra }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin', statusBarExtra }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   // App passes plain (re-created every render) handlers; stable wrappers keep the
   // memo'd Room from re-rendering on every snapshot tick. Not isPtySession: it is
@@ -337,12 +339,32 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   // Rooms are read via a ref so snapshot ticks don't re-trigger the scroll.
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
+  const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!selectedSessionId) return;
+    const GAP = 12;
+    // Content-space top/bottom of an element inside the scroll container.
+    const span = (container: HTMLElement, el: Element) => {
+      const base = container.getBoundingClientRect().top - container.scrollTop;
+      const r = el.getBoundingClientRect();
+      return { top: r.top - base, bottom: r.bottom - base };
+    };
     const scrollToDesk = () => {
+      const container = contentRef.current;
       const sel = CSS.escape(selectedSessionId);
       const desk = document.querySelector(`[data-desk-ovr="${sel}"], [data-desk-sid="${sel}"]`);
-      if (desk) { desk.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); return; }
+      if (desk && container) {
+        // Room title at the top of the view; if that leaves the desk cut off at
+        // the bottom, scroll just far enough for the desk to fit.
+        const roomEl = desk.closest('[data-room-id]');
+        const d = span(container, desk);
+        let top = (roomEl ? span(container, roomEl).top : d.top) - GAP;
+        if (d.bottom + GAP > top + container.clientHeight) {
+          top = Math.min(d.top - GAP, d.bottom + GAP - container.clientHeight);
+        }
+        container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+        return;
+      }
       // Desk not rendered — the room is collapsed or hidden. Unhide + expand so
       // the worker is actually reachable, then fall back to the room card for
       // this pass; the 260ms retry below lands on the now-mounted desk.
@@ -352,8 +374,10 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       if (!room) return;
       unhideRoom(room.id, room.cwd);
       expandRoom(room.id);
-      document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      const roomEl = document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`);
+      if (roomEl && container) {
+        container.scrollTo({ top: Math.max(0, span(container, roomEl).top - GAP), behavior: 'smooth' });
+      }
     };
     const raf = requestAnimationFrame(scrollToDesk);
     // The detail panel's 200ms width transition reflows the grid — scroll again after it settles
@@ -396,6 +420,18 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     draggedId.current = null;
     setDragOverId(null);
   }, []);
+
+  const roomTabs = hasRooms && (
+    <RoomTabs
+      rooms={visibleRooms}
+      scrollRef={contentRef}
+      onMove={moveRoom}
+      showSessions={snapshot?.settings?.showRoomTabSessions !== false}
+      customNames={roomCustomNames}
+      selectedSessionId={selectedSessionId}
+      onSelectSession={roomOnSelectSession}
+    />
+  );
 
   return (
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
@@ -471,8 +507,10 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         />
         <ScratchpadPopup />
       </header>
-      {/* Bottom dock: the panel sits above the status bar, so only the content makes room. */}
-      <div className={styles.content} style={{ marginBottom: bottomOffset, transition: 'margin-bottom 200ms ease' }}>
+      {/* Vertical dock: the panel is pinned under the header, then room tabs, then rooms. */}
+      <div className={styles.panelSpacer} style={{ height: topOffset }} />
+      {topOffset > 0 && roomTabs}
+      <div ref={contentRef} className={styles.content}>
         {!hasRooms ? (
           <div className={styles.empty}>
             {connecting ? (
@@ -535,6 +573,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           </div>
         )}
       </div>
+      {topOffset === 0 && roomTabs}
 
       <div className={styles.statusBar}>
         <span className={`${styles.statusIndicator} ${connected ? styles.connected : styles.reconnecting}`} />

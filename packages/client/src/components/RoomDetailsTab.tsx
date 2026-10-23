@@ -139,11 +139,45 @@ export function RoomDetailsTab({ cwd }: Props) {
           The first line is shown as a subtitle under the room name. If empty, nothing is shown.
         </span>
       </div>
+      <GitIdentity cwd={cwd} />
       <div className={styles.actions}>
         {error
           ? <span className={styles.error}>{error}</span>
           : <span className={dirty || saving ? styles.statusMuted : styles.saved}>{status}</span>}
       </div>
+    </div>
+  );
+}
+
+interface GitIdentityEntry { value: string; origin: string }
+interface GitIdentityResponse { git: boolean; name?: GitIdentityEntry | null; email?: GitIdentityEntry | null }
+
+function GitIdentity({ cwd }: { cwd: string }) {
+  const [identity, setIdentity] = useState<GitIdentityResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIdentity(null);
+    fetch(`/api/room-git-identity?cwd=${encodeURIComponent(cwd)}`)
+      .then(r => (r.ok ? r.json() as Promise<GitIdentityResponse> : null))
+      .then(d => { if (!cancelled) setIdentity(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [cwd]);
+
+  if (!identity?.git) return null;
+  const { name, email } = identity;
+  const origins = [...new Set([name?.origin, email?.origin].filter(Boolean))];
+  return (
+    <div className={styles.identity}>
+      <span className={styles.label}>Git identity</span>
+      {name || email
+        ? <span className={styles.identityValue}>
+            {name?.value ?? <em>no user.name</em>}
+            {email && <span className={styles.identityEmail}> &lt;{email.value}&gt;</span>}
+          </span>
+        : <span className={styles.identityValue}><em>No user.name / user.email configured</em></span>}
+      {origins.length > 0 && <span className={styles.hint}>from {origins.join(', ')}</span>}
     </div>
   );
 }

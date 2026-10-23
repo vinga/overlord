@@ -37,6 +37,18 @@ function writeStored(key: string, value: string | null): void {
   } catch { /* storage blocked */ }
 }
 
+/** Ask the room at `cwd` to show `rel` (repo-style path) in its Files tree.
+ *  Storage is written first so a panel that mounts in response — the room
+ *  opening its Files section — starts on the file; a mounted one hears the event. */
+export const REVEAL_ROOM_FILE_EVENT = 'overlord:revealRoomFile';
+let pendingReveal: { cwd: string; rel: string } | null = null;
+export function revealRoomFile(cwd: string, rel: string): void {
+  writeStored(`${LAST_FILE_KEY}:${cwd}`, rel);
+  writeStored(`${SCOPE_KEY}:${cwd}`, 'all');
+  pendingReveal = { cwd, rel };
+  window.dispatchEvent(new CustomEvent(REVEAL_ROOM_FILE_EVENT, { detail: { cwd, rel } }));
+}
+
 function ancestors(path: string): string[] {
   const parts = path.split('/');
   return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
@@ -91,6 +103,15 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false 
   }, [cwd]);
   const dirtyRef = useRef(false);
   const reqRef = useRef(0);
+  const treeRef = useRef<HTMLDivElement>(null);
+  // Bumped by a reveal so the scroll effect re-runs even for the same path.
+  // A reveal that caused this mount is consumed here; a plain mount never scrolls.
+  const [reveal, setReveal] = useState<{ path: string; n: number } | null>(() => {
+    if (pendingReveal?.cwd !== cwd) return null;
+    const path = pendingReveal.rel;
+    pendingReveal = null;
+    return { path, n: 0 };
+  });
 
   const source = useMemo(() => roomSource(cwd), [cwd]);
 
@@ -179,6 +200,34 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false 
 
   const onDirtyChange = useCallback((d: boolean) => { dirtyRef.current = d; }, []);
 
+  useEffect(() => {
+    const onReveal = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ cwd: string; rel: string }>).detail;
+      if (detail?.cwd !== cwd) return;
+      pendingReveal = null;
+      if (detail.rel !== selected && dirtyRef.current && !window.confirm('Discard unsaved changes?')) return;
+      dirtyRef.current = false;
+      setQuery('');
+      setScope('all');
+      setSelected(detail.rel);
+      setExpanded(prev => new Set([...prev, ...ancestors(detail.rel)]));
+      setReveal(r => ({ path: detail.rel, n: (r?.n ?? 0) + 1 }));
+    };
+    window.addEventListener(REVEAL_ROOM_FILE_EVENT, onReveal);
+    return () => window.removeEventListener(REVEAL_ROOM_FILE_EVENT, onReveal);
+  }, [cwd, selected, setScope, setSelected]);
+
+  // Center the revealed row in the tree once it has rows. Scrolls the tree only —
+  // scrollIntoView would also drag the office page.
+  useEffect(() => {
+    const tree = treeRef.current;
+    if (!reveal || !data || !tree) return;
+    const row = tree.querySelector(`[data-path="${CSS.escape(reveal.path)}"]`);
+    if (!row) return;
+    const offset = row.getBoundingClientRect().top - tree.getBoundingClientRect().top;
+    tree.scrollTop += offset - tree.clientHeight / 2;
+  }, [reveal, data]);
+
   return (
     <div className={styles.panel}>
       <div className={styles.sidebar}>
@@ -249,7 +298,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false 
           </div>
         )}
 
-        <div className={styles.tree} role="tree">
+        <div className={styles.tree} role="tree" ref={treeRef}>
           {error && <div className={styles.empty}>{error}</div>}
           {!error && loading && !data && <div className={styles.empty}>Loading…</div>}
           {!error && data && rows.length === 0 && (
@@ -285,6 +334,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false 
                 className={`${styles.row} ${row.path === selected ? styles.rowSelected : ''} ${deleted ? styles.rowDeleted : ''}`}
                 style={pad}
                 onClick={() => selectFile(row.path)}
+                data-path={row.path}
                 title={deleted ? `${row.path} — deleted, diff only` : row.path}
                 role="treeitem"
                 aria-selected={row.path === selected}

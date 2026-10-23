@@ -799,7 +799,6 @@ export function App() {
           stopWord={voiceCfg.stopWord}
           cancelWord={voiceCfg.cancelWord}
           maxUtteranceMs={voiceCfg.maxUtteranceMs}
-          bottomOffset={dock === 'bottom' ? panelHeight + 56 : undefined}
         />
       )}
       <Office
@@ -820,7 +819,7 @@ export function App() {
         selectedSessionId={selectedSessionId}
         selectionNonce={selectionNonce}
         rightOffset={dock === 'right' ? panelWidth : 0}
-        bottomOffset={dock === 'bottom' ? panelHeight : 0}
+        topOffset={dock === 'bottom' ? panelHeight : 0}
         onRoomClick={handleRoomClick}
         spawnCwd={spawnCwd}
         onSpawnNameChange={setPendingSpawnName}

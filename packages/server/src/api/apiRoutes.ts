@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
-import { join, resolve, dirname, basename, extname, sep } from 'path';
+import { join, resolve, dirname, basename, extname, sep, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
 import { readGridText, serializeGrid } from '../pty/screenGrid.js';
@@ -39,13 +39,14 @@ import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } fro
 import { WORKER_ICONS, isWorkerIcon, isDeskSpan } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
+import { resolvePathCandidates } from './pathCandidates.js';
 import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles, readRoomFileDiff } from './roomFiles.js';
 
 const BTW_MAX_CHARS = 4000;
 const BTW_TIMEOUT_MS = 120_000;
 // Measured on a trivial prompt: default (opus-class) model ~9s, sonnet ~2.8s,
-// haiku ~2.5s — sonnet is the quality/latency sweet spot for a side question.
-const BTW_MODEL = process.env.OVERLORD_BTW_MODEL || 'sonnet';
+// haiku ~2.5s — most of that is `claude -p` startup, so take the fastest model.
+const BTW_MODEL = process.env.OVERLORD_BTW_MODEL || 'haiku';
 
 const IMAGE_MIME: Record<string, string> = {
   png: 'image/png',
@@ -134,6 +135,9 @@ export function registerApiRoutes(
     }
     if (typeof body.showStickyUserMessage === 'boolean') {
       partial.showStickyUserMessage = body.showStickyUserMessage;
+    }
+    if (typeof body.showRoomTabSessions === 'boolean') {
+      partial.showRoomTabSessions = body.showRoomTabSessions;
     }
     if (typeof body.jiraBaseUrl === 'string') {
       partial.jiraBaseUrl = body.jiraBaseUrl;
@@ -1092,6 +1096,29 @@ export function registerApiRoutes(
     return guardPath(raw, res);
   };
 
+  // Commit identity git resolves in the room (local config, includeIf, or
+  // global), plus which config file supplied it. Read on demand, never polled.
+  app.get('/api/room-git-identity', async (req, res) => {
+    const cwd = roomCwdOf(req.query.cwd, res);
+    if (!cwd) return;
+    const read = (key: string) => new Promise<{ value: string; origin: string } | null>((done) => {
+      execFile('git', ['-C', cwd, 'config', '--show-origin', '--get', key], { timeout: 3000 }, (err, out) => {
+        if (err) return done(null);
+        const line = out.trimEnd();
+        const tab = line.indexOf('\t');
+        if (tab < 0) return done(null);
+        const origin = line.slice(0, tab).replace(/^file:/, '');
+        done({ value: line.slice(tab + 1), origin: origin.startsWith(os.homedir()) ? '~' + origin.slice(os.homedir().length) : origin });
+      });
+    });
+    const isRepo = await new Promise<boolean>((done) => {
+      execFile('git', ['-C', cwd, 'rev-parse', '--is-inside-work-tree'], { timeout: 3000 }, (err) => done(!err));
+    });
+    if (!isRepo) return res.json({ git: false });
+    const [name, email] = await Promise.all([read('user.name'), read('user.email')]);
+    res.json({ git: true, name, email });
+  });
+
   app.get('/api/room-files', async (req, res) => {
     const cwd = roomCwdOf(req.query.cwd, res);
     if (!cwd) return;
@@ -1215,6 +1242,58 @@ export function registerApiRoutes(
     }
     execFile(file, args, (err) => {
       if (err) res.status(500).json({ error: err.message });
+      else res.json({ ok: true });
+    });
+  });
+
+  // Where a path from the chat feed actually lives — absolute, `~/`, or
+  // relative to the room / its git root / $HOME / other rooms. Called on hover,
+  // never per render; git roots are cached per cwd.
+  const gitRootCache = new Map<string, string | null>();
+  const gitRootOf = (cwd: string) => new Promise<string | null>((done) => {
+    if (gitRootCache.has(cwd)) return done(gitRootCache.get(cwd)!);
+    execFile('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { timeout: 3000 }, (err, out) => {
+      const root = err ? null : out.trim() || null;
+      gitRootCache.set(cwd, root);
+      done(root);
+    });
+  });
+  app.post('/api/resolve-path', express.json(), async (req, res) => {
+    const { path: rawPath, cwd: rawCwd } = req.body as { path?: unknown; cwd?: unknown };
+    if (typeof rawPath !== 'string' || !rawPath.trim()) { res.status(400).json({ error: 'path required' }); return; }
+    const cwd = typeof rawCwd === 'string' && stateManager.isKnownRoomCwd(rawCwd) ? rawCwd : undefined;
+    const gitRoot = cwd ? await gitRootOf(cwd) : null;
+    const candidates = resolvePathCandidates(rawPath, {
+      cwd,
+      gitRoot,
+      otherRooms: stateManager.listKnownRoomCwds().sort(),
+    });
+    // "Show in Files" only for what the room's tree actually lists — the same
+    // gate the tree's own file routes use (gitignored / hidden files are out).
+    await Promise.all(candidates.map(async (c) => {
+      if (!c.room || c.kind !== 'file') return;
+      const verdict = await checkRoomFile(c.room.cwd, c.room.rel);
+      c.room.inTree = verdict.ok;
+      if (!verdict.ok) c.room.reason = verdict.reason;
+    }));
+    res.json({ candidates, home: os.homedir() });
+  });
+
+  // Reveal a file or folder in the OS file manager (Finder: selected in its
+  // folder). Unguarded on purpose: it reads nothing, only points Finder at it.
+  app.post('/api/reveal-path', express.json(), (req, res) => {
+    const raw = (req.body as { path?: unknown }).path;
+    if (typeof raw !== 'string' || !isAbsolute(raw)) { res.status(400).json({ error: 'absolute path required' }); return; }
+    const filePath = resolve(raw);
+    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
+    let file: string;
+    let args: string[];
+    if (process.platform === 'darwin') { file = 'open'; args = ['-R', filePath]; }
+    else if (process.platform === 'win32') { file = 'explorer.exe'; args = [`/select,${filePath}`]; }
+    else { file = 'xdg-open'; args = [dirname(filePath)]; }
+    execFile(file, args, (err) => {
+      // explorer.exe exits 1 even on success.
+      if (err && process.platform !== 'win32') res.status(500).json({ error: err.message });
       else res.json({ ok: true });
     });
   });

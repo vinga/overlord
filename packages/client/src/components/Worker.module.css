@@ -51,6 +51,9 @@
 
 .iconWrap {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .worker.horizontal {
@@ -690,6 +693,63 @@
   color: rgba(235, 235, 245, 0.9);
   -webkit-line-clamp: 3;
 }
+
+/* Note body rendered as markdown — compact scale of the NotePanel prose. */
+.noteMarkdown {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.noteMarkdown :global(p),
+.noteMarkdown :global(ul),
+.noteMarkdown :global(ol),
+.noteMarkdown :global(blockquote),
+.noteMarkdown :global(pre),
+.noteMarkdown :global(h1),
+.noteMarkdown :global(h2),
+.noteMarkdown :global(h3),
+.noteMarkdown :global(h4) {
+  margin: 0;
+}
+.noteMarkdown :global(h1),
+.noteMarkdown :global(h2),
+.noteMarkdown :global(h3),
+.noteMarkdown :global(h4) {
+  color: rgba(235, 235, 245, 0.9);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.noteMarkdown :global(h1) { font-size: 14px; }
+.noteMarkdown :global(h2) { font-size: 13px; }
+.noteMarkdown :global(h3),
+.noteMarkdown :global(h4) { font-size: 12px; }
+.noteMarkdown :global(strong) { color: rgba(235, 235, 245, 0.85); font-weight: 600; }
+.noteMarkdown :global(ul),
+.noteMarkdown :global(ol) { padding-left: 16px; }
+.noteMarkdown :global(li:has(> input[type="checkbox"])) { list-style: none; margin-left: -16px; }
+.noteMarkdown :global(input[type="checkbox"]) { margin: 0 5px 0 0; vertical-align: -1px; }
+.noteMarkdown :global(a) { color: #7aa2f7; text-decoration: none; }
+.noteMarkdown :global(code) {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.noteMarkdown :global(pre) { white-space: pre-wrap; }
+.noteMarkdown :global(blockquote) {
+  padding-left: 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.15);
+}
+.noteMarkdown :global(hr) {
+  width: 100%;
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.noteMarkdown :global(table) { border-collapse: collapse; font-size: 11px; }
+.noteMarkdown :global(th),
+.noteMarkdown :global(td) { padding: 1px 4px; border: 1px solid rgba(255, 255, 255, 0.1); }
 
 /* Notes: small glyph pinned top-left so the text gets the card width. */
 .noteWorker.horizontal .body {

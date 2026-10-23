@@ -4,21 +4,18 @@
   margin-top: 4px;
 }
 
+/* Icon-only: title lives in the tooltip and the click-open popover. */
 .pill {
   display: inline-flex;
-  align-items: flex-start;
-  gap: 5px;
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 10.5px;
-  font-weight: 500;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   color: rgba(255, 255, 255, 0.58);
-  padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
   cursor: pointer;
-  max-width: var(--pill-max, 163px);
-  min-width: 0;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
 
@@ -44,14 +41,6 @@
 .statusApproved { background: #22c55e; box-shadow: 0 0 4px rgba(34, 197, 94, 0.5); }
 .statusRejected { background: #ef4444; box-shadow: 0 0 4px rgba(239, 68, 68, 0.5); }
 .statusPending  { background: #6b7280; }
-
-.title {
-  min-width: 0;
-  flex-shrink: 1;
-  white-space: normal;
-  word-break: break-word;
-  line-height: 1.4;
-}
 
 /* Popover */
 .popover {

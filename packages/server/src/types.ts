@@ -512,6 +512,7 @@ export interface GlobalSettings {
   disableBackgroundLLM: boolean;
   autoResumeOnRestart: boolean;
   showStickyUserMessage: boolean;
+  showRoomTabSessions: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
   jiraEmail?: string;

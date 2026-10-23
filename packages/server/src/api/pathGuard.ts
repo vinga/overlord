@@ -51,6 +51,9 @@ function allowedRoots(): string[] {
   const roots = [
     resolve(os.homedir(), '.claude'),
     os.tmpdir(),
+    // Claude Code session scratchpads (`/tmp/claude-<uid>/…`) — sessions link
+    // their patches and notes from there, and os.tmpdir() is elsewhere on macOS.
+    ...(process.platform !== 'win32' && process.getuid ? [`/tmp/claude-${process.getuid()}`] : []),
     ...(roomCwdProvider?.() ?? []),
     ...extraRoots(),
   ];

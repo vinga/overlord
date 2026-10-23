@@ -23,6 +23,7 @@ import styles from './DetailPanel.module.css';
 import { SessionCommands } from './SessionCommands';
 import { searchFeed, BoldExcerpt } from '../lib/search';
 import { FileEditorOverlay } from './FileEditorOverlay';
+import { FilePathPopover } from './FilePathPopover';
 import { DiffViewer } from './DiffViewer';
 import { SelectionMenu } from './SelectionMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
@@ -1332,6 +1333,8 @@ function userMsgAttrs(item: ActivityItem, segIdx: number, isSkillDef: boolean): 
 function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, markUserMessages }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
+  // The in-flight group is expanded by default; this records an explicit collapse of it.
+  const [collapsedToolGroups, setCollapsedToolGroups] = useState<Set<number>>(new Set());
 
   // Auto-expand any multi-tool group that contains the scroll target so its
   // children are in the DOM and the scroll handler can find them.
@@ -1667,13 +1670,17 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             </div>
           );
         }
-        // Multi-tool group — collapsible, expanded only if in the set
-        const isExpanded = expandedToolGroups.has(segIdx);
+        // Multi-tool group — collapsible. The trailing group defaults open
+        // (unless the user collapsed it) and folds once Claude replies with
+        // text; others open only if in the set.
+        const isLastSegment = segIdx === segments.length - 1;
+        const isActiveGroup = isLastSegment;
+        const isExpanded = expandedToolGroups.has(segIdx) ||
+          (isActiveGroup && !collapsedToolGroups.has(segIdx));
         const toolNames = seg.items.map(t => t.toolName ?? '').filter(Boolean);
         const summary = toolNames.length <= 3
           ? toolNames.join(', ')
           : toolNames.slice(0, 3).join(', ') + ` +${toolNames.length - 3}`;
-        const isLastSegment = segIdx === segments.length - 1;
         // Show the last tool's description as a hint (active tool or last completed)
         const lastTool = seg.items[seg.items.length - 1];
         const activeDesc = lastTool?.content || undefined;
@@ -1691,7 +1698,12 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
               onClick={() => {
                 setExpandedToolGroups(prev => {
                   const next = new Set(prev);
-                  if (next.has(segIdx)) next.delete(segIdx); else next.add(segIdx);
+                  if (isExpanded) next.delete(segIdx); else next.add(segIdx);
+                  return next;
+                });
+                setCollapsedToolGroups(prev => {
+                  const next = new Set(prev);
+                  if (isExpanded) next.add(segIdx); else next.delete(segIdx);
                   return next;
                 });
               }}
@@ -2055,16 +2067,8 @@ export function DetailPanel({
         }
         return;
       }
-      const target = (e.target as HTMLElement | null)?.closest('[data-file-path]');
-      if (target) {
-        const path = target.getAttribute('data-file-path');
-        if (path) {
-          e.preventDefault();
-          const lineAttr = target.getAttribute('data-file-line');
-          const line = lineAttr ? parseInt(lineAttr, 10) : undefined;
-          setFileEditorTarget({ path, line: Number.isFinite(line) ? line : undefined });
-        }
-      }
+      // `[data-file-path]` clicks belong to FilePathPopover — it resolves the
+      // candidates first and opens directly only when there is exactly one.
     };
     const keyHandler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'o' || e.key === 'O')) {
@@ -2103,7 +2107,8 @@ export function DetailPanel({
 
     function onMouseMove(ev: MouseEvent) {
       if (dragStartPos.current === null) return;
-      const delta = dragStartPos.current - (horizontal ? ev.clientX : ev.clientY);
+      // Right dock grows leftward; the top-pinned bottom dock grows downward.
+      const delta = horizontal ? dragStartPos.current - ev.clientX : ev.clientY - dragStartPos.current;
       const min = horizontal ? 320 : 240;
       const max = horizontal ? Math.max(900, window.innerWidth - 80) : Math.max(240, window.innerHeight - 160);
       const next = Math.max(min, Math.min(max, dragStartSize.current + delta));
@@ -4586,6 +4591,7 @@ const currentDisplayName =
           </>
         )}
       </div>
+      <FilePathPopover cwd={selectedSession?.cwd} platform={platform} onOpen={setFileEditorTarget} />
       {fileEditorTarget && (
         <FileEditorOverlay
           path={fileEditorTarget.path}

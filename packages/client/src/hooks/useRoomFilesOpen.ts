@@ -44,6 +44,11 @@ export function toggleRoomFilesOpen(roomId: string): void {
   for (const listener of listeners) listener();
 }
 
+export function openRoomFiles(roomId: string): void {
+  if (openMap[roomId]) return;
+  toggleRoomFilesOpen(roomId);
+}
+
 export function useRoomFilesOpen() {
   const map = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const isFilesOpen = useCallback((roomId: string): boolean => map[roomId] ?? false, [map]);

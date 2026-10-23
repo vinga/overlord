@@ -265,3 +265,19 @@
   color: rgba(255, 255, 255, 0.25);
   padding: 4px 2px 2px;
 }
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.identityValue {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.identityEmail {
+  color: rgba(255, 255, 255, 0.55);
+}

@@ -182,6 +182,12 @@ export function NotePanel({
     void flushSave().then(() => onArchive(sessionId));
   };
 
+  // Any save reopens a closed note server-side (touchNote clears noteClosed).
+  const handleReopen = () => {
+    dirtyRef.current = true;
+    void flushSave();
+  };
+
   function commitEdit() {
     const trimmed = editValue.trim();
     if (onRename && trimmed && trimmed !== displayName) onRename(sessionId, trimmed);
@@ -245,6 +251,13 @@ export function NotePanel({
             <button className={styles.headerBtn} onClick={() => onCloseNote(sessionId)} title="Close note — keeps it in the room, dimmed" aria-label="Close note">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M8 2v5.5M4.4 4.2a5 5 0 107.2 0" />
+              </svg>
+            </button>
+          )}
+          {isClosed && loaded && (
+            <button className={styles.headerBtn} onClick={handleReopen} title="Reopen note" aria-label="Reopen note">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2.5 8a5.5 5.5 0 109.4-3.9M12 1.8v2.6H9.4" />
               </svg>
             </button>
           )}

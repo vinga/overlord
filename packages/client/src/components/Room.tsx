@@ -4,14 +4,16 @@ import type { Room as RoomType, Session, SessionProvider, TerminalSpawnMode, Arc
 import { getLaunchInfo } from '../types';
 import { formatSessionRef, sessionDisplayName } from '../lib/sessionRef';
 import { WorkerGroup } from './WorkerGroup';
+import { ColorPicker } from './ColorPicker';
+import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import { SessionCommands } from './SessionCommands';
 import styles from './Room.module.css';
 import { SpawnDialog } from './SpawnDialog';
 import { useRoomOrder } from '../hooks/useRoomOrder';
-import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
+import { useRoomCollapsed, expandRoom } from '../hooks/useRoomCollapsed';
 import { useRoomHidden } from '../hooks/useRoomHidden';
-import { useRoomFilesOpen } from '../hooks/useRoomFilesOpen';
-import { RoomFilesPanel } from './RoomFilesPanel';
+import { useRoomFilesOpen, openRoomFiles } from '../hooks/useRoomFilesOpen';
+import { RoomFilesPanel, REVEAL_ROOM_FILE_EVENT } from './RoomFilesPanel';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
@@ -292,8 +294,10 @@ function SpawningDesk({ name }: { name: string }) {
   );
 }
 
-function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void; sessionRef: string }) {
+function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef, session }: { onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void; sessionRef: string; session: Session }) {
   const [open, setOpen] = useState(false);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const burgerRef = React.useRef<HTMLButtonElement>(null);
   const [copied, setCopied] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
   const copiedTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -320,6 +324,7 @@ function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef }
   return (
     <div ref={ref} style={{ position: 'absolute', top: 4, right: 4, zIndex: 10 }}>
       <button
+        ref={burgerRef}
         onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         style={{
           background: 'rgba(30,30,40,0.85)', border: '1px solid rgba(255,255,255,0.12)',
@@ -354,6 +359,16 @@ function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef }
             onMouseEnter={(e) => { if (!copied) { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!copied) e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
           >{copied ? '✓ Copied' : 'Copy session ID'}</button>
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(false); setAppearanceOpen(true); }}
+            style={{
+              display: 'block', width: '100%', padding: '8px 14px',
+              background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
+              fontSize: 13, textAlign: 'left' as const, cursor: 'pointer', whiteSpace: 'nowrap' as const,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+          >Icon &amp; color…</button>
           {onClone && (
             <button
               onClick={(e) => { e.stopPropagation(); setOpen(false); onClone(); }}
@@ -414,6 +429,17 @@ function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef }
           >Delete</button>
         </div>
       )}
+      <ColorPicker
+        sessionId={session.sessionId}
+        color={session.color}
+        icon={session.icon}
+        isRaw={session.sessionType === 'raw'}
+        anchorRef={burgerRef}
+        open={appearanceOpen}
+        onOpenChange={setAppearanceOpen}
+        onChange={(c) => putSessionColor(session.sessionId, c)}
+        onIconChange={(i) => putSessionIcon(session.sessionId, i)}
+      />
     </div>
   );
 }
@@ -530,6 +556,20 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   const hidden = isHidden(room.id);
   const { isFilesOpen, toggleFiles } = useRoomFilesOpen();
   const filesOpen = isFilesOpen(room.id);
+  const roomRef = useRef<HTMLDivElement>(null);
+
+  // "Show in Files" from a chat file link: open this room's Files section and
+  // bring the room into view. RoomFilesPanel itself selects the file.
+  useEffect(() => {
+    const onReveal = (ev: Event) => {
+      if ((ev as CustomEvent<{ cwd: string }>).detail?.cwd !== room.cwd) return;
+      expandRoom(room.id);
+      openRoomFiles(room.id);
+      requestAnimationFrame(() => roomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    };
+    window.addEventListener(REVEAL_ROOM_FILE_EVENT, onReveal);
+    return () => window.removeEventListener(REVEAL_ROOM_FILE_EVENT, onReveal);
+  }, [room.cwd, room.id]);
 
   const isTerminalSpawning = terminalSpawnCwd === room.cwd;
 
@@ -680,7 +720,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   }, {});
 
   return (
-    <div className={`${styles.room} ${collapsed ? styles.roomCollapsed : ''}`}>
+    <div ref={roomRef} className={`${styles.room} ${collapsed ? styles.roomCollapsed : ''}`}>
       <div className={styles.titleBar}>
         {onRoomDragStart && (
           <span
@@ -925,6 +965,15 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
               onDragOver={(e) => { e.preventDefault(); setDragOverId(sessionOrderKey); }}
               onDrop={(e) => { e.preventDefault(); handleDrop(sessionOrderKey); }}
               onDragEnd={() => { setDraggedId(null); setDragOverId(null); }}
+              onClick={(e) => {
+                // Empty card space selects too. Controls handle their own clicks;
+                // portaled menus bubble here through React but aren't in the DOM subtree.
+                const target = e.target as HTMLElement;
+                if (!e.currentTarget.contains(target)) return;
+                if (target.closest('button, a, input, textarea, select, [role="button"], [role="menu"]')) return;
+                if (window.getSelection()?.toString()) return;
+                onSelectSession(session);
+              }}
             >
               <span className={styles.dragHandle} aria-hidden="true">⠿</span>
               <div className={styles.deskInfo}>
@@ -966,6 +1015,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                   } : undefined}
                   onClose={onCloseSession && session.state !== 'closed' ? () => onCloseSession(session.sessionId) : undefined}
                   onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
+                  session={session}
                   sessionRef={formatSessionRef({ name: sessionDisplayName(session, customNames[session.sessionId]), sessionId: session.sessionId, overlordId: session.overlordId })}
                 />
               )}

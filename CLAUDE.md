@@ -92,6 +92,8 @@ Delegate to subagents whenever independent work parallelizes. Prefer parallel to
 
 - `OVERLORD_ARCHIVE_PR_REFRESH` (default ON; set `0`/`false` to disable): hourly REST refresh of PR state for archived/closed rooms only, non-MERGED entries only. Live rooms already poll on the 15-min TTL. Non-destructive (records into `prHistoryStore`); kill switch exists for perf-sensitive machines. See `stateManager.refreshArchivedPrs` / `selectArchivedPrTargets`.
 
+- `OVERLORD_AUTO_TRUST_FOLDERS` (default OFF; set `1`/`true` to enable): before each claude PTY spawn, sets `projects[cwd].hasTrustDialogAccepted` in `~/.claude.json` so a new folder skips the trust dialog. Best-effort — a racing write from a running claude can drop it. See `pty/folderTrust.ts`.
+
 ## Client Feature Flags (Vite env)
 
 Declared in `packages/client/src/config/featureFlags.ts`. Vite bakes these in — a change needs a **client restart**, not just a reload.

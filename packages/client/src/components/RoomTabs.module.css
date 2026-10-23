@@ -1,0 +1,205 @@
+.strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  /* Row gap clears the badge overlay that pokes above each tab. */
+  gap: 10px 8px;
+  padding: 8px 24px 6px;
+  flex-shrink: 0;
+  background: rgba(10, 10, 18, 0.7);
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a8a96;
+  font: 500 12px/1 'Inter', system-ui, sans-serif;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #d8d8e0;
+}
+
+.tab:focus-within:has(.tabBtn:focus-visible) {
+  border-color: rgba(212, 175, 55, 0.5);
+}
+
+/* The room name is its own button so the session dots can be sibling buttons. */
+.tabBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: inherit;
+}
+
+.tabBtn:focus-visible {
+  outline: none;
+}
+
+.active {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: rgba(212, 175, 55, 0.28);
+  color: #ecd27a;
+}
+
+.active:hover {
+  background: rgba(212, 175, 55, 0.14);
+  color: #f2dc8c;
+}
+
+.dragging {
+  opacity: 0.4;
+}
+
+/* Drop lands in front of the target — mark its leading edge. */
+.dropTarget::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: #d4af37;
+  box-shadow: 0 0 6px rgba(212, 175, 55, 0.6);
+}
+
+.name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busyDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.busyOn {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+}
+
+.badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px #0b0b13;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  background: #f59e0b;
+  color: #1a1206;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* Open sessions: one compact line each, under the room name. */
+.withSessions {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  height: auto;
+  padding: 6px 8px 5px;
+}
+
+.strip:has(.withSessions) {
+  align-items: flex-start;
+}
+
+.sessions {
+  display: flex;
+  flex-direction: column;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: #8a8a96;
+  font: 400 12px/1 'Inter', system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.session:hover,
+.session:focus-visible {
+  background: rgba(255, 255, 255, 0.07);
+  color: #e8e8ee;
+  outline: none;
+}
+
+.sessionDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot);
+  flex-shrink: 0;
+}
+
+.sessionName {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busy .sessionDot {
+  animation: dotPulse 1.6s ease-in-out infinite;
+}
+
+.waiting {
+  color: #e0b25a;
+}
+
+.waiting .sessionDot {
+  box-shadow: 0 0 0 1.5px #f59e0b;
+}
+
+.selected {
+  background: rgba(255, 255, 255, 0.09);
+  color: #f4f4f8;
+  font-weight: 500;
+}
+
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.75); }
+}

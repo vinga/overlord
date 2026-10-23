@@ -1,0 +1,174 @@
+.card {
+  position: fixed;
+  z-index: 10000;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(24, 24, 28, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.3);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.88);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 2px;
+}
+
+.raw {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #d4af37;
+}
+
+.status {
+  padding: 6px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.row:hover,
+.rowActive {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.rowActive {
+  box-shadow: inset 2px 0 0 #d4af37;
+}
+
+.single {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 6px 4px;
+  min-width: 0;
+}
+
+.path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.badge {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(212, 175, 55, 0.12);
+  color: #d4af37;
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.preview {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: pre;
+  -webkit-mask-image: linear-gradient(to bottom, #000 80%, transparent);
+  mask-image: linear-gradient(to bottom, #000 80%, transparent);
+}
+
+.empty {
+  color: rgba(255, 255, 255, 0.35);
+  font-style: italic;
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 2px 2px;
+}
+
+.btn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.85);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.btnPrimary {
+  background: rgba(212, 175, 55, 0.16);
+  border-color: rgba(212, 175, 55, 0.35);
+  color: #e8c97c;
+}
+
+.btnPrimary:hover {
+  background: rgba(212, 175, 55, 0.24);
+  border-color: rgba(212, 175, 55, 0.5);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.hint {
+  padding: 4px 4px 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}

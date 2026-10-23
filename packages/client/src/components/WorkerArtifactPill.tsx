@@ -176,10 +176,10 @@ export function WorkerArtifactPill({ artifactId, title, planStatus, timestamp }:
         ref={pillRef}
         className={styles.pill}
         onClick={handleClick}
-        title={title}
+        title={`Plan (${statusLabel(currentStatus)}): ${title}`}
+        aria-label={`Plan: ${title}`}
       >
         <PlanIcon className={styles.icon} />
-        <span className={styles.title}>{title}</span>
       </span>
       {open && ReactDOM.createPortal(
         <div

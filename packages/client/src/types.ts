@@ -252,6 +252,8 @@ interface GlobalSettings {
   autoResumeOnRestart: boolean;
   /** Absent in settings.json written before this existed — read as `!== false`. */
   showStickyUserMessage: boolean;
+  /** Session dots in room tab chips. Absent ⇒ on; read as `!== false`. */
+  showRoomTabSessions?: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
   jiraEmail?: string;

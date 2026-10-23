@@ -118,6 +118,8 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           isRaw={session.sessionType === 'raw'}
           isNote={session.sessionType === 'note'}
           notePreview={session.sessionType === 'note' ? session.lastMessage : undefined}
+          noteTitle={session.sessionType === 'note' ? (customName ?? session.proposedName) : undefined}
+          noteVersion={session.sessionType === 'note' ? session.lastActivity : undefined}
           notePreviewLines={5 * spanH}
           wide={spanW > 1}
           icon={session.icon}

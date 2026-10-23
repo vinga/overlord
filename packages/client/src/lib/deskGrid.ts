@@ -6,6 +6,8 @@ export const DESK_CELL_W = 250;
 export const DESK_CELL_H = 140;
 export const DESK_GAP = 14;
 export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;
+/** Tallest an un-resized card auto-grows to; dragging can still reach DESK_SPAN_MAX.h. */
+export const DESK_AUTO_MAX_H = 2;
 
 const UNIT: DeskSpan = { w: 1, h: 1 };
 

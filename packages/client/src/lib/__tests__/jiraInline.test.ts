@@ -207,3 +207,37 @@ describe('inline PR matching', () => {
     expect(summarize('https://github.com/o/r/pull/12')).toEqual(['pr:o/r#12']);
   });
 });
+
+describe('relative path matching', () => {
+  const rel = (text: string) =>
+    collectInlineMatches(text).filter((m) => m.kind === 'path').map((m) => `${m.relative ? 'rel' : 'abs'}:${m.text}`);
+
+  it('matches dir/file.ext with optional :line', () => {
+    expect(rel('edit src/lib/a.ts and packages/b/c.tsx:12 now.')).toEqual(['rel:src/lib/a.ts', 'rel:packages/b/c.tsx:12']);
+  });
+
+  it('matches ./ ../ and ~/ prefixes, even without an extension', () => {
+    expect(rel('run ./scripts/dev then ../docs and ~/notes/todo.md')).toEqual([
+      'rel:./scripts/dev', 'rel:../docs', 'rel:~/notes/todo.md',
+    ]);
+  });
+
+  it('ignores prose slashes and bare filenames', () => {
+    expect(rel('and/or km/h TCP/IP w/o README.md 1.2/3.4')).toEqual([]);
+  });
+
+  it('never splits an absolute path into a relative one', () => {
+    expect(rel('/Users/x/repo/src/a.ts')).toEqual(['abs:/Users/x/repo/src/a.ts']);
+  });
+
+  it('a glob links only up to its last whole folder', () => {
+    expect(rel('zapisane w ~/Downloads/BACKEND-2720/dev-*.png. Koniec')).toEqual(['rel:~/Downloads/BACKEND-2720']);
+    expect(rel('ls /Users/x/repo/src/*.ts')).toEqual(['abs:/Users/x/repo/src']);
+    expect(rel('see ./logs/run-?.txt')).toEqual(['rel:./logs']);
+    expect(rel('src/{a,b}.ts')).toEqual([]);
+  });
+
+  it('stays out of URLs', () => {
+    expect(rel('https://github.com/org/repo/blob/main/src/a.ts')).toEqual([]);
+  });
+});

@@ -38,7 +38,7 @@ const TREE: TreeNode[] = [
     keywords: 'general basics',
     children: [
       { id: 'general.startup', label: 'Startup & Resume', keywords: 'auto resume restart respawn terminal pty boot' },
-      { id: 'general.layout', label: 'Layout', keywords: 'layout dock panel bottom right side portrait landscape vertical monitor orientation split chat rooms' },
+      { id: 'general.layout', label: 'Layout', keywords: 'layout dock panel bottom right side portrait landscape vertical monitor orientation split chat rooms tabs chips sessions dots' },
       { id: 'general.conversation', label: 'Conversation', keywords: 'sticky pinned user message feed prompt header detail panel' },
       { id: 'general.voice', label: 'Voice', keywords: 'voice mic microphone dictation speech stt start word stop word wake hands free language' },
     ],
@@ -126,6 +126,7 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
 
   // Absent in settings.json written before the setting existed → treat as on.
   const stickyOn = settings.showStickyUserMessage !== false;
+  const tabSessionsOn = settings.showRoomTabSessions !== false;
   const intentOn = !settings.disableBackgroundLLM;
 
   // The server rejects a word that collides with the other two; showing that
@@ -206,6 +207,7 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
           { value: 'bottom', label: 'Bottom' },
         ];
         return (
+          <>
           <div className={styles.row}>
             <div className={styles.rowText}>
               <div className={styles.rowLabel}>Detail panel dock</div>
@@ -228,6 +230,13 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
               ))}
             </div>
           </div>
+          <ToggleRow
+            label="Show sessions in room tabs"
+            hint="Each room tab lists its open sessions as small colored dots. Click a dot to open that session."
+            on={tabSessionsOn}
+            onToggle={() => onUpdate({ showRoomTabSessions: !tabSessionsOn })}
+          />
+          </>
         );
       }
 

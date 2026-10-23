@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DeskSpan, Session } from '../types';
 import { putDeskSpan } from '../lib/sessionAppearance';
 import {
-  DESK_CELL_H, DESK_CELL_W, DESK_GAP, DESK_SPAN_MAX,
+  DESK_AUTO_MAX_H, DESK_CELL_H, DESK_CELL_W, DESK_GAP, DESK_SPAN_MAX,
   columnsFor, effectiveSpan, snapSpan, spanPx,
 } from '../lib/deskGrid';
 
@@ -99,10 +99,10 @@ export function useDeskResize() {
     return ref;
   }, [getMeasureRO]);
 
-  /** Rows a card's content needs at its natural height (1…max). */
+  /** Rows a card's content needs at its natural height (1…DESK_AUTO_MAX_H). */
   const autoRows = useCallback((sessionId: string): number => {
     const px = needPx[sessionId];
-    return px ? Math.min(DESK_SPAN_MAX.h, Math.max(1, Math.ceil((px + DESK_GAP) / (DESK_CELL_H + DESK_GAP)))) : 1;
+    return px ? Math.min(DESK_AUTO_MAX_H, Math.max(1, Math.ceil((px + DESK_GAP) / (DESK_CELL_H + DESK_GAP)))) : 1;
   }, [needPx]);
 
   const spanOf = useCallback((session: Session): DeskSpan => {

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { killProcessTree } from './processTree.js';
+import { ensureFolderTrusted, isAutoTrustEnabled } from './folderTrust.js';
 
 let pty: typeof import('node-pty') | null = null;
 try {
@@ -87,6 +88,13 @@ export class PtyManager extends EventEmitter {
     const bin = executable ?? CLAUDE_BIN;
     // Raw shells don't retry on quick exit — user may deliberately type `exit`.
     const allowRetry = executable === undefined;
+    if (executable === undefined && _retryCount === 0 && isAutoTrustEnabled()) {
+      try {
+        if (ensureFolderTrusted(cwd)) console.log('[PtyManager] auto-trusted folder:', cwd);
+      } catch (err) {
+        console.warn('[PtyManager] auto-trust failed:', (err as Error).message);
+      }
+    }
     const ptyProcess = pty.spawn(bin, executable === undefined ? withDefaultPermissionMode(args) : args, {
       name: 'xterm-color',
       cols,

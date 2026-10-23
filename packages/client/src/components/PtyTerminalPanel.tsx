@@ -132,7 +132,7 @@ export function PtyTerminalPanel({
     const max = horizontal ? MAX_WIDTH : Math.max(MIN_HEIGHT, window.innerHeight - 160);
     const onMove = (e: MouseEvent) => {
       if (!dragging.current) return;
-      const delta = startPos.current - (horizontal ? e.clientX : e.clientY);
+      const delta = horizontal ? startPos.current - e.clientX : e.clientY - startPos.current;
       const next = Math.max(min, Math.min(max, startSize.current + delta));
       setSize(next);
     };
