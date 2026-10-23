@@ -26,6 +26,7 @@ import { FileEditorOverlay } from './FileEditorOverlay';
 import { FilePathPopover } from './FilePathPopover';
 import { DiffViewer } from './DiffViewer';
 import { SelectionMenu } from './SelectionMenu';
+import { DeskMenu } from './DeskMenu';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
 import { SkillChips } from './SkillChips';
@@ -414,6 +415,8 @@ interface SessionActions {
   onResumeArchived?: (sessionId: string, cwd: string) => void;
   onCloneArchived?: (sessionId: string, cwd: string) => void;
   onCloneSession?: (sessionId: string) => void;
+  onCloseSession?: (sessionId: string) => void;
+  onArchiveSession?: (sessionId: string) => void;
   onDeleteArchived?: (sessionId: string) => void;
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
@@ -1951,7 +1954,7 @@ export function DetailPanel({
   voiceMic = 'ready',
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onCloseSession, onArchiveSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -3009,6 +3012,27 @@ const currentDisplayName =
             <button className={styles.closeButton} onClick={onClose} aria-label="Close panel">
               &times;
             </button>
+
+            {/* Session burger menu — same as the desk card's */}
+            {!selectedSubagent && !selectedSession.isArchived && onDeleteSession && (
+              <DeskMenu
+                session={selectedSession}
+                sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
+                anchorStyle={{ position: 'absolute', top: 12, right: 46, zIndex: 50 }}
+                buttonSize={28}
+                onDelete={() => setConfirmDelete(true)}
+                onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
+                onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
+                  void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: '/clear\r' }),
+                  }).catch(() => {});
+                } : undefined}
+                onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
+                onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
+              />
+            )}
 
             {selectedSubagent ? (
               /* Subagent view */
