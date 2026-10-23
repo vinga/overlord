@@ -3239,6 +3239,38 @@ const currentDisplayName =
                         </button>
                       </>
                     )}
+                  {/* Right end of the name row: the room's branch/PR badge + the session burger */}
+                  <div className={styles.headerActions}>
+                    {room?.gitBranch && (
+                      <GitBranchBadge
+                        branch={room.gitBranch}
+                        cwd={room.cwd}
+                        gitWarning={room.gitWarning}
+                        pullRequest={room.pullRequest}
+                        gitAhead={room.gitAhead}
+                      />
+                    )}
+                    {!selectedSession.isArchived && onDeleteSession && (
+                      <DeskMenu
+                        session={selectedSession}
+                        sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
+                        anchorStyle={{ position: 'relative' }}
+                        buttonSize={28}
+                        onDelete={() => setConfirmDelete(true)}
+                        onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
+                        onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
+                          void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: '/clear\r' }),
+                          }).catch(() => {});
+                        } : undefined}
+                        onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
+                        onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
+                        getConversationText={() => conversationText(mergedFeed)}
+                      />
+                    )}
+                  </div>
                   </div>
 
                   {/* Notes line is always rendered (empty shows a click-to-edit placeholder)
@@ -3460,38 +3492,6 @@ const currentDisplayName =
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   </div>{/* headerMain */}
-                  {/* Top-right cluster: the room's branch/PR badge + the session burger */}
-                  <div className={styles.headerActions}>
-                    {room?.gitBranch && (
-                      <GitBranchBadge
-                        branch={room.gitBranch}
-                        cwd={room.cwd}
-                        gitWarning={room.gitWarning}
-                        pullRequest={room.pullRequest}
-                        gitAhead={room.gitAhead}
-                      />
-                    )}
-                    {!selectedSession.isArchived && onDeleteSession && (
-                      <DeskMenu
-                        session={selectedSession}
-                        sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
-                        anchorStyle={{ position: 'relative' }}
-                        buttonSize={28}
-                        onDelete={() => setConfirmDelete(true)}
-                        onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
-                        onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
-                          void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ text: '/clear\r' }),
-                          }).catch(() => {});
-                        } : undefined}
-                        onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
-                        onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
-                        getConversationText={() => conversationText(mergedFeed)}
-                      />
-                    )}
-                  </div>
                   </div>{/* headerWithAvatar */}
                 </div>
 
