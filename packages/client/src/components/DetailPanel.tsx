@@ -1333,6 +1333,14 @@ function userMsgAttrs(item: ActivityItem, segIdx: number, isSkillDef: boolean): 
   };
 }
 
+/** Plain-text transcript of the user/assistant messages, for "Copy conversation". */
+function conversationText(feed: ActivityItem[]): string {
+  return feed
+    .filter(i => i.kind === 'message' && (i.role === 'user' || i.role === 'assistant'))
+    .map(i => `[${i.role?.toUpperCase()}]\n${i.content ?? ''}`)
+    .join('\n\n---\n\n');
+}
+
 function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, markUserMessages }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
@@ -3045,6 +3053,7 @@ const currentDisplayName =
                         if (!onSelectSession) return;
                         const feed = selectedSession.activityFeed ?? [];
                         const desc = selectedSubagent.description;
+                getConversationText={() => conversationText(mergedFeed)}
                         let targetTs: string | undefined;
                         for (let i = feed.length - 1; i >= 0; i--) {
                           const item = feed[i];
@@ -3543,7 +3552,8 @@ const currentDisplayName =
                       )}
                     </div>
                   </div>
-                  {/* Conversation menu */}
+                  {/* Conversation menu — archived sessions only; live ones use the header burger */}
+                  {selectedSession.isArchived && (
                   <div className={styles.convMenuAnchor} ref={convMenuRef}>
                     <button
                       className={styles.convMenuTrigger}
@@ -3557,29 +3567,13 @@ const currentDisplayName =
                         <button
                           className={styles.quickMenuItem}
                           onClick={() => {
-                            const text = mergedFeed
-                              .filter(i => i.kind === 'message' && (i.role === 'user' || i.role === 'assistant'))
-                              .map(i => `[${i.role?.toUpperCase()}]\n${i.content ?? ''}`)
-                              .join('\n\n---\n\n');
-                            navigator.clipboard.writeText(text);
+                            navigator.clipboard.writeText(conversationText(mergedFeed));
                             setCopiedConv(true);
                             setTimeout(() => { setCopiedConv(false); setShowConvMenu(false); }, 1200);
                           }}
                         >
                           {copiedConv ? '✓ Copied' : 'Copy conversation'}
                         </button>
-                        {onCloneSession && !selectedSession.isArchived && mergedFeed.length > 0 && (
-                          <button
-                            className={styles.quickMenuItem}
-                            title="Spawn a new session forked from this conversation"
-                            onClick={() => {
-                              onCloneSession(selectedSession.sessionId);
-                              setShowConvMenu(false);
-                            }}
-                          >
-                            Clone conversation
-                          </button>
-                        )}
                       </div>
                     )}
                   </div>
@@ -3597,6 +3591,7 @@ const currentDisplayName =
                         return (
                           <div
                             key={i}
+                  )}
                             className={styles.panelSearchRow}
                             onClick={() => {
                               if (match.item.timestamp) {

@@ -5,8 +5,10 @@ import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 
 /** Session burger menu — shared by the desk card (Room) and the detail panel header. */
-export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessionRef, session, anchorStyle, buttonSize = 22 }: {
+export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getConversationText, sessionRef, session, anchorStyle, buttonSize = 22 }: {
   onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void;
+  /** Adds a "Copy conversation" item (detail panel only). */
+  getConversationText?: () => string;
   sessionRef: string; session: Session;
   /** Wrapper position; defaults to the desk card's top-right corner. */
   anchorStyle?: React.CSSProperties;
@@ -15,7 +17,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessi
   const [open, setOpen] = useState(false);
   const [appearanceOpen, setAppearanceOpen] = useState(false);
   const burgerRef = React.useRef<HTMLButtonElement>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'ref' | 'conv' | null>(null);
   const ref = React.useRef<HTMLDivElement>(null);
   const menuRef = React.useRef<HTMLDivElement>(null);
   const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
@@ -57,13 +59,18 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessi
 
   React.useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
 
-  const handleCopyRef = (e: React.MouseEvent) => {
+  const copy = (e: React.MouseEvent, what: 'ref' | 'conv', text: string) => {
     e.stopPropagation();
-    void navigator.clipboard.writeText(sessionRef);
-    setCopied(true);
+    void navigator.clipboard.writeText(text);
+    setCopied(what);
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => { setCopied(false); setOpen(false); }, 900);
+    copiedTimer.current = setTimeout(() => { setCopied(null); setOpen(false); }, 900);
   };
+  const copyItemStyle = (done: boolean): React.CSSProperties => ({
+    display: 'block', width: '100%', padding: '8px 14px',
+    background: 'none', border: 'none', color: done ? '#22c55e' : 'rgba(255,255,255,0.7)',
+    fontSize: 13, textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap',
+  });
 
   return (
     <div ref={ref} style={anchorStyle ?? { position: 'absolute', top: 4, right: 4, zIndex: 10 }}>
@@ -93,16 +100,20 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessi
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 10000, minWidth: 140,
         }}>
           <button
-            onClick={handleCopyRef}
+            onClick={(e) => copy(e, 'ref', sessionRef)}
             title={sessionRef}
-            style={{
-              display: 'block', width: '100%', padding: '8px 14px',
-              background: 'none', border: 'none', color: copied ? '#22c55e' : 'rgba(255,255,255,0.7)',
-              fontSize: 13, textAlign: 'left' as const, cursor: 'pointer', whiteSpace: 'nowrap' as const,
-            }}
-            onMouseEnter={(e) => { if (!copied) { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (!copied) e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-          >{copied ? '✓ Copied' : 'Copy session ID'}</button>
+            style={copyItemStyle(copied === 'ref')}
+            onMouseEnter={(e) => { if (copied !== 'ref') { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (copied !== 'ref') e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+          >{copied === 'ref' ? '✓ Copied' : 'Copy session ID'}</button>
+          {getConversationText && (
+            <button
+              onClick={(e) => copy(e, 'conv', getConversationText())}
+              style={copyItemStyle(copied === 'conv')}
+              onMouseEnter={(e) => { if (copied !== 'conv') { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (copied !== 'conv') e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
+            >{copied === 'conv' ? '✓ Copied' : 'Copy conversation'}</button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(false); setAppearanceOpen(true); }}
             style={{
