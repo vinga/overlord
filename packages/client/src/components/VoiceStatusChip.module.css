@@ -1,6 +1,6 @@
 .root {
   position: relative;
-  margin-left: auto;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
 }
@@ -47,7 +47,8 @@
 
 .keys { display: inline-flex; gap: 2px; }
 
-.root kbd {
+.root kbd,
+.popover kbd {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10.5px;
   font-weight: 500;
@@ -60,10 +61,10 @@
 }
 
 .popover {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 8px);
-  width: 300px;
+  /* Portalled to <body>; top/left come from the chip's rect. */
+  position: fixed;
+  z-index: 1300;
+  width: 344px;
   max-width: calc(100vw - 32px);
   padding: 14px;
   border-radius: 10px;
@@ -112,7 +113,7 @@
 
 .note { margin-top: 12px; color: #7a7a82; font-size: 12px; line-height: 1.5; }
 
-.footer { display: flex; gap: 6px; margin-top: 14px; }
+.footer { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 
 .action,
 .ghost {
@@ -122,6 +123,7 @@
   font-family: inherit;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -130,3 +132,4 @@
 
 .ghost { border: 1px solid rgba(255, 255, 255, 0.12); background: transparent; color: #c4c4cc; }
 .ghost:hover { background: rgba(255, 255, 255, 0.05); }
+

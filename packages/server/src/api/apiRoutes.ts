@@ -40,6 +40,7 @@ import { WORKER_ICONS, isWorkerIcon, isDeskSpan } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
 import { resolvePathCandidates } from './pathCandidates.js';
+import { getProgressCards, getProgressHistory } from '../session/progressStore.js';
 import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles, readRoomFileDiff } from './roomFiles.js';
 
 const BTW_MAX_CHARS = 4000;
@@ -284,6 +285,19 @@ export function registerApiRoutes(
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
+  });
+
+  // Background-command progress cards (live + persisted) and one card's full history.
+  // Keyed by claude sessionId — closed sessions are not in memory but keep their cards.
+  app.get('/api/sessions/:sessionId/progress', (req, res) => {
+    const { sessionId } = req.params;
+    if (!/^[\w-]+$/.test(sessionId)) { res.status(400).json({ error: 'bad sessionId' }); return; }
+    res.json({ cards: getProgressCards(sessionId) });
+  });
+  app.get('/api/sessions/:sessionId/progress/:toolUseId', (req, res) => {
+    const { sessionId, toolUseId } = req.params;
+    if (!/^[\w-]+$/.test(sessionId) || !/^[\w-]+$/.test(toolUseId)) { res.status(400).json({ error: 'bad id' }); return; }
+    res.json({ entries: getProgressHistory(sessionId, toolUseId) });
   });
 
   // Debug endpoint: clone a session

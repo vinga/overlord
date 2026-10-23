@@ -1,10 +1,10 @@
-/* Bottom-left gutter: the one region that stays empty whether or not the
-   detail panel is open. Centre collides with the panel composer, and the top
-   collides with the office header controls. */
+/* Top centre, just under the office header (56px). Left-aligned it covered
+   the logo and the room list; centred it reads as a transient banner. */
 .host {
   position: fixed;
-  bottom: 44px;
-  left: 14px;
+  top: 64px;
+  left: 0;
+  right: 0;
   z-index: 1200;
   display: flex;
   justify-content: center;

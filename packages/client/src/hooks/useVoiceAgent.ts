@@ -24,6 +24,8 @@ const OFF: VoiceSnapshot = {
   error: null,
   manual: false,
   sending: false,
+  session: false,
+  followUp: false,
 };
 
 export interface UseVoiceAgentOptions {
@@ -53,6 +55,13 @@ export interface UseVoiceAgentResult extends VoiceSnapshot {
   toggleCapture: () => void;
   /** Forces Chrome's microphone prompt, then starts recognition on success. */
   requestPermission: () => void;
+  /** Stay-on: hold the idle countdown while the last target is busy. */
+  setIdleHold: (held: boolean) => void;
+  /** Before reading a reply: true when speaking is fine (an empty follow-up
+   *  capture is closed for it). */
+  yieldForReply: () => boolean;
+  /** After reading: reopen a session paused by yieldForReply, or end it. */
+  resumeSession: (resume: boolean) => void;
 }
 
 /**
@@ -167,5 +176,12 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
       .catch(() => setPermission('denied'));
   }, []);
 
-  return { ...snapshot, muted, supported, permission, toggleMute, discard, begin, commit, toggleCapture, requestPermission };
+  const setIdleHold = useCallback((held: boolean) => { agentRef.current?.setIdleHold(held); }, []);
+  const yieldForReply = useCallback(() => agentRef.current?.yieldForReply() ?? true, []);
+  const resumeSession = useCallback((resume: boolean) => { agentRef.current?.resumeSession(resume); }, []);
+
+  return {
+    ...snapshot, muted, supported, permission, toggleMute, discard, begin, commit, toggleCapture, requestPermission,
+    setIdleHold, yieldForReply, resumeSession,
+  };
 }

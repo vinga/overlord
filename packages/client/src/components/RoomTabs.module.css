@@ -6,6 +6,9 @@
   gap: 10px 8px;
   padding: 8px 24px 6px;
   flex-shrink: 0;
+  /* Session lists can outgrow the window; never squeeze the rooms out. */
+  max-height: 40vh;
+  overflow-y: auto;
   background: rgba(10, 10, 18, 0.7);
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   font-family: 'Inter', system-ui, sans-serif;
@@ -82,8 +85,15 @@
   box-shadow: 0 0 6px rgba(212, 175, 55, 0.6);
 }
 
+/* Mirrors Room.module.css .roomName, a size down; color stays fixed — the
+   active chip is marked by its background and border. */
 .name {
   max-width: 180px;
+  color: #d4af37;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -152,7 +162,7 @@
   border: 0;
   border-radius: 4px;
   background: none;
-  color: #8a8a96;
+  color: #d8d8e0;
   font: 400 12px/1 'Inter', system-ui, sans-serif;
   text-align: left;
   cursor: pointer;
@@ -162,7 +172,7 @@
 .session:hover,
 .session:focus-visible {
   background: rgba(255, 255, 255, 0.07);
-  color: #e8e8ee;
+  color: #fff;
   outline: none;
 }
 
@@ -185,18 +195,16 @@
   animation: dotPulse 1.6s ease-in-out infinite;
 }
 
-.waiting {
-  color: #e0b25a;
-}
-
 .waiting .sessionDot {
   box-shadow: 0 0 0 1.5px #f59e0b;
 }
 
-.selected {
-  background: rgba(255, 255, 255, 0.09);
-  color: #f4f4f8;
-  font-weight: 500;
+/* Open session: gold, like the active room chip. */
+.selected,
+.selected:hover {
+  background: rgba(212, 175, 55, 0.16);
+  color: #f2dc8c;
+  font-weight: 600;
 }
 
 @keyframes dotPulse {

@@ -25,8 +25,9 @@ export interface Pending {
 export interface UseReplySpeakerOptions {
   cfg: VoiceInputConfig;
   workers: readonly ReplyWorker[];
-  /** True while the user is dictating — never talk over them. */
-  isListening: () => boolean;
+  /** Asked right before a reading starts. False while the user is dictating —
+   *  never talk over them. May close an empty stay-on capture to make room. */
+  canSpeak: () => boolean;
   /** Fires when a reading ends; `completed` is false when it was cut off. */
   onSpoken?: (completed: boolean) => void;
 }
@@ -67,7 +68,7 @@ export function trackReplies(pending: Map<string, Pending>, workers: readonly Re
   return answered;
 }
 
-export function useReplySpeaker({ cfg, workers, isListening, onSpoken }: UseReplySpeakerOptions): UseReplySpeakerResult {
+export function useReplySpeaker({ cfg, workers, canSpeak, onSpoken }: UseReplySpeakerOptions): UseReplySpeakerResult {
   const enabled = cfg.enabled && cfg.speakReplies && isSpeechOutputSupported();
   const [speaking, setSpeaking] = useState<string | null>(null);
   const voiceRef = useRef<ReplyVoice | null>(null);
@@ -76,8 +77,8 @@ export function useReplySpeaker({ cfg, workers, isListening, onSpoken }: UseRepl
   workersRef.current = workers;
   const langRef = useRef(cfg.lang);
   langRef.current = cfg.lang;
-  const isListeningRef = useRef(isListening);
-  isListeningRef.current = isListening;
+  const canSpeakRef = useRef(canSpeak);
+  canSpeakRef.current = canSpeak;
   const onSpokenRef = useRef(onSpoken);
   onSpokenRef.current = onSpoken;
 
@@ -112,10 +113,10 @@ export function useReplySpeaker({ cfg, workers, isListening, onSpoken }: UseRepl
     if (speaking) return;
     for (const w of answered) {
       pending.delete(w.ovrId);
-      if (isListeningRef.current()) continue;   // the user is already talking
       const msg = w.lastMessage ?? '';
       const text = toSpokenText(msg, MAX_SPOKEN_CHARS, { truncated: msg.length >= LAST_MESSAGE_CAP });
       if (!text) continue;
+      if (!canSpeakRef.current()) continue;   // the user is already talking
 
       voiceRef.current ??= new ReplyVoice();
       setSpeaking(w.name);

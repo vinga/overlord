@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, SessionReview, DeskSpan } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, BackgroundProgress, SessionReview, DeskSpan } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -124,6 +124,7 @@ import {
   readTeammateId,
   clearSessionCaches,
 } from './transcriptReader.js';
+import { syncSession as syncProgress, getProgressCards } from './progressStore.js';
 import { ensureShadow } from './transcriptShadow.js';
 import { findCodexRolloutBySessionId } from './codexSession.js';
 import type { RawSession } from './sessionWatcher.js';
@@ -378,6 +379,17 @@ function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined):
 /** Membership-only comparison of pending background tasks. `lastOutputAt` moves
  *  every time the command writes a byte — comparing it would broadcast a snapshot
  *  on every poll for any session tailing a chatty background job. */
+// Stable reference per source array: unfocused snapshots re-filter every tick,
+// and a fresh array each time would defeat the client's memoized Worker.
+const runningProgressCache = new WeakMap<BackgroundProgress[], BackgroundProgress[] | undefined>();
+function runningProgressOnly(cards: BackgroundProgress[]): BackgroundProgress[] | undefined {
+  if (runningProgressCache.has(cards)) return runningProgressCache.get(cards);
+  const running = cards.filter(p => p.status === 'running');
+  const out = running.length > 0 ? running : undefined;
+  runningProgressCache.set(cards, out);
+  return out;
+}
+
 function backgroundTasksEqual(a: BackgroundTask[] | undefined, b: BackgroundTask[] | undefined): boolean {
   if (a === b) return true;
   if ((a?.length ?? 0) !== (b?.length ?? 0)) return false;
@@ -2219,6 +2231,11 @@ export class StateManager {
     if (changed) {
       this.onChange();
     }
+    // Kept out of `changed`: output-file progress must not reset the stale-transcript counter.
+    if (syncProgress(sessionId, session.backgroundTasks, result.backgroundTaskStatuses)) {
+      session.backgroundProgress = getProgressCards(sessionId);
+      this.onChange();
+    }
 
     // Stale transcript detection: track consecutive unchanged lastActivity for active sessions
     let transcriptStale = false;
@@ -3174,6 +3191,10 @@ export class StateManager {
       out.skillsUsed = overlord.skillsUsed ?? session.skillsUsed;
     }
     if (latestPlan) out.latestPlan = latestPlan;
+    // Finished cards render only in the detail panel; the worker pill needs the running ones.
+    if (!focused && session.backgroundProgress?.some(p => p.status !== 'running')) {
+      out.backgroundProgress = runningProgressOnly(session.backgroundProgress);
+    }
     if (needsPty) out.ptyAlive = this.hasLivePtyFn(session.overlordId);
     // The transcript lacks pending AskUserQuestion tool_uses until they're
     // answered (Claude writes the tool_use + answer together), so a live

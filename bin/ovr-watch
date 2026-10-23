@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# ovr-watch — polling wrapper that emits Overlord ::progress markers.
+# Works on macOS bash 3.2 and Linux bash. Needs python3 (state/message parsing).
+
+PROG=${0##*/}
+
+usage() {
+  cat <<EOF
+Usage: $PROG --label "<text>" [options] -- <check command> [args...]
+
+Run <check command> every N seconds until its output matches --until,
+matches --fail, or --max rounds pass. Each round prints one Overlord
+progress marker (pipe mode) or redraws one status line (terminal).
+
+Options:
+  --label TEXT    Row label (default: the command string)
+  --id ID         Row id, [A-Za-z0-9_.-]+ (default: main)
+  --every SECS    Seconds between rounds (default: 60)
+  --max N         Max rounds (default: 30)
+  --until ERE     Stop with 'done' (exit 0) when output matches (grep -E)
+  --fail ERE      Stop with 'fail' (exit 1) when output matches (grep -E).
+                  Checked before --until.
+  --state REGEX   Python regex with one capture group; group 1 = state
+                  (default state: running)
+  --plain         Force marker output even on a terminal
+  -h, --help      Show this help
+
+Exit codes: 0 done, 1 --fail matched, 2 timeout (max rounds, no --until
+match), 130 stopped (SIGINT/SIGTERM), 64 usage error.
+
+Output (pipe mode), one line per round:
+  ::progress id=<id> label="<label>" step=<i>/<max> state=<state>:: <message>
+The last line carries a flag before '::': done | fail | stopped.
+<message> is the last non-empty line of the check output (max 200 chars).
+
+Examples:
+  # Wait for a dev deploy, from a Claude Code background Bash call
+  $PROG --label "Dev deploy PR 814" --id dev --every 60 --max 25 \\
+    --until 'Synced.*Healthy' --fail 'Degraded|Failed' \\
+    --state '(Synced|OutOfSync|Progressing)' \\
+    -- kubectl -n app get application my-svc -o wide
+
+  # Several watches in one background command
+  $PROG --id dev --label "dev rollout" --until 'deployed' -- ./check.sh dev & \\
+  $PROG --id prod-eu --label "prod-eu rollout" --until 'deployed' -- ./check.sh prod-eu & \\
+  wait
+EOF
+}
+
+die() { printf '%s: %s\n' "$PROG" "$1" >&2; exit 64; }
+
+ID=main
+EVERY=60
+MAX=30
+LABEL=
+UNTIL=
+FAIL=
+STATE_RE=
+PLAIN=0
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift 2 ;;
+    --id)    [ $# -ge 2 ] || die "--id needs a value"; ID=$2; shift 2 ;;
+    --every) [ $# -ge 2 ] || die "--every needs a value"; EVERY=$2; shift 2 ;;
+    --max)   [ $# -ge 2 ] || die "--max needs a value"; MAX=$2; shift 2 ;;
+    --until) [ $# -ge 2 ] || die "--until needs a value"; UNTIL=$2; shift 2 ;;
+    --fail)  [ $# -ge 2 ] || die "--fail needs a value"; FAIL=$2; shift 2 ;;
+    --state) [ $# -ge 2 ] || die "--state needs a value"; STATE_RE=$2; shift 2 ;;
+    --plain) PLAIN=1; shift ;;
+    --) shift; break ;;
+    *) die "unknown option: $1 (use -- before the check command; --help for usage)" ;;
+  esac
+done
+
+[ $# -gt 0 ] || die "missing check command after --"
+command -v "$1" >/dev/null 2>&1 || die "check command not found: $1"
+case $ID in ''|*[!A-Za-z0-9_.-]*) die "--id must match [A-Za-z0-9_.-]+" ;; esac
+case $EVERY in ''|*[!0-9]*) die "--every must be a whole number of seconds" ;; esac
+case $MAX in ''|*[!0-9]*|0) die "--max must be a positive integer" ;; esac
+command -v python3 >/dev/null 2>&1 || die "python3 not found"
+
+[ -n "$LABEL" ] || LABEL="$*"
+# Label: single line, inner double quotes escaped.
+LABEL=$(printf '%s' "$LABEL" | tr '\n\r' '  ')
+QLABEL=$(printf '%s' "$LABEL" | sed 's/"/\\"/g')
+
+TTY=0
+if [ "$PLAIN" = 0 ] && [ -t 1 ]; then TTY=1; fi
+
+TMP=$(mktemp "${TMPDIR:-/tmp}/ovr-watch.XXXXXX") || die "mktemp failed"
+CHECK_PID=
+SLEEP_PID=
+STEP=0
+STATE=running
+MSG=
+START=$SECONDS
+SPIN_I=0
+FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+
+cleanup() { rm -f "$TMP"; }
+trap cleanup EXIT
+
+elapsed() {
+  local s=$((SECONDS - START))
+  if [ $s -lt 60 ]; then printf '%ds' $s
+  elif [ $s -lt 3600 ]; then printf '%dm%02ds' $((s / 60)) $((s % 60))
+  else printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+  fi
+}
+
+cols() {
+  local c
+  c=$(tput cols 2>/dev/null)
+  case $c in ''|*[!0-9]*) c=${COLUMNS:-80} ;; esac
+  printf '%s' "$c"
+}
+
+# draw <icon>: redraw the TTY status line in place (no newline).
+draw() {
+  local line="$1 $LABEL  $STEP/$MAX  $STATE  · $(elapsed)"
+  local w room m
+  w=$(cols)
+  if [ ${#line} -ge $((w - 1)) ]; then
+    line=${line:0:$((w - 1))}
+  elif [ -n "$MSG" ]; then
+    room=$((w - 1 - ${#line} - 2))
+    if [ $room -gt 0 ]; then
+      m=$MSG
+      if [ ${#m} -gt $room ]; then
+        if [ $room -gt 1 ]; then m="${m:0:$((room - 1))}…"; else m=${m:0:$room}; fi
+      fi
+      line="$line  $m"
+    fi
+  fi
+  printf '\r\033[K%s' "$line"
+}
+
+spin() {
+  draw "${FRAMES[$SPIN_I]}"
+  SPIN_I=$(((SPIN_I + 1) % ${#FRAMES[@]}))
+}
+
+# emit [flag]: print one marker line (pipe) or redraw/finish (TTY).
+emit() {
+  local flag=$1
+  if [ "$TTY" = 1 ]; then
+    case $flag in
+      done)    draw "✓"; printf '\n' ;;
+      fail)    draw "✗"; printf '\n' ;;
+      stopped) draw "⏹"; printf '\n' ;;
+      *)       spin ;;
+    esac
+  else
+    local f=
+    [ -n "$flag" ] && f=" $flag"
+    printf '::progress id=%s label="%s" step=%s/%s state=%s%s:: %s\n' \
+      "$ID" "$QLABEL" "$STEP" "$MAX" "$STATE" "$f" "$MSG"
+  fi
+}
+
+on_stop() {
+  trap '' INT TERM HUP
+  if [ -n "$CHECK_PID" ]; then
+    # Kill direct children first (e.g. `sh -c '...; sleep'`), then the check.
+    pkill -TERM -P "$CHECK_PID" 2>/dev/null
+    kill "$CHECK_PID" 2>/dev/null
+  fi
+  [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
+  STATE=stopped
+  [ -n "$MSG" ] || MSG="stopped"
+  emit stopped
+  exit 130
+}
+trap on_stop INT TERM HUP
+
+# Wait for a background pid; animate the spinner meanwhile on a TTY.
+# `wait` is interruptible by trapped signals, a foreground child is not.
+wait_pid() {
+  local pid=$1 t
+  if [ "$TTY" = 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      spin
+      sleep 0.2 & t=$!
+      SLEEP_PID=$t; wait "$t" 2>/dev/null; SLEEP_PID=
+    done
+  fi
+  wait "$pid" 2>/dev/null
+}
+
+# Parse $TMP -> STATE, MSG.
+parse() {
+  local out
+  out=$(python3 -c '
+import re, sys
+pat, path = sys.argv[1], sys.argv[2]
+with open(path, "rb") as fh:
+    text = fh.read().decode("utf-8", "replace")
+state = ""
+if pat:
+    try:
+        m = re.search(pat, text, re.M)
+        if m and m.groups() and m.group(1) is not None:
+            state = m.group(1)
+    except re.error:
+        state = "bad-state-regex"
+state = re.sub(r"\s+", "-", state.strip()).replace(":", "") or "running"
+msg = ""
+for line in reversed(text.splitlines()):
+    if line.strip():
+        msg = line.strip()
+        break
+msg = msg.replace("\r", " ")[:200]
+sys.stdout.write(state + "\n" + msg + "\n")
+' "$STATE_RE" "$TMP" 2>/dev/null)
+  STATE=$(printf '%s\n' "$out" | sed -n 1p)
+  MSG=$(printf '%s\n' "$out" | sed -n 2p)
+  [ -n "$STATE" ] || STATE=running
+}
+
+matches() { grep -Eq -- "$1" "$TMP" 2>/dev/null; }
+
+STEP=1
+while [ "$STEP" -le "$MAX" ]; do
+  "$@" >"$TMP" 2>&1 </dev/null &
+  CHECK_PID=$!
+  wait_pid "$CHECK_PID"
+  CHECK_PID=
+  parse
+
+  if [ -n "$FAIL" ] && matches "$FAIL"; then emit fail; exit 1; fi
+  if [ -n "$UNTIL" ] && matches "$UNTIL"; then emit done; exit 0; fi
+  if [ "$STEP" -eq "$MAX" ]; then
+    if [ -n "$UNTIL" ]; then STATE=timeout; emit fail; exit 2; fi
+    emit done; exit 0
+  fi
+  emit ""
+
+  if [ "$EVERY" -gt 0 ]; then
+    if [ "$TTY" = 1 ]; then
+      ticks=$((EVERY * 5))
+      while [ $ticks -gt 0 ]; do
+        spin
+        sleep 0.2 & SLEEP_PID=$!
+        wait "$SLEEP_PID" 2>/dev/null; SLEEP_PID=
+        ticks=$((ticks - 1))
+      done
+    else
+      sleep "$EVERY" & SLEEP_PID=$!
+      wait "$SLEEP_PID" 2>/dev/null; SLEEP_PID=
+    fi
+  fi
+  STEP=$((STEP + 1))
+done

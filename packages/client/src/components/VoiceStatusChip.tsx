@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { MicPermission } from '../hooks/useVoiceAgent';
 import type { VoiceState } from '../lib/voiceAgent';
 import type { VoiceInputConfig } from '../lib/voiceConfig';
@@ -17,6 +18,18 @@ interface Props {
   onToggleMute: () => void;
   onRequestPermission: () => void;
   onOpenSettings: () => void;
+  /** Flips "Stay on after send" (push mode). */
+  onToggleStayOn: () => void;
+}
+
+function MicIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
+      <rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M3 7.5a5 5 0 0 0 10 0M8 12.5v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      {muted && <path d="M2 2l12 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />}
+    </svg>
+  );
 }
 
 /** First alternative of a comma-separated word setting. */
@@ -31,15 +44,33 @@ function firstWord(raw: string): string {
  */
 export function VoiceStatusChip({
   state, muted, permission, error, cfg, speaking, onStopSpeaking,
-  onToggleCapture, onToggleMute, onRequestPermission, onOpenSettings,
+  onToggleCapture, onToggleMute, onRequestPermission, onOpenSettings, onToggleStayOn,
 }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  // The popover is portalled to <body>: the office pane clips its overflow, and
+  // in a narrow pane the cheat sheet is wider than the room left of the chip.
+  useLayoutEffect(() => {
+    if (!open || !ref.current) { setPos(null); return; }
+    const place = () => {
+      const r = ref.current!.getBoundingClientRect();
+      const width = popRef.current?.offsetWidth ?? 344;
+      setPos({ top: r.bottom + 8, left: Math.max(16, Math.min(r.left, window.innerWidth - width - 16)) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || popRef.current?.contains(t)) return;
+      setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', onDown);
@@ -60,6 +91,8 @@ export function VoiceStatusChip({
     : listening || speaking ? styles.live
     : styles.ready;
 
+  const idle = !blocked && !errored && !listening && !speaking;
+
   const label = blocked ? 'Mic blocked'
     : muted ? 'Mic off'
     : errored ? 'Mic error'
@@ -75,17 +108,27 @@ export function VoiceStatusChip({
         onClick={() => { if (speaking) onStopSpeaking(); else setOpen(o => !o); }}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title="Voice control — click for shortcuts"
+        title={idle
+          ? `${muted ? 'Microphone off' : push ? 'Voice: Alt+V to dictate' : `Voice: say “${firstWord(cfg.startWord)}”`} — click for shortcuts`
+          : 'Voice control — click for shortcuts'}
+        aria-label={idle ? (muted ? 'Microphone off' : 'Voice control') : undefined}
       >
-        <span className={`${styles.dot} ${listening || speaking ? styles.pulsing : ''}`} />
-        <span>{label}</span>
-        {push && !blocked && !muted && !errored && !listening && !speaking && (
-          <span className={styles.keys}><kbd>Alt</kbd><kbd>V</kbd></span>
-        )}
+        {/* Idle, it is a bare mic icon — the header is tight and the cheat
+            sheet holds the details. States that need attention get a label. */}
+        {idle ? <MicIcon muted={muted} /> : <>
+          <span className={`${styles.dot} ${listening || speaking ? styles.pulsing : ''}`} />
+          <span>{label}</span>
+        </>}
       </button>
 
-      {open && (
-        <div className={styles.popover} role="dialog" aria-label="Voice control">
+      {open && createPortal(
+        <div
+          ref={popRef}
+          className={styles.popover}
+          role="dialog"
+          aria-label="Voice control"
+          style={pos ? { top: pos.top, left: pos.left } : { visibility: 'hidden' }}
+        >
           {blocked && (
             <div className={styles.alert}>
               <div className={styles.alertTitle}>Chrome blocked the microphone</div>
@@ -111,6 +154,7 @@ export function VoiceStatusChip({
               <>
                 <dt><kbd>Alt</kbd><kbd>V</kbd> or 🎙</dt><dd>Start dictating</dd>
                 <dt><kbd>Enter</kbd> or “{firstWord(cfg.stopWord)}” + pause</dt><dd>Send</dd>
+                {cfg.stayOnAfterSend && <><dt>Stay on</dt><dd>Mic reopens after each send; <kbd>Esc</kbd> stops</dd></>}
               </>
             ) : (
               <>
@@ -133,10 +177,17 @@ export function VoiceStatusChip({
                 {listening ? 'Send' : 'Start dictating'}
               </button>
             )}
+            {push && (
+              <button className={styles.ghost} onClick={onToggleStayOn} aria-pressed={cfg.stayOnAfterSend}
+                title="After sending, dictation reopens for the next message">
+                {cfg.stayOnAfterSend ? 'Stay on ✓' : 'Stay on'}
+              </button>
+            )}
             <button className={styles.ghost} onClick={onToggleMute}>{muted ? 'Unmute' : 'Mute'}</button>
             <button className={styles.ghost} onClick={() => { setOpen(false); onOpenSettings(); }}>Settings</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

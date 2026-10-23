@@ -39,6 +39,8 @@ packages/
 
 Deep dives: `docs/architecture.md`, `docs/session-lifecycle.md`.
 
+**Background progress:** `bin/ovr-watch` prints `::progress …::` markers; `progressStore` tails background-task output files into chat-feed cards, zero tokens. See `docs/architecture.md#background-progress`.
+
 ## Bridge Binary
 
 Source: `packages/bridge/` (Go). Binary resolved via `getBridgePath()` in `packages/server/src/pty/pipeInjector.ts` → **`bridge/overlord-bridge`** at project root.

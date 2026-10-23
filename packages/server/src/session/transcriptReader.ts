@@ -492,6 +492,8 @@ const BACKGROUND_LAUNCH_RE = /Command running in background with ID: ([^\s.]+)\.
 // Statuses seen in the wild: completed, failed, stopped — all terminal, so the
 // presence of a notification is the signal and <status> is not parsed at all.
 const TASK_NOTIFICATION_TOOL_USE_RE = /<tool-use-id>([^<]+)<\/tool-use-id>/;
+// Read only for the progress card's end state (✓ / ✗ / ⏹).
+const TASK_NOTIFICATION_STATUS_RE = /<status>([^<]+)<\/status>/;
 
 /**
  * Extract the tool-use-id from any line shape carrying a <task-notification>.
@@ -1259,6 +1261,9 @@ export function readTranscriptState(filePath: string): {
   prRefs?: string[];
   // Skill/command names from slash-command invocations in the tail. Capped at 12.
   skillsUsed?: string[];
+  // <status> of background-task notifications seen in this window, by tool-use-id.
+  // Not sticky: progressStore latches the end state itself.
+  backgroundTaskStatuses?: Record<string, string>;
 } {
   if (isCodexTranscript(filePath)) {
     return readCodexTranscriptState(filePath);
@@ -1378,6 +1383,7 @@ export function readTranscriptState(filePath: string): {
     // pending map after the loop — see the merge block below.
     const backgroundStarts = new Map<string, BackgroundTask>();
     const terminatedToolUseIds = new Set<string>();
+    const backgroundTaskStatuses: Record<string, string> = {};
     // Harness-Monitor tracking, same sticky pattern, keyed by task id. Reverse
     // scan ⇒ the first event seen per task is the newest one.
     const monitorStarts = new Map<string, ActiveMonitor>();
@@ -1409,6 +1415,10 @@ export function readTranscriptState(filePath: string): {
         if (notifiedToolUseId) terminatedToolUseIds.add(notifiedToolUseId);
         // Monitor events / stream end / expiry ride the same notification shapes.
         const notifXml = taskNotificationXml(parsed);
+        if (notifiedToolUseId && notifXml && !backgroundTaskStatuses[notifiedToolUseId]) {
+          const status = TASK_NOTIFICATION_STATUS_RE.exec(notifXml)?.[1];
+          if (status) backgroundTaskStatuses[notifiedToolUseId] = status;
+        }
         if (notifXml) {
           const mn = parseMonitorNotification(notifXml, parsed.timestamp ?? parsed.attachment?.timestamp);
           if (mn) {
@@ -1506,6 +1516,10 @@ export function readTranscriptState(filePath: string): {
                 if (block.type === 'tool_use' && block.name) {
                   const desc = describeInput(block.input);
                   const item: ActivityItem = { kind: 'tool', toolName: block.name as string, content: desc };
+                  if (block.name === 'Bash' && block.input && typeof block.input === 'object'
+                      && (block.input as Record<string, unknown>).run_in_background === true) {
+                    item.toolUseId = (block as Record<string, unknown>).id as string | undefined;
+                  }
                   // Capture approved plans from ExitPlanMode tool_use
                   if (block.name === 'ExitPlanMode' && block.input && typeof block.input === 'object') {
                     const planText = (block.input as Record<string, unknown>).plan;
@@ -1900,6 +1914,7 @@ export function readTranscriptState(filePath: string): {
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
       prRefs: prRefs.length > 0 ? prRefs : undefined,
       skillsUsed: skillsUsed.length > 0 ? skillsUsed : undefined,
+      backgroundTaskStatuses: Object.keys(backgroundTaskStatuses).length > 0 ? backgroundTaskStatuses : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false, parsedTailLines: tailLines, parsedUpToBytes, pendingBackgroundTasks, pendingMonitors });
     evictTranscriptCache(now);
@@ -2644,9 +2659,14 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
         }
         if (contentBlocks) {
           for (let j = contentBlocks.length - 1; j >= 0; j--) {
-            const block = contentBlocks[j] as { type?: string; name?: string; input?: unknown };
+            const block = contentBlocks[j] as { type?: string; name?: string; input?: unknown; id?: string };
             if (block.type === 'tool_use' && block.name) {
-              activityFeed.unshift({ kind: 'tool', toolName: block.name as string, content: block.name as string, timestamp: parsed.timestamp });
+              const isBackgroundBash = block.name === 'Bash' && !!block.input && typeof block.input === 'object'
+                && (block.input as Record<string, unknown>).run_in_background === true;
+              activityFeed.unshift({
+                kind: 'tool', toolName: block.name as string, content: block.name as string, timestamp: parsed.timestamp,
+                ...(isBackgroundBash && block.id ? { toolUseId: block.id } : {}),
+              });
             }
           }
         }

@@ -23,6 +23,7 @@ interface ActivityItem {
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
   isError?: boolean;             // true if tool_result had is_error: true
+  toolUseId?: string;            // Bash(run_in_background) only: join key with BackgroundProgress
   durationMs?: number;           // for kind='tool': how long the tool call took
   timestamp?: string;            // ISO timestamp of when this entry occurred
   pending?: boolean;             // optimistic locally-sent message, not yet processed
@@ -91,6 +92,40 @@ export interface BackgroundTask {
   outputFile?: string;
   lastOutputAt?: number;
 }
+
+/** One `::progress id=…::` row (server: progressParser). */
+export interface ProgressRow {
+  id: string;
+  label?: string;
+  step?: number;
+  max?: number;
+  pct?: number;
+  state?: string;
+  message: string;
+  at: number;
+  final?: 'done' | 'fail' | 'stopped';
+}
+
+export type BackgroundProgressStatus = 'running' | 'done' | 'failed' | 'stopped';
+
+/** Progress card for a background Bash command (server: progressStore). */
+export interface BackgroundProgress {
+  toolUseId: string;
+  taskId: string;
+  description?: string;
+  startedAt?: string;
+  endedAt?: number;
+  status: BackgroundProgressStatus;
+  rows: ProgressRow[];
+  lastLine?: string;
+  lineCount: number;
+  lastAt?: number;
+}
+
+export type ProgressHistoryEntry =
+  | { t: 'meta'; toolUseId: string; taskId: string; description?: string; startedAt?: string }
+  | { t: 'line'; at: number; text: string; row?: ProgressRow }
+  | { t: 'end'; at: number; status: BackgroundProgressStatus };
 
 interface Task {
   taskId: string;
@@ -179,6 +214,7 @@ interface Session {
   scheduledWakeupSetAt?: number;  // epoch ms the ScheduleWakeup call was made; the badge shows elapsed since this
   scheduledWakeupReason?: string;  // why it's sleeping (the ScheduleWakeup `reason`)
   backgroundTasks?: BackgroundTask[];  // in-flight background Bash commands; present ⇒ show "running" instead of "waiting"
+  backgroundProgress?: BackgroundProgress[];  // progress cards; finished ones only on the focused session
   jiraKeys?: string[];
   /** `owner/repo#number` refs for PRs this session touched — autodetected from PR
    *  URLs in the transcript and/or pinned via the `+` on a PR link in the feed. */

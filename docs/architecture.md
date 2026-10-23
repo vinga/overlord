@@ -195,3 +195,28 @@ delete:
   (see CLAUDE.md).
 - **/clear detection** uses only PID-based mechanisms (live file changes,
   stale transcript poll, startup PID compare, UI-injected clears).
+
+## Background progress
+
+Zero-token progress for `Bash(run_in_background)` commands, rendered as cards
+in the chat feed under the launching tool call.
+
+```
+transcriptReader ─► backgroundTasks (outputFile) + <task-notification> <status>
+        │
+stateManager.refreshTranscript (3s poll) ─► progressStore.syncSession
+        │   stat outputFile → read appended bytes (≤64KB) → progressParser
+        │   append ~/.claude/overlord/progress/<sessionId>/<toolUseId>.jsonl
+        ▼
+Session.backgroundProgress ─► ProgressCard (DetailPanel) + BackgroundTasksPill
+GET /api/sessions/:sid/progress[/:toolUseId] ─► persisted cards / full history
+```
+
+- Marker: `::progress id=… label="…" step=N/M state=… [done|fail|stopped]:: msg`.
+  One row per `id`; other lines are plain text. Writer: `bin/ovr-watch`.
+- No timer of its own; reads are mtime-gated and incremental. Persisted lines
+  cap at 500 per task (markers always kept). Files are never auto-deleted.
+- A card ends on a notification, or when its task leaves the live list during
+  this process. Reloaded running cards wait for either, up to 6h.
+- Unfocused sessions carry only running cards (worker pill); the focused one
+  carries all, plus a REST fetch for persisted cards.

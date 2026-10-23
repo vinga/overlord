@@ -38,6 +38,11 @@ describe('sanitizeVoiceOverride', () => {
     expect(sanitizeVoiceOverride({ speakReplies: 'yes' })).toEqual({});
   });
 
+  it('keeps stay-on-after-send when boolean', () => {
+    expect(sanitizeVoiceOverride({ stayOnAfterSend: true })).toEqual({ stayOnAfterSend: true });
+    expect(sanitizeVoiceOverride({ stayOnAfterSend: 1 })).toEqual({});
+  });
+
   it('keeps a known activation mode and drops an unknown one', () => {
     expect(sanitizeVoiceOverride({ activation: 'wake' })).toEqual({ activation: 'wake' });
     expect(sanitizeVoiceOverride({ activation: 'push' })).toEqual({ activation: 'push' });

@@ -284,6 +284,15 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
               </div>
             </div>
 
+            {voice.activation === 'push' && (
+              <ToggleRow
+                label="Stay on after send"
+                hint="Push-to-talk only. After sending, dictation reopens for the next message. A soft double tick every minute reminds you the mic is on. Esc, or 5 min of silence after the reply, turns it off."
+                on={voice.stayOnAfterSend}
+                onToggle={() => patchVoice({ stayOnAfterSend: !voice.stayOnAfterSend })}
+              />
+            )}
+
             <div className={styles.subgroup}>
               <h4 className={styles.subgroupTitle}>Feedback</h4>
               <ToggleRow

@@ -401,20 +401,25 @@ export function App() {
 
   // The voice agent is created below and needs the speaker's markVoicePrompt;
   // the speaker needs the agent's state. Refs break the cycle.
-  const voiceListeningRef = useRef(false);
+  const yieldForReplyRef = useRef<() => boolean>(() => true);
+  const resumeSessionRef = useRef<(resume: boolean) => void>(() => {});
   const beginVoiceRef = useRef<() => boolean>(() => false);
   const listenAfterReplyRef = useRef(voiceCfg.listenAfterReply);
   listenAfterReplyRef.current = voiceCfg.listenAfterReply;
   const replySpeaker = useReplySpeaker({
     cfg: voiceCfg,
     workers: replyWorkers,
-    isListening: () => voiceListeningRef.current,
+    canSpeak: () => yieldForReplyRef.current(),
     onSpoken: (completed) => {
+      // A stay-on session paused for the reading picks up again — unless the
+      // reading was cut off (Esc), which ends it.
+      resumeSessionRef.current(completed);
       if (completed && listenAfterReplyRef.current) beginVoiceRef.current();
     },
   });
   const { markVoicePrompt, stop: stopReply, speaking: replySpeaking } = replySpeaker;
 
+  const [lastVoiceTarget, setLastVoiceTarget] = useState<string | null>(null);
   const handleVoiceDispatch = useCallback((dispatch: VoiceDispatch) => {
     if (dispatch.kind === 'refused') {
       setVoiceNotice(dispatch.candidates?.length
@@ -436,6 +441,7 @@ export function App() {
         terminal.injectText(dispatch.ovrId, dispatch.text, dispatch.text.includes('@'));
       }
       markVoicePrompt(dispatch.ovrId);
+      setLastVoiceTarget(dispatch.ovrId);
       setVoiceNotice(null);
       return;
     }
@@ -476,28 +482,38 @@ export function App() {
     onDispatch: handleVoiceDispatch,
     onCue: voiceCfg.soundCues ? playCue : undefined,
   });
-  voiceListeningRef.current = voice.state === 'listening';
+  yieldForReplyRef.current = voice.yieldForReply;
+  resumeSessionRef.current = voice.resumeSession;
   beginVoiceRef.current = voice.begin;
+
+  // Stay-on: waiting for the reply is not idleness, so the follow-up idle
+  // countdown is held while the worker that got the last message works.
+  const lastVoiceTargetBusy = lastVoiceTarget !== null && voiceWorkers.some(w =>
+    w.ovrId === lastVoiceTarget && (w.state === 'working' || w.state === 'thinking'));
+  const { setIdleHold: setVoiceIdleHold } = voice;
+  useEffect(() => { setVoiceIdleHold(lastVoiceTargetBusy); }, [lastVoiceTargetBusy, setVoiceIdleHold]);
 
   // Mirror what is being heard into the target worker's composer, so the text
   // is visible and editable before the stop word sends it.
+  //
+  // The target is sticky for the whole capture: a preview that briefly resolves
+  // to something other than a prompt (a verb, a refusal) must not release the
+  // composer mid-sentence.
   const dictationTargetRef = useRef<string | null>(null);
   useEffect(() => {
-    const target = voice.state === 'listening' && voice.preview?.kind === 'prompt'
-      ? voice.preview.ovrId
+    const listening = voice.state === 'listening';
+    const target = listening
+      ? (voice.preview?.kind === 'prompt' ? voice.preview.ovrId : dictationTargetRef.current)
       : null;
     if (target) {
       dictationTargetRef.current = target;
       setDictation(target, voice.captured);
       return;
     }
-    // Left the utterance (sent, cancelled or timed out) — empty the composer we
-    // were filling, then release it.
-    const prev = dictationTargetRef.current;
-    if (prev) {
-      setDictation(prev, '');
-      dictationTargetRef.current = null;
-    }
+    // Left the utterance (sent, cancelled or timed out) — release the composer
+    // but keep its text. A send already cleared it; anything else is the
+    // user's to keep, edit or send by hand.
+    dictationTargetRef.current = null;
     setDictation(null, '');
   }, [voice.state, voice.captured, voice.preview]);
 
@@ -551,6 +567,16 @@ export function App() {
     else toggleCapture();
   }, [voiceMic, requestMic, toggleVoiceMute, toggleCapture]);
 
+  const stayOnAfterSend = voiceCfg.stayOnAfterSend;
+  const toggleStayOn = useCallback(() => {
+    // The server merges voiceInput, so a single-field patch is safe.
+    void fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voiceInput: { stayOnAfterSend: !stayOnAfterSend } }),
+    });
+  }, [stayOnAfterSend]);
+
   const [settingsPage, setSettingsPage] = useState<PageId | undefined>(undefined);
   const openVoiceSettings = useCallback(() => {
     setSettingsPage('general.voice');
@@ -571,9 +597,10 @@ export function App() {
       onToggleMute={voice.toggleMute}
       onRequestPermission={voice.requestPermission}
       onOpenSettings={openVoiceSettings}
+      onToggleStayOn={toggleStayOn}
     />
   ) : null, [voiceCfg, voice.supported, voice.state, voice.muted, voice.permission, voice.error,
-    toggleCapture, voice.toggleMute, voice.requestPermission, openVoiceSettings, replySpeaking, stopReply]);
+    toggleCapture, voice.toggleMute, voice.requestPermission, openVoiceSettings, replySpeaking, stopReply, toggleStayOn]);
 
   // Clear a refusal notice a few seconds after it lands.
   useEffect(() => {
@@ -818,7 +845,7 @@ export function App() {
         onNewTerminalSession={handleNewTerminalSession}
         onLogsClick={() => setView('logs')}
         onSettingsClick={() => { setSettingsPage(undefined); setShowSettings(true); }}
-        statusBarExtra={voiceChip}
+        headerExtra={voiceChip}
         onStatsClick={() => setShowStats(true)}
         onOpenAdvancedSearch={(initialQuery) => { setAdvancedSearchInitialQuery(initialQuery ?? ''); setShowAdvancedSearch(true); }}
 

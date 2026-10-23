@@ -127,6 +127,7 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           scheduledWakeupAt={session.scheduledWakeupAt}
           scheduledWakeupSetAt={session.scheduledWakeupSetAt}
           backgroundTasks={session.backgroundTasks}
+          backgroundProgress={session.backgroundProgress}
           notesSummary={notesMap.get(session.sessionId)}
           intent={session.intent}
           teammateId={session.teammateId}

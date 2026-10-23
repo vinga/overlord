@@ -1,5 +1,5 @@
 import React, { memo, useState, useRef, useEffect, useCallback } from 'react';
-import type { WorkerState, Session, ActiveMonitor, BackgroundTask, WorkerIcon, SessionReview } from '../types';
+import type { WorkerState, Session, ActiveMonitor, BackgroundTask, BackgroundProgress, WorkerIcon, SessionReview } from '../types';
 import { formatElapsed } from '../lib/formatElapsed';
 import { useTick } from '../hooks/useTick';
 import { useNoteMarkdown } from '../hooks/useNoteMarkdown';
@@ -49,6 +49,7 @@ interface WorkerProps {
   scheduledWakeupAt?: number;
   scheduledWakeupSetAt?: number;
   backgroundTasks?: BackgroundTask[];
+  backgroundProgress?: BackgroundProgress[];
   notesSummary?: string;
   intent?: string;
   /** teammate_id of the Claude Code lead driving this session, when it is a teammate. */
@@ -130,7 +131,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -380,7 +381,7 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
         <MonitoringPill monitors={activeMonitors} />
       )}
       {!minimal && !isSubagent && backgroundTasks && backgroundTasks.length > 0 && (
-        <BackgroundTasksPill tasks={backgroundTasks} />
+        <BackgroundTasksPill tasks={backgroundTasks} progress={backgroundProgress} />
       )}
       </div>
       </div>

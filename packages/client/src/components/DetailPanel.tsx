@@ -7,7 +7,9 @@ import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draf
 import { mergeDictation, subscribeDictation, subscribeDictationSubmit, type DictationEdit } from '../lib/dictationStore';
 import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
 import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
-import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
+import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview, BackgroundProgress } from '../types';
+import { useProgressCards } from '../hooks/useProgressCards';
+import { ProgressCard } from './ProgressCard';
 import { getLaunchInfo } from '../types';
 import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
@@ -886,7 +888,8 @@ type FeedSegment =
   | { type: 'thinking'; item: ActivityItem }
   | { type: 'question'; item: ActivityItem }
   | { type: 'compact'; item: ActivityItem }
-  | { type: 'recap'; item: ActivityItem };
+  | { type: 'recap'; item: ActivityItem }
+  | { type: 'progress'; toolUseId: string; timestamp?: string };
 
 function buildSegments(feed: ActivityItem[]): FeedSegment[] {
   const segments: FeedSegment[] = [];
@@ -905,6 +908,8 @@ function buildSegments(feed: ActivityItem[]): FeedSegment[] {
       } else {
         segments.push({ type: 'toolGroup', items: [item] });
       }
+      // A background Bash closes its group: its progress card sits right under it.
+      if (item.toolUseId) segments.push({ type: 'progress', toolUseId: item.toolUseId, timestamp: item.timestamp });
     } else if (item.kind === 'thinking') {
       segments.push({ type: 'thinking', item });
     } else {
@@ -1300,6 +1305,9 @@ interface FeedSegmentsProps {
    *  top-level feeds set this — inline subagent feeds nest inside the same
    *  scroll container and their prompts aren't the user's. */
   markUserMessages?: boolean;
+  /** Background-command progress cards by launching toolUseId (top-level feed only). */
+  progressCards?: Map<string, BackgroundProgress>;
+  progressSessionId?: string;
 }
 
 /** User-role transcript entries the harness generates on your behalf — command
@@ -1344,7 +1352,7 @@ function conversationText(feed: ActivityItem[]): string {
     .join('\n\n---\n\n');
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, markUserMessages }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, markUserMessages, progressCards, progressSessionId }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   // The in-flight group is expanded by default; this records an explicit collapse of it.
@@ -1391,6 +1399,11 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
   return (
     <>
       {segments.map((seg, segIdx) => {
+        if (seg.type === 'progress') {
+          const card = progressCards?.get(seg.toolUseId);
+          if (!card || !progressSessionId) return null;
+          return <ProgressCard key={segIdx} card={card} sessionId={progressSessionId} />;
+        }
         if (seg.type === 'question') {
           // Pending (unanswered, live in the TUI) → interactive prompt that injects
           // the choice. Answered, or stale (TUI no longer on the menu) → read-only.
@@ -1974,6 +1987,7 @@ export function DetailPanel({
   const effectiveOvrId = selectedSessionId ?? selectedSession?.overlordId ?? effectiveSessionId ?? '';
   const isPendingPty = !selectedSession && !!effectiveSessionId && isPtySession(effectiveSessionId);
   const isOpen = selectedSession !== null || isPendingPty;
+  const progressCards = useProgressCards(selectedSession?.sessionId, selectedSession?.backgroundProgress);
 
   // Re-render every second to update duration / relative times — only when panel is open
   useTick(selectedSession ? 1000 : null);
@@ -2238,10 +2252,12 @@ export function DetailPanel({
   // can edit the text before the stop word sends it. Only the worker the voice
   // agent resolved as the target is written to; everyone else is untouched.
   //
-  // It must never clobber text the user typed. Wake-word matching is fuzzy by
-  // design, so a false wake is expected — and a false wake that wipes a draft
-  // mid-sentence is far worse than one that is merely ignored. The composer is
-  // therefore written to only if it was empty when the utterance opened.
+  // It must never clobber text already in the composer — a typed draft, or an
+  // earlier dictation that closed without a stop word. A new utterance appends
+  // after it instead (that text is the DictationEdit base).
+  //
+  // Dictated text is persistent: releasing the composer (capture closed,
+  // timed out, cancelled) leaves the text in place. Only a send clears it.
   //
   // Editing the composer mid-dictation is respected: the edited text becomes
   // the base and only words heard afterwards are appended (see DictationEdit).
@@ -2263,23 +2279,22 @@ export function DetailPanel({
       return;
     }
     if (!dictationOwnsComposer.current) {
-      if (composerRef.current.trim() !== '') return;   // user's draft wins
       dictationOwnsComposer.current = true;
-      dictationEdit.current = null;
+      // Existing text is the base; everything heard is appended after it.
+      dictationEdit.current = composerRef.current.trim() !== ''
+        ? { base: composerRef.current, heardAt: '' }
+        : null;
       dictationWritten.current = composerRef.current;
       dictationHeard.current = '';
     } else {
       noteComposerEdit();
     }
-    const next = d.text === '' ? '' : mergeDictation(dictationEdit.current, d.text);
+    const next = mergeDictation(dictationEdit.current, d.text);
     dictationHeard.current = d.text;
+    if (next === composerRef.current) return;
     dictationWritten.current = next;
     composerRef.current = next;   // a second result can land before the re-render
     setSendInput2(next);
-    if (d.text === '') {
-      dictationOwnsComposer.current = false;
-      dictationEdit.current = null;
-    }
   }), [effectiveOvrId]);
 
   // The stop word sends through the composer, so it is indistinguishable from
@@ -3752,6 +3767,8 @@ const currentDisplayName =
                                     onQuestionDismissedToChat={() => sendTextareaRef.current?.focus()}
                                     questionStale={selectedSession.questionStale}
                                     markUserMessages
+                                    progressCards={progressCards}
+                                    progressSessionId={selectedSession.sessionId}
                                   />
                                 </div>
                               ) : (

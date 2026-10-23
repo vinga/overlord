@@ -52,9 +52,9 @@ interface OfficeProps {
   onStatsClick?: () => void;
   onOpenAdvancedSearch?: (initialQuery?: string) => void;
   platform?: string;
-  /** Right-aligned status-bar content (the voice chip). Memoize it in the
+  /** Header content after the search box (the voice chip). Memoize it in the
    *  parent: Office is memo'd and a fresh element re-renders the whole grid. */
-  statusBarExtra?: React.ReactNode;
+  headerExtra?: React.ReactNode;
 }
 
 function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onToggleActiveOnly }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void; activeOnly: boolean; onToggleActiveOnly: () => void }) {
@@ -208,7 +208,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin', statusBarExtra }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   // App passes plain (re-created every render) handlers; stable wrappers keep the
   // memo'd Room from re-rendering on every snapshot tick. Not isPtySession: it is
@@ -498,6 +498,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           </button>
         )}
         </div>
+        {headerExtra}
         <HiddenRoomsPill
           hiddenRooms={hiddenRooms}
           attentionCount={hiddenAttentionCount}
@@ -606,7 +607,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             &nbsp;&bull;&nbsp;{formatUpdatedAt(snapshot.updatedAt)}
           </span>
         )}
-        {statusBarExtra}
       </div>
       <BtwToastStack entries={btwEntries} onDismiss={dismissBtw} />
     </div>

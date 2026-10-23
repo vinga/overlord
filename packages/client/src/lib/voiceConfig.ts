@@ -23,6 +23,8 @@ export interface VoiceInputConfig {
   soundCues: boolean;
   speakReplies: boolean;
   listenAfterReply: boolean;
+  /** Push-to-talk: after a send, reopen capture for the next message. */
+  stayOnAfterSend: boolean;
 }
 
 export const VOICE_DEFAULTS: VoiceInputConfig = {
@@ -39,6 +41,7 @@ export const VOICE_DEFAULTS: VoiceInputConfig = {
   soundCues: true,
   speakReplies: false,
   listenAfterReply: false,
+  stayOnAfterSend: false,
 };
 
 /** Minimum silence before a trailing stop word counts as a commit. Without it,
@@ -54,6 +57,13 @@ export const STOP_PAUSE_MS = 500;
  *  "I go" mid-word ("I got…") and the next words can take over 500 ms to
  *  arrive, which used to send a half-sentence. */
 export const INTERIM_STOP_PAUSE_MS = 1500;
+
+/** Stay-on session: an empty follow-up capture closes after this much silence.
+ *  The countdown is held while the worker that got the last message works. */
+export const FOLLOW_UP_IDLE_MS = 5 * 60_000;
+
+/** Stay-on session: a quiet reminder cue this often while the mic waits. */
+export const REMINDER_INTERVAL_MS = 60_000;
 
 /** defaults < global < per-session override. The single precedence rule — both
  *  the agent hook and the settings UI call this, so the effective value is never

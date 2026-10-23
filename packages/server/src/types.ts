@@ -39,6 +39,8 @@ export interface ActivityItem {
   inputJson?: string;            // full tool input as JSON (truncated)
   resultJson?: string;           // tool result content (truncated to 2000 chars)
   isError?: boolean;             // true if tool_result had is_error: true
+  /** for Bash(run_in_background) tool items: join key with BackgroundProgress */
+  toolUseId?: string;
   durationMs?: number;           // for kind='tool': how long the tool call took
   timestamp?: string;            // ISO timestamp of when this entry occurred
   compactMeta?: { trigger: string; preTokens: number }; // for kind='compact'
@@ -120,6 +122,42 @@ export interface BackgroundTask {
   outputFile?: string;    // …/tasks/<taskId>.output
   lastOutputAt?: number;  // epoch ms — mtime of outputFile, liveness hint
 }
+
+/** One `::progress id=…::` row on a background-task card (see progressParser). */
+export interface ProgressRow {
+  id: string;
+  label?: string;
+  step?: number;
+  max?: number;
+  pct?: number;
+  state?: string;
+  message: string;
+  at: number;             // epoch ms the line was read
+  final?: 'done' | 'fail' | 'stopped';
+}
+
+export type BackgroundProgressStatus = 'running' | 'done' | 'failed' | 'stopped';
+
+/** Progress card for a background Bash command, live or finished. Built by
+ *  progressStore from the command's output file; persisted under
+ *  ~/.claude/overlord/progress so it outlives /tmp and server restarts. */
+export interface BackgroundProgress {
+  toolUseId: string;
+  taskId: string;
+  description?: string;
+  startedAt?: string;
+  endedAt?: number;
+  status: BackgroundProgressStatus;
+  rows: ProgressRow[];
+  lastLine?: string;
+  lineCount: number;
+  lastAt?: number;
+}
+
+export type ProgressHistoryEntry =
+  | { t: 'meta'; toolUseId: string; taskId: string; description?: string; startedAt?: string }
+  | { t: 'line'; at: number; text: string; row?: ProgressRow }
+  | { t: 'end'; at: number; status: BackgroundProgressStatus };
 
 export interface Task {
   taskId: string;         // e.g. "{sessionId}-1"
@@ -249,6 +287,9 @@ export interface Session {
    *  waiting on the harness re-invoke, not on the user — UI shows "running"
    *  instead of "waiting". Cleared by the matching <task-notification>. */
   backgroundTasks?: BackgroundTask[];
+  /** Progress cards for background commands, live and recently finished. Only
+   *  the focused session carries finished ones (see composeSession). */
+  backgroundProgress?: BackgroundProgress[];
   /** JIRA-shaped ticket keys mined from this session's transcript. Union-merged
    *  across reads — keys seen earlier in the conversation but no longer in the
    *  tail window persist here. Wiped on /clear (transcriptTruncated). */

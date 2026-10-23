@@ -209,7 +209,8 @@ export const RoomTabs = React.memo(function RoomTabs({
               ))}
             </span>
           )}
-          {t.waiting > 0 && <span className={styles.badge} title={`${t.waiting} waiting for input`}>{t.waiting > 9 ? '9+' : t.waiting}</span>}
+          {/* The session list already shows who's waiting — the count is redundant. */}
+          {t.waiting > 0 && !(showSessions && t.sessions.length > 0) && <span className={styles.badge} title={`${t.waiting} waiting for input`}>{t.waiting > 9 ? '9+' : t.waiting}</span>}
         </div>
       ))}
     </nav>

@@ -10,12 +10,6 @@ interface Props {
   stopWord: string;
   cancelWord: string;
   maxUtteranceMs: number;
-  /**
-   * Distance from the viewport bottom. The default gutter (44px) assumes a
-   * right-docked panel; a bottom-docked panel covers the whole lower edge, so
-   * the pill must sit above its top edge or it lands on the composer.
-   */
-  bottomOffset?: number;
 }
 
 /**
@@ -27,7 +21,7 @@ interface Props {
  * and how much of the utterance cap is used — so a wrong target is obvious
  * before sending rather than after.
  */
-export function VoicePill({ voice, notice, stopWord, cancelWord, maxUtteranceMs, bottomOffset }: Props) {
+export function VoicePill({ voice, notice, stopWord, cancelWord, maxUtteranceMs }: Props) {
   const listening = voice.state === 'listening';
   if (!listening && !notice) return null;
 
@@ -42,7 +36,7 @@ export function VoicePill({ voice, notice, stopWord, cancelWord, maxUtteranceMs,
   const capPct = Math.min(100, (voice.elapsedMs / Math.max(1, maxUtteranceMs)) * 100);
 
   return (
-    <div className={styles.host} style={bottomOffset !== undefined ? { bottom: bottomOffset } : undefined}>
+    <div className={styles.host}>
       <div className={`${styles.pill} ${listening ? styles.listening : styles.errored}`} role="status">
         {!listening && <span className={styles.refused}>{notice}</span>}
 
@@ -50,13 +44,16 @@ export function VoicePill({ voice, notice, stopWord, cancelWord, maxUtteranceMs,
           <>
             <span className={`${styles.dot} ${voice.sending ? '' : styles.pulsing}`} />
             <span className={styles.transcript}>
-              {voice.captured.trim() === '' ? 'Listening…' : voice.captured}
+              {voice.followUp ? 'Listening for the next message…'
+                : voice.captured.trim() === '' ? 'Listening…' : voice.captured}
             </span>
             {refusal
               ? <span className={styles.refused}>{refusal}</span>
               : targetLabel && <span className={styles.target}>→ {targetLabel}</span>}
             <span className={styles.hint}>
-              {voice.sending ? <b>sending…</b> : voice.manual
+              {voice.sending ? <b>sending…</b> : voice.followUp
+                ? <><kbd>Esc</kbd> to stop</>
+                : voice.manual
                 ? <><kbd>Enter</kbd> send · <kbd>Esc</kbd> cancel</>
                 : <>“{stopLabel}” send · “{cancelLabel}” cancel</>}
             </span>

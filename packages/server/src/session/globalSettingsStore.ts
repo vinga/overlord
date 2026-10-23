@@ -41,6 +41,8 @@ export interface VoiceInputConfig {
   speakReplies: boolean;
   /** After a reply is read aloud, open a push-to-talk capture automatically. */
   listenAfterReply: boolean;
+  /** Push-to-talk: after a send, reopen capture for the next message. */
+  stayOnAfterSend: boolean;
 }
 
 export const VOICE_DEFAULTS: VoiceInputConfig = {
@@ -57,6 +59,7 @@ export const VOICE_DEFAULTS: VoiceInputConfig = {
   soundCues: true,
   speakReplies: false,
   listenAfterReply: false,
+  stayOnAfterSend: false,
 };
 
 export interface GlobalSettings {
@@ -226,7 +229,7 @@ function sanitizeVoice(input: Partial<VoiceInputConfig>): Partial<VoiceInputConf
   if (input.provider === 'webspeech') out.provider = input.provider;
   if (input.activation === 'push' || input.activation === 'wake') out.activation = input.activation;
   if (typeof input.wakeOnWorkerName === 'boolean') out.wakeOnWorkerName = input.wakeOnWorkerName;
-  for (const key of ['soundCues', 'speakReplies', 'listenAfterReply'] as const) {
+  for (const key of ['soundCues', 'speakReplies', 'listenAfterReply', 'stayOnAfterSend'] as const) {
     if (typeof input[key] === 'boolean') out[key] = input[key];
   }
   if (typeof input.lang === 'string') {
