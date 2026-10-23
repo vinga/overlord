@@ -40,6 +40,7 @@ import type { SessionEventContext } from './session/sessionEventHandlers.js';
 import { setupWebSocketHandler } from './api/wsHandler.js';
 import { wsVisible, wsTermSubs, wsSnapshotOptOut, wsFocus } from './api/wsClientState.js';
 import { startTranscriptWatcher } from './session/transcriptWatcher.js';
+import { syncCodexAgentsMd } from './session/agentInstructions.js';
 import { wirePtyEvents } from './pty/ptyEvents.js';
 import { readGridText } from './pty/screenGrid.js';
 import { feedCompactDetector, clearCompactDetector } from './pty/compactDetect.js';
@@ -981,6 +982,8 @@ registerApiRoutes(
 httpServer.listen(PORT, BIND_HOST, () => {
   const scope = isLoopbackBind(BIND_HOST) ? 'loopback only' : `EXPOSED on ${BIND_HOST}, token required`;
   console.log(`Overlord server listening on http://${BIND_HOST}:${PORT} (${scope})`);
+  // Codex reads ~/.codex/AGENTS.md in every session; keep Overlord's rules block current.
+  try { syncCodexAgentsMd(); } catch (err) { console.warn('[agent-instructions] codex sync failed:', (err as Error).message); }
 });
 
 httpServer.on('error', (err: NodeJS.ErrnoException) => {

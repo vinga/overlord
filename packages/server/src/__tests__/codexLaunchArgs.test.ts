@@ -6,6 +6,9 @@ const FULL_ACCESS = '--dangerously-bypass-approvals-and-sandbox';
 describe('Codex launch args', () => {
   it('fresh spawn starts with full access', () => {
     expect(buildCodexSpawnArgs()).toEqual([FULL_ACCESS]);
+    // Per-thread identity for ovr-watch (the shared daemon's env is the first TUI's).
+    expect(buildCodexSpawnArgs('codex-1-ab')).toEqual([FULL_ACCESS, '-c', 'shell_environment_policy.set.OVERLORD_PTY_ID="codex-1-ab"']);
+    expect(buildCodexSpawnArgs('bad"id')).toEqual([FULL_ACCESS]);
   });
 
   it('resume keeps full access on the resume subcommand', () => {

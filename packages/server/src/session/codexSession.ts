@@ -10,16 +10,25 @@ import type { StateManager } from './stateManager.js';
  */
 const CODEX_FULL_ACCESS_FLAG = '--dangerously-bypass-approvals-and-sandbox';
 
-export function buildCodexSpawnArgs(): string[] {
-  return [CODEX_FULL_ACCESS_FLAG];
+/** Session identity for tools run inside Codex (bin/ovr-watch). Not the PTY
+ *  env: Codex runs commands in a shared app-server daemon that keeps the env of
+ *  whichever TUI started it, so every Codex session would report as the first
+ *  one. A config override is applied per thread. */
+function overlordEnvArgs(ptyId?: string): string[] {
+  if (!ptyId || !/^[\w.-]+$/.test(ptyId)) return [];
+  return ['-c', `shell_environment_policy.set.OVERLORD_PTY_ID="${ptyId}"`];
+}
+
+export function buildCodexSpawnArgs(ptyId?: string): string[] {
+  return [CODEX_FULL_ACCESS_FLAG, ...overlordEnvArgs(ptyId)];
 }
 
 /** Resume a specific Codex session by its id. `--last` is only a fallback: it
  *  picks the newest session in the cwd, which is the wrong conversation once
  *  two Codex workers share a directory. */
-export function buildCodexResumeArgs(providerSessionId?: string): string[] {
+export function buildCodexResumeArgs(providerSessionId?: string, ptyId?: string): string[] {
   const target = providerSessionId && /^[0-9a-f-]{8,64}$/i.test(providerSessionId) ? providerSessionId : '--last';
-  return ['resume', target, CODEX_FULL_ACCESS_FLAG];
+  return ['resume', target, CODEX_FULL_ACCESS_FLAG, ...overlordEnvArgs(ptyId)];
 }
 
 /** Shell form for external / bridged terminal windows. */

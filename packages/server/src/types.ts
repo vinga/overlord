@@ -152,10 +152,13 @@ export interface BackgroundProgress {
   lastLine?: string;
   lineCount: number;
   lastAt?: number;
+  /** 'push': reported over POST /api/progress (bin/ovr-watch, any provider) —
+   *  no launching tool call, so it lives only in the dock and history. */
+  source?: 'output' | 'push';
 }
 
 export type ProgressHistoryEntry =
-  | { t: 'meta'; toolUseId: string; taskId: string; description?: string; startedAt?: string }
+  | { t: 'meta'; toolUseId: string; taskId: string; description?: string; startedAt?: string; source?: 'output' | 'push' }
   | { t: 'line'; at: number; text: string; row?: ProgressRow }
   | { t: 'end'; at: number; status: BackgroundProgressStatus };
 

@@ -39,7 +39,7 @@ packages/
 
 Deep dives: `docs/architecture.md`, `docs/session-lifecycle.md`.
 
-**Background progress:** `bin/ovr-watch` prints `::progress …::` markers; `progressStore` tails background-task output files into chat-feed cards, zero tokens. See `docs/architecture.md#background-progress`.
+**Background progress:** `bin/ovr-watch` prints `::progress …::` markers; `progressStore` tails background-task output files (Claude) or takes them over `POST /api/progress` (Codex, `OVERLORD_PTY_ID`) into cards pinned above the composer, zero tokens. Default agent rules: `GET /api/agent-instructions` → Claude `SessionStart` hook / Codex `~/.codex/AGENTS.md` block. See `docs/architecture.md#background-progress`.
 
 ## Bridge Binary
 
@@ -93,6 +93,8 @@ Delegate to subagents whenever independent work parallelizes. Prefer parallel to
 ## Background Jobs (env toggles)
 
 - `OVERLORD_ARCHIVE_PR_REFRESH` (default ON; set `0`/`false` to disable): hourly REST refresh of PR state for archived/closed rooms only, non-MERGED entries only. Live rooms already poll on the 15-min TTL. Non-destructive (records into `prHistoryStore`); kill switch exists for perf-sensitive machines. See `stateManager.refreshArchivedPrs` / `selectArchivedPrTargets`.
+
+- `OVERLORD_PROGRESS_NOTIFY` (default: Codex sessions only; `1`/`true` all providers, `0`/`false` none): when a pushed progress card (`ovr-watch` over `POST /api/progress`) ends, inject one `[ovr-watch] …` line into its session once it is idle — Codex's stand-in for Claude's task-notification. See `session/progressNotify.ts`.
 
 - `OVERLORD_AUTO_TRUST_FOLDERS` (default OFF; set `1`/`true` to enable): before each claude PTY spawn, sets `projects[cwd].hasTrustDialogAccepted` in `~/.claude.json` so a new folder skips the trust dialog. Best-effort — a racing write from a running claude can drop it. See `pty/folderTrust.ts`.
 

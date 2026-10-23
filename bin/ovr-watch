@@ -23,7 +23,17 @@ Options:
   --state REGEX   Python regex with one capture group; group 1 = state
                   (default state: running)
   --plain         Force marker output even on a terminal
+  --watch-id ID   Watch id sent with pushes (default: <id>-<epoch>-<pid>)
+  --no-push       Do not POST markers to Overlord
+  --detach        Run in the background (nohup), print one line, exit 0.
+                  Output goes to \${TMPDIR:-/tmp}/ovr-watch-<watch-id>.log
   -h, --help      Show this help
+
+Push: when OVERLORD_PTY_ID (set by Overlord on spawned sessions) or
+OVERLORD_OVR_ID (manual override) is set, every marker is also POSTed to
+\${OVERLORD_URL:-http://localhost:3173}/api/progress as
+{"ptyId"?,"ovrId"?,"watchId","line"}. Pushes are fire-and-forget (2s max each);
+the final marker's push is awaited before exit. Needs curl.
 
 Exit codes: 0 done, 1 --fail matched, 2 timeout (max rounds, no --until
 match), 130 stopped (SIGINT/SIGTERM), 64 usage error.
@@ -39,6 +49,9 @@ Examples:
     --until 'Synced.*Healthy' --fail 'Degraded|Failed' \\
     --state '(Synced|OutOfSync|Progressing)' \\
     -- kubectl -n app get application my-svc -o wide
+
+  # Non-blocking from an agent without background Bash (e.g. Codex)
+  $PROG --detach --label "Dev deploy" --until 'deployed' -- ./check.sh dev
 
   # Several watches in one background command
   $PROG --id dev --label "dev rollout" --until 'deployed' -- ./check.sh dev & \\
@@ -57,18 +70,26 @@ UNTIL=
 FAIL=
 STATE_RE=
 PLAIN=0
+WID=
+PUSH=1
+DETACH=0
+# Options forwarded to the detached child (minus --detach/--watch-id/--plain).
+OPTS=()
 
 while [ $# -gt 0 ]; do
   case $1 in
     -h|--help) usage; exit 0 ;;
-    --label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; shift 2 ;;
-    --id)    [ $# -ge 2 ] || die "--id needs a value"; ID=$2; shift 2 ;;
-    --every) [ $# -ge 2 ] || die "--every needs a value"; EVERY=$2; shift 2 ;;
-    --max)   [ $# -ge 2 ] || die "--max needs a value"; MAX=$2; shift 2 ;;
-    --until) [ $# -ge 2 ] || die "--until needs a value"; UNTIL=$2; shift 2 ;;
-    --fail)  [ $# -ge 2 ] || die "--fail needs a value"; FAIL=$2; shift 2 ;;
-    --state) [ $# -ge 2 ] || die "--state needs a value"; STATE_RE=$2; shift 2 ;;
+    --label) [ $# -ge 2 ] || die "--label needs a value"; LABEL=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --id)    [ $# -ge 2 ] || die "--id needs a value"; ID=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --every) [ $# -ge 2 ] || die "--every needs a value"; EVERY=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --max)   [ $# -ge 2 ] || die "--max needs a value"; MAX=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --until) [ $# -ge 2 ] || die "--until needs a value"; UNTIL=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --fail)  [ $# -ge 2 ] || die "--fail needs a value"; FAIL=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --state) [ $# -ge 2 ] || die "--state needs a value"; STATE_RE=$2; OPTS+=("$1" "$2"); shift 2 ;;
+    --watch-id) [ $# -ge 2 ] || die "--watch-id needs a value"; WID=$2; shift 2 ;;
     --plain) PLAIN=1; shift ;;
+    --no-push) PUSH=0; OPTS+=("$1"); shift ;;
+    --detach) DETACH=1; shift ;;
     --) shift; break ;;
     *) die "unknown option: $1 (use -- before the check command; --help for usage)" ;;
   esac
@@ -81,10 +102,64 @@ case $EVERY in ''|*[!0-9]*) die "--every must be a whole number of seconds" ;; e
 case $MAX in ''|*[!0-9]*|0) die "--max must be a positive integer" ;; esac
 command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
+[ -n "$WID" ] || WID="$ID-$(date +%s)-$$"
+WID=$(printf '%s' "$WID" | tr -c 'A-Za-z0-9_.-' '_')
+
 [ -n "$LABEL" ] || LABEL="$*"
 # Label: single line, inner double quotes escaped.
 LABEL=$(printf '%s' "$LABEL" | tr '\n\r' '  ')
 QLABEL=$(printf '%s' "$LABEL" | sed 's/"/\\"/g')
+
+if [ "$DETACH" = 1 ]; then
+  LOG="${TMPDIR:-/tmp}"
+  LOG="${LOG%/}/ovr-watch-$WID.log"
+  # A new session, not just nohup: Codex kills the whole process group when the
+  # command returns, which a nohup'd child is still in. macOS has no setsid(1),
+  # hence python3 (already required). The child is reparented to launchd/init.
+  python3 - "$LOG" "$0" --watch-id "$WID" --plain ${OPTS[@]+"${OPTS[@]}"} -- "$@" <<'PY'
+import subprocess, sys
+log = open(sys.argv[1], "ab")
+subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                 start_new_session=True, close_fds=True)
+PY
+  printf 'watching in background: %s (id %s, log %s)\n' "$LABEL" "$WID" "$LOG"
+  exit 0
+fi
+
+# Push only with an Overlord session id (PTY or OVR), curl, and no --no-push.
+PTY_ID=${OVERLORD_PTY_ID:-}
+OVR_ID=${OVERLORD_OVR_ID:-}
+PUSH_URL="${OVERLORD_URL:-http://localhost:3173}"
+PUSH_URL="${PUSH_URL%/}/api/progress"
+if [ -z "$PTY_ID$OVR_ID" ] || ! command -v curl >/dev/null 2>&1; then PUSH=0; fi
+
+# post <line>: POST one marker line; JSON built by python3. Never fails.
+post() {
+  local body
+  body=$(python3 -c 'import json, sys
+pty, ovr, wid, line = sys.argv[1:5]
+d = {}
+if pty: d["ptyId"] = pty
+if ovr: d["ovrId"] = ovr
+d["watchId"] = wid
+d["line"] = line
+print(json.dumps(d))' \
+    "$PTY_ID" "$OVR_ID" "$WID" "$1" 2>/dev/null) || return 0
+  curl -s --max-time 2 -X POST "$PUSH_URL" \
+    -H 'Content-Type: application/json' -d "$body" >/dev/null 2>&1
+  return 0
+}
+
+# push <line> [final]: background POST; a final one is awaited (max ~2s).
+push() {
+  [ "$PUSH" = 1 ] || return 0
+  if [ -n "$2" ]; then
+    post "$1"
+  else
+    post "$1" >/dev/null 2>&1 </dev/null &
+  fi
+  return 0
+}
 
 TTY=0
 if [ "$PLAIN" = 0 ] && [ -t 1 ]; then TTY=1; fi
@@ -144,7 +219,10 @@ spin() {
 
 # emit [flag]: print one marker line (pipe) or redraw/finish (TTY).
 emit() {
-  local flag=$1
+  local flag=$1 f= line
+  [ -n "$flag" ] && f=" $flag"
+  printf -v line '::progress id=%s label="%s" step=%s/%s state=%s%s:: %s' \
+    "$ID" "$QLABEL" "$STEP" "$MAX" "$STATE" "$f" "$MSG"
   if [ "$TTY" = 1 ]; then
     case $flag in
       done)    draw "✓"; printf '\n' ;;
@@ -153,11 +231,9 @@ emit() {
       *)       spin ;;
     esac
   else
-    local f=
-    [ -n "$flag" ] && f=" $flag"
-    printf '::progress id=%s label="%s" step=%s/%s state=%s%s:: %s\n' \
-      "$ID" "$QLABEL" "$STEP" "$MAX" "$STATE" "$f" "$MSG"
+    printf '%s\n' "$line"
   fi
+  push "$line" "$flag"
 }
 
 on_stop() {

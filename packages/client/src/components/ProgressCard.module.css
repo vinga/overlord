@@ -94,7 +94,7 @@
 .rowLabel {
   font-weight: 500;
   color: var(--text-secondary, rgba(235, 235, 245, 0.75));
-  max-width: 120px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -209,4 +209,99 @@
 
 .historyState {
   color: rgba(var(--accent), 0.9);
+}
+
+/* ── Pinned dock (ProgressDock) — between the conversation and the composer ── */
+.dock {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(14, 16, 22, 0.92);
+  padding: 6px 14px 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.dockHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0 6px;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dockTitle {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(45, 212, 191, 0.85);
+}
+
+.dockCount {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 0 6px;
+  border-radius: 8px;
+  color: rgba(45, 212, 191, 0.95);
+  background: rgba(45, 212, 191, 0.12);
+}
+
+.dockToggle {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-tertiary, rgba(235, 235, 245, 0.45));
+}
+
+.dockHeader:hover .dockToggle {
+  color: rgba(45, 212, 191, 0.95);
+}
+
+.dockBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+.docked {
+  margin: 0;
+}
+
+/* One-line summary: the feed spot of a docked card, and the collapsed dock. */
+.line {
+  --accent: 45, 212, 191;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 4px 0 8px;
+  padding: 5px 10px;
+  border-left: 2px solid rgba(var(--accent), 0.5);
+  border-radius: 0 6px 6px 0;
+  background: rgba(var(--accent), 0.04);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.dockBody .line {
+  margin: 0;
+}
+
+.line .title {
+  flex: 0 1 auto;
+  font-size: 12px;
+}
+
+.lineSummary {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary, rgba(235, 235, 245, 0.65));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

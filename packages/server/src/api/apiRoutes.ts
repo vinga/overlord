@@ -40,7 +40,8 @@ import { WORKER_ICONS, isWorkerIcon, isDeskSpan } from '../types.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { resolveAllowedPath } from './pathGuard.js';
 import { resolvePathCandidates } from './pathCandidates.js';
-import { getProgressCards, getProgressHistory } from '../session/progressStore.js';
+import { getProgressCards, getProgressHistory, ingestPushed } from '../session/progressStore.js';
+import { instructionsFor, writeInstructions, syncCodexAgentsMd } from '../session/agentInstructions.js';
 import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles, readRoomFileDiff } from './roomFiles.js';
 
 const BTW_MAX_CHARS = 4000;
@@ -296,8 +297,39 @@ export function registerApiRoutes(
   });
   app.get('/api/sessions/:sessionId/progress/:toolUseId', (req, res) => {
     const { sessionId, toolUseId } = req.params;
-    if (!/^[\w-]+$/.test(sessionId) || !/^[\w-]+$/.test(toolUseId)) { res.status(400).json({ error: 'bad id' }); return; }
+    if (!/^[\w-]+$/.test(sessionId) || !/^[\w.:-]+$/.test(toolUseId)) { res.status(400).json({ error: 'bad id' }); return; }
     res.json({ entries: getProgressHistory(sessionId, toolUseId) });
+  });
+
+  // One `::progress` line pushed by a watcher (bin/ovr-watch). The path for
+  // sessions with no output file to tail (Codex). Identity: OVERLORD_PTY_ID from
+  // the spawn env, or an explicit ovrId / claude sessionId.
+  app.post('/api/progress', express.json(), (req, res) => {
+    const { ptyId, ovrId, sessionId, watchId, line } = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof watchId !== 'string' || !/^[\w.-]{1,120}$/.test(watchId)) { res.status(400).json({ error: 'watchId required' }); return; }
+    if (typeof line !== 'string' || line.length === 0 || line.length > 4000) { res.status(400).json({ error: 'line required' }); return; }
+    const resolvedOvr = typeof ovrId === 'string' ? ovrId
+      : typeof ptyId === 'string' ? (ptyToOvr.get(ptyId) ?? ptyId)
+      : undefined;
+    const session = typeof sessionId === 'string' ? stateManager.getSession(sessionId)
+      : resolvedOvr ? stateManager.getActiveClaudeByOvr(resolvedOvr)
+      : undefined;
+    if (!session) { res.status(404).json({ error: 'session not found' }); return; }
+    if (ingestPushed(session.sessionId, watchId, line)) stateManager.refreshProgressCards(session.sessionId);
+    res.json({ ok: true });
+  });
+
+  // Default agent rules — every new Claude session pulls them via a SessionStart
+  // hook; Codex reads the managed block Overlord keeps in ~/.codex/AGENTS.md.
+  app.get('/api/agent-instructions', (req, res) => {
+    const provider = req.query.provider === 'codex' ? 'codex' : 'claude';
+    res.type('text/plain').send(instructionsFor(provider));
+  });
+  app.put('/api/agent-instructions', express.text({ type: '*/*', limit: '64kb' }), (req, res) => {
+    const text = typeof req.body === 'string' ? req.body.trim() : '';
+    if (!text) { res.status(400).json({ error: 'text body required' }); return; }
+    writeInstructions(text);
+    res.json({ ok: true, codex: syncCodexAgentsMd() });
   });
 
   // Debug endpoint: clone a session

@@ -37,7 +37,20 @@ interface Tracked {
   persistedLines: number;
   /** Seen in the live backgroundTasks list during this process. */
   seenLive: boolean;
+  /** Push cards: last gap between lines, for the staleness cutoff. */
+  pushGapMs?: number;
 }
+
+/** A pushed card that just ended, for the completion ping (see takeEndedPushCards). */
+export interface EndedPushCard {
+  sessionId: string;
+  card: BackgroundProgress;
+}
+
+// Push cards have no task notification: they end on an all-final set of rows,
+// or go stale when lines stop (the watcher was killed with -9, the laptop slept).
+const PUSH_STALE_MIN_MS = 120_000;
+const endedPushCards: EndedPushCard[] = [];
 
 const sessions = new Map<string, Map<string, Tracked>>();
 
@@ -96,6 +109,7 @@ export function replayHistory(entries: ProgressHistoryEntry[], now = Date.now())
     status: 'running',
     rows: [],
     lineCount: 0,
+    ...(meta.source === 'push' ? { source: 'push' as const } : {}),
   };
   for (const e of entries) {
     if (e.t === 'line') card = applyLine(card, e.text, e.row, e.at);
@@ -211,6 +225,65 @@ function ingest(sessionId: string, t: Tracked, lines: string[], now: number): bo
   return changed;
 }
 
+function pushFinalStatus(card: BackgroundProgress): BackgroundProgressStatus | null {
+  if (card.rows.length === 0 || card.rows.some(r => !r.final)) return null;
+  if (card.rows.some(r => r.final === 'fail')) return 'failed';
+  if (card.rows.some(r => r.final === 'stopped')) return 'stopped';
+  return 'done';
+}
+
+function endPushCard(sessionId: string, t: Tracked, status: BackgroundProgressStatus, now: number): void {
+  t.card = { ...t.card, status, endedAt: now };
+  persist(sessionId, t.card.toolUseId, [{ t: 'end', at: now, status }]);
+  endedPushCards.push({ sessionId, card: t.card });
+}
+
+/**
+ * One `::progress` line POSTed by a watcher (bin/ovr-watch) — the path for
+ * sessions whose harness writes no output file Overlord can tail (Codex).
+ * Card key `push:<watchId>`. Returns true when the card changed.
+ */
+export function ingestPushed(sessionId: string, watchId: string, line: string, now = Date.now()): boolean {
+  const map = loadSession(sessionId);
+  const key = `push:${watchId}`;
+  let t = map.get(key);
+  const text = cleanOutputLine(line);
+  if (!text) return false;
+  const row = parseProgressLine(text, now);
+  if (!t) {
+    t = {
+      card: {
+        toolUseId: key,
+        taskId: watchId,
+        description: row?.label,
+        startedAt: new Date(now).toISOString(),
+        status: 'running',
+        rows: [],
+        lineCount: 0,
+        source: 'push',
+      },
+      offset: 0,
+      lastMtime: 0,
+      partial: '',
+      persistedLines: 0,
+      seenLive: true,
+    };
+    map.set(key, t);
+    persist(sessionId, key, [{ t: 'meta', toolUseId: key, taskId: watchId, description: row?.label, startedAt: t.card.startedAt, source: 'push' }]);
+  }
+  if (t.card.status !== 'running') return false;   // a late line after the end
+  if (t.card.lastAt !== undefined) t.pushGapMs = now - t.card.lastAt;
+  ingest(sessionId, t, [text], now);
+  const final = pushFinalStatus(t.card);
+  if (final) endPushCard(sessionId, t, final, now);
+  return true;
+}
+
+/** Drain the push cards that ended since the last call. */
+export function takeEndedPushCards(): EndedPushCard[] {
+  return endedPushCards.splice(0, endedPushCards.length);
+}
+
 function endStatus(card: BackgroundProgress, notified: string | undefined): BackgroundProgressStatus {
   if (card.rows.some(r => r.final === 'fail')) return 'failed';
   if (notified === 'failed') return 'failed';
@@ -281,6 +354,17 @@ export function syncSession(
   }
 
   for (const t of map.values()) {
+    if (t.card.source === 'push') {
+      if (t.card.status !== 'running') continue;
+      const lastMs = t.card.lastAt ?? Date.parse(t.card.startedAt ?? '');
+      const cutoff = Math.max(PUSH_STALE_MIN_MS, 2 * (t.pushGapMs ?? 0) + 60_000);
+      // Reloaded after a restart with no fresh line yet: same rule, from the last persisted line.
+      if (Number.isFinite(lastMs) && now - lastMs > cutoff) {
+        endPushCard(sessionId, t, 'stopped', now);
+        changed = true;
+      }
+      continue;
+    }
     if (t.card.status !== 'running' || liveIds.has(t.card.toolUseId)) continue;
     const notified = statuses?.[t.card.toolUseId];
     // End only on evidence: a notification, or the task left the live list
@@ -323,4 +407,5 @@ export function getProgressHistory(sessionId: string, toolUseId: string): Progre
 
 export function _resetProgressStoreForTest(): void {
   sessions.clear();
+  endedPushCards.length = 0;
 }

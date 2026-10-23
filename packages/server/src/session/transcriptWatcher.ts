@@ -10,6 +10,8 @@ import type { SessionEventContext } from './sessionEventHandlers.js';
 import { markTranscriptDirty } from './transcriptReader.js';
 import { closeOrRemoveReplaced, linkPtyToOvr } from './sessionEventHandlers.js';
 import { log } from '../logger.js';
+import { flushProgressNotifications } from './progressNotify.js';
+import { scheduleInject, shouldUseExtraEnter } from '../pty/injectScheduler.js';
 
 export interface TranscriptWatcherContext {
   stateManager: StateManager;
@@ -338,6 +340,22 @@ export function startTranscriptWatcher(ctx: TranscriptWatcherContext): void {
       const sd = Date.now() - s0;
       if (sd > 50) console.log(`[perf] poll session ${sessionId.slice(0,8)}: ${sd}ms`);
     }
+    // Completion pings for pushed progress cards (Codex has no task-notification).
+    flushProgressNotifications({
+      getSession: (sid) => ctx.stateManager.getSession(sid),
+      inject: (session, text) => {
+        const ptyId = ctx.sessionCtx.ovrToPty.get(session.overlordId ?? session.sessionId);
+        if (!ptyId || !ctx.ptyManager.has(ptyId)) return false;
+        scheduleInject(
+          (data) => { try { return ctx.ptyManager.write(ptyId, data); } catch { return false; } },
+          () => ctx.ptyManager.has(ptyId),
+          () => { /* deferred failure — the card itself still shows the end */ },
+          text,
+          shouldUseExtraEnter(text),
+        );
+        return true;
+      },
+    });
     const td = Date.now() - t0;
     if (td > 200) console.log(`[perf] poll total: ${td}ms across ${processed} sessions`);
     pollInFlight = false;

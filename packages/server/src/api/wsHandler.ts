@@ -325,7 +325,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
 
           broadcastRaw({ type: 'terminal:spawned', sessionId, pid: 0 });
           try {
-            ptyManager.spawn(sessionId, cwd, cols, rows, provider === 'codex' ? buildCodexSpawnArgs() : [], provider);
+            ptyManager.spawn(sessionId, cwd, cols, rows, provider === 'codex' ? buildCodexSpawnArgs(sessionId) : [], provider);
             const pid = ptyManager.getPid(sessionId) ?? 0;
             if (pid) stateManager.setPid(sessionId, pid);
             log('pty:started', `${managedProviderLabel(provider)} PTY session started`, { sessionId, sessionName: name ?? sessionId.slice(0, 8) });
@@ -414,7 +414,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
           try {
             const resumeArgs = provider === 'opencode'
               ? buildOpencodeResumeArgs(targetSession.providerSessionId)
-              : buildCodexResumeArgs(targetSession.providerSessionId);
+              : buildCodexResumeArgs(targetSession.providerSessionId, ptySessionId);
             ptyManager.spawn(ptySessionId, cwd, cols, rows, resumeArgs, provider);
             const pid = ptyManager.getPid(ptySessionId) ?? 0;
             stateManager.reviveManagedProviderSession(resumeSessionId, pid);

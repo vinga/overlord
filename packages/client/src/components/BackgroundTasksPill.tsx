@@ -9,13 +9,18 @@ interface Props {
   progress?: BackgroundProgress[];
 }
 
-/** Latest progress for a task: its newest `::progress::` row, else its last raw line. */
+/** Progress summary for a task. Pinned to the first unfinished row in first-seen
+ *  order — never "the newest row": with several rows updating at different
+ *  rates that label would flip between them on every line and flicker. */
 function progressText(card: BackgroundProgress | undefined): string | undefined {
   if (!card) return undefined;
-  const row = card.rows.reduce<BackgroundProgress['rows'][number] | undefined>((a, r) => (!a || r.at >= a.at ? r : a), undefined);
-  if (!row) return card.lastLine;
+  if (card.rows.length === 0) return card.lastLine;
+  const row = card.rows.find(r => !r.final) ?? card.rows[0];
   const step = row.step !== undefined ? `${row.step}${row.max ? `/${row.max}` : ''}` : '';
-  return [card.rows.length > 1 ? (row.label ?? row.id) : '', step, row.state ?? row.message].filter(Boolean).join(' ');
+  const text = [card.rows.length > 1 ? (row.label ?? row.id) : '', step, row.state ?? row.message].filter(Boolean).join(' ');
+  if (card.rows.length === 1) return text;
+  const done = card.rows.filter(r => r.final).length;
+  return `${done}/${card.rows.length} done · ${text}`;
 }
 
 /** Sibling of MonitoringPill for `Bash(run_in_background: true)` commands: names

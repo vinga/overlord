@@ -220,3 +220,25 @@ GET /api/sessions/:sid/progress[/:toolUseId] ─► persisted cards / full histo
   this process. Reloaded running cards wait for either, up to 6h.
 - Unfocused sessions carry only running cards (worker pill); the focused one
   carries all, plus a REST fetch for persisted cards.
+
+### Push path (Codex, any process) and default agent rules
+
+Codex writes no background output file and sends no completion notification,
+so `ovr-watch` also POSTs each marker:
+
+```
+ovr-watch (OVERLORD_PTY_ID from the spawn env) ─POST /api/progress─► progressStore.ingestPushed
+   card key push:<watchId>; ends when every row is final, or stale (no line for
+   max(120s, 2×gap+60s)) → stopped
+progressNotify.flushProgressNotifications (3s poll) ─► one "[ovr-watch] …" line
+   injected into the session when idle (OVERLORD_PROGRESS_NOTIFY; default codex only)
+```
+
+Push cards have no tool call in the feed: they live in the dock while running
+and for 10 minutes after, then in history (`GET /api/sessions/:sid/progress`).
+
+Default rules for every new session come from `GET /api/agent-instructions`
+(stored in `~/.claude/overlord/agent-instructions.md`, edit with `PUT`):
+Claude Code pulls them through a `SessionStart` hook (`bin/agent-instructions-hook`,
+installed by `bin/install-agent-defaults --apply`); Codex reads the managed
+block Overlord keeps in `~/.codex/AGENTS.md` (synced on boot and on every PUT).

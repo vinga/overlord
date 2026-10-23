@@ -9,7 +9,7 @@ import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentH
 import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
 import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview, BackgroundProgress } from '../types';
 import { useProgressCards } from '../hooks/useProgressCards';
-import { ProgressCard } from './ProgressCard';
+import { ProgressCard, ProgressDock } from './ProgressCard';
 import { getLaunchInfo } from '../types';
 import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
@@ -1402,7 +1402,8 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
         if (seg.type === 'progress') {
           const card = progressCards?.get(seg.toolUseId);
           if (!card || !progressSessionId) return null;
-          return <ProgressCard key={segIdx} card={card} sessionId={progressSessionId} />;
+          // Running cards are pinned in the dock above the composer; their feed spot is a one-liner.
+          return <ProgressCard key={segIdx} card={card} sessionId={progressSessionId} variant={card.status === 'running' ? 'line' : 'inline'} />;
         }
         if (seg.type === 'question') {
           // Pending (unanswered, live in the TUI) → interactive prompt that injects
@@ -1987,7 +1988,12 @@ export function DetailPanel({
   const effectiveOvrId = selectedSessionId ?? selectedSession?.overlordId ?? effectiveSessionId ?? '';
   const isPendingPty = !selectedSession && !!effectiveSessionId && isPtySession(effectiveSessionId);
   const isOpen = selectedSession !== null || isPendingPty;
-  const progressCards = useProgressCards(selectedSession?.sessionId, selectedSession?.backgroundProgress);
+  const progressCards = useProgressCards(selectedSession?.sessionId, selectedSession?.backgroundProgress, selectedSession?.backgroundTasks);
+  // Dock: running cards, plus recently finished pushed ones (no feed anchor to land on).
+  const dockProgressCards = useMemo(
+    () => [...progressCards.values()].filter(c => c.status === 'running' || c.source === 'push'),
+    [progressCards],
+  );
 
   // Re-render every second to update duration / relative times — only when panel is open
   useTick(selectedSession ? 1000 : null);
@@ -3800,6 +3806,7 @@ const currentDisplayName =
                           styles={styles}
                         />
                       </div>
+                      <ProgressDock cards={dockProgressCards} sessionId={selectedSession.sessionId} />
                       {selectedSession.sessionType !== 'bridge' && (
                         <ConsolePreview
                           sessionId={selectedSession.sessionId}

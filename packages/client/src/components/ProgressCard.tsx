@@ -7,6 +7,9 @@ import styles from './ProgressCard.module.css';
 interface Props {
   card: BackgroundProgress;
   sessionId: string;
+  /** 'inline': full card in the feed. 'docked': pinned above the composer while
+   *  running. 'line': one-line summary (feed spot of a docked card, collapsed dock). */
+  variant?: 'inline' | 'docked' | 'line';
 }
 
 const STATUS_LABEL: Record<BackgroundProgress['status'], string> = {
@@ -37,7 +40,7 @@ function rowTone(row: ProgressRow, cardStatus: BackgroundProgress['status']): st
 /** Live card for a `Bash(run_in_background)` command, rendered in the chat feed
  *  under the tool call that launched it. Data comes from the server reading the
  *  command's output file — the agent spends no tokens on it. */
-export function ProgressCard({ card, sessionId }: Props) {
+export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
   const running = card.status === 'running';
   // Elapsed drifts between output lines.
   useTick(running ? 1000 : null);
@@ -64,10 +67,25 @@ export function ProgressCard({ card, sessionId }: Props) {
     ? formatElapsed(card.startedAt, card.endedAt ?? Date.now())
     : '';
   const title = card.rows.length === 1 && card.rows[0].label ? card.rows[0].label : (card.description ?? card.taskId);
+  if (variant === 'line') {
+    const row = card.rows.find(r => !r.final) ?? card.rows[0];
+    const summary = row
+      ? [card.rows.length > 1 ? (row.label ?? row.id) : '', row.step !== undefined ? `${row.step}${row.max ? `/${row.max}` : ''}` : '', row.state ?? row.message].filter(Boolean).join(' ')
+      : card.lastLine;
+    return (
+      <div className={`${styles.line} ${styles[card.status]}`} data-progress-card={card.toolUseId}>
+        <span className={styles.statusDot} />
+        <span className={styles.title}>{title}</span>
+        {summary && <span className={styles.lineSummary}>{summary}</span>}
+        {elapsed && <span className={styles.meta}>{elapsed}</span>}
+      </div>
+    );
+  }
+
   const lines = history?.filter((e): e is Extract<ProgressHistoryEntry, { t: 'line' }> => e.t === 'line') ?? [];
 
   return (
-    <div className={`${styles.card} ${styles[card.status]}`} data-progress-card={card.toolUseId}>
+    <div className={`${styles.card} ${styles[card.status]} ${variant === 'docked' ? styles.docked : ''}`} data-progress-card={card.toolUseId}>
       <div className={styles.header}>
         <span className={styles.statusDot} />
         <span className={styles.title} title={card.description}>{title}</span>
@@ -132,6 +150,46 @@ export function ProgressCard({ card, sessionId }: Props) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+interface DockProps {
+  cards: BackgroundProgress[];
+  sessionId: string;
+}
+
+/** Pushed cards (ovr-watch over REST, e.g. Codex) have no tool call in the feed
+ *  to land on when they finish, so the dock keeps them this long afterwards. */
+const PUSH_FINISHED_VISIBLE_MS = 10 * 60 * 1000;
+
+/** Running background commands, pinned between the conversation and the
+ *  composer so their progress stays in view while the chat scrolls. Each card
+ *  moves back into the feed (inline, at its launch point) once it finishes. */
+export function ProgressDock({ cards, sessionId }: DockProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const running = cards.filter(c => c.status === 'running');
+  const now = Date.now();
+  const finished = cards.filter(c => c.status !== 'running' && c.source === 'push'
+    && c.endedAt !== undefined && now - c.endedAt < PUSH_FINISHED_VISIBLE_MS);
+  // Drops finished push cards once their window passes.
+  useTick(finished.length > 0 ? 30_000 : null);
+  if (running.length === 0 && finished.length === 0) return null;
+  return (
+    <div className={styles.dock}>
+      <button type="button" className={styles.dockHeader} onClick={() => setCollapsed(c => !c)}>
+        <span className={styles.dockTitle}>{running.length > 0 ? 'Running in background' : 'Background finished'}</span>
+        <span className={styles.dockCount}>{running.length > 0 ? running.length : finished.length}</span>
+        <span className={styles.dockToggle}>{collapsed ? 'Expand' : 'Collapse'}</span>
+      </button>
+      <div className={styles.dockBody}>
+        {running.map(c => (
+          <ProgressCard key={c.toolUseId} card={c} sessionId={sessionId} variant={collapsed ? 'line' : 'docked'} />
+        ))}
+        {finished.map(c => (
+          <ProgressCard key={c.toolUseId} card={c} sessionId={sessionId} variant="line" />
+        ))}
+      </div>
     </div>
   );
 }

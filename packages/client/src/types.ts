@@ -120,6 +120,7 @@ export interface BackgroundProgress {
   lastLine?: string;
   lineCount: number;
   lastAt?: number;
+  source?: 'output' | 'push';     // 'push': POSTed by ovr-watch (any provider); dock + history only
 }
 
 export type ProgressHistoryEntry =

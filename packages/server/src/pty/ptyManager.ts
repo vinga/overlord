@@ -54,9 +54,14 @@ const PARENT_SESSION_ENV_VARS = [
   'CLAUDE_EFFORT',
 ];
 
-function sanitizedSpawnEnv(): Record<string, string> {
+function sanitizedSpawnEnv(ptyId: string): Record<string, string> {
   const env = { ...process.env, TERM: 'xterm-color' } as Record<string, string>;
   for (const key of PARENT_SESSION_ENV_VARS) delete env[key];
+  // Lets tools inside the session (bin/ovr-watch) report to Overlord without a
+  // provider-specific lookup — the only identity a Codex session can see.
+  env.OVERLORD_PTY_ID = ptyId;
+  env.OVERLORD_URL = `http://localhost:${Number(process.env.OVERLORD_PORT) || 3173}`;
+  delete env.OVERLORD_OVR_ID;
   return env;
 }
 
@@ -100,7 +105,7 @@ export class PtyManager extends EventEmitter {
       cols,
       rows,
       cwd,
-      env: sanitizedSpawnEnv(),
+      env: sanitizedSpawnEnv(sessionId),
     });
     this.sessions.set(sessionId, ptyProcess);
     this.emit('pid-ready', sessionId, ptyProcess.pid);

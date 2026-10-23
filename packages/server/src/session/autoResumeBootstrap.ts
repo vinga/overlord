@@ -81,7 +81,7 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
         // `codex resume` continues into a fresh rollout file; only rollouts
         // written after the spawn are candidates for re-linking.
         const startedAfterMs = Date.now() - 2_000;
-        ptyManager.spawn(sessionId, cwd, 220, 50, buildCodexResumeArgs(providerSessionId), 'codex');
+        ptyManager.spawn(sessionId, cwd, 220, 50, buildCodexResumeArgs(providerSessionId, sessionId), 'codex');
         const pid = ptyManager.getPid(sessionId) ?? 0;
         stateManager.reviveManagedProviderSession(sessionId, pid);
         ovrToPty.set(sessionId, sessionId);

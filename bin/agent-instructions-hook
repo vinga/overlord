@@ -1,0 +1,13 @@
+#!/bin/sh
+# Claude Code SessionStart hook: prints Overlord's default agent rules, which
+# Claude Code adds to the new session's context. Falls back to the last good
+# copy when Overlord is down; never fails or delays the session start (2s cap).
+URL="${OVERLORD_URL:-http://localhost:3173}"
+CACHE="$HOME/.claude/overlord/agent-instructions.cache.md"
+if TEXT=$(curl -sf --max-time 2 "$URL/api/agent-instructions?provider=claude") && [ -n "$TEXT" ]; then
+  mkdir -p "$(dirname "$CACHE")" && printf '%s\n' "$TEXT" > "$CACHE"
+  printf '%s\n' "$TEXT"
+elif [ -f "$CACHE" ]; then
+  cat "$CACHE"
+fi
+exit 0

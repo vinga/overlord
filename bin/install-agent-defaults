@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Make Overlord's default agent behaviour apply to every new Claude Code and
+# Codex session, in any folder. Idempotent; shows a diff and backs up before
+# changing ~/.claude/settings.json.
+#
+#   install-agent-defaults          # dry run: show what would change
+#   install-agent-defaults --apply  # apply
+set -euo pipefail
+BIN="$(cd "$(dirname "$0")" && pwd)"
+HOOK="$BIN/agent-instructions-hook"
+SETTINGS="$HOME/.claude/settings.json"
+APPLY=0; [ "${1:-}" = "--apply" ] && APPLY=1
+
+# 1. ovr-watch on PATH
+LINK="$HOME/.local/bin/ovr-watch"
+if [ "$(readlink "$LINK" 2>/dev/null)" = "$BIN/ovr-watch" ]; then echo "ok   ovr-watch already linked at $LINK"
+elif [ $APPLY = 1 ]; then mkdir -p "$(dirname "$LINK")"; ln -sf "$BIN/ovr-watch" "$LINK"; echo "done linked $LINK"
+else echo "todo link $LINK -> $BIN/ovr-watch"; fi
+
+# 2. Claude SessionStart hook
+NEW=$(python3 - "$SETTINGS" "$HOOK" <<'PY'
+import json, sys, os
+path, hook = sys.argv[1], sys.argv[2]
+data = json.load(open(path)) if os.path.exists(path) else {}
+starts = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+if not any(h.get("command") == hook for g in starts for h in g.get("hooks", [])):
+    starts.append({"hooks": [{"type": "command", "command": hook, "timeout": 5}]})
+print(json.dumps(data, indent=2, ensure_ascii=False))
+PY
+)
+norm() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), indent=2, ensure_ascii=False))' "$1" 2>/dev/null || echo '{}'; }
+if [ -f "$SETTINGS" ] && diff -q <(norm "$SETTINGS") <(printf '%s\n' "$NEW") >/dev/null; then
+  echo "ok   SessionStart hook already in $SETTINGS"
+else
+  echo "---- $SETTINGS (proposed change)"
+  diff <(norm "$SETTINGS") <(printf '%s\n' "$NEW") || true
+  if [ $APPLY = 1 ]; then
+    [ -f "$SETTINGS" ] && cp "$SETTINGS" "$SETTINGS.bak-$(date +%Y%m%d%H%M%S)"
+    printf '%s\n' "$NEW" > "$SETTINGS"; echo "done hook added (backup next to it)"
+  else echo "todo add hook (run with --apply)"; fi
+fi
+
+# 3. Codex: the server keeps ~/.codex/AGENTS.md's managed block in sync on boot
+#    and on every PUT /api/agent-instructions. Show its current state.
+if [ -d "$HOME/.codex" ]; then
+  if grep -q 'overlord:begin' "$HOME/.codex/AGENTS.md" 2>/dev/null; then echo "ok   ~/.codex/AGENTS.md has the Overlord block"
+  else echo "todo ~/.codex/AGENTS.md block appears after the next Overlord server start"; fi
+fi

@@ -524,6 +524,14 @@ export class StateManager {
 
   private generateOvrId(): string { return this.ovrIdReservation.generate(); }
   mintReservedOvrId(marker: string): string { return this.ovrIdReservation.mint(marker); }
+
+  /** Re-read progress cards after an out-of-band change (POST /api/progress). */
+  refreshProgressCards(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.backgroundProgress = getProgressCards(sessionId);
+    this.onChange();
+  }
   reserveOvrIdForMarker(marker: string, ovrId: string): void { this.ovrIdReservation.reserveForMarker(marker, ovrId); }
   consumeReservedOvrIdForMarker(marker: string): string | undefined { return this.ovrIdReservation.consumeByMarker(marker); }
   reserveOvrIdForPid(pid: number, ovrId: string): void { this.ovrIdReservation.reserveForPid(pid, ovrId); }
