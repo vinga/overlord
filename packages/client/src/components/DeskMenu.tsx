@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ReactDOM from 'react-dom';
 import type { Session } from '../types';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
@@ -16,15 +17,42 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessi
   const burgerRef = React.useRef<HTMLButtonElement>(null);
   const [copied, setCopied] = useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const copiedTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   React.useEffect(() => {
     if (!open) return;
     function handler(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); }
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
+    }
+    // The menu is portaled with fixed coords — any scroll or resize would strand it.
+    function dismiss(e: Event) {
+      if (e.type === 'scroll' && menuRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
     }
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [open]);
+
+  // Portaled to <body> so no panel/feed stacking context or overflow can cover it.
+  // Opens downward; flips upward when the space below is too short.
+  React.useLayoutEffect(() => {
+    if (!open || !burgerRef.current) { setMenuPos(null); return; }
+    const r = burgerRef.current.getBoundingClientRect();
+    const right = window.innerWidth - r.right;
+    const MENU_H = 240;
+    setMenuPos(window.innerHeight - r.bottom < MENU_H && r.top > window.innerHeight - r.bottom
+      ? { bottom: window.innerHeight - r.top + 4, right }
+      : { top: r.bottom + 4, right });
   }, [open]);
 
   React.useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
@@ -58,11 +86,11 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessi
           <rect y="8.5" width="12" height="1.5" rx="0.75"/>
         </svg>
       </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: buttonSize + 4, right: 0, background: '#1e1e2e',
+      {open && menuPos && ReactDOM.createPortal(
+        <div ref={menuRef} onMouseDown={(e) => e.stopPropagation()} style={{
+          position: 'fixed', ...menuPos, background: '#1e1e2e',
           border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 4,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 100, minWidth: 140,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 10000, minWidth: 140,
         }}>
           <button
             onClick={handleCopyRef}
@@ -143,7 +171,8 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, sessi
             onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,107,107,0.1)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
           >Delete</button>
-        </div>
+        </div>,
+        document.body,
       )}
       <ColorPicker
         sessionId={session.sessionId}
