@@ -337,6 +337,12 @@ export function App() {
     return null;
   }, [snapshot, selectedSessionId, archivedSession]);
 
+  // Room of the open session — the detail panel shows its branch/PR badge.
+  const selectedSessionRoom = useMemo<Room | null>(
+    () => (selectedSession ? snapshot?.rooms.find(r => r.cwd === selectedSession.cwd) ?? null : null),
+    [snapshot?.rooms, selectedSession],
+  );
+
   const selectedRoom: Room | null =
     selectedRoomId != null
       ? (snapshot?.rooms.find(r => r.id === selectedRoomId) ?? null)
@@ -931,6 +937,7 @@ export function App() {
         onVoiceToggle={voiceCfg.enabled && voice.supported ? handleMicButton : undefined}
         voiceMic={voiceMic}
         customName={displayNames[selectedSession?.sessionId ?? '']}
+        room={selectedSessionRoom}
         onRename={rename}
         onClose={handleClose}
         connected={connected}

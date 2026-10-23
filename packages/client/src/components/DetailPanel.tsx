@@ -7,7 +7,7 @@ import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draf
 import { mergeDictation, subscribeDictation, subscribeDictationSubmit, type DictationEdit } from '../lib/dictationStore';
 import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
 import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
-import type { Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
+import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview } from '../types';
 import { getLaunchInfo } from '../types';
 import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
@@ -27,6 +27,7 @@ import { FilePathPopover } from './FilePathPopover';
 import { DiffViewer } from './DiffViewer';
 import { SelectionMenu } from './SelectionMenu';
 import { DeskMenu } from './DeskMenu';
+import { GitBranchBadge } from './GitBranchBadge';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
 import { SkillChips } from './SkillChips';
@@ -428,6 +429,8 @@ interface DetailPanelProps {
   selectedSessionId?: string | null;
   selectedSubagentId?: string;
   customName?: string;
+  /** Room of the selected session — feeds the header's branch/PR badge. */
+  room?: Room | null;
   onRename: (sessionId: string, name: string) => void;
   onClose: () => void;
   connected: boolean;
@@ -1936,6 +1939,7 @@ export function DetailPanel({
   selectedSessionId,
   selectedSubagentId,
   customName,
+  room,
   onRename,
   onClose,
   connected,
@@ -3021,27 +3025,6 @@ const currentDisplayName =
               &times;
             </button>
 
-            {/* Session burger menu — same as the desk card's */}
-            {!selectedSubagent && !selectedSession.isArchived && onDeleteSession && (
-              <DeskMenu
-                session={selectedSession}
-                sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
-                anchorStyle={{ position: 'absolute', top: 12, right: 46, zIndex: 50 }}
-                buttonSize={28}
-                onDelete={() => setConfirmDelete(true)}
-                onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
-                onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
-                  void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: '/clear\r' }),
-                  }).catch(() => {});
-                } : undefined}
-                onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
-                onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
-              />
-            )}
-
             {selectedSubagent ? (
               /* Subagent view */
               <>
@@ -3053,7 +3036,6 @@ const currentDisplayName =
                         if (!onSelectSession) return;
                         const feed = selectedSession.activityFeed ?? [];
                         const desc = selectedSubagent.description;
-                getConversationText={() => conversationText(mergedFeed)}
                         let targetTs: string | undefined;
                         for (let i = feed.length - 1; i >= 0; i--) {
                           const item = feed[i];
@@ -3463,6 +3445,38 @@ const currentDisplayName =
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   </div>{/* headerMain */}
+                  {/* Top-right cluster: the room's branch/PR badge + the session burger */}
+                  <div className={styles.headerActions}>
+                    {room?.gitBranch && (
+                      <GitBranchBadge
+                        branch={room.gitBranch}
+                        cwd={room.cwd}
+                        gitWarning={room.gitWarning}
+                        pullRequest={room.pullRequest}
+                        gitAhead={room.gitAhead}
+                      />
+                    )}
+                    {!selectedSession.isArchived && onDeleteSession && (
+                      <DeskMenu
+                        session={selectedSession}
+                        sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
+                        anchorStyle={{ position: 'relative' }}
+                        buttonSize={28}
+                        onDelete={() => setConfirmDelete(true)}
+                        onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
+                        onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
+                          void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: '/clear\r' }),
+                          }).catch(() => {});
+                        } : undefined}
+                        onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
+                        onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
+                        getConversationText={() => conversationText(mergedFeed)}
+                      />
+                    )}
+                  </div>
                   </div>{/* headerWithAvatar */}
                 </div>
 
@@ -3577,6 +3591,7 @@ const currentDisplayName =
                       </div>
                     )}
                   </div>
+                  )}
                 </div>
 
                 {/* Panel search results dropdown */}
@@ -3591,7 +3606,6 @@ const currentDisplayName =
                         return (
                           <div
                             key={i}
-                  )}
                             className={styles.panelSearchRow}
                             onClick={() => {
                               if (match.item.timestamp) {
