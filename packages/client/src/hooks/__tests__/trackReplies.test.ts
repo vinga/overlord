@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PENDING_TTL_MS, trackReplies, type Pending, type ReplyWorker } from '../useReplySpeaker';
+import { PENDING_TTL_MS, REPEAT_GRACE_MS, trackReplies, type Pending, type ReplyWorker } from '../useReplySpeaker';
 
 const worker = (over: Partial<ReplyWorker> = {}): ReplyWorker =>
   ({ ovrId: 'ovr-1', name: 'atlas', state: 'waiting', lastMessage: 'old reply', ...over });
@@ -27,10 +27,20 @@ describe('trackReplies', () => {
     expect(out[0]).toMatchObject({ lastMessage: 'new reply' });
   });
 
-  it('fires after a busy phase even when the reply text repeats', () => {
+  it('does not read the previous reply when "waiting" lands before the new message', () => {
+    const pending = pendingFor('old reply');
+    trackReplies(pending, [worker({ state: 'working' })], 0);
+    // Back to waiting, but lastMessage has not caught up yet.
+    expect(trackReplies(pending, [worker()], 100)).toEqual([]);
+    const out = trackReplies(pending, [worker({ lastMessage: 'new reply' })], 600);
+    expect(out[0]).toMatchObject({ lastMessage: 'new reply' });
+  });
+
+  it('reads a reply that repeats the previous one after the grace period', () => {
     const pending = pendingFor('done.');
     trackReplies(pending, [worker({ state: 'thinking', lastMessage: 'done.' })], 0);
-    expect(trackReplies(pending, [worker({ lastMessage: 'done.' })], 0)).toHaveLength(1);
+    expect(trackReplies(pending, [worker({ lastMessage: 'done.' })], 1000)).toEqual([]);
+    expect(trackReplies(pending, [worker({ lastMessage: 'done.' })], 1000 + REPEAT_GRACE_MS)).toHaveLength(1);
   });
 
   it('forgets a prompt whose worker closed or vanished', () => {

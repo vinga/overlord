@@ -567,3 +567,40 @@
   background: rgba(212, 175, 55, 0.14);
   color: #f0dda0;
 }
+
+/* ---------- read-aloud voice ---------- */
+
+.engineControls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.voicePicker {
+  margin-top: 8px;
+  max-width: 280px;
+}
+
+.sampleBtn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  color: #c4c4cc;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sampleBtn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8e8e8;
+}
+
+.engineError {
+  color: #f87171;
+}

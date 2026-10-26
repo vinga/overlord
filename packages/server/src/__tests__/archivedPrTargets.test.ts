@@ -8,18 +8,29 @@ function lookup(map: Record<string, Hist>) {
 }
 
 describe('selectArchivedPrTargets', () => {
-  it('excludes active rooms (they poll on the live TTL)', () => {
-    const active = new Set(['/repo/live']);
+  it('skips only the branch an active room live-polls, not its older branches', () => {
+    const live = new Map([['/repo/live', 'feat-live']]);
     const all = ['/repo/live', '/repo/archived'];
-    const targets = selectArchivedPrTargets(active, all, lookup({
-      '/repo/live': [{ state: 'OPEN', branch: 'feat-live' }],
+    const targets = selectArchivedPrTargets(live, all, lookup({
+      '/repo/live': [{ state: 'OPEN', branch: 'feat-live' }, { state: 'OPEN', branch: 'feat-older' }],
       '/repo/archived': [{ state: 'OPEN', branch: 'feat-old' }],
     }));
-    expect(targets).toEqual([{ cwd: '/repo/archived', branch: 'feat-old' }]);
+    expect(targets).toEqual([
+      { cwd: '/repo/live', branch: 'feat-older' },
+      { cwd: '/repo/archived', branch: 'feat-old' },
+    ]);
+  });
+
+  it('includes active rooms missing from the known-cwd universe', () => {
+    const live = new Map([['/repo/live', 'current']]);
+    const targets = selectArchivedPrTargets(live, [], lookup({
+      '/repo/live': [{ state: 'OPEN', branch: 'old' }],
+    }));
+    expect(targets).toEqual([{ cwd: '/repo/live', branch: 'old' }]);
   });
 
   it('skips MERGED entries (terminal)', () => {
-    const targets = selectArchivedPrTargets(new Set(), ['/repo/a'], lookup({
+    const targets = selectArchivedPrTargets(new Map(), ['/repo/a'], lookup({
       '/repo/a': [
         { state: 'MERGED', branch: 'done' },
         { state: 'OPEN', branch: 'wip' },
@@ -36,7 +47,7 @@ describe('selectArchivedPrTargets', () => {
   });
 
   it('dedupes by cwd+branch and ignores empty branches', () => {
-    const targets = selectArchivedPrTargets(new Set(), ['/repo/a'], lookup({
+    const targets = selectArchivedPrTargets(new Map(), ['/repo/a'], lookup({
       '/repo/a': [
         { state: 'OPEN', branch: 'x' },
         { state: 'OPEN', branch: 'x' },
@@ -49,7 +60,7 @@ describe('selectArchivedPrTargets', () => {
   it('does not collide cwds that differ only by a space split', () => {
     // "/a b" + branch "c" vs "/a" + branch "b\nc"-style — newline separator
     // keeps these distinct.
-    const targets = selectArchivedPrTargets(new Set(), ['/a b', '/a'], lookup({
+    const targets = selectArchivedPrTargets(new Map(), ['/a b', '/a'], lookup({
       '/a b': [{ state: 'OPEN', branch: 'c' }],
       '/a': [{ state: 'OPEN', branch: 'c' }],
     }));
@@ -57,6 +68,6 @@ describe('selectArchivedPrTargets', () => {
   });
 
   it('returns empty when there are no candidates', () => {
-    expect(selectArchivedPrTargets(new Set(['/x']), ['/x'], lookup({}))).toEqual([]);
+    expect(selectArchivedPrTargets(new Map([['/x', 'main']]), ['/x'], lookup({}))).toEqual([]);
   });
 });

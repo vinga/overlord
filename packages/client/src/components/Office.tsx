@@ -9,6 +9,7 @@ import { expandRoom } from '../hooks/useRoomCollapsed';
 import { useRoomHidden, unhideRoom, seedFromServer } from '../hooks/useRoomHidden';
 import { HiddenRoomsPill } from './HiddenRoomsPill';
 import { RoomTabs } from './RoomTabs';
+import { useMarkSeenOnOpen } from '../hooks/useMarkSeenOnOpen';
 import { BtwToastStack, type BtwEntry } from './BtwToast';
 import { parseBtwCommand, isBtwDraft } from '../lib/btwCommand';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
@@ -210,6 +211,7 @@ const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
 export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
+  useMarkSeenOnOpen(rooms, selectedSessionId);
   // App passes plain (re-created every render) handlers; stable wrappers keep the
   // memo'd Room from re-rendering on every snapshot tick. Not isPtySession: it is
   // already a useCallback whose identity changes exactly when the PTY set does.

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Room, Session } from '../types';
 import { expandRoom } from '../hooks/useRoomCollapsed';
+import { hasBackground, isAgent, isBusy, needsUser } from '../lib/sessionAttention';
 import styles from './RoomTabs.module.css';
 
 interface RoomTabsProps {
@@ -16,15 +17,17 @@ interface RoomTabsProps {
   onSelectSession?: (session: Session) => void;
 }
 
-type DotStatus = 'busy' | 'waiting' | 'idle';
+/** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read/parked). */
+type DotStatus = 'busy' | 'unseen' | 'seen' | 'idle';
 
 interface SessionDot {
   /** overlordId when present — stable across /clear. */
   id: string;
   sessionId: string;
   name: string;
-  color: string;
   status: DotStatus;
+  /** Background command, Monitor watch, or scheduled wakeup in flight. */
+  background: boolean;
 }
 
 interface TabInfo {
@@ -36,32 +39,38 @@ interface TabInfo {
   sessions: SessionDot[];
 }
 
-// Raw shell sessions flip working/waiting on every burst of output — that's
-// not agent activity, so they always read as idle here.
-const isBusy = (s: Session) => s.sessionType !== 'raw' && (s.state === 'working' || s.state === 'thinking');
-const isWaiting = (s: Session) => s.sessionType !== 'raw' && s.state === 'waiting' && s.review == null;
+const isWaiting = (s: Session) => isAgent(s) && s.state === 'waiting' && s.review == null;
+const dotId = (s: Session) => s.overlordId ?? s.sessionId;
 
 function sessionDots(sessions: Session[], customNames: Record<string, string>): SessionDot[] {
   const seen = new Set<string>();
   const out: SessionDot[] = [];
   for (const s of sessions) {
     if (s.state === 'closed') continue;
-    const id = s.overlordId ?? s.sessionId;
+    const id = dotId(s);
     if (seen.has(id)) continue;
     seen.add(id);
-    const status: DotStatus = isBusy(s) ? 'busy' : isWaiting(s) ? 'waiting' : 'idle';
+    const status: DotStatus = isBusy(s) ? 'busy'
+      // `review` ('read' / 'parked') is set when you open the session — see useMarkSeenOnOpen.
+      : needsUser(s) ? (s.review == null ? 'unseen' : 'seen')
+      : 'idle';
     out.push({
       id,
       sessionId: s.sessionId,
       name: customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? s.sessionId.slice(0, 8),
-      color: s.color,
       status,
+      background: hasBackground(s),
     });
   }
   return out;
 }
 
-const STATUS_LABEL: Record<DotStatus, string> = { busy: 'working', waiting: 'waiting for input', idle: 'idle' };
+const STATUS_LABEL: Record<DotStatus, string> = {
+  busy: 'working',
+  unseen: 'waiting for input — not seen yet',
+  seen: 'waiting for input — seen',
+  idle: 'idle',
+};
 
 function roomEl(container: HTMLElement, id: string): HTMLElement | null {
   return container.querySelector(`[data-room-id="${CSS.escape(id)}"]`);
@@ -184,7 +193,10 @@ export const RoomTabs = React.memo(function RoomTabs({
           {/* Dot slot is always laid out and the badge is an overlay, so state
               changes never shift tab widths. */}
           <button type="button" className={styles.tabBtn} title={`${t.cwd}\nDrag to reorder`}>
-            <span className={`${styles.busyDot} ${t.busy ? styles.busyOn : ''}`} aria-hidden="true" />
+            {/* With session lists, "working" is shown per session line instead. */}
+            {!(showSessions && t.sessions.length > 0) && (
+              <span className={`${styles.busyDot} ${t.busy ? styles.busyOn : ''}`} aria-hidden="true" />
+            )}
             <span className={styles.name}>{t.name}</span>
           </button>
           {showSessions && t.sessions.length > 0 && (
@@ -198,13 +210,13 @@ export const RoomTabs = React.memo(function RoomTabs({
                     styles[d.status],
                     selectedSessionId === d.id || selectedSessionId === d.sessionId ? styles.selected : '',
                   ].filter(Boolean).join(' ')}
-                  style={{ '--dot': d.color } as React.CSSProperties}
-                  title={`${d.name} — ${STATUS_LABEL[d.status]}`}
+                  title={`${d.name} — ${STATUS_LABEL[d.status]}${d.background ? ' · background task running' : ''}`}
                   draggable={false}
                   onClick={(e) => { e.stopPropagation(); openSession(t.id, d.sessionId); }}
                 >
-                  <span className={styles.sessionDot} aria-hidden="true" />
+                  <span className={styles.statusDot} aria-hidden="true" />
                   <span className={styles.sessionName}>{d.name}</span>
+                  {d.background && <span className={styles.bgDot} aria-hidden="true" />}
                 </button>
               ))}
             </span>

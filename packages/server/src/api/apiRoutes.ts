@@ -231,13 +231,18 @@ export function registerApiRoutes(
     res.json(full);
   });
 
-  // Per-room PR history (last 10 observed). Populated lazily by prCache as it
-  // observes PRs during background polls + user clicks; persisted to disk so
-  // history survives restarts.
-  app.get('/api/git/pr-history', (req, res) => {
+  // Recent PRs for the room: the gh user's PRs in the repo, straight from
+  // GitHub, so a PR whose branch lives in another worktree still shows.
+  // Fallback when GitHub can't answer: the per-room history prCache records
+  // as it observes PRs (persisted to disk). A tooltip open is a user click, so
+  // non-merged entries are re-fetched first — otherwise they stay stale.
+  app.get('/api/git/pr-history', async (req, res) => {
     const cwd = String(req.query.cwd ?? '');
     if (!cwd) return res.status(400).json({ error: 'cwd required' });
     if (!stateManager.isKnownRoomCwd(cwd)) return res.status(404).json({ error: 'unknown cwd' });
+    const fromGitHub = await stateManager.getPrCache().listRecentFromGitHub(cwd);
+    if (fromGitHub) return res.json({ entries: fromGitHub });
+    await stateManager.getPrCache().refreshHistory(cwd);
     const entries = stateManager.getPrHistoryStore().list(cwd);
     res.json({ entries });
   });
@@ -742,7 +747,7 @@ export function registerApiRoutes(
   //   'read'   — silences the pulsing WAITING bubble; auto-clears on the next turn
   //   'parked' — deliberate, sticky, optional free-text reason (<= PARK_REASON_MAX)
   //   null     — clears whichever marker is set
-  app.post('/api/sessions/:sessionId/review', (req, res) => {
+  app.post('/api/sessions/:sessionId/review', express.json(), (req, res) => {
     const { sessionId } = req.params;
     const raw = (req.body ?? {}) as { review?: unknown; reason?: unknown };
     const review = raw.review;

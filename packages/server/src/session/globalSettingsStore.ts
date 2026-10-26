@@ -7,6 +7,9 @@ import * as path from 'path';
  *  the only automatic transition is `maxUtteranceMs`, and it discards. */
 export type VoiceActivation = 'push' | 'wake';
 
+/** Read-aloud engine: Chrome's speechSynthesis, or Kokoro running locally in the browser. */
+export type TtsEngine = 'chrome' | 'kokoro';
+
 export interface VoiceInputConfig {
   /** Master switch. When false nothing is mounted client-side: no `getUserMedia`,
    *  no mic permission prompt, no HUD pill. */
@@ -43,6 +46,10 @@ export interface VoiceInputConfig {
   listenAfterReply: boolean;
   /** Push-to-talk: after a send, reopen capture for the next message. */
   stayOnAfterSend: boolean;
+  /** Engine for reading replies aloud. */
+  ttsEngine: TtsEngine;
+  /** Kokoro voice id, e.g. `af_heart`. */
+  kokoroVoice: string;
 }
 
 export const VOICE_DEFAULTS: VoiceInputConfig = {
@@ -62,6 +69,8 @@ export const VOICE_DEFAULTS: VoiceInputConfig = {
   speakReplies: false,
   listenAfterReply: false,
   stayOnAfterSend: false,
+  ttsEngine: 'chrome',
+  kokoroVoice: 'af_heart',
 };
 
 export interface GlobalSettings {
@@ -234,6 +243,8 @@ function sanitizeVoice(input: Partial<VoiceInputConfig>): Partial<VoiceInputConf
   for (const key of ['soundCues', 'speakReplies', 'listenAfterReply', 'stayOnAfterSend'] as const) {
     if (typeof input[key] === 'boolean') out[key] = input[key];
   }
+  if (input.ttsEngine === 'chrome' || input.ttsEngine === 'kokoro') out.ttsEngine = input.ttsEngine;
+  if (typeof input.kokoroVoice === 'string' && /^[a-z]{2}_[a-z]+$/.test(input.kokoroVoice)) out.kokoroVoice = input.kokoroVoice;
   if (typeof input.lang === 'string') {
     const lang = input.lang.trim();
     // Loose BCP-47: primary subtag plus optional region/script subtags.

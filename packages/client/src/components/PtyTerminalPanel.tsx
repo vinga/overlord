@@ -61,7 +61,6 @@ interface PtyTerminalPanelProps {
   onKill: (sessionId: string) => void;
   onRestart?: (sessionId: string) => void;
   onRename?: (sessionId: string, name: string) => void;
-  onClose?: () => void;
   /** Which screen edge the panel docks to. Bottom = portrait / horizontal split. */
   dock?: 'right' | 'bottom';
   /** Width when right-docked, height when bottom-docked. */
@@ -80,7 +79,6 @@ export function PtyTerminalPanel({
   onKill,
   onRestart,
   onRename,
-  onClose,
   dock = 'right',
   panelSize,
   onPanelSizeChange,
@@ -155,6 +153,9 @@ export function PtyTerminalPanel({
   }, [horizontal]);
 
   const displayName = customName ?? session?.proposedName ?? session?.slug ?? sessionId.slice(0, 12);
+  // A raw shell hydrated from its record after a server restart is CLOSED but
+  // not historyOnly — gating Restart on historyOnly alone left no way back in.
+  const shellDead = isExited || !!session?.historyOnly || session?.state === 'closed' || session?.ptyAlive === false;
 
   function startEdit() {
     setEditValue(displayName);
@@ -222,15 +223,20 @@ export function PtyTerminalPanel({
           <button
             className={`${styles.iconBtn} ${detailsOpen ? styles.iconBtnActive : ''}`}
             onClick={() => setDetailsOpen(s => !s)}
-            title={detailsOpen ? 'Hide details' : 'Show details'}
+            aria-label={detailsOpen ? 'Hide details' : 'Show details'}
+            data-tooltip={detailsOpen ? 'Hide details' : 'Show details (folder, pid, shell)'}
+            data-tooltip-dir="down"
+            data-tooltip-align="right"
           >
             {detailsOpen ? '▴' : '▾'}
           </button>
-          {session?.historyOnly && onRestart && (
+          {shellDead && onRestart && (
             <button
               className={styles.restartBtn}
               onClick={() => onRestart(sessionId)}
-              title="Restart shell in original folder"
+              data-tooltip="Start a new shell in the original folder"
+              data-tooltip-dir="down"
+              data-tooltip-align="right"
             >
               ↻ Restart shell
             </button>
@@ -238,19 +244,13 @@ export function PtyTerminalPanel({
           <button
             className={styles.iconBtn}
             onClick={() => onKill(sessionId)}
-            title="Kill session"
+            aria-label="Kill session"
+            data-tooltip="Kill shell and remove it from the room"
+            data-tooltip-dir="down"
+            data-tooltip-align="right"
           >
             ⏻
           </button>
-          {onClose && (
-            <button
-              className={styles.closeButton}
-              onClick={onClose}
-              title="Close panel"
-            >
-              ×
-            </button>
-          )}
         </div>
       </div>
 

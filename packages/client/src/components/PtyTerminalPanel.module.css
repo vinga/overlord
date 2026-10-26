@@ -191,28 +191,6 @@
   color: #c8e0ff;
 }
 
-.closeButton {
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #e8e8e8;
-  font-size: 18px;
-  line-height: 1;
-  width: 26px;
-  height: 26px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  transition: background 150ms;
-  flex-shrink: 0;
-}
-
-.closeButton:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
 /* ── Collapsible details ─────────────────────────────────── */
 
 .details {

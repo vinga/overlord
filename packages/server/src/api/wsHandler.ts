@@ -15,6 +15,7 @@ import { spawnClaudeSession } from '../pty/spawnSession.js';
 import { serializeGrid } from '../pty/screenGrid.js';
 import { isWorkerIcon, type WorkerIcon } from '../types.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
+import { renderShellHistory } from '../pty/shellHistoryRender.js';
 import { archiveManager } from '../archive/archiveManager.js';
 import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
@@ -57,6 +58,8 @@ export interface WsHandlerContext {
 // feels slow. If no BSU is present we return [] and rely on the SIGWINCH nudge
 // to produce the next full frame.
 const BSU_MARKER = Buffer.from('\x1b[?2026h');
+/** How long a resize-triggered TUI redraw is ignored for WAITING→WORKING promotion. */
+const RESIZE_REDRAW_MS = 1500;
 /** Slice the replay buffer from the last synchronized-output frame start.
  *
  *  NOTE: the current Claude CLI does not emit BSU, so this returns [] in
@@ -895,6 +898,8 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         subscribeTerminal(ws, ovrId);
         const claudeSession = stateManager.getActiveClaudeByOvr(ovrId) ?? stateManager.getSession(ovrId);
         const claudeSessionId = claudeSession?.sessionId ?? ovrId;
+        // The TUI redraws on SIGWINCH; opening a session must not read as work.
+        stateManager.suppressPtyPromotion(claudeSessionId, RESIZE_REDRAW_MS);
         if (stateManager.isBridge(claudeSessionId)) {
           void resizeAndNudgeBridgePipe(claudeSessionId, cols, rows);
         } else {
@@ -931,6 +936,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
             sendToClient(ws, { type: 'terminal:output', sessionId: ovrId, data: encoded });
           }
           console.log(`[terminal:replay] bridge nudge for ovrId=${ovrId.slice(0, 8)} cols=${cols} rows=${rows} bufChunks=${buf?.length ?? 0} sliceChunks=${slice.length}`);
+          stateManager.suppressPtyPromotion(claudeSessionId, RESIZE_REDRAW_MS);
           if (cols > 0 && rows > 0) {
             void resizeAndNudgeBridgePipe(claudeSessionId, cols, rows).then(ok => {
               console.log(`[terminal:replay] nudge result: ${ok ? 'ok' : 'FAILED'} for ovrId=${ovrId.slice(0, 8)}`);
@@ -975,7 +981,9 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         // This covers both historyOnly revived sessions and fresh reconnects where the
         // in-memory ring buffer was lost across a server restart.
         if (isRaw && replaySlice.length === 0 && hasShellHistory(ovrId)) {
-          const diskLog = readShellHistory(ovrId);
+          // Raw bytes were recorded at the PTY's width back then; replaying them
+          // into a narrower xterm wraps every zsh prompt into fragments.
+          const diskLog = Buffer.from(await renderShellHistory(readShellHistory(ovrId), cols));
           const banner = claudeSession?.historyOnly
             ? `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} · click "Restart shell" to start a live session ──\x1b[0m\r\n`
             : `\r\n\x1b[2m── restored shell history · ${new Date().toISOString()} ──\x1b[0m\r\n`;

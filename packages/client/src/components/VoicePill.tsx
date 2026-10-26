@@ -6,63 +6,28 @@ interface Props {
   voice: UseVoiceAgentResult;
   /** Transient message from the last dispatch — a refusal, or an unwired verb. */
   notice: string | null;
-  /** Words that commit / discard a capture, shown as the hint while listening. */
-  stopWord: string;
-  cancelWord: string;
-  maxUtteranceMs: number;
 }
 
 /**
  * Shown only while dictating (or for a few seconds after a refused dispatch).
- * The idle, muted and blocked states live in the status-bar chip, so nothing
- * floats over the office when the microphone is not in use.
- *
- * While capturing it shows what was heard, who will receive it, how to finish,
- * and how much of the utterance cap is used — so a wrong target is obvious
- * before sending rather than after.
+ * Deliberately minimal: it says that the mic is recording and nothing else.
+ * The dictated text lands in the composer, and the shortcuts live in the
+ * header mic's cheat sheet.
  */
-export function VoicePill({ voice, notice, stopWord, cancelWord, maxUtteranceMs }: Props) {
+export function VoicePill({ voice, notice }: Props) {
   const listening = voice.state === 'listening';
   if (!listening && !notice) return null;
-
-  const stopLabel = stopWord.split(',')[0].trim() || stopWord;
-  const cancelLabel = cancelWord.split(',')[0].trim() || cancelWord;
-
-  const preview = voice.preview;
-  const targetLabel = preview?.kind === 'prompt' ? preview.name
-    : preview?.kind === 'control' ? (preview.name ?? preview.verb)
-    : null;
-  const refusal = preview?.kind === 'refused' ? preview.reason : null;
-  const capPct = Math.min(100, (voice.elapsedMs / Math.max(1, maxUtteranceMs)) * 100);
 
   return (
     <div className={styles.host}>
       <div className={`${styles.pill} ${listening ? styles.listening : styles.errored}`} role="status">
-        {!listening && <span className={styles.refused}>{notice}</span>}
-
-        {listening && (
+        {listening ? (
           <>
             <span className={`${styles.dot} ${voice.sending ? '' : styles.pulsing}`} />
-            <span className={styles.transcript}>
-              {voice.followUp ? 'Listening for the next message…'
-                : voice.captured.trim() === '' ? 'Listening…' : voice.captured}
-            </span>
-            {refusal
-              ? <span className={styles.refused}>{refusal}</span>
-              : targetLabel && <span className={styles.target}>→ {targetLabel}</span>}
-            <span className={styles.hint}>
-              {voice.sending ? <b>sending…</b> : voice.followUp
-                ? <><kbd>Esc</kbd> to stop</>
-                : voice.manual
-                ? <><kbd>Enter</kbd> send · <kbd>Esc</kbd> cancel</>
-                : <>“{stopLabel}” send · “{cancelLabel}” cancel</>}
-            </span>
-            <button className={styles.iconBtn} onClick={voice.commit} title="Send">↵</button>
-            <button className={styles.iconBtn} onClick={voice.discard} title="Cancel (Esc)">✕</button>
-            <span className={styles.cap}>
-              <span className={styles.capFill} style={{ width: `${capPct}%` }} />
-            </span>
+            <span className={styles.label}>{voice.sending ? 'Sending…' : 'Recording'}</span>
           </>
+        ) : (
+          <span className={styles.refused}>{notice}</span>
         )}
       </div>
     </div>

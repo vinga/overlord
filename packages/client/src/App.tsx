@@ -826,13 +826,7 @@ export function App() {
   return (
     <>
       {voiceCfg.enabled && (voice.state === 'listening' || voiceNotice) && (
-        <VoicePill
-          voice={voice}
-          notice={voiceNotice}
-          stopWord={voiceCfg.stopWord}
-          cancelWord={voiceCfg.cancelWord}
-          maxUtteranceMs={voiceCfg.maxUtteranceMs}
-        />
+        <VoicePill voice={voice} notice={voiceNotice} />
       )}
       <Office
         snapshot={snapshot}
@@ -950,7 +944,6 @@ export function App() {
           }}
           onRestart={(sessionId) => terminal.restartShell(sessionId)}
           onRename={rename}
-          onClose={handleClose}
           dock={dock}
           panelSize={panelSize}
           onPanelSizeChange={setPanelSize}

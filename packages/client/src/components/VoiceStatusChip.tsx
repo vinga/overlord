@@ -104,11 +104,18 @@ export function VoiceStatusChip({
     <div className={styles.root} ref={ref}>
       <button
         className={`${styles.chip} ${tone}`}
-        // While a reply is read aloud the chip is a stop button.
-        onClick={() => { if (speaking) onStopSpeaking(); else setOpen(o => !o); }}
+        // While a reply is read aloud the chip is a stop button. Blocked, a
+        // click asks Chrome for the mic — that works even when the page could
+        // not start it on its own.
+        onClick={() => {
+          if (speaking) onStopSpeaking();
+          else if (blocked && !open) onRequestPermission();
+          else setOpen(o => !o);
+        }}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={idle
+        title={blocked ? 'Microphone blocked — click to allow it'
+          : idle
           ? `${muted ? 'Microphone off' : push ? 'Voice: Alt+V to dictate' : `Voice: say “${firstWord(cfg.startWord)}”`} — click for shortcuts`
           : 'Voice control — click for shortcuts'}
         aria-label={idle ? (muted ? 'Microphone off' : 'Voice control') : undefined}

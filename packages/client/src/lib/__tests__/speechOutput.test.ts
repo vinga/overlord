@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_SPOKEN_CHARS, pickVoice, toSpokenText } from '../speechOutput';
+import { MAX_SPOKEN_CHARS, looksPolish, pickEngine, pickVoice, toSpokenText } from '../speechOutput';
 
 describe('toSpokenText', () => {
   it('drops fenced and inline code', () => {
@@ -66,5 +66,37 @@ describe('pickVoice', () => {
 
   it('returns null when no voice speaks the language', () => {
     expect(pickVoice([v('Daniel', 'en-GB')], 'pl-PL')).toBeNull();
+  });
+});
+
+describe('looksPolish', () => {
+  it('spots Polish diacritics', () => {
+    expect(looksPolish('Zrobione, wszystko działa.')).toBe(true);
+  });
+
+  it('spots ASCII-only Polish by its words', () => {
+    expect(looksPolish('Teraz jest gotowe, tylko test.')).toBe(true);
+  });
+
+  it('leaves English alone', () => {
+    expect(looksPolish('All tests pass now. I pushed it to main.')).toBe(false);
+    expect(looksPolish('Go to the panel')).toBe(false);
+  });
+});
+
+describe('pickEngine', () => {
+  it('uses Kokoro for English when chosen and usable', () => {
+    expect(pickEngine('kokoro', 'All tests pass.', 'en-US', true)).toBe('kokoro');
+  });
+
+  it('falls back to Chrome for Polish text or a Polish language setting', () => {
+    expect(pickEngine('kokoro', 'Wszystko działa.', 'en-US', true)).toBe('chrome');
+    expect(pickEngine('kokoro', 'All tests pass.', 'pl-PL', true)).toBe('chrome');
+  });
+
+  it('falls back to Chrome when Kokoro is unusable or not chosen', () => {
+    expect(pickEngine('kokoro', 'All tests pass.', 'en-US', false)).toBe('chrome');
+    expect(pickEngine('chrome', 'All tests pass.', 'en-US', true)).toBe('chrome');
+    expect(pickEngine(undefined, 'All tests pass.', 'en-US', true)).toBe('chrome');
   });
 });

@@ -332,34 +332,9 @@
   opacity: 0.85;
 }
 
-.closeButton {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #e8e8e8;
-  font-size: 18px;
-  line-height: 1;
-  width: 28px;
-  height: 28px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  transition: background 150ms;
-  z-index: 50;
-}
-
-.closeButton:hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
 .panelHeader {
   flex-shrink: 0;
-  padding: 16px 52px 0 24px;
+  padding: 16px 24px 0 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background: #151521;
   z-index: 1;

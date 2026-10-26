@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import type { GlobalSettings } from '../types';
 import { useDockMode, type DockMode } from '../hooks/useOrientation';
 import { resolveVoiceConfig, type VoiceInputConfig } from '../lib/voiceConfig';
+import { KOKORO_VOICES, kokoro, type KokoroState } from '../lib/kokoroVoice';
+import { ReplyVoice } from '../lib/speechOutput';
 import styles from './SettingsModal.module.css';
 
 interface Props {
@@ -307,6 +309,14 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
                 on={voice.speakReplies}
                 onToggle={() => patchVoice({ speakReplies: !voice.speakReplies })}
               />
+              {voice.speakReplies && (
+                <VoiceEngineRow
+                  engine={voice.ttsEngine}
+                  kokoroVoice={voice.kokoroVoice}
+                  lang={voice.lang}
+                  onChange={patchVoice}
+                />
+              )}
               {voice.speakReplies && (
                 <ToggleRow
                   label="Listen after reading"
@@ -704,6 +714,84 @@ function ToggleRow({ label, hint, on, onToggle }: {
         aria-checked={on}
         aria-label={label}
       />
+    </div>
+  );
+}
+
+const SAMPLE_TEXT = 'All tests pass. I pushed the fix to main, and the deploy is running now.';
+
+function kokoroStatusText(s: KokoroState): string {
+  switch (s.status) {
+    case 'idle': return 'The model (about 90 MB) downloads on first use and is cached by the browser.';
+    case 'loading': return `Loading model…${s.progress !== undefined ? ` ${s.progress}%` : ''}`;
+    case 'ready': return s.device === 'webgpu' ? 'Ready — running on the GPU.' : 'Ready — running on the CPU.';
+    case 'error': return `Failed to load — using the Chrome voice. ${s.error ?? ''}`.trim();
+  }
+}
+
+/** Read-aloud engine: Chrome's built-in voice or Kokoro, a neural voice that
+ *  runs locally in the browser. Polish text always uses the Chrome voice. */
+function VoiceEngineRow({ engine, kokoroVoice, lang, onChange }: {
+  engine: VoiceInputConfig['ttsEngine'];
+  kokoroVoice: string;
+  lang: string;
+  onChange: (partial: Partial<VoiceInputConfig>) => void;
+}) {
+  const [state, setState] = useState<KokoroState>(() => kokoro().getState());
+  const [sampling, setSampling] = useState(false);
+  const sampleVoice = useMemo(() => new ReplyVoice(), []);
+  useEffect(() => kokoro().subscribe(setState), []);
+  useEffect(() => () => sampleVoice.stop(), [sampleVoice]);
+  // Picking Kokoro starts the download, so the first reply is not the one that waits.
+  useEffect(() => { if (engine === 'kokoro') kokoro().load(); }, [engine]);
+
+  const playSample = () => {
+    if (sampling) { sampleVoice.stop(); return; }
+    setSampling(true);
+    sampleVoice.speak(SAMPLE_TEXT, lang.toLowerCase().startsWith('pl') ? 'en-US' : lang, () => setSampling(false), { engine, kokoroVoice });
+  };
+
+  return (
+    <div className={styles.row}>
+      <div className={styles.rowText}>
+        <div className={styles.rowLabel}>Voice</div>
+        <div className={styles.rowHint}>
+          {engine === 'kokoro'
+            ? <>Kokoro is a neural voice that runs on this computer — nothing is sent anywhere. English only: Polish replies use the Chrome voice.</>
+            : <>Chrome’s built-in voice. Kokoro sounds far more natural and also runs locally.</>}
+        </div>
+        {engine === 'kokoro' && (
+          <>
+            <div className={styles.voicePicker}>
+              <select
+                className={styles.input}
+                value={kokoroVoice}
+                onChange={e => onChange({ kokoroVoice: e.target.value })}
+                aria-label="Kokoro voice"
+              >
+                {KOKORO_VOICES.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+              </select>
+            </div>
+            <div className={`${styles.rowHint} ${state.status === 'error' ? styles.engineError : ''}`}>{kokoroStatusText(state)}</div>
+          </>
+        )}
+      </div>
+      <div className={styles.engineControls}>
+        <div className={styles.segmented} role="radiogroup" aria-label="Voice engine">
+          {([['chrome', 'Chrome'], ['kokoro', 'Kokoro (local AI)']] as const).map(([value, label]) => (
+            <button
+              key={value}
+              className={`${styles.segmentBtn} ${engine === value ? styles.segmentBtnActive : ''}`}
+              role="radio"
+              aria-checked={engine === value}
+              onClick={() => onChange({ ttsEngine: value })}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button className={styles.sampleBtn} onClick={playSample}>{sampling ? '■ Stop' : '▶ Sample'}</button>
+      </div>
     </div>
   );
 }

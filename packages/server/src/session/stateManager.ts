@@ -84,21 +84,23 @@ function getAllProcessInfo(): Map<number, { parentPid: number; name: string }> {
 }
 
 /**
- * Pure selection for the hourly archived-PR refresh. Given the set of currently
- * active room cwds, the universe of known cwds, and a per-cwd PR-history lookup,
- * returns the (cwd, branch) worklist to refresh: archived/closed rooms only
- * (active excluded — they already poll on the live TTL) and only entries whose
- * last-known state is not MERGED (terminal). Deduped by cwd+branch. Extracted
- * from StateManager so it can be unit-tested without booting the server.
+ * Pure selection for the hourly PR-history refresh. Given each active room's
+ * live-polled branch, the universe of known cwds, and a per-cwd PR-history
+ * lookup, returns the (cwd, branch) worklist to refresh: every room, active or
+ * archived, and only entries whose last-known state is not MERGED (terminal).
+ * The one branch skipped is an active room's checked-out branch — the live TTL
+ * already polls it; older branches in that room are polled by nothing else.
+ * Deduped by cwd+branch. Extracted from StateManager so it can be unit-tested
+ * without booting the server.
  */
 export function selectArchivedPrTargets(
-  activeCwds: Set<string>,
+  livePolledBranches: Map<string, string | undefined>,
   allCwds: Iterable<string>,
   historyFor: (cwd: string) => Array<{ state: string; branch: string }>,
 ): Array<{ cwd: string; branch: string }> {
-  const candidateCwds = new Set<string>();
+  const candidateCwds = new Set<string>(livePolledBranches.keys());
   for (const cwd of allCwds) {
-    if (cwd && !activeCwds.has(cwd)) candidateCwds.add(cwd);
+    if (cwd) candidateCwds.add(cwd);
   }
   const seen = new Set<string>();
   const targets: Array<{ cwd: string; branch: string }> = [];
@@ -106,6 +108,7 @@ export function selectArchivedPrTargets(
     for (const entry of historyFor(cwd)) {
       if (entry.state === 'MERGED') continue; // terminal — never re-poll
       if (!entry.branch) continue;
+      if (livePolledBranches.get(cwd) === entry.branch) continue; // live TTL covers it
       const key = `${cwd}\n${entry.branch}`; // newline: safe vs spaces in mac paths
       if (seen.has(key)) continue;
       seen.add(key);
@@ -582,8 +585,8 @@ export class StateManager {
     // 30s, not 15s: the sweep is now one cheap spawn per room, and the ahead-count
     // is an advisory badge. Halving the cadence halves what is left of its cost.
     this.gitAheadTimer = setInterval(() => { void this.refreshGitAheadCache(); }, 30_000);
-    // Hourly background refresh of PR state for archived/closed rooms (live
-    // rooms already poll on the 15-min HIT TTL). Non-destructive + REST-only +
+    // Hourly background refresh of non-merged pr-history entries (a live room's
+    // checked-out branch is skipped — it polls on the 15-min HIT TTL). Non-destructive + REST-only +
     // gated by env, so default-ON is acceptable. First run is delayed off boot.
     if (process.env.OVERLORD_ARCHIVE_PR_REFRESH !== '0' && process.env.OVERLORD_ARCHIVE_PR_REFRESH !== 'false') {
       this.archivePrBootTimer = setTimeout(() => { void this.refreshArchivedPrs(); }, 90_000);
@@ -667,35 +670,35 @@ export class StateManager {
     }
   }
 
-  /** Distinct cwds with a live/hydrated session — i.e. the rooms the snapshot
-   *  surfaces and `prCache` keeps fresh on the 15-min TTL. Used to exclude
-   *  active rooms from the archived-PR refresh so we never double-poll. */
-  private activeRoomCwds(): Set<string> {
-    const out = new Set<string>();
+  /** Each cwd with a live/hydrated session, mapped to its checked-out branch —
+   *  the one branch per room that `prCache` keeps fresh on the 15-min TTL.
+   *  Used to skip exactly that branch in the hourly refresh (no double-poll). */
+  private liveRoomBranches(): Map<string, string | undefined> {
+    const out = new Map<string, string | undefined>();
     for (const session of this.sessions.values()) {
-      if (session.cwd) out.add(session.cwd);
+      if (session.cwd) out.set(session.cwd, this.gitWatcher.getBranch(session.cwd));
     }
     return out;
   }
 
-  /** Build the archived-PR refresh worklist: every (cwd, branch) from
-   *  pr-history whose room is NOT currently active and whose last-known state
-   *  is not yet MERGED (terminal). Deduped by cwd+branch. Pure — no I/O beyond
-   *  the in-memory/disk-backed stores it reads. Extracted for unit testing. */
+  /** Build the hourly PR-history refresh worklist: every (cwd, branch) from
+   *  pr-history whose last-known state is not yet MERGED (terminal), minus the
+   *  branch an active room live-polls. Deduped by cwd+branch. Pure — no I/O
+   *  beyond the in-memory/disk-backed stores it reads. Extracted for unit testing. */
   computeArchivedPrRefreshTargets(): Array<{ cwd: string; branch: string }> {
     const allCwds = new Set<string>();
     for (const rec of sessionStore.listAll()) {
       if (rec.cwd) allCwds.add(rec.cwd);
     }
     return selectArchivedPrTargets(
-      this.activeRoomCwds(),
+      this.liveRoomBranches(),
       allCwds,
       cwd => this.prHistoryStore.list(cwd),
     );
   }
 
-  /** Hourly job: refresh PR state for archived/closed rooms whose PR is not yet
-   *  merged. Sequenced with a small gap so we never burst `gh` forks on a
+  /** Hourly job: refresh PR state for every pr-history entry not yet merged
+   *  (archived rooms and older branches of active rooms). Sequenced with a small gap so we never burst `gh` forks on a
    *  loaded machine. Each refresh records fresh state into prHistoryStore. */
   private async refreshArchivedPrs(): Promise<void> {
     const targets = this.computeArchivedPrRefreshTargets();

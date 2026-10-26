@@ -38,6 +38,12 @@ describe('sanitizeVoiceOverride', () => {
     expect(sanitizeVoiceOverride({ speakReplies: 'yes' })).toEqual({});
   });
 
+  it('keeps a known read-aloud engine and a well-formed Kokoro voice', () => {
+    expect(sanitizeVoiceOverride({ ttsEngine: 'kokoro', kokoroVoice: 'bf_emma' }))
+      .toEqual({ ttsEngine: 'kokoro', kokoroVoice: 'bf_emma' });
+    expect(sanitizeVoiceOverride({ ttsEngine: 'eleven', kokoroVoice: '../etc' })).toEqual({});
+  });
+
   it('keeps stay-on-after-send when boolean', () => {
     expect(sanitizeVoiceOverride({ stayOnAfterSend: true })).toEqual({ stayOnAfterSend: true });
     expect(sanitizeVoiceOverride({ stayOnAfterSend: 1 })).toEqual({});

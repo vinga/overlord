@@ -141,10 +141,11 @@
   padding: 6px 8px 5px;
 }
 
-/* With session lists, chips sit in equal-width columns. */
+/* With session lists, chips sit in equal-width columns — at least a worker
+   card wide (Room.module.css desk grid, 250px). */
 .strip:has(.withSessions) {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   align-items: start;
 }
 
@@ -188,11 +189,37 @@
   outline: none;
 }
 
-.sessionDot {
-  width: 6px;
-  height: 6px;
+/* Session status light — color by .busy / .unseen / .seen / .idle on the row. */
+.statusDot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--dot);
+  background: rgba(255, 255, 255, 0.18);
+  flex-shrink: 0;
+}
+
+.busy .statusDot {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+}
+
+.unseen .statusDot {
+  background: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.65);
+}
+
+.seen .statusDot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(245, 158, 11, 0.7);
+}
+
+/* Background command / Monitor / scheduled wakeup in flight. */
+.bgDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #60a5fa;
+  box-shadow: 0 0 5px rgba(96, 165, 250, 0.6);
   flex-shrink: 0;
 }
 
@@ -204,23 +231,10 @@
   white-space: nowrap;
 }
 
-.busy .sessionDot {
-  animation: dotPulse 1.6s ease-in-out infinite;
-}
-
-.waiting .sessionDot {
-  box-shadow: 0 0 0 1.5px #f59e0b;
-}
-
 /* Open session: gold, like the active room chip. */
 .selected,
 .selected:hover {
   background: rgba(212, 175, 55, 0.16);
   color: #f2dc8c;
   font-weight: 600;
-}
-
-@keyframes dotPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.75); }
 }

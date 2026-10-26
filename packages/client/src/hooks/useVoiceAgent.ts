@@ -75,7 +75,12 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
   const supported = useMemo(() => isSpeechSupported(), []);
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>(OFF);
   const [muted, setMuted] = useState<boolean>(readMuted);
-  const [permission, setPermission] = useState<MicPermission>('unknown');
+  // What the Permissions API reports. Not trusted for 'denied': Chrome can
+  // report it while getUserMedia and recognition both work, so only a real
+  // refusal (`refused`) blocks the microphone.
+  const [queried, setPermission] = useState<MicPermission>('unknown');
+  const [refused, setRefused] = useState(false);
+  const permission: MicPermission = refused ? 'denied' : queried === 'denied' ? 'unknown' : queried;
 
   // Speech recognition silently produces nothing when the microphone was never
   // granted — no error, no results. Tracking the permission is the only way to
@@ -83,7 +88,11 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
   useEffect(() => {
     if (!supported) return;
     let status: PermissionStatus | null = null;
-    const onChange = () => { if (status) setPermission(status.state as MicPermission); };
+    const onChange = () => {
+      if (!status) return;
+      setPermission(status.state as MicPermission);
+      if (status.state === 'granted') setRefused(false);
+    };
     navigator.permissions
       ?.query({ name: 'microphone' as PermissionName })
       .then(s => { status = s; setPermission(s.state as MicPermission); s.addEventListener('change', onChange); })
@@ -130,13 +139,17 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
   useEffect(() => {
     const agent = agentRef.current;
     if (!agent) return;
-    // Only an outright denial blocks. Chrome reports 'prompt' for a live but
-    // session-scoped grant, so treating that as blocked would silence a
-    // microphone that is actually working.
-    const blocked = permission === 'denied';
-    agent.setMuted(muted || blocked);
+    // Only a real refusal blocks. Chrome reports 'prompt' for a live but
+    // session-scoped grant, and sometimes 'denied' for a working one, so
+    // trusting the query would silence a microphone that is actually working.
+    agent.setMuted(muted || refused);
     agent.sync();
-  }, [muted, permission, cfg.enabled, cfg.lang, cfg.activation]);
+  }, [muted, refused, cfg.enabled, cfg.lang, cfg.activation]);
+
+  // Chrome refused recognition itself: that is a real block.
+  useEffect(() => {
+    if (snapshot.error === 'not-allowed' || snapshot.error === 'service-not-allowed') setRefused(true);
+  }, [snapshot.error]);
 
   // Tick the elapsed-time readout only while an utterance is open.
   useEffect(() => {
@@ -172,8 +185,9 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
       .then(stream => {
         stream.getTracks().forEach(t => t.stop());
         setPermission('granted');
+        setRefused(false);
       })
-      .catch(() => setPermission('denied'));
+      .catch(() => setRefused(true));
   }, []);
 
   const setIdleHold = useCallback((held: boolean) => { agentRef.current?.setIdleHold(held); }, []);

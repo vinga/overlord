@@ -3001,7 +3001,6 @@ const currentDisplayName =
         {isPendingPty && effectiveSessionId && (
           <>
             <div className={styles.colorStrip} style={{ background: '#d4af37' }} />
-            <button className={styles.closeButton} onClick={onClose} aria-label="Close panel">&times;</button>
             <div className={styles.panelHeader}>
               <div className={styles.headerMain}>
                 <h2 className={styles.sessionName}>Starting session...</h2>
@@ -3040,11 +3039,6 @@ const currentDisplayName =
             })() : (
               <div className={styles.colorStrip} style={{ background: selectedSession.color }} />
             )}
-
-            {/* Close button */}
-            <button className={styles.closeButton} onClick={onClose} aria-label="Close panel">
-              &times;
-            </button>
 
             {selectedSubagent ? (
               /* Subagent view */

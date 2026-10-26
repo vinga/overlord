@@ -1,8 +1,13 @@
 /**
- * Reading worker replies aloud through the browser's speechSynthesis.
+ * Reading worker replies aloud — Chrome's speechSynthesis, or the Kokoro
+ * neural voice running locally (see kokoroVoice.ts).
  *
- * `toSpokenText` is pure and tested; `ReplyVoice` is the thin browser wrapper.
+ * `toSpokenText`, `looksPolish` and `pickEngine` are pure and tested;
+ * `ReplyVoice` is the thin browser wrapper.
  */
+
+import { kokoro } from './kokoroVoice';
+import type { TtsEngine } from './voiceConfig';
 
 /** Longest text handed to the synthesizer. Some Chrome voices stop silently
  *  after ~15s of speech; this keeps one reading comfortably under that. */
@@ -74,45 +79,102 @@ export function isSpeechOutputSupported(): boolean {
   return typeof window !== 'undefined' && 'speechSynthesis' in window;
 }
 
-/** One reply at a time: a new `speak` cuts off the previous one. */
+/** Polish words that are not also common English ones. */
+const POLISH_WORDS = new Set([
+  'jest', 'nie', 'jak', 'czy', 'dla', 'tego', 'teraz', 'gdzie', 'ale', 'bo', 'mam', 'oraz', 'tylko',
+  'przez', 'jeszcze', 'potem', 'kiedy', 'dlaczego', 'wszystko', 'zrobione', 'gotowe', 'plik', 'pliku',
+]);
+
+/** Heuristic: Polish diacritics, or at least two Polish-only words. */
+export function looksPolish(text: string): boolean {
+  if (/[ąćęłńśźżĄĆĘŁŃŚŹŻ]/.test(text)) return true;
+  let hits = 0;
+  for (const w of text.toLowerCase().match(/[a-z]+/g) ?? []) {
+    if (POLISH_WORDS.has(w) && ++hits >= 2) return true;
+  }
+  return false;
+}
+
+/** How long a reading waits for Kokoro to load before using Chrome's voice. */
+export const KOKORO_READY_TIMEOUT_MS = 8000;
+
+/** Kokoro speaks English only, so Polish text — or a Polish language
+ *  setting — always goes to Chrome's voice. */
+export function pickEngine(engine: TtsEngine | undefined, text: string, lang: string, kokoroUsable: boolean): TtsEngine {
+  if (engine !== 'kokoro' || !kokoroUsable) return 'chrome';
+  if (lang.toLowerCase().startsWith('pl') || looksPolish(text)) return 'chrome';
+  return 'kokoro';
+}
+
+export interface SpeakOptions {
+  engine?: TtsEngine;
+  kokoroVoice?: string;
+}
+
+/** One reply at a time across both engines: a new `speak` cuts off the
+ *  previous one. */
 export class ReplyVoice {
-  private current: SpeechSynthesisUtterance | null = null;
+  private active: { stop(): void } | null = null;
 
   /** `onEnd(completed)`: false when cut off by `stop()` or a newer `speak()`. */
-  speak(text: string, lang: string, onEnd: (completed: boolean) => void): void {
-    if (!isSpeechOutputSupported() || text.trim() === '') { onEnd(false); return; }
-    const synth = window.speechSynthesis;
+  speak(text: string, lang: string, onEnd: (completed: boolean) => void, opts: SpeakOptions = {}): void {
+    if (text.trim() === '') { onEnd(false); return; }
     this.stop();
 
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = lang;
-    const voice = pickVoice(synth.getVoices(), lang);
-    if (voice) u.voice = voice;
-    u.rate = 1.05;
-
     let done = false;
+    let engineStop: (() => void) | null = null;
+    const handle = { stop: () => { engineStop?.(); finish(false); } };
     const finish = (completed: boolean) => {
       if (done) return;
       done = true;
-      if (this.current === u) this.current = null;
+      if (this.active === handle) this.active = null;
       onEnd(completed);
     };
-    u.onend = () => finish(this.current === u);
-    u.onerror = () => finish(false);
-    this.current = u;
-    synth.speak(u);
+    this.active = handle;
+
+    const chrome = () => {
+      if (this.active !== handle) return;
+      if (!isSpeechOutputSupported()) { finish(false); return; }
+      engineStop = speakChrome(text, lang, () => this.active === handle, finish);
+    };
+
+    const client = typeof window !== 'undefined' && typeof Worker !== 'undefined' ? kokoro() : null;
+    const usable = client !== null && client.getState().status !== 'error';
+    if (pickEngine(opts.engine, text, lang, usable) === 'chrome' || !client) { chrome(); return; }
+
+    void client.whenReady(KOKORO_READY_TIMEOUT_MS).then(ready => {
+      if (this.active !== handle) return;
+      if (!ready) { chrome(); return; }
+      const reading = client.speak(text, opts.kokoroVoice ?? 'af_heart', (completed, failed) => {
+        if (failed) chrome(); else finish(completed);
+      });
+      engineStop = () => reading.stop();
+    });
   }
 
   stop(): void {
-    if (!isSpeechOutputSupported()) return;
-    const u = this.current;
-    this.current = null;
-    // cancel() fires the utterance's onend; `current` is already cleared, so it
-    // reports completed=false.
-    if (u) window.speechSynthesis.cancel();
+    const a = this.active;
+    this.active = null;
+    a?.stop();
   }
 
   isSpeaking(): boolean {
-    return this.current !== null;
+    return this.active !== null;
   }
+}
+
+/** Reads `text` with Chrome's speechSynthesis. Returns a stop function. */
+function speakChrome(text: string, lang: string, isCurrent: () => boolean, finish: (completed: boolean) => void): () => void {
+  const synth = window.speechSynthesis;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang;
+  const voice = pickVoice(synth.getVoices(), lang);
+  if (voice) u.voice = voice;
+  u.rate = 1.05;
+  // cancel() fires onend; by then the reading is no longer current, so it
+  // reports completed=false.
+  u.onend = () => finish(isCurrent());
+  u.onerror = () => finish(false);
+  synth.speak(u);
+  return () => synth.cancel();
 }

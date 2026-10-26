@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { PrHistoryStore } from './prHistoryStore.js';
+import type { PrHistoryEntry, PrHistoryStore } from './prHistoryStore.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -70,6 +70,7 @@ export class PrCache {
   // (getOrFetchFull) bypass this gate.
   private pollingEnabled = true;
   private historyStore: PrHistoryStore | undefined;
+  private recent = new Map<string, { entries: PrHistoryEntry[]; fetchedAt: number; inFlight?: Promise<PrHistoryEntry[] | null> }>();
 
   constructor(onUpdate: () => void, historyStore?: PrHistoryStore) {
     this.onUpdate = onUpdate;
@@ -167,7 +168,47 @@ export class PrCache {
     }
   }
 
+  /** User-triggered refresh of a room's PR history: re-fetch every branch whose
+   *  last-known state is not terminal (MERGED). Live polling only covers the
+   *  room's current branch and the hourly archived job skips active rooms, so
+   *  without this an OPEN entry for an older, since-merged branch never updates.
+   *  Branches fetched within CLICK_FRESH_MS are reused, not re-fetched. */
+  async refreshHistory(cwd: string): Promise<void> {
+    if (!this.historyStore) return;
+    const branches = new Set(
+      this.historyStore.list(cwd)
+        .filter(e => e.state !== 'MERGED' && e.branch)
+        .map(e => e.branch),
+    );
+    await Promise.all([...branches].map(branch => {
+      const existing = this.entries.get(entryKey(cwd, branch));
+      if (existing && Date.now() - existing.fetchedAt <= CLICK_FRESH_MS) return existing.inFlight;
+      return this.refreshForHistory(cwd, branch);
+    }));
+  }
+
+  /** Recent PRs authored by the gh user in this cwd's repo, straight from
+   *  GitHub — covers PRs whose branch was never checked out in this room
+   *  (e.g. one living in a sibling worktree). One REST call (core pool);
+   *  opens within CLICK_FRESH_MS reuse it. Resolves null when GitHub can't
+   *  answer, so the caller falls back to the locally observed history. */
+  async listRecentFromGitHub(cwd: string): Promise<PrHistoryEntry[] | null> {
+    const cached = this.recent.get(cwd);
+    if (cached?.inFlight) return cached.inFlight;
+    if (cached && Date.now() - cached.fetchedAt <= CLICK_FRESH_MS) return cached.entries;
+    const inFlight = fetchRecentPrsREST(cwd).then(entries => {
+      if (entries) this.recent.set(cwd, { entries, fetchedAt: Date.now() });
+      else this.recent.delete(cwd);
+      return entries;
+    });
+    this.recent.set(cwd, { entries: cached?.entries ?? [], fetchedAt: cached?.fetchedAt ?? 0, inFlight });
+    return inFlight;
+  }
+
   retain(activeCwds: Set<string>): void {
+    for (const cwd of this.recent.keys()) {
+      if (!activeCwds.has(cwd)) this.recent.delete(cwd);
+    }
     for (const [key, entry] of this.entries) {
       if (!activeCwds.has(entry.cwd)) this.entries.delete(key);
     }
@@ -314,6 +355,77 @@ async function fetchPrREST(cwd: string, branch: string): Promise<{ value: PrInfo
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { value: null, error: msg };
+  }
+}
+
+// The gh user's login never changes for the process lifetime; only a
+// successful lookup is cached so a transient failure retries on the next open.
+let ghLogin: string | undefined;
+
+async function getGhLogin(cwd: string): Promise<string | null> {
+  if (ghLogin) return ghLogin;
+  try {
+    const { stdout } = await execFileAsync('gh', ['api', 'user', '--jq', '.login'], { cwd, timeout: 5000 });
+    const login = stdout.trim();
+    if (!login) return null;
+    ghLogin = login;
+    return login;
+  } catch {
+    return null;
+  }
+}
+
+const RECENT_LIMIT = 10;
+
+/** The gh user's most recently updated PRs in this cwd's repo, open and
+ *  closed. Scans the repo's 100 most recently updated PRs — enough to cover
+ *  weeks of one author's work — because the pulls list can't filter by author
+ *  and search results carry no head branch. */
+async function fetchRecentPrsREST(cwd: string): Promise<PrHistoryEntry[] | null> {
+  const ident = await getRepoIdent(cwd);
+  if (!ident) return null;
+  const login = await getGhLogin(cwd);
+  if (!login) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'api',
+        '-X', 'GET',
+        '-H', 'Accept: application/vnd.github+json',
+        `/repos/${ident.owner}/${ident.repo}/pulls`,
+        '-f', 'state=all',
+        '-f', 'sort=updated',
+        '-f', 'direction=desc',
+        '-f', 'per_page=100',
+      ],
+      { cwd, timeout: 10000, maxBuffer: 16 * 1024 * 1024 }
+    );
+    const arr = JSON.parse(stdout) as (RestPull & {
+      user?: { login?: string };
+      head?: { ref?: string };
+      created_at: string;
+      updated_at: string;
+    })[];
+    return arr
+      .filter(p => p.user?.login === login)
+      .slice(0, RECENT_LIMIT)
+      .map(p => {
+        let state = p.state.toUpperCase();
+        if (state === 'CLOSED' && p.merged_at) state = 'MERGED';
+        return {
+          number: p.number,
+          url: p.html_url,
+          title: p.title,
+          state,
+          isDraft: !!p.draft,
+          branch: p.head?.ref ?? '',
+          firstSeenAt: Date.parse(p.created_at),
+          lastSeenAt: Date.parse(p.updated_at),
+        };
+      });
+  } catch {
+    return null;
   }
 }
 

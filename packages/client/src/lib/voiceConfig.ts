@@ -9,6 +9,9 @@
 
 export type VoiceActivation = 'push' | 'wake';
 
+/** Read-aloud engine: Chrome's speechSynthesis, or Kokoro running locally in the browser. */
+export type TtsEngine = 'chrome' | 'kokoro';
+
 export interface VoiceInputConfig {
   enabled: boolean;
   provider: 'webspeech';
@@ -25,6 +28,10 @@ export interface VoiceInputConfig {
   listenAfterReply: boolean;
   /** Push-to-talk: after a send, reopen capture for the next message. */
   stayOnAfterSend: boolean;
+  /** Engine for reading replies aloud. */
+  ttsEngine: TtsEngine;
+  /** Kokoro voice id, e.g. `af_heart`. */
+  kokoroVoice: string;
 }
 
 export const VOICE_DEFAULTS: VoiceInputConfig = {
@@ -44,6 +51,8 @@ export const VOICE_DEFAULTS: VoiceInputConfig = {
   speakReplies: false,
   listenAfterReply: false,
   stayOnAfterSend: false,
+  ttsEngine: 'chrome',
+  kokoroVoice: 'af_heart',
 };
 
 /** Minimum silence before a trailing stop word counts as a commit. Without it,
