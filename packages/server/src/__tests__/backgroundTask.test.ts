@@ -106,6 +106,38 @@ describe('backgroundTasks detection', () => {
     fs.utimesSync(fp, mtime, mtime);
   }
 
+  it('drops a task stopped with TaskStop (which writes no task-notification)', () => {
+    const callTs = BASE - 30_000;
+    const stopTs = BASE - 10_000;
+    const stopCall = JSON.stringify({
+      type: 'assistant', timestamp: new Date(stopTs).toISOString(),
+      message: { model: 'claude-opus-5', usage: { input_tokens: 10 }, content: [{ type: 'tool_use', id: 'stop1', name: 'TaskStop', input: { task_id: 'bkill1' } }] },
+    });
+    const stopResult = JSON.stringify({
+      type: 'user', timestamp: new Date(stopTs + 100).toISOString(),
+      message: { content: [{ type: 'tool_result', tool_use_id: 'stop1', content: '{"message":"Successfully stopped task: bkill1 (npx login)"}' }] },
+    });
+    write([userMsg('go', callTs - 1000), bashCall('t1', callTs), launchResult('t1', callTs + 100, 'bkill1'), stopCall, stopResult]);
+    const state = readTranscriptState(fp);
+    expect(state.backgroundTasks).toBeUndefined();
+    expect(state.backgroundTaskStatuses).toEqual({ t1: 'killed' });
+  });
+
+  it('keeps the task when TaskStop failed', () => {
+    const callTs = BASE - 30_000;
+    const stopTs = BASE - 10_000;
+    const stopCall = JSON.stringify({
+      type: 'assistant', timestamp: new Date(stopTs).toISOString(),
+      message: { model: 'claude-opus-5', usage: { input_tokens: 10 }, content: [{ type: 'tool_use', id: 'stop1', name: 'TaskStop', input: { task_id: 'bkill1' } }] },
+    });
+    const stopResult = JSON.stringify({
+      type: 'user', timestamp: new Date(stopTs + 100).toISOString(),
+      message: { content: [{ type: 'tool_result', tool_use_id: 'stop1', content: 'No task found', is_error: true }] },
+    });
+    write([userMsg('go', callTs - 1000), bashCall('t1', callTs), launchResult('t1', callTs + 100, 'bkill1'), stopCall, stopResult]);
+    expect(readTranscriptState(fp).backgroundTasks?.map(t => t.taskId)).toEqual(['bkill1']);
+  });
+
   it('surfaces a launched background command', () => {
     const callTs = BASE - 30_000;
     write([

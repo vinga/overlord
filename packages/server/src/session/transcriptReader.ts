@@ -1437,6 +1437,9 @@ export function readTranscriptState(filePath: string): {
     const backgroundStarts = new Map<string, BackgroundTask>();
     const terminatedToolUseIds = new Set<string>();
     const backgroundTaskStatuses: Record<string, string> = {};
+    // Shell ids stopped with TaskStop / KillShell. A stopped task writes NO
+    // <task-notification>, so without this it stays "running" until the TTL.
+    const stoppedTaskIds = new Set<string>();
     // Harness-Monitor tracking, same sticky pattern, keyed by task id. Reverse
     // scan ⇒ the first event seen per task is the newest one.
     const monitorStarts = new Map<string, ActiveMonitor>();
@@ -1648,6 +1651,12 @@ export function readTranscriptState(filePath: string): {
                         outputFile: m[2],
                       });
                     }
+                  }
+                  if (block.name === 'TaskStop' || block.name === 'KillShell' || block.name === 'KillBash') {
+                    const inp = (block.input && typeof block.input === 'object') ? block.input as Record<string, unknown> : {};
+                    const target = typeof inp.task_id === 'string' ? inp.task_id : typeof inp.shell_id === 'string' ? inp.shell_id : undefined;
+                    const res = toolResults.get((block as Record<string, unknown>).id as string);
+                    if (target && res && !res.isError) stoppedTaskIds.add(target);
                   }
                   // Active ScheduleWakeup: most recent call, confirmed by a non-error
                   // tool_result, not a stop, fire time (+ grace) still ahead.
@@ -1903,6 +1912,11 @@ export function readTranscriptState(filePath: string): {
       if (!pendingBackgroundTasks.has(id)) pendingBackgroundTasks.set(id, task);
     }
     for (const id of terminatedToolUseIds) pendingBackgroundTasks.delete(id);
+    for (const [id, task] of pendingBackgroundTasks) {
+      if (!stoppedTaskIds.has(task.taskId)) continue;
+      pendingBackgroundTasks.delete(id);
+      backgroundTaskStatuses[id] ??= 'killed';
+    }
     for (const [id, task] of pendingBackgroundTasks) {
       const startedMs = task.startedAt ? Date.parse(task.startedAt) : NaN;
       if (!Number.isFinite(startedMs) || now - startedMs > BACKGROUND_TASK_TTL_MS) {
