@@ -305,3 +305,16 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.dockGroup {
+  margin: 4px 0 -2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-tertiary, rgba(235, 235, 245, 0.4));
+}
+
+.line .meta {
+  margin-left: auto;
+}

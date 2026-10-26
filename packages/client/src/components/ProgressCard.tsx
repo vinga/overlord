@@ -168,29 +168,47 @@ interface DockProps {
  *  "finished" entry this long, or the end goes unnoticed. */
 const FINISHED_VISIBLE_MS = 10 * 60 * 1000;
 
+/** A running card with no progress rows and nothing printed for this long is a
+ *  service (dev server, browser, log tail), not a watch: it keeps one line in
+ *  the dock instead of a full card. */
+const QUIET_AFTER_MS = 5 * 60 * 1000;
+
+function isQuietService(c: BackgroundProgress, now: number): boolean {
+  if (c.rows.length > 0) return false;
+  const lastMs = c.lastAt ?? (c.startedAt ? Date.parse(c.startedAt) : NaN);
+  return Number.isFinite(lastMs) && now - lastMs > QUIET_AFTER_MS;
+}
+
 /** Running background commands, pinned between the conversation and the
  *  composer so their progress stays in view while the chat scrolls. Each card
  *  moves back into the feed (inline, at its launch point) once it finishes. */
 export function ProgressDock({ cards, sessionId }: DockProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const running = cards.filter(c => c.status === 'running');
   const now = Date.now();
+  const allRunning = cards.filter(c => c.status === 'running');
+  const running = allRunning.filter(c => !isQuietService(c, now));
+  const services = allRunning.filter(c => isQuietService(c, now));
   const finished = cards.filter(c => c.status !== 'running'
     && c.endedAt !== undefined && now - c.endedAt < FINISHED_VISIBLE_MS);
-  // Drops finished cards once their window passes.
-  useTick(finished.length > 0 ? 30_000 : null);
-  if (running.length === 0 && finished.length === 0) return null;
+  // Drops finished cards once their window passes; moves quiet ones to services.
+  useTick(finished.length > 0 || allRunning.length > 0 ? 30_000 : null);
+  if (allRunning.length === 0 && finished.length === 0) return null;
   return (
     <div className={styles.dock}>
       <button type="button" className={styles.dockHeader} onClick={() => setCollapsed(c => !c)}>
-        <span className={styles.dockTitle}>{running.length > 0 ? 'Running in background' : 'Background finished'}</span>
-        <span className={styles.dockCount}>{running.length > 0 ? running.length : finished.length}</span>
+        <span className={styles.dockTitle}>{allRunning.length > 0 ? 'Running in background' : 'Background finished'}</span>
+        <span className={styles.dockCount}>{allRunning.length > 0 ? allRunning.length : finished.length}</span>
         <span className={styles.dockToggle}>{collapsed ? 'Expand' : 'Collapse'}</span>
       </button>
       <div className={styles.dockBody}>
         {running.map(c => (
           <ProgressCard key={c.toolUseId} card={c} sessionId={sessionId} variant={collapsed ? 'line' : 'docked'} />
         ))}
+        {services.length > 0 && <div className={styles.dockGroup}>Long-running · no output for 5+ min</div>}
+        {services.map(c => (
+          <ProgressCard key={c.toolUseId} card={c} sessionId={sessionId} variant="line" />
+        ))}
+        {finished.length > 0 && allRunning.length > 0 && <div className={styles.dockGroup}>Finished</div>}
         {finished.map(c => (
           <ProgressCard key={c.toolUseId} card={c} sessionId={sessionId} variant="line" />
         ))}
