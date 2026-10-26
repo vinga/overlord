@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readTranscriptState, _resetCachesForTest } from '../session/transcriptReader.js';
+import { readTranscriptState, _resetCachesForTest, commandLabel } from '../session/transcriptReader.js';
 
 // Background-task detection: a session that launched `Bash(run_in_background: true)`
 // and ended its turn is not "waiting for input" — the harness re-invokes it when the
@@ -272,5 +272,21 @@ describe('backgroundTasks detection', () => {
     const r = readTranscriptState(fp);
     expect(r.transcriptTruncated).toBe(true);
     expect(r.backgroundTasks).toBeUndefined();
+  });
+});
+
+describe('commandLabel (title for a background command without a description)', () => {
+  it.each([
+    ['"${AGENT_SKILLS_DIR:-$HOME/.claude/skills}/hy-deliver/scripts/wait_for_merge.sh" --interval 120 --rounds 55 hypatos/enrichment-hub#561', 'wait_for_merge.sh hypatos/enrichment-hub#561'],
+    ['cd /repo && AWS_PROFILE=dev python3 scripts/check.py --pr 814 dev', 'python3 scripts/check.py dev'],
+    ['ovr-watch --label "Dev deploy" --every 60 -- ./check.sh dev', 'ovr-watch ./check.sh dev'],
+    ['# comment\nnpm run dev', 'npm run dev'],
+  ])('%s', (cmd, want) => {
+    expect(commandLabel(cmd)).toBe(want);
+  });
+
+  it('is undefined for no command', () => {
+    expect(commandLabel(undefined)).toBeUndefined();
+    expect(commandLabel('   ')).toBeUndefined();
   });
 });

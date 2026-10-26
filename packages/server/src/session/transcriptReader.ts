@@ -487,6 +487,41 @@ const BACKGROUND_TASK_TTL_MS = 6 * 60 * 60 * 1000;
 // sentence-ending period instead.
 const BACKGROUND_LAUNCH_RE = /Command running in background with ID: ([^\s.]+)\. Output is being written to: (\S+)\./;
 
+/**
+ * Short name for a background command launched without a `description`
+ * (skills often omit it), so the card and pill don't fall back to the shell id:
+ * `"${HOME}/…/wait_for_merge.sh" --interval 120 owner/repo#561` →
+ * `wait_for_merge.sh owner/repo#561`. Leading `cd …&&` and `VAR=…` are skipped;
+ * flags and their values are dropped.
+ */
+export function commandLabel(command: unknown): string | undefined {
+  if (typeof command !== 'string') return undefined;
+  const firstLine = command.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'));
+  if (!firstLine) return undefined;
+  const segments = firstLine.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
+  const main = segments.find(s => !/^(cd|export|set|source|\.)\s/.test(s)) ?? segments[0];
+  const tokens = (main.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(t => t.replace(/^["']|["']$/g, ''));
+  let i = 0;
+  while (i < tokens.length && /^[A-Z_][A-Z0-9_]*=/.test(tokens[i])) i++;
+  const exe = tokens[i];
+  if (!exe) return undefined;
+  const name = exe.split('/').pop() ?? exe;
+  const args: string[] = [];
+  for (let j = i + 1; j < tokens.length && args.length < 2; j++) {
+    const t = tokens[j];
+    if (t === '--') continue;
+    if (t.startsWith('-')) {
+      // Assume `--flag value` (most script flags take one); `--flag=value` is one token.
+      if (!t.includes('=') && j + 1 < tokens.length && !tokens[j + 1].startsWith('-')) j++;
+      continue;
+    }
+    if (/^[|<>&]/.test(t)) break;
+    args.push(t);
+  }
+  const label = [name, ...args].join(' ');
+  return label.length > 80 ? `${label.slice(0, 79)}…` : label;
+}
+
 // Completion arrives as a <task-notification> block on three separate lines
 // (queue-operation enqueue, queue-operation remove, attachment/queued_command).
 // Statuses seen in the wild: completed, failed, stopped — all terminal, so the
@@ -1585,7 +1620,9 @@ export function readTranscriptState(filePath: string): {
                       backgroundStarts.set(toolUseId, {
                         toolUseId,
                         taskId: m[1],
-                        description: typeof desc === 'string' ? desc : undefined,
+                        description: typeof desc === 'string' && desc.trim()
+                          ? desc
+                          : commandLabel((block.input as Record<string, unknown>).command),
                         startedAt: parsed.timestamp ?? new Date(now).toISOString(),
                         outputFile: m[2],
                       });

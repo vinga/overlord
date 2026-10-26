@@ -106,7 +106,7 @@ function WaitingIndicator({ isSubagent, review, needsPermission, unknownCommand,
     const first = backgroundTasks[0];
     const elapsed = formatElapsed(first.startedAt);
     const extra = backgroundTasks.length > 1 ? ` +${backgroundTasks.length - 1}` : '';
-    const label = first.description ?? first.taskId;
+    const label = first.description ?? 'Background command';
     return (
       <span className={styles.bubbleBackground} title={`Running in background: ${label}${elapsed ? ` (${elapsed})` : ''}`}>
         <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">

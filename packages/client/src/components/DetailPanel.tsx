@@ -3840,7 +3840,7 @@ const currentDisplayName =
                                   className={styles.stateBarReason}
                                   title={stateBarBackgroundTask.outputFile ?? stateBarBackgroundTask.taskId}
                                 >
-                                  {stateBarBackgroundTask.description ?? stateBarBackgroundTask.taskId}
+                                  {stateBarBackgroundTask.description ?? ''}
                                 </span>
                                 {stateBarBackgroundTask.startedAt && (
                                   <span className={styles.stateBarElapsed}>

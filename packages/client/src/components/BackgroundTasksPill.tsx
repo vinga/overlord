@@ -37,7 +37,7 @@ export function BackgroundTasksPill({ tasks, progress }: Props) {
     .map(t => {
       const elapsed = formatElapsed(t.startedAt);
       const latest = progressText(cardFor(t));
-      return `${t.description ?? t.taskId}${elapsed ? ` — ${elapsed}` : ''}${latest ? `\n  ${latest}` : ''}`;
+      return `${t.description ?? 'Background command'}${elapsed ? ` — ${elapsed}` : ''}${latest ? `\n  ${latest}` : ''}`;
     })
     .join('\n');
 
@@ -46,7 +46,7 @@ export function BackgroundTasksPill({ tasks, progress }: Props) {
   const latest = progressText(cardFor(first));
   const label = tasks.length > 1
     ? `Background ×${tasks.length}`
-    : `Background · ${latest ?? first.description ?? first.taskId}`;
+    : `Background · ${latest ?? first.description ?? 'command'}`;
 
   return (
     <span className={`${styles.pill} ${styles.background}`} title={tooltip}>

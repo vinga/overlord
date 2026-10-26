@@ -66,7 +66,7 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
   const elapsed = card.startedAt
     ? formatElapsed(card.startedAt, card.endedAt ?? Date.now())
     : '';
-  const title = card.rows.length === 1 && card.rows[0].label ? card.rows[0].label : (card.description ?? card.taskId);
+  const title = card.rows.length === 1 && card.rows[0].label ? card.rows[0].label : (card.description ?? 'Background command');
   if (variant === 'line') {
     const row = card.rows.find(r => !r.final) ?? card.rows[0];
     const summary = row
