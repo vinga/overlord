@@ -1989,9 +1989,9 @@ export function DetailPanel({
   const isPendingPty = !selectedSession && !!effectiveSessionId && isPtySession(effectiveSessionId);
   const isOpen = selectedSession !== null || isPendingPty;
   const progressCards = useProgressCards(selectedSession?.sessionId, selectedSession?.backgroundProgress, selectedSession?.backgroundTasks);
-  // Dock: running cards, plus recently finished pushed ones (no feed anchor to land on).
+  // Dock: running cards, plus finished ones (the dock shows those for a few minutes).
   const dockProgressCards = useMemo(
-    () => [...progressCards.values()].filter(c => c.status === 'running' || c.source === 'push'),
+    () => [...progressCards.values()].filter(c => c.status === 'running' || c.endedAt !== undefined),
     [progressCards],
   );
 

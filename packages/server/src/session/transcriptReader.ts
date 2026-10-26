@@ -498,11 +498,29 @@ export function commandLabel(command: unknown): string | undefined {
   if (typeof command !== 'string') return undefined;
   const firstLine = command.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#'));
   if (!firstLine) return undefined;
-  const segments = firstLine.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
+  // `for … do X; done` / `while … do X` / `if … then X`: the loop header says
+  // nothing ("for i in"), the body's first command does ("loop · docker info").
+  const compound = /^(for|while|until|select|if)\b/.exec(firstLine);
+  if (compound) {
+    const body = /\b(?:do|then)\s+(.*)$/.exec(firstLine)?.[1];
+    const inner = body ? simpleCommandLabel(body) : undefined;
+    const kind = compound[1] === 'if' ? 'if' : 'loop';
+    return inner ? `${kind} · ${inner}` : clip(firstLine.replace(/\s+/g, ' '));
+  }
+  return simpleCommandLabel(firstLine);
+}
+
+function clip(label: string): string {
+  return label.length > 80 ? `${label.slice(0, 79)}…` : label;
+}
+
+function simpleCommandLabel(line: string): string | undefined {
+  const segments = line.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
   const main = segments.find(s => !/^(cd|export|set|source|\.)\s/.test(s)) ?? segments[0];
+  if (!main) return undefined;
   const tokens = (main.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map(t => t.replace(/^["']|["']$/g, ''));
   let i = 0;
-  while (i < tokens.length && /^[A-Z_][A-Z0-9_]*=/.test(tokens[i])) i++;
+  while (i < tokens.length && (/^[A-Z_][A-Z0-9_]*=/.test(tokens[i]) || /^[{(!]$/.test(tokens[i]))) i++;
   const exe = tokens[i];
   if (!exe) return undefined;
   const name = exe.split('/').pop() ?? exe;
@@ -511,15 +529,15 @@ export function commandLabel(command: unknown): string | undefined {
     const t = tokens[j];
     if (t === '--') continue;
     if (t.startsWith('-')) {
-      // Assume `--flag value` (most script flags take one); `--flag=value` is one token.
-      if (!t.includes('=') && j + 1 < tokens.length && !tokens[j + 1].startsWith('-')) j++;
+      // Assume `--flag value` (most script flags take one); `--flag=value` is one
+      // token, and short bundles like `-sf` are switches.
+      if (t.startsWith('--') && !t.includes('=') && j + 1 < tokens.length && !tokens[j + 1].startsWith('-')) j++;
       continue;
     }
-    if (/^[|<>&]/.test(t)) break;
+    if (/^[|<>&]|^\d>/.test(t)) break;
     args.push(t);
   }
-  const label = [name, ...args].join(' ');
-  return label.length > 80 ? `${label.slice(0, 79)}…` : label;
+  return clip([name, ...args].join(' '));
 }
 
 // Completion arrives as a <task-notification> block on three separate lines
@@ -1623,6 +1641,9 @@ export function readTranscriptState(filePath: string): {
                         description: typeof desc === 'string' && desc.trim()
                           ? desc
                           : commandLabel((block.input as Record<string, unknown>).command),
+                        command: typeof (block.input as Record<string, unknown>).command === 'string'
+                          ? ((block.input as Record<string, unknown>).command as string).slice(0, 500)
+                          : undefined,
                         startedAt: parsed.timestamp ?? new Date(now).toISOString(),
                         outputFile: m[2],
                       });

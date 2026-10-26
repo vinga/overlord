@@ -118,6 +118,7 @@ export interface BackgroundTask {
   toolUseId: string;      // Bash tool_use id — join key with <tool-use-id>
   taskId: string;         // shell id, e.g. "bw5hy60h4"
   description?: string;   // Bash `description` input — label for the bubble
+  command?: string;       // Bash `command` input, first 500 chars — shown until the first output line
   startedAt?: string;     // ISO timestamp of the tool_use
   outputFile?: string;    // …/tasks/<taskId>.output
   lastOutputAt?: number;  // epoch ms — mtime of outputFile, liveness hint
@@ -145,6 +146,7 @@ export interface BackgroundProgress {
   toolUseId: string;
   taskId: string;
   description?: string;
+  command?: string;
   startedAt?: string;
   endedAt?: number;
   status: BackgroundProgressStatus;
@@ -158,7 +160,7 @@ export interface BackgroundProgress {
 }
 
 export type ProgressHistoryEntry =
-  | { t: 'meta'; toolUseId: string; taskId: string; description?: string; startedAt?: string; source?: 'output' | 'push' }
+  | { t: 'meta'; toolUseId: string; taskId: string; description?: string; command?: string; startedAt?: string; source?: 'output' | 'push' }
   | { t: 'line'; at: number; text: string; row?: ProgressRow }
   | { t: 'end'; at: number; status: BackgroundProgressStatus };
 

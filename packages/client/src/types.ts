@@ -88,6 +88,7 @@ export interface BackgroundTask {
   toolUseId: string;
   taskId: string;
   description?: string;
+  command?: string;
   startedAt?: string;
   outputFile?: string;
   lastOutputAt?: number;
@@ -113,6 +114,7 @@ export interface BackgroundProgress {
   toolUseId: string;
   taskId: string;
   description?: string;
+  command?: string;
   startedAt?: string;
   endedAt?: number;
   status: BackgroundProgressStatus;

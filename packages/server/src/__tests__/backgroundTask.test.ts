@@ -281,6 +281,9 @@ describe('commandLabel (title for a background command without a description)', 
     ['cd /repo && AWS_PROFILE=dev python3 scripts/check.py --pr 814 dev', 'python3 scripts/check.py dev'],
     ['ovr-watch --label "Dev deploy" --every 60 -- ./check.sh dev', 'ovr-watch ./check.sh dev'],
     ['# comment\nnpm run dev', 'npm run dev'],
+    ['for i in $(seq 1 100); do docker info >/dev/null 2>&1 && { echo DOCKER_OK; exit 0; }; sleep 5; done; echo NO_DOCKER', 'loop · docker info'],
+    ['while true; do curl -sf http://localhost:8000/health && break; sleep 2; done', 'loop · curl http://localhost:8000/health'],
+    ['if [ -f x ]; then ./deploy.sh prod; fi', 'if · deploy.sh prod'],
   ])('%s', (cmd, want) => {
     expect(commandLabel(cmd)).toBe(want);
   });

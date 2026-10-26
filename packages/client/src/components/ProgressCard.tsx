@@ -75,7 +75,8 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
     return (
       <div className={`${styles.line} ${styles[card.status]}`} data-progress-card={card.toolUseId}>
         <span className={styles.statusDot} />
-        <span className={styles.title}>{title}</span>
+        <span className={styles.title} title={card.command ?? card.description}>{title}</span>
+        {!running && <span className={styles.statusChip}>{STATUS_LABEL[card.status]}</span>}
         {summary && <span className={styles.lineSummary}>{summary}</span>}
         {elapsed && <span className={styles.meta}>{elapsed}</span>}
       </div>
@@ -88,7 +89,7 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
     <div className={`${styles.card} ${styles[card.status]} ${variant === 'docked' ? styles.docked : ''}`} data-progress-card={card.toolUseId}>
       <div className={styles.header}>
         <span className={styles.statusDot} />
-        <span className={styles.title} title={card.description}>{title}</span>
+        <span className={styles.title} title={card.command ?? card.description}>{title}</span>
         <span className={styles.statusChip}>{STATUS_LABEL[card.status]}</span>
         {elapsed && <span className={styles.meta}>{elapsed}</span>}
       </div>
@@ -120,7 +121,10 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
         <div className={styles.lastLine} title={card.lastLine}>{card.lastLine}</div>
       )}
       {card.rows.length === 0 && !card.lastLine && (
-        <div className={styles.empty}>{running ? 'No output yet' : 'No output'}</div>
+        card.command
+          // Nothing printed yet: the command itself is the best description.
+          ? <div className={styles.lastLine} title={card.command}>$ {card.command.split('\n')[0]}</div>
+          : <div className={styles.empty}>{running ? 'No output yet' : 'No output'}</div>
       )}
 
       {card.lineCount > 0 && (
@@ -159,9 +163,10 @@ interface DockProps {
   sessionId: string;
 }
 
-/** Pushed cards (ovr-watch over REST, e.g. Codex) have no tool call in the feed
- *  to land on when they finish, so the dock keeps them this long afterwards. */
-const PUSH_FINISHED_VISIBLE_MS = 10 * 60 * 1000;
+/** A finished card's inline spot is wherever it was launched — often far up
+ *  the feed, and pushed cards (Codex) have none — so the dock keeps a one-line
+ *  "finished" entry this long, or the end goes unnoticed. */
+const FINISHED_VISIBLE_MS = 10 * 60 * 1000;
 
 /** Running background commands, pinned between the conversation and the
  *  composer so their progress stays in view while the chat scrolls. Each card
@@ -170,9 +175,9 @@ export function ProgressDock({ cards, sessionId }: DockProps) {
   const [collapsed, setCollapsed] = useState(false);
   const running = cards.filter(c => c.status === 'running');
   const now = Date.now();
-  const finished = cards.filter(c => c.status !== 'running' && c.source === 'push'
-    && c.endedAt !== undefined && now - c.endedAt < PUSH_FINISHED_VISIBLE_MS);
-  // Drops finished push cards once their window passes.
+  const finished = cards.filter(c => c.status !== 'running'
+    && c.endedAt !== undefined && now - c.endedAt < FINISHED_VISIBLE_MS);
+  // Drops finished cards once their window passes.
   useTick(finished.length > 0 ? 30_000 : null);
   if (running.length === 0 && finished.length === 0) return null;
   return (

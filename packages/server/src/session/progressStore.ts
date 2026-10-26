@@ -105,6 +105,7 @@ export function replayHistory(entries: ProgressHistoryEntry[], now = Date.now())
     toolUseId: meta.toolUseId,
     taskId: meta.taskId,
     description: meta.description,
+    command: meta.command,
     startedAt: meta.startedAt,
     status: 'running',
     rows: [],
@@ -318,6 +319,7 @@ export function syncSession(
           toolUseId: task.toolUseId,
           taskId: task.taskId,
           description: task.description,
+          command: task.command,
           startedAt: task.startedAt,
           status: 'running',
           rows: [],
@@ -332,7 +334,7 @@ export function syncSession(
       };
       map.set(task.toolUseId, t);
       persist(sessionId, task.toolUseId, [{
-        t: 'meta', toolUseId: task.toolUseId, taskId: task.taskId, description: task.description, startedAt: task.startedAt,
+        t: 'meta', toolUseId: task.toolUseId, taskId: task.taskId, description: task.description, command: task.command, startedAt: task.startedAt,
       }]);
       changed = true;
     } else if (!t.seenLive) {
