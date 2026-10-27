@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Room } from '../types';
 import styles from './HiddenRoomsPill.module.css';
 
@@ -36,21 +37,37 @@ function roomHasAttention(room: Room): boolean {
 export function HiddenRoomsPill({ hiddenRooms, attentionCount, onUnhide, onUnhideAll }: HiddenRoomsPillProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   useEffect(() => {
     if (!open) return;
     function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || menuRef.current?.contains(t)) return;
+      setOpen(false);
     }
+    function onResize() { setOpen(false); }
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') setOpen(false);
     }
     document.addEventListener('mousedown', onDocClick);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
     return () => {
+      window.removeEventListener('resize', onResize);
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
+  }, [open]);
+
+  // Portaled to <body>: the sticky header's stacking context (z 10) sits below the
+  // detail panel (z 101), so a vertically docked panel would cover an in-header popover.
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) { setMenuPos(null); return; }
+    const r = btnRef.current.getBoundingClientRect();
+    setMenuPos({ top: r.bottom + 6, right: window.innerWidth - r.right });
   }, [open]);
 
   if (hiddenRooms.length === 0) return null;
@@ -58,6 +75,7 @@ export function HiddenRoomsPill({ hiddenRooms, attentionCount, onUnhide, onUnhid
   return (
     <div className={styles.wrapper} ref={ref}>
       <button
+        ref={btnRef}
         className={styles.pill}
         onClick={() => setOpen(o => !o)}
         aria-expanded={open}
@@ -71,8 +89,8 @@ export function HiddenRoomsPill({ hiddenRooms, attentionCount, onUnhide, onUnhid
         <span>{hiddenRooms.length}</span>
         {attentionCount > 0 && <span className={styles.attentionDot} aria-label={`${attentionCount} waiting`} />}
       </button>
-      {open && (
-        <div className={styles.popover} role="menu">
+      {open && menuPos && createPortal(
+        <div ref={menuRef} className={styles.popover} style={{ top: menuPos.top, right: menuPos.right }} role="menu">
           <div className={styles.popoverTitle}>Hidden rooms</div>
           {hiddenRooms.map(room => {
             const activeCount = room.sessions.filter(s => s.state !== 'closed').length;
@@ -98,7 +116,8 @@ export function HiddenRoomsPill({ hiddenRooms, attentionCount, onUnhide, onUnhid
               Show all
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

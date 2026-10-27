@@ -37,9 +37,7 @@
 }
 
 .popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   min-width: 260px;
   max-width: 340px;
   background: #1e1e2e;
