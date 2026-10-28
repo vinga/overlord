@@ -328,6 +328,11 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           <span
             className={`${styles.label} ${isSubagent ? styles.labelSubagent : ''}`}
             onDoubleClick={handleLabelDoubleClick}
+            onMouseEnter={(e) => {
+              // Full title on hover, only when the 2-line clamp cut it.
+              const el = e.currentTarget;
+              el.title = el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1 ? label : '';
+            }}
           >
             {label}
           </span>
