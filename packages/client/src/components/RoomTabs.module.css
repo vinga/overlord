@@ -43,6 +43,9 @@
 
 .strip.side .tab {
   min-width: 0;
+  /* Same inset as .withSessions, so every room name starts on one line. */
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
 .strip.side .tabBtn {
@@ -138,20 +141,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.busyDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
-  flex-shrink: 0;
-  transition: background 0.2s, box-shadow 0.2s;
-}
-
-.busyOn {
-  background: #4ade80;
-  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
 }
 
 .badge {

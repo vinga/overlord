@@ -37,7 +37,6 @@ interface TabInfo {
   name: string;
   cwd: string;
   waiting: number;
-  busy: boolean;
   sessions: SessionDot[];
 }
 
@@ -87,15 +86,14 @@ export const RoomTabs = React.memo(function RoomTabs({
   const tabsKey = rooms
     .map(r => {
       const waiting = r.sessions.filter(isWaiting).length;
-      const busy = r.sessions.some(isBusy);
       const dots = showSessions ? JSON.stringify(sessionDots(r.sessions, customNames)) : '[]';
-      return `${r.id}\u0001${r.name}\u0001${r.cwd}\u0001${waiting}\u0001${busy ? 1 : 0}\u0001${dots}`;
+      return `${r.id}\u0001${r.name}\u0001${r.cwd}\u0001${waiting}\u0001${dots}`;
     })
     .join('\u0002');
   const tabs = useMemo<TabInfo[]>(
     () => (tabsKey ? tabsKey.split('\u0002') : []).map(row => {
-      const [id, name, cwd, waiting, busy, dots] = row.split('\u0001');
-      return { id, name, cwd, waiting: Number(waiting), busy: busy === '1', sessions: JSON.parse(dots) as SessionDot[] };
+      const [id, name, cwd, waiting, dots] = row.split('\u0001');
+      return { id, name, cwd, waiting: Number(waiting), sessions: JSON.parse(dots) as SessionDot[] };
     }),
     [tabsKey],
   );
@@ -192,13 +190,8 @@ export const RoomTabs = React.memo(function RoomTabs({
           }}
           onDragEnd={endDrag}
         >
-          {/* Dot slot is always laid out and the badge is an overlay, so state
-              changes never shift tab widths. */}
+          {/* The badge is an overlay, so state changes never shift tab widths. */}
           <button type="button" className={styles.tabBtn} title={`${t.cwd}\nDrag to reorder`}>
-            {/* With session lists, "working" is shown per session line instead. */}
-            {!(showSessions && t.sessions.length > 0) && (
-              <span className={`${styles.busyDot} ${t.busy ? styles.busyOn : ''}`} aria-hidden="true" />
-            )}
             <span className={styles.name}>{t.name}</span>
           </button>
           {showSessions && t.sessions.length > 0 && (
