@@ -2333,7 +2333,6 @@ export function DetailPanel({
   const [confirmDeleteArchive, setConfirmDeleteArchive] = useState(false);
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
-  const [confirmKill, setConfirmKill] = useState(false);
   const [resuming, setResuming] = useState(false);
   const [openingTerminal, setOpeningTerminal] = useState(false);
   const [openingBridged, setOpeningBridged] = useState(false);
@@ -2641,7 +2640,6 @@ const currentDisplayName =
     setConfirmDeleteArchive(false);
     setPastedImage(null);
     setKilling(false);
-    setConfirmKill(false);
     setResuming(false);
     setPanelSearchQuery('');
     // Don't reset to conversation tab if a scroll target will switch us there
@@ -4545,30 +4543,18 @@ const currentDisplayName =
                                 </button>
                               )}
                               {selectedSession.state !== 'closed' && (
-                                confirmKill ? (
-                                  <div className={styles.killConfirmInline}>
-                                    <span>Kill session?</span>
-                                    <button
-                                      className={styles.killConfirmYes}
-                                      onClick={() => {
-                                        setConfirmKill(false);
-                                        setKilling(true);
-                                        fetch(`/api/sessions/${sid}/kill-process`, { method: 'POST' })
-                                          .catch(console.error)
-                                          .finally(() => setKilling(false));
-                                      }}
-                                    >Kill</button>
-                                    <button className={styles.killConfirmNo} onClick={() => setConfirmKill(false)}>Cancel</button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    className={`${styles.resumeKillBtn} ${killing ? styles.resumeButtonPending : ''}`}
-                                    disabled={killing}
-                                    onClick={() => setConfirmKill(true)}
-                                  >
-                                    {killing ? 'Killing…' : 'Kill Session'}
-                                  </button>
-                                )
+                                <button
+                                  className={`${styles.resumeKillBtn} ${killing ? styles.resumeButtonPending : ''}`}
+                                  disabled={killing}
+                                  onClick={() => {
+                                    setKilling(true);
+                                    fetch(`/api/sessions/${sid}/kill-process`, { method: 'POST' })
+                                      .catch(console.error)
+                                      .finally(() => setKilling(false));
+                                  }}
+                                >
+                                  {killing ? 'Killing…' : 'Kill Session'}
+                                </button>
                               )}
                             </div>
                           </div>
