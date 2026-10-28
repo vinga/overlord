@@ -124,14 +124,18 @@ function hasAskUserQuestionMarkers(text: string): boolean {
 }
 
 function looksLikeAskUserQuestion(text: string): boolean {
-  if (PRIMARY_PATTERN.test(text)) return false;          // it's a permission prompt
+  // "do you want to" marks a permission prompt — but only inside the dialog box.
+  // Scrollback above the chip's box is the conversation, and the assistant asking
+  // "What do you want to clarify?" there must not hide the menu below it.
+  const lines = text.split('\n');
+  const chipIdx = findLastIdx(lines, ASK_CHIP_LINE);
+  const box = chipIdx >= 0 ? lines.slice(boxStartIdx(lines, chipIdx)).join('\n') : text;
+  if (PRIMARY_PATTERN.test(box)) return false;           // it's a permission prompt
   // Require at least one numbered option line so a bare footer echo doesn't trigger.
   if (!ASK_OPTION_LINE.test(text)) return false;
   if (ASK_FOOTER.every(p => p.test(text))) return true;  // the ordinary, fully-visible menu
   // Clipped menu. The chip alone is too weak (other TUI pickers use numbered rows),
   // so demand a second AskUserQuestion-only marker.
-  const lines = text.split('\n');
-  const chipIdx = findLastIdx(lines, ASK_CHIP_LINE);
   if (chipIdx >= 0 && ASK_REVIEW.test(lines.slice(chipIdx + 1).join('\n'))) return false;
   return ASK_HEADER_CHIP.test(text)
     && (ASK_BUILTIN_ROW.test(text) || ASK_OPTION_CARET.test(text) || ASK_JUMP_TO_BOTTOM.test(text));
@@ -406,7 +410,9 @@ export function startPermissionChecker(
         const text = getScreenText
           ? await getScreenText(id, session.pid)
           : (readScreen ? await readScreen(session.pid) : null);
-        const hasPrompt = text ? looksLikePermissionPrompt(text) : false;
+        // The menu's own `Esc to cancel` plus a "do you want to" in the scrollback
+        // reads as a permission prompt; a live AskUserQuestion box rules that out.
+        const hasPrompt = text ? looksLikePermissionPrompt(text) && !looksLikeAskUserQuestion(text) : false;
         if (hasPrompt && !isBypass) {
           // Prompt detected: set flag and reset miss counter
           missCount.set(id, 0);

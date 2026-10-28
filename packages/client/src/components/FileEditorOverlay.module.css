@@ -369,3 +369,30 @@
   resize: none;
   box-sizing: border-box;
 }
+
+/* Rich (WYSIWYG) markdown editing: toolbar pinned, document scrolls under it. */
+.richPane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.richToolbar {
+  display: flex;
+  align-items: center;
+  padding: 6px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.richScroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.richProse {
+  outline: none;
+  caret-color: #d4af37;
+  white-space: pre-wrap;
+}

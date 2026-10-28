@@ -115,6 +115,35 @@ describe('single-select "Type something" row', () => {
   });
 });
 
+describe('"do you want to" in the scrollback', () => {
+  // Live screen: the previous assistant turn asked "What do you want to clarify?",
+  // which once read as a permission prompt and hid the menu below it.
+  const SCREEN = [
+    '⏺ The question was rejected. What do you want to clarify?',
+    '',
+    '❯ Ask it again, same question, nothing else.',
+    RULE,
+    '←  ☐ Push  ✔ Submit  →',
+    '',
+    'Which skills?',
+    '',
+    '❯ 1. [ ] A',
+    '         Skill A',
+    '  2. [ ] B',
+    '         Skill B',
+    '  3. [ ] Type something',
+    '     Submit',
+    RULE,
+    '  4. Chat about this',
+    '',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel',
+  ].join('\n');
+
+  it('still detects the menu', () => {
+    expect(looksLikeAskUserQuestion(SCREEN)).toBe(true);
+  });
+});
+
 describe('review step', () => {
   it('is not mistaken for a question', () => {
     expect(looksLikeAskUserQuestion(REVIEW)).toBe(false);

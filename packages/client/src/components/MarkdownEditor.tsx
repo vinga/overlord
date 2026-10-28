@@ -3,6 +3,9 @@ import type { ReactNode } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import type { Editor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
+import Text from '@tiptap/extension-text';
+import Code from '@tiptap/extension-code';
+import HardBreak from '@tiptap/extension-hard-break';
 import Link from '@tiptap/extension-link';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
@@ -24,20 +27,72 @@ interface Options {
   /** Extra class on the ProseMirror root — e.g. a larger font size. */
   proseClassName?: string;
   onChange: (markdown: string) => void;
+  /** Editing a markdown file on disk: keep the source as close to verbatim as
+   *  tiptap allows (see FILE_FIDELITY). */
+  forFile?: boolean;
 }
+
+/** Plain text, escaped for markdown only. tiptap-markdown's own text node also
+ *  HTML-escapes, so every `>` in prose came back as `&gt;`. */
+const FileText = Text.extend({
+  addStorage() {
+    return { markdown: { serialize(state: { text: (t: string) => void }, node: { text: string }) { state.text(node.text); } } };
+  },
+});
+
+type SerializerState = { inTable?: boolean; write: (s: string) => void };
+type PMNode = { type: unknown; childCount: number; child: (i: number) => PMNode };
+
+/** A wrapped source line parses (with `breaks`) into a hard break; writing it
+ *  back as a plain newline instead of `\` + newline keeps the file's wrapping. */
+const FileHardBreak = HardBreak.extend({
+  addStorage() {
+    return {
+      markdown: {
+        serialize(state: SerializerState, node: PMNode, parent: PMNode, index: number) {
+          // Same rule as tiptap-markdown: nothing for trailing breaks.
+          for (let i = index + 1; i < parent.childCount; i++) {
+            if (parent.child(i).type !== node.type) {
+              state.write(state.inTable ? '<br>' : '\n');
+              return;
+            }
+          }
+        },
+      },
+    };
+  },
+});
+
+/** Files differ from notes: no autolinking (setContent would turn a bare
+ *  `CLAUDE.md` into a link), raw HTML kept as HTML, line wrapping kept, and
+ *  inline code may sit inside bold (**`x`**) instead of dropping the bold. */
+const FILE_FIDELITY = {
+  starterKit: { text: false, code: false, hardBreak: false } as const,
+  extensions: [FileText, FileHardBreak, Code.extend({ excludes: '' })],
+  link: {
+    autolink: false,
+    linkOnPaste: false,
+    // Relative links (`docs/x.md`) are what files hold, and the bundled default
+    // drops any with a `/`: esbuild turns its `[^a-z+.\-:]` into the range `.-:`.
+    // Anything with a scheme still goes through the default check (no `javascript:`).
+    isAllowedUri: (url: string, ctx: { defaultValidate: (u: string) => boolean }) =>
+      ctx.defaultValidate(url) || !/^\s*[a-z][a-z0-9+.-]*:/i.test(url),
+  },
+  markdown: { html: true, linkify: false },
+};
 
 /**
  * WYSIWYG markdown editor shared by the header Scratchpad and notepad sessions:
  * tiptap + tiptap-markdown, a formatting toolbar and an inline link bar (⌘K).
  */
-export function useMarkdownEditor({ placeholder, proseClassName, onChange }: Options) {
+export function useMarkdownEditor({ placeholder, proseClassName, onChange, forFile = false }: Options) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
-      Link.configure({ openOnClick: false, autolink: true }),
+      ...(forFile ? [StarterKit.configure(FILE_FIDELITY.starterKit), ...FILE_FIDELITY.extensions] : [StarterKit]),
+      Link.configure({ openOnClick: false, autolink: true, ...(forFile ? FILE_FIDELITY.link : {}) }),
       TaskList,
       TaskItem.configure({ nested: true }),
       Table,
@@ -45,7 +100,7 @@ export function useMarkdownEditor({ placeholder, proseClassName, onChange }: Opt
       TableHeader,
       TableCell,
       Placeholder.configure({ placeholder }),
-      Markdown.configure({ html: false, linkify: true, breaks: true }),
+      Markdown.configure({ html: false, linkify: true, breaks: true, ...(forFile ? FILE_FIDELITY.markdown : {}) }),
     ],
     editorProps: {
       attributes: { class: `${styles.prose} ${proseClassName ?? ''}`, spellcheck: 'false' },

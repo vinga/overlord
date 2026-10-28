@@ -3,6 +3,7 @@ import styles from './FileEditorOverlay.module.css';
 import { languageForPath, highlightToLines } from '../lib/highlightLines';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import { FileDiff } from './DiffViewer';
+import { useMarkdownEditor, MarkdownToolbar, MarkdownEditorContent } from './MarkdownEditor';
 import 'highlight.js/styles/github-dark.css';
 
 export const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
@@ -70,7 +71,41 @@ export interface DiffSource {
 
 interface DiffData { original: string; modified: string; base: string }
 
-type Mode = 'preview' | 'edit' | 'diff';
+type Mode = 'preview' | 'rich' | 'edit' | 'diff';
+
+/** WYSIWYG markdown editing, styled like the preview. Opening it never touches
+ *  the file: tiptap only reports user edits, and only those re-serialize the
+ *  markdown (which may normalize its formatting, e.g. `*` lists to `-`). */
+function RichMarkdownPane({ content, onChange }: { content: string; onChange: (markdown: string) => void }) {
+  // What the editor last produced — an incoming `content` equal to it is our own
+  // echo, anything else (a reload) replaces the document.
+  const emitted = useRef<string | null>(null);
+  const { editor, openLinkEditor, handleKeyDown, linkBar } = useMarkdownEditor({
+    placeholder: 'Empty file',
+    forFile: true,
+    proseClassName: `${styles.markdownContent} ${styles.richProse}`,
+    onChange: (markdown) => {
+      emitted.current = markdown;
+      onChange(markdown);
+    },
+  });
+
+  useEffect(() => {
+    if (!editor || content === emitted.current) return;
+    emitted.current = content;
+    editor.commands.setContent(content, false);
+  }, [editor, content]);
+
+  return (
+    <div className={styles.richPane} onKeyDown={handleKeyDown}>
+      <div className={styles.richToolbar}>
+        <MarkdownToolbar editor={editor} onLink={openLinkEditor} extended />
+      </div>
+      {linkBar}
+      <MarkdownEditorContent editor={editor} className={styles.richScroll} />
+    </div>
+  );
+}
 
 export function FileEditorOverlay({ path, line, cwd, onClose }: Props) {
   const dirtyRef = useRef(false);
@@ -117,17 +152,21 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
   const [mode, setMode] = useState<Mode>(() => {
     let saved: string | null = null;
     try { saved = localStorage.getItem(modeStorageKey); } catch { /* storage blocked */ }
-    return (saved === 'edit' || saved === 'diff' ? saved : 'preview') as Mode;
+    return (saved === 'rich' || saved === 'edit' || saved === 'diff' ? saved : 'preview') as Mode;
   });
-  // A remembered 'diff' falls back to preview on files with nothing to diff;
-  // a deleted file has nothing but the diff.
-  const viewMode: Mode = missing ? 'diff' : mode === 'diff' && !diff ? 'preview' : mode;
+  const isMarkdown = path.toLowerCase().endsWith('.md');
+  // A remembered 'diff' falls back to preview on files with nothing to diff,
+  // 'rich' to the plain editor on non-markdown files; a deleted file has
+  // nothing but the diff.
+  const viewMode: Mode = missing ? 'diff'
+    : mode === 'diff' && !diff ? 'preview'
+    : mode === 'rich' && !isMarkdown ? 'edit'
+    : mode;
   const [saving, setSaving] = useState(false);
   const [saveFlash, setSaveFlash] = useState('');
   const [saveError, setSaveError] = useState('');
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isMarkdown = path.toLowerCase().endsWith('.md');
   const isImage = isImagePath(path);
   const isDirty = !isImage && content !== original;
   // Every text file gets the numbered, highlighted code view in preview mode.
@@ -300,6 +339,13 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
                   onClick={() => handleModeChange('preview')}
                 >Preview</button>
               )}
+              {!missing && isMarkdown && (
+                <button
+                  className={`${styles.toggleBtn} ${viewMode === 'rich' ? styles.active : ''}`}
+                  onClick={() => handleModeChange('rich')}
+                  title="Edit the rendered markdown"
+                >Rich</button>
+              )}
               {!missing && (
                 <button
                   className={`${styles.toggleBtn} ${viewMode === 'edit' ? styles.active : ''}`}
@@ -401,6 +447,9 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
             : diffData
               ? <FileDiff before={diffData.original} after={diffData.modified} />
               : <div className={styles.loading}>Loading diff…</div>
+        )}
+        {!loading && !tooLarge && !isImage && viewMode === 'rich' && (
+          <RichMarkdownPane content={content} onChange={setContent} />
         )}
         {!loading && !tooLarge && !isImage && viewMode === 'edit' && (
           <textarea
