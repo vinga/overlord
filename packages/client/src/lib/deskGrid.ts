@@ -3,7 +3,7 @@ import type { DeskSpan } from '../types';
 /** Room desk grid: every card covers whole cells of this size. Mirrors the
  *  `.desks` grid template in Room.module.css. */
 export const DESK_CELL_W = 250;
-export const DESK_CELL_H = 140;
+export const DESK_CELL_H = 120;
 export const DESK_GAP = 14;
 export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;
 /** Tallest an un-resized card auto-grows to; dragging can still reach DESK_SPAN_MAX.h. */

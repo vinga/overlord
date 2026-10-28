@@ -328,7 +328,7 @@
 .desks {
   display: grid;
   grid-template-columns: repeat(auto-fill, 250px);
-  grid-auto-rows: 140px;
+  grid-auto-rows: 120px;
   grid-auto-flow: dense;
   gap: 14px;
 }
@@ -472,15 +472,9 @@
   z-index: 5;
 }
 
-.deskTimeLabel {
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 11px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.25);
-  cursor: help;
-  letter-spacing: 0.03em;
-  line-height: 1.4;
-  white-space: nowrap;
+/* Only launch badges live here now — no row at all for a plain session. */
+.deskInfo:empty {
+  display: none;
 }
 
 .deskInfoLine {

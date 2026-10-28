@@ -118,26 +118,6 @@ function extractFirstLine(content: string): string {
   return raw.replace(/^[#>*\-_`~\s]+/, '').trim();
 }
 
-function lastActivityLabel(isoTimestamp: string): string {
-  const diffMs = Date.now() - new Date(isoTimestamp).getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return '<1m';
-  if (diffMin < 60) return `${diffMin}m`;
-  const diffHour = Math.floor(diffMin / 60);
-  return `${diffHour}h`;
-}
-
-/** Tooltip for the desk age label — spells out what the "10h" / "18m" badge measures. */
-function lastActivityTooltip(isoTimestamp: string): string {
-  const d = new Date(isoTimestamp);
-  if (Number.isNaN(d.getTime())) return 'Time since last activity in this session';
-  const when = d.toLocaleString(undefined, {
-    weekday: 'short', month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
-  return `Time since last activity — last message at ${when}`;
-}
-
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
@@ -896,9 +876,6 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             >
               <span className={styles.dragHandle} aria-hidden="true">⠿</span>
               <div className={styles.deskInfo}>
-                <div className={styles.deskTimeLabel} title={lastActivityTooltip(session.lastActivity)}>
-                  {lastActivityLabel(session.lastActivity)}
-                </div>
                 {(() => {
                   const launch = getLaunchInfo(session, isPtySession?.(session.overlordId ?? session.sessionId));
                   // Overlord-spawned is the default — no chip for it, only for other launch types.
