@@ -456,6 +456,26 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     />
   );
 
+  const filterActive = filterQuery.trim().length > 0;
+  const matchedAgents = useMemo(
+    () => visibleRooms.reduce((n, r) => n + r.sessions.length, 0),
+    [visibleRooms],
+  );
+  // Sits beside the room chips so a forgotten search box can't silently hide rooms.
+  const filterBar = filterActive && (
+    <div className={styles.filterBar} role="status">
+      <span className={styles.filterBarDot} aria-hidden="true" />
+      <span className={styles.filterBarLabel}>Filter active</span>
+      <span className={styles.filterBarQuery}>“{filterQuery.trim()}”</span>
+      <span className={styles.filterBarCount}>
+        {visibleRooms.length} {visibleRooms.length === 1 ? 'room' : 'rooms'} · {matchedAgents} {matchedAgents === 1 ? 'agent' : 'agents'}
+      </span>
+      <button type="button" className={styles.filterBarClear} onClick={() => setSearchQuery('')}>
+        Clear
+      </button>
+    </div>
+  );
+
   return (
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
       <header className={styles.header}>
@@ -463,7 +483,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         <div className={styles.searchWrap}>
         <input
           type="text"
-          className={`${styles.searchInput} ${isBtwDraft(searchQuery) ? styles.searchInputBtw : ''}`}
+          className={`${styles.searchInput} ${isBtwDraft(searchQuery) ? styles.searchInputBtw : filterActive ? styles.searchInputActive : ''}`}
           placeholder="Search agents, JIRA tickets…  ·  /btw ask a quick question"
           title="Filter rooms and agents. Type /btw <question> + Enter to ask the internal agent; the answer pops up as a toast."
           value={searchQuery}
@@ -533,6 +553,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       </header>
       {/* Vertical dock: the panel is pinned under the header, then room tabs, then rooms. */}
       <div className={styles.panelSpacer} style={{ height: topOffset }} />
+      {topOffset > 0 && filterBar}
       {topOffset > 0 && roomTabs}
       <div ref={contentRef} className={styles.content}>
         {!hasRooms ? (
@@ -597,6 +618,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           </div>
         )}
       </div>
+      {topOffset === 0 && filterBar}
       {topOffset === 0 && roomTabs}
 
       <div className={styles.statusBar}>

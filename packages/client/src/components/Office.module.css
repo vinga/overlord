@@ -210,6 +210,71 @@
   color: #e8e8e8;
 }
 /* Command mode: the box is about to talk to the internal agent, not filter. */
+/* A live filter stays visibly "on", even unfocused. */
+.searchInputActive,
+.searchInputActive:hover,
+.searchInputActive:focus {
+  border-color: rgba(250, 204, 21, 0.75);
+  background: rgba(250, 204, 21, 0.1);
+  color: #fde68a;
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.25);
+}
+
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 24px;
+  flex-shrink: 0;
+  background: rgba(250, 204, 21, 0.08);
+  border-top: 1px solid rgba(250, 204, 21, 0.3);
+  border-bottom: 1px solid rgba(250, 204, 21, 0.15);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  color: rgba(253, 230, 138, 0.85);
+  min-width: 0;
+}
+.filterBarDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #facc15;
+  flex-shrink: 0;
+}
+.filterBarLabel {
+  font-weight: 600;
+  color: #fde68a;
+  flex-shrink: 0;
+}
+.filterBarQuery {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fef3c7;
+}
+.filterBarCount {
+  color: rgba(253, 230, 138, 0.6);
+  flex-shrink: 0;
+}
+.filterBarClear {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  background: transparent;
+  border: 1px solid rgba(250, 204, 21, 0.35);
+  border-radius: 4px;
+  color: #fde68a;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.filterBarClear:hover {
+  background: rgba(250, 204, 21, 0.15);
+  border-color: rgba(250, 204, 21, 0.6);
+}
+
 .searchInputBtw,
 .searchInputBtw:focus {
   border-color: rgba(212, 175, 55, 0.7);
