@@ -79,11 +79,54 @@
 .horizontal .content {
   align-items: flex-start;
   justify-content: center;
-  min-height: 63px;
+  min-height: 54px;
   text-align: left;
   flex: 1 1 auto;
-  /* Clear the desk's absolutely-positioned options burger (22px @ top/right 4px). */
+  /* Clear the desk's absolutely-positioned options burger (22px @ top/right 4px)
+     and the plan pill beside it. */
   padding-right: 16px;
+}
+
+/* Session cards: small glyph + title on the first row, everything else
+   (tickets, intent, pills) below at the full card width. `.content` dissolves
+   into the body grid so its children can span both columns. */
+.worker.horizontal:not(.noteWorker) .body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 4px;
+  --pill-max: 100%;
+  /* The row gap already spaces the ticket chips from the title. */
+  --jira-row-margin: 0;
+}
+.worker.horizontal:not(.noteWorker) .content {
+  display: contents;
+}
+.worker.horizontal:not(.noteWorker) .content > * {
+  grid-column: 1 / -1;
+  justify-self: stretch;
+}
+.worker.horizontal:not(.noteWorker) .content > .label,
+.worker.horizontal:not(.noteWorker) .content > .labelEdit {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  /* Clear the card's top-right controls (burger, plus plan pill if any). */
+  margin-right: var(--desk-title-clear, 44px);
+  /* Two lines max — the rest of the card is for tickets and plans. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.worker.horizontal:not(.noteWorker) .iconWrap {
+  grid-column: 1;
+  grid-row: 1;
+}
+.worker.horizontal:not(.noteWorker) .iconWrap .svg {
+  width: 24px;
+  height: 32px;
 }
 
 /* Children carry vertical-layout max-widths (163px); let them use the row width. */

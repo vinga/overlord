@@ -9,7 +9,17 @@ export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;
 /** Tallest an un-resized card auto-grows to; dragging can still reach DESK_SPAN_MAX.h. */
 export const DESK_AUTO_MAX_H = 2;
 
+/** Grid row track (px). Rows have no gap; each card's margin-bottom supplies
+ *  DESK_GAP. Cells (DESK_CELL_H + DESK_GAP) are whole tracks, so resized cards
+ *  still line up, while un-resized cards fit their content to the track. */
+export const DESK_ROW_UNIT = 2;
+
 const UNIT: DeskSpan = { w: 1, h: 1 };
+
+/** Grid row tracks for a card `px` tall (plus its trailing gap). */
+export function rowsForPx(px: number): number {
+  return Math.max(1, Math.ceil((px + DESK_GAP) / DESK_ROW_UNIT));
+}
 
 /** Pixel size of `n` cells, including the gaps between them. */
 export function spanPx(n: number, cell: number, gap = DESK_GAP): number {

@@ -105,19 +105,35 @@ export function useDeskResize() {
     return px ? Math.min(DESK_AUTO_MAX_H, Math.max(1, Math.ceil((px + DESK_GAP) / (DESK_CELL_H + DESK_GAP)))) : 1;
   }, [needPx]);
 
-  const spanOf = useCallback((session: Session): DeskSpan => {
+  /** The user's span (optimistic override first), or null when auto-sized. */
+  const savedSpan = useCallback((session: Session): DeskSpan | null => {
     const o = overrides[session.sessionId];
-    const saved = o && Date.now() - o.at < OVERRIDE_TTL_MS ? o.span : session.deskSpan ?? null;
+    return o && Date.now() - o.at < OVERRIDE_TTL_MS ? o.span : session.deskSpan ?? null;
+  }, [overrides]);
+
+  /** Span in whole cells — for resized cards their size, for auto-sized ones
+   *  the cells their content reaches into (drives content limits, not height). */
+  const spanOf = useCallback((session: Session): DeskSpan => {
+    const saved = savedSpan(session);
     if (saved) return effectiveSpan(saved, columns);
     const h = autoRows(session.sessionId);
     return h === 1 ? effectiveSpan(undefined, columns) : { w: 1, h };
-  }, [overrides, columns, autoRows]);
+  }, [savedSpan, columns, autoRows]);
 
-  /** True when the card's content is taller than its span — show the fade. */
-  const isClipped = useCallback((sessionId: string, span: DeskSpan): boolean => {
-    const px = needPx[sessionId];
-    return px != null && px > spanPx(span.h, DESK_CELL_H) + 1;
-  }, [needPx]);
+  /** Card height (px): whole cells when resized, else its content's natural
+   *  height up to DESK_AUTO_MAX_H cells. One cell until first measured. */
+  const heightOf = useCallback((session: Session): number => {
+    const saved = savedSpan(session);
+    if (saved) return spanPx(saved.h, DESK_CELL_H);
+    const px = needPx[session.sessionId];
+    return px ? Math.min(px, spanPx(DESK_AUTO_MAX_H, DESK_CELL_H)) : spanPx(1, DESK_CELL_H);
+  }, [savedSpan, needPx]);
+
+  /** True when the card's content is taller than the card — show the fade. */
+  const isClipped = useCallback((session: Session): boolean => {
+    const px = needPx[session.sessionId];
+    return px != null && px > heightOf(session) + 1;
+  }, [needPx, heightOf]);
 
   const onPointerMove = useCallback((e: PointerEvent) => {
     const d = dragRef.current;
@@ -134,6 +150,21 @@ export function useDeskResize() {
     setOverrides(prev => ({ ...prev, [sessionId]: { span, at: Date.now() } }));
     putDeskSpan(sessionId, span);
   }, []);
+
+  /** Grow a clipped card so all its content shows. A 1-wide card whose content
+   *  fits the auto-size cap goes back to auto (exact content height); anything
+   *  taller or wider snaps to the whole cells it needs. */
+  const expand = useCallback((session: Session) => {
+    const px = needPx[session.sessionId];
+    if (!px) return;
+    const w = spanOf(session).w;
+    if (w === 1 && px <= spanPx(DESK_AUTO_MAX_H, DESK_CELL_H)) {
+      commit(session.sessionId, null);
+      return;
+    }
+    const h = Math.min(DESK_SPAN_MAX.h, Math.max(1, Math.ceil((px + DESK_GAP) / (DESK_CELL_H + DESK_GAP))));
+    commit(session.sessionId, { w, h });
+  }, [needPx, spanOf, commit]);
 
   const onPointerUp = useCallback(() => {
     const d = dragRef.current;
@@ -184,5 +215,5 @@ export function useDeskResize() {
     },
   }), [spanOf, onPointerMove, onPointerUp, commit]);
 
-  return { desksRef, bodyRef, spanOf, isClipped, gripProps, ghost, resizing: ghost != null };
+  return { desksRef, bodyRef, spanOf, heightOf, isClipped, expand, gripProps, ghost, resizing: ghost != null };
 }

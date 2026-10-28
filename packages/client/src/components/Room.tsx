@@ -18,7 +18,7 @@ import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 import { useDeskResize } from '../hooks/useDeskResize';
-import { spanPx, DESK_CELL_W, DESK_CELL_H } from '../lib/deskGrid';
+import { spanPx, rowsForPx, DESK_CELL_W, DESK_CELL_H } from '../lib/deskGrid';
 
 // 300 distinctive names for new sessions — pick a random unused one
 export const SESSION_NAMES = [
@@ -845,7 +845,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           const isNote = session.sessionType === 'note';
           const span = deskResize.spanOf(session);
           const ghostSpan = deskResize.ghost?.sessionId === session.sessionId ? deskResize.ghost.span : null;
-          const clipped = deskResize.isClipped(session.sessionId, span);
+          const clipped = deskResize.isClipped(session);
           return (
             <div
               key={session.sessionId}
@@ -859,7 +859,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                 ghostSpan ? styles.deskResizing : '',
                 clipped ? styles.deskClipped : '',
               ].filter(Boolean).join(' ')}
-              style={span.w > 1 || span.h > 1 ? { gridColumn: `span ${span.w}`, gridRow: `span ${span.h}` } : undefined}
+              style={{ gridColumn: span.w > 1 ? `span ${span.w}` : undefined, gridRow: `span ${rowsForPx(deskResize.heightOf(session))}` }}
               draggable={!deskResize.resizing}
               onDragStart={() => setDraggedId(sessionOrderKey)}
               onDragOver={(e) => { e.preventDefault(); setDragOverId(sessionOrderKey); }}
@@ -933,7 +933,14 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                 </div>
               </div>
               {clipped && (
-                <span className={styles.moreHint} title="More content — enlarge the card to see it" aria-hidden="true">⋯</span>
+                <button
+                  type="button"
+                  className={styles.moreHint}
+                  title="Show everything — grow the card to fit"
+                  aria-label="Expand card to fit its content"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); deskResize.expand(session); }}
+                >⋯</button>
               )}
               <span
                 className={styles.resizeGrip}

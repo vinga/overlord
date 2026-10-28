@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { snapSpan, spanPx, columnsFor, effectiveSpan, DESK_CELL_W, DESK_CELL_H, DESK_GAP } from '../deskGrid';
+import { snapSpan, spanPx, columnsFor, effectiveSpan, rowsForPx, DESK_CELL_W, DESK_CELL_H, DESK_GAP, DESK_ROW_UNIT } from '../deskGrid';
 
 describe('snapSpan', () => {
   const W = DESK_CELL_W;
@@ -42,5 +42,18 @@ describe('effectiveSpan', () => {
 
   it('clamps width to the available columns, keeps height', () => {
     expect(effectiveSpan({ w: 3, h: 2 }, 2)).toEqual({ w: 2, h: 2 });
+  });
+});
+
+describe('rowsForPx', () => {
+  it('maps whole cells to whole row tracks, so resized cards line up', () => {
+    for (const n of [1, 2, 3, 4]) {
+      expect(rowsForPx(spanPx(n, DESK_CELL_H)) * DESK_ROW_UNIT).toBe(n * (DESK_CELL_H + DESK_GAP));
+    }
+  });
+
+  it('rounds content heights up to the next track', () => {
+    expect(rowsForPx(70) * DESK_ROW_UNIT).toBeGreaterThanOrEqual(70 + DESK_GAP);
+    expect(rowsForPx(70) * DESK_ROW_UNIT).toBeLessThan(70 + DESK_GAP + DESK_ROW_UNIT);
   });
 });

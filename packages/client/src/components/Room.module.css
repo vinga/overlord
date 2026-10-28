@@ -24,11 +24,20 @@
   border-bottom: none;
 }
 
+/* Pinned to the top of the scroll area while its room scrolls past. Bleeds
+   into the room's 16px padding so cards slide under an opaque bar. */
 .titleBar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 14px;
+  position: sticky;
+  /* Office's scroll area has 20px top padding — stick flush to its edge. */
+  top: -20px;
+  z-index: 20;
+  margin: -16px -16px 0;
+  padding: 16px 16px 14px;
+  background: #0e0e18;
+  border-radius: 12px 12px 0 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
@@ -323,21 +332,31 @@
   max-width: 360px;
 }
 
-/* Fixed-cell grid — cards span whole cells (see lib/deskGrid.ts, which
-   mirrors these numbers for the resize snap math). */
+/* Fixed-width columns over fine 2px row tracks (see lib/deskGrid.ts, which
+   mirrors these numbers). Resized cards span whole 120px cells; un-resized
+   ones span just the tracks their content needs. Rows have no gap — each
+   card's margin-bottom is the vertical gap. Default: one cell, 67 tracks
+   = (120 + 14) / 2. */
 .desks {
   display: grid;
   grid-template-columns: repeat(auto-fill, 250px);
-  grid-auto-rows: 120px;
+  grid-auto-rows: 2px;
   grid-auto-flow: dense;
-  gap: 14px;
+  column-gap: 14px;
+  row-gap: 0;
+  /* Cancel the last row's card margin. */
+  margin-bottom: -14px;
+}
+.desks > * {
+  grid-row: span 67;
+  margin-bottom: 14px;
 }
 
 .desk {
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
-  padding: 14px 12px 10px;
+  padding: 10px 12px 10px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
@@ -381,8 +400,15 @@
   letter-spacing: 1px;
   color: rgba(255, 255, 255, 0.7);
   background: rgba(255, 255, 255, 0.08);
-  pointer-events: none;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
   z-index: 5;
+  transition: background 0.15s, color 0.15s;
+}
+.moreHint:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .resizeGrip {
@@ -488,6 +514,15 @@
 
 .deskPlanBesideMenu {
   right: 30px;
+}
+
+/* Room the worker title leaves for the top-right controls (read by
+   Worker.module.css): the burger alone, or burger + plan pill. */
+.desk {
+  --desk-title-clear: 16px;
+}
+.desk:has(> .deskPlan) {
+  --desk-title-clear: 44px;
 }
 
 .deskPlan > span {
@@ -619,12 +654,13 @@
   cursor: grab;
   color: rgba(255, 255, 255, 0.2);
   font-size: 14px;
-  padding: 0 6px;
+  padding: 0 3px;
   user-select: none;
   transition: color 0.15s;
   position: absolute;
   top: 50%;
-  left: 4px;
+  /* Hug the card edge, clear of the worker glyph. */
+  left: 0;
   transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
