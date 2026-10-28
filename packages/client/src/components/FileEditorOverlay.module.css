@@ -370,7 +370,9 @@
   box-sizing: border-box;
 }
 
-/* Rich (WYSIWYG) markdown editing: toolbar pinned, document scrolls under it. */
+/* Rich (WYSIWYG) markdown editing: toolbar pinned, document scrolls under it.
+   The document wears the preview's .markdownContent look; only what tiptap
+   adds on top (task lists, node selection) is styled here. */
 .richPane {
   display: flex;
   flex-direction: column;
@@ -389,10 +391,43 @@
 .richScroll {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+  cursor: text;
+  display: flex;
+  flex-direction: column;
 }
 
 .richProse {
+  flex: 1;
   outline: none;
   caret-color: #d4af37;
   white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.richProse :global(ul[data-type='taskList']) {
+  list-style: none;
+  padding-left: 2px;
+}
+.richProse :global(ul[data-type='taskList'] li) {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.richProse :global(ul[data-type='taskList'] li > label) {
+  flex-shrink: 0;
+  user-select: none;
+}
+.richProse :global(ul[data-type='taskList'] li > div) {
+  flex: 1;
+}
+.richProse :global(ul[data-type='taskList'] li[data-checked='true'] > div) {
+  color: #8a877d;
+  text-decoration: line-through;
+}
+.richProse :global(input[type='checkbox']) {
+  accent-color: #d4af37;
+}
+.richProse :global(.ProseMirror-selectednode) {
+  outline: 2px solid rgba(212, 175, 55, 0.4);
 }

@@ -103,7 +103,8 @@ export function useMarkdownEditor({ placeholder, proseClassName, onChange, forFi
       Markdown.configure({ html: false, linkify: true, breaks: true, ...(forFile ? FILE_FIDELITY.markdown : {}) }),
     ],
     editorProps: {
-      attributes: { class: `${styles.prose} ${proseClassName ?? ''}`, spellcheck: 'false' },
+      // A file is styled entirely by its caller (the preview's look), not the notes prose.
+      attributes: { class: forFile ? proseClassName ?? '' : `${styles.prose} ${proseClassName ?? ''}`, spellcheck: 'false' },
       // Click opens links; place the cursor via adjacent text or arrow keys.
       handleClick(_view, _pos, event) {
         const anchor = (event.target as HTMLElement).closest('a');
@@ -300,11 +301,13 @@ export function MarkdownToolbar({ editor, onLink, extended = false, className }:
 }
 
 /** Scrollable editor surface. `hidden` keeps the editor mounted while content loads. */
-export function MarkdownEditorContent({ editor, hidden, className }: { editor: Editor | null; hidden?: boolean; className?: string }) {
+/** `bare` drops the notes styling of the document (headings, code, links…), for
+ *  a caller that brings its own. */
+export function MarkdownEditorContent({ editor, hidden, className, bare = false }: { editor: Editor | null; hidden?: boolean; className?: string; bare?: boolean }) {
   return (
     <EditorContent
       editor={editor}
-      className={`${styles.editorScroll} ${className ?? ''} ${hidden ? styles.hidden : ''}`}
+      className={`${bare ? '' : styles.editorScroll} ${className ?? ''} ${hidden ? styles.hidden : ''}`}
     />
   );
 }

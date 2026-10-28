@@ -102,7 +102,7 @@ function RichMarkdownPane({ content, onChange }: { content: string; onChange: (m
         <MarkdownToolbar editor={editor} onLink={openLinkEditor} extended />
       </div>
       {linkBar}
-      <MarkdownEditorContent editor={editor} className={styles.richScroll} />
+      <MarkdownEditorContent editor={editor} className={styles.richScroll} bare />
     </div>
   );
 }
