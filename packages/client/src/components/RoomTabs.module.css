@@ -32,8 +32,27 @@
   border-right: 1px solid rgba(212, 175, 55, 0.22);
 }
 
+/* Always one chip per row, whatever the width — sessions listed or not. */
+.strip.side,
 .strip.side:has(.withSessions) {
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.strip.side .tab {
+  min-width: 0;
+}
+
+.strip.side .tabBtn {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* A wider column shows more of the room name. */
+.strip.side .name {
+  max-width: none;
 }
 
 .tab {

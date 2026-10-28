@@ -10,6 +10,11 @@ import { useRoomHidden, unhideRoom, seedFromServer } from '../hooks/useRoomHidde
 import { HiddenRoomsPill } from './HiddenRoomsPill';
 import { RoomTabs } from './RoomTabs';
 import { useMarkSeenOnOpen } from '../hooks/useMarkSeenOnOpen';
+
+const SIDE_TABS_WIDTH_KEY = 'overlord:roomTabsWidth';
+/** One chip column: 250px chip + 2 × 12px padding. */
+const SIDE_TABS_DEFAULT = 274;
+const clampSideTabsWidth = (w: number) => Math.max(180, Math.min(640, Math.round(w)));
 import { BtwToastStack, type BtwEntry } from './BtwToast';
 import { parseBtwCommand, isBtwDraft } from '../lib/btwCommand';
 import { useNotesSummaries } from '../hooks/useNotesSummaries';
@@ -457,6 +462,38 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     />
   );
 
+  // Horizontal layout: the chip column's width is dragged from its right edge
+  // and remembered per browser.
+  const [sideTabsWidth, setSideTabsWidth] = useState<number>(() => {
+    try {
+      const saved = parseInt(localStorage.getItem(SIDE_TABS_WIDTH_KEY) ?? '', 10);
+      return Number.isFinite(saved) ? clampSideTabsWidth(saved) : SIDE_TABS_DEFAULT;
+    } catch {
+      return SIDE_TABS_DEFAULT;
+    }
+  });
+  const onSideTabsResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startW = sideTabsWidth;
+    let width = startW;
+    const onMove = (ev: PointerEvent) => {
+      width = clampSideTabsWidth(startW + ev.clientX - startX);
+      setSideTabsWidth(width);
+    };
+    const onUp = () => {
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      try { localStorage.setItem(SIDE_TABS_WIDTH_KEY, String(width)); } catch { /* storage blocked */ }
+    };
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  }, [sideTabsWidth]);
+
   const filterActive = filterQuery.trim().length > 0;
   const matchedAgents = useMemo(
     () => visibleRooms.reduce((n, r) => n + r.sessions.length, 0),
@@ -559,9 +596,17 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       {/* Horizontal layout: the room chips are a column left of the rooms. */}
       <div className={styles.body}>
       {topOffset === 0 && (filterBar || roomTabs) && (
-        <div className={styles.sideTabs}>
+        <div className={styles.sideTabs} style={{ width: sideTabsWidth }}>
           {filterBar}
           {roomTabs}
+          <div
+            className={styles.sideTabsResize}
+            onPointerDown={onSideTabsResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize room list"
+            title="Drag to resize"
+          />
         </div>
       )}
       <div ref={contentRef} className={styles.content}>
