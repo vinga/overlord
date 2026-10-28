@@ -132,6 +132,69 @@ describe('checkRoomFile', () => {
   });
 });
 
+describe('symlinked directories', () => {
+  // Rooms with links to: a git target outside the room, $HOME, an ancestor of
+  // the room, `/`, and a single file. The target itself links further out.
+  let linkRepo: string;
+  let linkPlain: string;
+  let ext: string;
+
+  beforeAll(() => {
+    ext = join(sandbox, 'ext');
+    write(join(ext, '.gitignore'), 'ignored.md\n');
+    write(join(ext, 'notes.md'), '# notes');
+    write(join(ext, 'sub', 'deep.md'), 'deep');
+    write(join(ext, 'ignored.md'), 'ignored');
+    write(join(ext, '.env'), 'TOKEN=1');
+    gitIn(ext, 'init', '-q');
+    write(join(sandbox, 'further', 'x.md'), 'two hops');
+    fs.symlinkSync(join(sandbox, 'further'), join(ext, 'further'));
+
+    linkRepo = join(sandbox, 'home', 'linkrepo');
+    write(join(linkRepo, 'own.md'), 'own');
+    gitIn(linkRepo, 'init', '-q');
+    linkPlain = join(sandbox, 'home', 'linkplain');
+    write(join(linkPlain, 'own.md'), 'own');
+    for (const room of [linkRepo, linkPlain]) {
+      fs.symlinkSync(ext, join(room, 'ext'));
+      fs.symlinkSync(join(sandbox, 'home'), join(room, 'home'));
+      fs.symlinkSync(sandbox, join(room, 'up'));
+      fs.symlinkSync('/', join(room, 'root'));
+      fs.symlinkSync(join(ext, 'notes.md'), join(room, 'filelink.md'));
+    }
+  });
+
+  it.each([['git', () => linkRepo], ['walk', () => linkPlain]])('lists a linked dir under its link (%s)', async (_mode, room) => {
+    const r = await listRoomFiles(room());
+    expect(r.files).toEqual(expect.arrayContaining(['own.md', 'ext/notes.md', 'ext/sub/deep.md']));
+    for (const hidden of ['ext', 'ext/ignored.md', 'ext/.env', 'ext/further/x.md']) expect(r.files).not.toContain(hidden);
+    expect(r.files.some(f => /^(home|up|root)\//.test(f))).toBe(false);
+    expect(r.changed.ext).toBeUndefined();
+  });
+
+  it('opens a linked file', async () => {
+    const v = await checkRoomFile(linkRepo, 'ext/sub/deep.md');
+    expect(v).toEqual({ ok: true, abs: join(ext, 'sub', 'deep.md') });
+  });
+
+  it.each([
+    ['ext/ignored.md', 403],     // the target's own .gitignore
+    ['ext/.env', 403],
+    ['ext/further/x.md', 403],   // second hop
+    ['ext/missing.md', 404],
+    ['home/plain/main.py', 403],
+    ['home/nope.md', 403],       // missing behind a refused link: no existence probe
+    ['up/ext/notes.md', 403],
+    ['root/etc/hosts', 403],
+    ['filelink.md', 403],        // a file link out of the room stays refused
+    ['ext/../../outside.txt', 403],
+  ])('refuses %s with %i', async (rel, status) => {
+    const v = await checkRoomFile(linkRepo, rel);
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.status).toBe(status);
+  });
+});
+
 describe('content limits', () => {
   it('refuses binary files on read', () => {
     const r = readRoomFileText(join(repo, 'bin.dat'));
