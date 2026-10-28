@@ -113,7 +113,6 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           unknownCommand={session.unknownCommand}
           isCompacting={session.isCompacting}
           bridgeDead={session.bridgeDead}
-          latestPlan={session.latestPlan}
           isWorker={session.isWorker}
           isRaw={session.sessionType === 'raw'}
           isNote={session.sessionType === 'note'}

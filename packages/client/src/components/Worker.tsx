@@ -6,7 +6,6 @@ import { useNoteMarkdown } from '../hooks/useNoteMarkdown';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import { WorkerGlyph } from './workerGlyphs';
 import styles from './Worker.module.css';
-import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { MonitoringPill } from './MonitoringPill';
 import { BackgroundTasksPill } from './BackgroundTasksPill';
 import { JiraChips } from './JiraChips';
@@ -30,7 +29,6 @@ interface WorkerProps {
   isCompacting?: boolean;
   bridgeDead?: boolean;
   /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
-  latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   isWorker?: boolean;
   isRaw?: boolean;
   /** Notepad session — no process, so no state indicator; shows `notePreview`. */
@@ -131,7 +129,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, latestPlan: latestPlanProp, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -228,7 +226,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
   const isBackground = state === 'waiting' && hasBackgroundTasks && !isScheduled && !needsPermission;
   const stateClass = `${styles[state] ?? ''}${isScheduled ? ' ' + styles.scheduled : ''}${isBackground ? ' ' + styles.background : ''}`;
 
-  const latestPlan = isSubagent ? null : (latestPlanProp ?? null);
   // Full workers lay out icon-left / text-right; subagents and minimal chips stay stacked.
   const horizontal = !minimal && !isSubagent;
 
@@ -308,15 +305,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
           {glyphSvg}
         </ColorPicker>
       ) : glyphSvg}
-      {/* Plan sits in the free space under the glyph, not on its own content line. */}
-      {!minimal && latestPlan && (
-        <WorkerArtifactPill
-          artifactId={latestPlan.artifactId}
-          title={latestPlan.title ?? 'Plan'}
-          planStatus={latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
-          timestamp={latestPlan.updatedAt}
-        />
-      )}
       </div>
 
       <div className={styles.content}>

@@ -477,6 +477,23 @@
   display: none;
 }
 
+/* Plan pill (20px) centred on the burger's row (22px @ top/right 4px). */
+.deskPlan {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  z-index: 10;
+  display: flex;
+}
+
+.deskPlanBesideMenu {
+  right: 30px;
+}
+
+.deskPlan > span {
+  margin-top: 0;
+}
+
 .deskInfoLine {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10px;

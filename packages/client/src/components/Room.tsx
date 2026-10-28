@@ -5,6 +5,7 @@ import { getLaunchInfo } from '../types';
 import { formatSessionRef, sessionDisplayName } from '../lib/sessionRef';
 import { WorkerGroup } from './WorkerGroup';
 import { DeskMenu } from './DeskMenu';
+import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { SessionCommands } from './SessionCommands';
 import styles from './Room.module.css';
 import { SpawnDialog } from './SpawnDialog';
@@ -914,6 +915,17 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                   session={session}
                   sessionRef={formatSessionRef({ name: sessionDisplayName(session, customNames[session.sessionId]), sessionId: session.sessionId, overlordId: session.overlordId })}
                 />
+              )}
+              {/* Plan rides the card's top-right controls, left of the burger. */}
+              {session.latestPlan && (
+                <div className={`${styles.deskPlan} ${onDeleteSession ? styles.deskPlanBesideMenu : ''}`}>
+                  <WorkerArtifactPill
+                    artifactId={session.latestPlan.artifactId}
+                    title={session.latestPlan.title ?? 'Plan'}
+                    planStatus={session.latestPlan.status as 'draft' | 'active' | 'done' | 'archived'}
+                    timestamp={session.latestPlan.updatedAt}
+                  />
+                </div>
               )}
               <div className={styles.deskBody}>
                 <div ref={deskResize.bodyRef(session.sessionId)}>
