@@ -50,6 +50,13 @@ interface PendingQuestionOption {
   /** TUI-appended option ("Type something" / "Chat about this") — answering it
    *  opens a free-text field instead of committing the choice. */
   builtin?: boolean;
+  /** The "Type something" row (inline text field in the TUI). A builtin without it
+   *  is "Chat about this". */
+  freeText?: boolean;
+  /** Screen-only, multi-select: checkbox ticked on screen. */
+  checked?: boolean;
+  /** Screen-only: text already typed into the "Type something" row. */
+  value?: string;
 }
 
 interface PendingQuestion {
@@ -57,6 +64,9 @@ interface PendingQuestion {
   header?: string;
   multiSelect?: boolean;
   options: PendingQuestionOption[];
+  /** Screen-only: TUI row under the `❯` caret. A multi-select's unnumbered
+   *  "Next"/"Submit" row counts as a row, between "Type something" and "Chat about this". */
+  cursor?: number;
 }
 
 interface PendingQuestionSet {
@@ -69,6 +79,9 @@ interface PendingQuestionSet {
    *  sets — the transcript holds nothing of an unanswered AskUserQuestion turn, so this
    *  is the only copy of that message while the menu is up. */
   preamble?: string;
+  /** Screen-only: position of the shown question among the TUI's tabs. The screen
+   *  holds one question at a time, so this decides whether answering is the last step. */
+  step?: { index: number; count: number };
 }
 
 interface ActiveMonitor {

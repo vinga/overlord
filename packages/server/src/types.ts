@@ -67,6 +67,14 @@ export interface PendingQuestionOption {
    *  "Chat about this"). They are not model-authored, and answering them requires a
    *  follow-up free-text injection rather than a plain Enter. */
   builtin?: boolean;
+  /** The "Type something" row: an inline text field in the TUI. Typing on it answers
+   *  with that text (and, in a multi-select, ticks the row). Without it a builtin is
+   *  "Chat about this", which dismisses the question set. */
+  freeText?: boolean;
+  /** Screen-only, multi-select: the row's checkbox is ticked on screen. */
+  checked?: boolean;
+  /** Screen-only: text already typed into the "Type something" row. */
+  value?: string;
 }
 
 export interface PendingQuestion {
@@ -74,6 +82,10 @@ export interface PendingQuestion {
   header?: string;
   multiSelect?: boolean;
   options: PendingQuestionOption[];
+  /** Screen-only: TUI row the `❯` caret is on. Rows are the options in order, with a
+   *  multi-select's unnumbered "Next"/"Submit" row counted between the "Type something"
+   *  row and "Chat about this". Arrow injection moves relative to this. */
+  cursor?: number;
 }
 
 /** All questions from one AskUserQuestion tool call */
@@ -91,6 +103,10 @@ export interface PendingQuestionSet {
    *  source of the preamble. Screen-derived only; undefined on transcript sets,
    *  where the real assistant message is already in the feed. */
   preamble?: string;
+  /** Screen-only: where the shown question sits among the TUI's tabs
+   *  (`←  ☒ Fruits  ☐ Color  ✔ Submit  →`). The screen holds one question at a time,
+   *  so this — not `questions.length` — says whether answering it is the last step. */
+  step?: { index: number; count: number };
 }
 
 /** An in-flight Monitor tool_use — emitted while the tool has no tool_result yet. */

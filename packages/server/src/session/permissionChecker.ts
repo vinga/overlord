@@ -1,6 +1,6 @@
 import * as os from 'os';
 import { detectModeFromText, SHIFT_TAB_SENTINEL } from './modeDetect.js';
-import type { PendingQuestionSet } from '../types.js';
+import type { PendingQuestionOption, PendingQuestionSet } from '../types.js';
 
 // Only active on Windows
 const IS_WINDOWS = process.platform === 'win32';
@@ -52,7 +52,15 @@ const ASK_BUILTIN_OPTION = /^(type something|chat about this|let me (?:type|answ
 // A menu taller than the viewport scrolls: the TUI drops the footer and shows a
 // "Jump to bottom" rule instead. These three survive that clipping and are what a
 // scrolled menu is recognised by.
-const ASK_HEADER_CHIP = /^[ \t]*☐[ \t]+\S/m;             // ` ☐ FRUIT ` header chip
+// ` ☐ FRUIT ` header chip. With several questions — and in every multi-select — the
+// chips sit in a tab bar (`←  ☒ Fruits  ☐ Color  ✔ Submit  →`); `☒` marks a tab
+// that already has an answer, which a multi-select gets on its first tick.
+const ASK_HEADER_CHIP = /^[ \t]*(?:←[ \t]*)?[☐☒][ \t]+\S/m;
+const ASK_CHIP_LINE = /^[ \t]*(?:←[ \t]*)?[☐☒][ \t]+\S/;
+// The review step the TUI shows after the last tab. It carries the chip bar and a
+// caret row (`❯ 1. Submit answers`) but is not a question: the client confirms it
+// itself right after the last answer.
+const ASK_REVIEW = /^[ \t]*(?:review your answers|ready to submit your answers\?)[ \t]*$/im;
 const ASK_OPTION_CARET = /^[ \t]*❯[ \t]*\d+\.[ \t]+\S/m; // arrow-selected numbered row
 const ASK_BUILTIN_ROW = /^[ \t]*\d+\.[ \t]+(?:type something|chat about this)\b/im;
 const ASK_JUMP_TO_BOTTOM = /jump to bottom/i;
@@ -122,6 +130,9 @@ function looksLikeAskUserQuestion(text: string): boolean {
   if (ASK_FOOTER.every(p => p.test(text))) return true;  // the ordinary, fully-visible menu
   // Clipped menu. The chip alone is too weak (other TUI pickers use numbered rows),
   // so demand a second AskUserQuestion-only marker.
+  const lines = text.split('\n');
+  const chipIdx = findLastIdx(lines, ASK_CHIP_LINE);
+  if (chipIdx >= 0 && ASK_REVIEW.test(lines.slice(chipIdx + 1).join('\n'))) return false;
   return ASK_HEADER_CHIP.test(text)
     && (ASK_BUILTIN_ROW.test(text) || ASK_OPTION_CARET.test(text) || ASK_JUMP_TO_BOTTOM.test(text));
 }
@@ -167,6 +178,15 @@ function extractPreamble(rawLines: string[], questionIdx: number): string | unde
   return out ? out.slice(0, MAX_PREAMBLE) : undefined;
 }
 
+// The chips of the tab bar, in order. `✔ Submit` is not a question and has no box.
+function parseChipTabs(line: string): { label: string; done: boolean }[] {
+  const tabs: { label: string; done: boolean }[] = [];
+  for (const m of line.matchAll(/([☐☒])[ \t]+(.+?)(?=[ \t]{2,}|[ \t]*[✔→]|[ \t]*$)/g)) {
+    tabs.push({ label: m[2].trim(), done: m[1] === '☒' });
+  }
+  return tabs;
+}
+
 // Best-effort parse of the question + ordered real option labels from the menu screen.
 // Screen text is partial/space-mangled, so this is presentation only; injection relies
 // on option ORDER (index), not label text.
@@ -185,36 +205,100 @@ export function parseScreenQuestion(text: string): PendingQuestionSet | null {
     // silently drop the option.
     footerIdx = jumpIdx < 0 ? lines.length : (ASK_OPTION_LINE.test(lines[jumpIdx]) ? jumpIdx + 1 : jumpIdx);
   }
-  // Start of the box: the ` ☐ HEADER ` chip. Anchoring here keeps numbered lines in
-  // the assistant's own prose above the box (a "1. …" list) from being parsed as
-  // options — that would shift every index and send the arrow-key injection to the
-  // wrong row. Absent chip ⇒ scan from the top, as before.
+  // Start of the box: the ` ☐ HEADER ` chip (or the tab bar of chips). Anchoring here
+  // keeps numbered lines in the assistant's own prose above the box (a "1. …" list)
+  // from being parsed as options — that would shift every index and send the
+  // arrow-key injection to the wrong row. Absent chip ⇒ scan from the top, as before.
   let boxIdx = 0;
-  let header: string | undefined;
+  let tabs: { label: string; done: boolean }[] = [];
   for (let i = footerIdx - 1; i >= 0; i--) {
-    const m = rawLines[i].match(/^[ \t]*☐[ \t]+(.*?)\s*$/);
-    if (m) { boxIdx = i + 1; header = m[1].trim() || undefined; break; }
+    if (ASK_CHIP_LINE.test(rawLines[i])) { boxIdx = i + 1; tabs = parseChipTabs(rawLines[i]); break; }
   }
   // No chip (CLI modals have none): the full-width rule that opens the box is the
   // next best anchor. Without it the scan starts at line 0 and swallows whatever
   // scrollback happens to be above — for a resume dialog that is the previous turn.
   if (boxIdx === 0) boxIdx = boxStartIdx(rawLines, footerIdx);
-  const options: { label: string; builtin?: boolean }[] = [];
+  const options: PendingQuestionOption[] = [];
   let firstOptionIdx = -1;
+  // Selectable rows in TUI order — options plus a multi-select's unnumbered
+  // "Next"/"Submit" row — so `cursor` counts the same keystrokes the TUI does.
+  let rows = 0;
+  let cursor: number | undefined;
+  let multiSelect = false;
+  let sawSubmitRow = false;
+  let describing: PendingQuestionOption | undefined;
   for (let i = boxIdx; i < footerIdx; i++) {
+    const caret = rawLines[i].trimStart().startsWith('❯');
     const m = lines[i].match(/^\d+\.\s+(.+)$/);
     if (m) {
       if (firstOptionIdx < 0) firstOptionIdx = i;
       // Strip the scroll indicator when it is painted onto this option's row.
-      const label = m[1].replace(/\s{2,}Jump to bottom.*$/i, '').trim();
+      let label = m[1].replace(/\s{2,}Jump to bottom.*$/i, '').trim();
+      // Multi-select rows carry a checkbox: `[ ]`, or `[✔]` once ticked. Read the
+      // tick from the raw line — the ASCII-stripped one has `[]` for it.
+      const box = rawLines[i].match(/^[ \t]*(?:❯[ \t]*)?\d+\.[ \t]+\[([^\]]*)\]/);
+      const opt: PendingQuestionOption = { label: '' };
+      if (box) {
+        multiSelect = true;
+        label = label.replace(/^\[[^\]]*\]\s*/, '');
+        opt.checked = box[1].trim() !== '';
+      }
+      opt.label = label.slice(0, 120);
       // Keep "Type something" / "Chat about this" — they are real, selectable rows.
-      // Tag them so the UI opens a free-text field instead of committing the choice.
-      // They always trail the model-authored options, so option index still maps 1:1
-      // to the TUI's arrow-key order.
-      const builtin = ASK_BUILTIN_OPTION.test(label);
-      options.push(builtin ? { label: label.slice(0, 120), builtin: true } : { label: label.slice(0, 120) });
+      // They always trail the model-authored options, so option index still maps
+      // 1:1 to the TUI's arrow-key order.
+      if (ASK_BUILTIN_OPTION.test(label)) opt.builtin = true;
+      if (caret) cursor = rows;
+      rows++;
+      options.push(opt);
+      describing = opt;
+      continue;
+    }
+    if (multiSelect && /^(?:next|submit)$/i.test(lines[i])) {
+      if (caret) cursor = rows;
+      rows++;
+      sawSubmitRow = true;
+      describing = undefined;
+      continue;
+    }
+    // The indented lines under an option are its description. A blank line (or a
+    // rule, which ASCII-stripping blanks) ends it.
+    const desc = lines[i].replace(/\s{2,}Jump to bottom.*$/i, '').trim();
+    if (!desc) { describing = undefined; continue; }
+    if (describing) describing.description = describing.description ? `${describing.description} ${desc}` : desc;
+  }
+  // The "Type something" row. Once typed into it shows the user's text instead of
+  // its label, so find it by position: in a multi-select it is the last checkbox row
+  // (right above "Next"/"Submit"), in a single-select the row right above "Chat about
+  // this". A clipped menu may show neither neighbour — fall back to the label.
+  if (!system) {
+    const chatIdx = options.findIndex(o => o.builtin && /^chat about this/i.test(o.label));
+    let textIdx = -1;
+    if (multiSelect && sawSubmitRow) {
+      for (let i = options.length - 1; i >= 0; i--) if (options[i].checked !== undefined) { textIdx = i; break; }
+    } else if (!multiSelect && chatIdx > 0) {
+      textIdx = chatIdx - 1;
+    }
+    if (textIdx < 0) textIdx = options.findIndex(o => o.builtin && !/^chat about this/i.test(o.label));
+    if (textIdx >= 0) {
+      const o = options[textIdx];
+      options[textIdx] = o.builtin
+        ? { ...o, freeText: true }
+        : { label: 'Type something', builtin: true, freeText: true, value: o.label, ...(o.checked !== undefined ? { checked: o.checked } : {}) };
     }
   }
+  // Which tab is on screen. Its highlight is styling only, so infer it, assuming
+  // tabs are answered in order: the current tab is the first unanswered one — or
+  // the one before it, when this multi-select already has a tick (which flips its
+  // own chip to `☒`).
+  let step: { index: number; count: number } | undefined;
+  if (tabs.length > 0) {
+    const firstOpen = tabs.findIndex(t => !t.done);
+    const ticked = multiSelect && options.some(o => o.checked);
+    const index = firstOpen < 0 ? tabs.length - 1 : (ticked && firstOpen > 0 ? firstOpen - 1 : firstOpen);
+    step = { index, count: tabs.length };
+  }
+  const header = step ? tabs[step.index].label : undefined;
   // Question text: the paragraph directly above the first option. Joining the whole
   // paragraph rather than its last line matters for CLI modals, whose question wraps
   // over several lines; an AskUserQuestion question is one line followed by a blank,
@@ -234,8 +318,9 @@ export function parseScreenQuestion(text: string): PendingQuestionSet | null {
   // which is already in the transcript. Attributing that to the dialog would duplicate it.
   const preamble = system ? undefined : extractPreamble(rawLines, questionIdx);
   return {
-    questions: [{ question: question.slice(0, 300), header, multiSelect: false, options }],
+    questions: [{ question: question.slice(0, 300), header, multiSelect, options, ...(cursor !== undefined ? { cursor } : {}) }],
     ...(system ? { kind: 'system' as const } : {}),
+    ...(step && !system ? { step } : {}),
     ...(preamble ? { preamble } : {}),
   };
 }

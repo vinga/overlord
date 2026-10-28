@@ -67,7 +67,7 @@ describe('AskUserQuestion menu taller than the viewport', () => {
     const opts = parseScreenQuestion(CLIPPED)!.questions[0].options;
     // Dropping this row would also drop the "Chat about this" that follows it, and
     // "Type something" is the row a user reaches for when the menu is unreadable.
-    expect(opts[3]).toEqual({ label: 'Type something.', builtin: true });
+    expect(opts[3]).toEqual({ label: 'Type something.', builtin: true, freeText: true });
   });
 
   it('leaves the preamble undefined when the message is scrolled off screen', () => {

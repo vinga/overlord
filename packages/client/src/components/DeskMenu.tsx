@@ -51,7 +51,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getCo
     if (!open || !burgerRef.current) { setMenuPos(null); return; }
     const r = burgerRef.current.getBoundingClientRect();
     const right = window.innerWidth - r.right;
-    const MENU_H = 240;
+    const MENU_H = 320;
     setMenuPos(window.innerHeight - r.bottom < MENU_H && r.top > window.innerHeight - r.bottom
       ? { bottom: window.innerHeight - r.top + 4, right }
       : { top: r.bottom + 4, right });
@@ -66,11 +66,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getCo
     if (copiedTimer.current) clearTimeout(copiedTimer.current);
     copiedTimer.current = setTimeout(() => { setCopied(null); setOpen(false); }, 900);
   };
-  const copyItemStyle = (done: boolean): React.CSSProperties => ({
-    display: 'block', width: '100%', padding: '8px 14px',
-    background: 'none', border: 'none', color: done ? '#22c55e' : 'rgba(255,255,255,0.7)',
-    fontSize: 13, textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap',
-  });
+  const act = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); setOpen(false); fn(); };
 
   return (
     <div ref={ref} style={anchorStyle ?? { position: 'absolute', top: 4, right: 4, zIndex: 10 }}>
@@ -99,89 +95,30 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getCo
           border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 4,
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 10000, minWidth: 140,
         }}>
-          <button
-            onClick={(e) => copy(e, 'ref', sessionRef)}
+          {/* Most used first: Close and Archive lead the menu. */}
+          {onClose && <MenuItem icon={ICONS.close} label="Close" onClick={act(onClose)} />}
+          {onArchive && <MenuItem icon={ICONS.archive} label="Archive" onClick={act(onArchive)} />}
+          {(onClose || onArchive) && <MenuDivider />}
+          <MenuItem
+            icon={copied === 'ref' ? ICONS.check : ICONS.copy}
+            label={copied === 'ref' ? 'Copied' : 'Copy session ID'}
             title={sessionRef}
-            style={copyItemStyle(copied === 'ref')}
-            onMouseEnter={(e) => { if (copied !== 'ref') { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (copied !== 'ref') e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-          >{copied === 'ref' ? '✓ Copied' : 'Copy session ID'}</button>
+            done={copied === 'ref'}
+            onClick={(e) => copy(e, 'ref', sessionRef)}
+          />
           {getConversationText && (
-            <button
+            <MenuItem
+              icon={copied === 'conv' ? ICONS.check : ICONS.conversation}
+              label={copied === 'conv' ? 'Copied' : 'Copy conversation'}
+              done={copied === 'conv'}
               onClick={(e) => copy(e, 'conv', getConversationText())}
-              style={copyItemStyle(copied === 'conv')}
-              onMouseEnter={(e) => { if (copied !== 'conv') { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; } }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; if (copied !== 'conv') e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >{copied === 'conv' ? '✓ Copied' : 'Copy conversation'}</button>
+            />
           )}
-          <button
-            onClick={(e) => { e.stopPropagation(); setOpen(false); setAppearanceOpen(true); }}
-            style={{
-              display: 'block', width: '100%', padding: '8px 14px',
-              background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-              fontSize: 13, textAlign: 'left' as const, cursor: 'pointer', whiteSpace: 'nowrap' as const,
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-          >Icon &amp; color…</button>
-          {onClone && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpen(false); onClone(); }}
-              style={{
-                display: 'block', width: '100%', padding: '8px 14px',
-                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(212,175,55,0.1)'; e.currentTarget.style.color = '#d4af37'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >Clone</button>
-          )}
-          {onClear && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpen(false); onClear(); }}
-              style={{
-                display: 'block', width: '100%', padding: '8px 14px',
-                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(251,146,60,0.1)'; e.currentTarget.style.color = '#fb923c'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >Clear</button>
-          )}
-          {onClose && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpen(false); onClose(); }}
-              style={{
-                display: 'block', width: '100%', padding: '8px 14px',
-                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >Close</button>
-          )}
-          {onArchive && (
-            <button
-              onClick={(e) => { e.stopPropagation(); setOpen(false); onArchive(); }}
-              style={{
-                display: 'block', width: '100%', padding: '8px 14px',
-                background: 'none', border: 'none', color: 'rgba(255,255,255,0.7)',
-                fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(148,163,184,0.15)'; e.currentTarget.style.color = '#cbd5e1'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; }}
-            >Archive</button>
-          )}
-          <button
-            onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }}
-            style={{
-              display: 'block', width: '100%', padding: '8px 14px',
-              background: 'none', border: 'none', color: '#ff6b6b',
-              fontSize: 13, textAlign: 'left' as const, cursor: 'pointer',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,107,107,0.1)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >Delete</button>
+          <MenuItem icon={ICONS.palette} label="Icon & color…" onClick={act(() => setAppearanceOpen(true))} />
+          {onClone && <MenuItem icon={ICONS.clone} label="Clone" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onClone)} />}
+          {onClear && <MenuItem icon={ICONS.clear} label="Clear" hover="#fb923c" hoverBg="rgba(251,146,60,0.1)" onClick={act(onClear)} />}
+          <MenuDivider />
+          <MenuItem icon={ICONS.trash} label="Delete" color="#ff6b6b" hover="#ff6b6b" hoverBg="rgba(255,107,107,0.1)" onClick={act(onDelete)} />
         </div>,
         document.body,
       )}
@@ -199,3 +136,47 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getCo
     </div>
   );
 }
+
+const svg = (d: React.ReactNode) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{d}</svg>
+);
+
+const ICONS = {
+  close: svg(<><circle cx="12" cy="12" r="9" /><path d="M15 9l-6 6M9 9l6 6" /></>),
+  archive: svg(<><rect x="3" y="4" width="18" height="5" rx="1" /><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4" /></>),
+  copy: svg(<><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></>),
+  conversation: svg(<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />),
+  palette: svg(<><path d="M12 3a9 9 0 1 0 0 18c1 0 1.5-.8 1.5-1.5 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-7.8-9-7.8z" /><circle cx="7.5" cy="10.5" r="1" /><circle cx="12" cy="7.5" r="1" /><circle cx="16.5" cy="10.5" r="1" /></>),
+  clone: svg(<><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M4 16V5a1 1 0 0 1 1-1h11M14.5 11.5v6M11.5 14.5h6" /></>),
+  clear: svg(<path d="M3 6h18M7 12h10M10 18h4" />),
+  trash: svg(<><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" /></>),
+  check: svg(<path d="M5 12l5 5L20 7" />),
+};
+
+const MENU_TEXT = 'rgba(255,255,255,0.7)';
+
+function MenuItem({ icon, label, title, onClick, done, color = MENU_TEXT, hover = '#cbd5e1', hoverBg = 'rgba(148,163,184,0.15)' }: {
+  icon: React.ReactNode; label: string; title?: string; onClick: (e: React.MouseEvent) => void;
+  /** Transient success state (after a copy) — green, no hover recolor. */
+  done?: boolean; color?: string; hover?: string; hoverBg?: string;
+}) {
+  const base = done ? '#22c55e' : color;
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '7px 12px',
+        background: 'none', border: 'none', borderRadius: 5, color: base,
+        fontSize: 13, textAlign: 'left', cursor: 'pointer', whiteSpace: 'nowrap',
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = hoverBg; if (!done) e.currentTarget.style.color = hover; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = base; }}
+    >
+      <span style={{ display: 'flex', opacity: 0.85, flexShrink: 0 }}>{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+const MenuDivider = () => <div style={{ height: 1, margin: '4px 6px', background: 'rgba(255,255,255,0.08)' }} />;

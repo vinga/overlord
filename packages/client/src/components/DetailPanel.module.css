@@ -3727,6 +3727,67 @@
   margin-top: 4px;
 }
 
+.questionMultiHint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+/* Multi-select rows: a checkbox where single-select shows the row number. */
+.questionCheckbox {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(139, 92, 246, 0.45);
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.questionCheckboxOn {
+  background: #8b5cf6;
+  border-color: #8b5cf6;
+}
+
+/* Inline field for the "Type something" row. */
+.questionTextField {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.questionTextInput {
+  flex: 1;
+  min-width: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.questionTextInput:focus {
+  border-color: rgba(139, 92, 246, 0.65);
+}
+
+.questionTextInput::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.questionSubmit {
+  align-self: flex-start;
+  margin: 2px 0 4px;
+}
+
 .toolDuration {
   font-size: 10px;
   font-weight: 500;

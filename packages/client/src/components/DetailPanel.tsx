@@ -7,7 +7,7 @@ import { loadDraft, saveDraft, clearDraft, migrateDraftKey } from '../hooks/draf
 import { mergeDictation, subscribeDictation, subscribeDictationSubmit, type DictationEdit } from '../lib/dictationStore';
 import { loadSentHistory, pushSentHistory, type SentEntry } from '../hooks/sentHistoryStore';
 import { useToolTextPrefs, toggleBreakNewlines, toggleWrap, unescapeToolText } from '../hooks/useToolTextPrefs';
-import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestionSet, SessionReview, BackgroundProgress } from '../types';
+import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestion, PendingQuestionOption, PendingQuestionSet, SessionReview, BackgroundProgress } from '../types';
 import { useProgressCards } from '../hooks/useProgressCards';
 import { ProgressCard, ProgressDock } from './ProgressCard';
 import { getLaunchInfo } from '../types';
@@ -955,18 +955,24 @@ function parseQuestionInput(inputJson?: string): ParsedQuestion[] {
 function questionInputToSet(inputJson?: string): PendingQuestionSet | null {
   if (!inputJson) return null;
   try {
-    const parsed = JSON.parse(inputJson) as { kind?: 'ask' | 'system'; questions?: Array<{ question?: string; header?: string; multiSelect?: boolean; options?: Array<{ label?: string; description?: string; preview?: string; builtin?: boolean }> }> };
+    const parsed = JSON.parse(inputJson) as Pick<PendingQuestionSet, 'kind' | 'step'> & { questions?: Array<Partial<PendingQuestion> & { options?: Array<Partial<PendingQuestionOption>> }> };
     const questions = (parsed.questions ?? [])
       .filter(q => q.question)
       .map(q => ({
         question: q.question!,
         header: q.header,
         multiSelect: q.multiSelect ?? false,
-        options: (q.options ?? []).map(o => ({ label: o.label ?? '', description: o.description, preview: o.preview, builtin: o.builtin })).filter(o => o.label),
+        cursor: q.cursor,
+        options: (q.options ?? []).map(o => ({
+          label: o.label ?? '', description: o.description, preview: o.preview,
+          builtin: o.builtin, freeText: o.freeText, checked: o.checked, value: o.value,
+        })).filter(o => o.label),
       }));
-    // `kind` rides through the same JSON so a CLI modal keeps its answering rules
-    // after the round-trip; anything but 'system' is the ordinary tool menu.
-    return questions.length > 0 ? { questions, ...(parsed.kind === 'system' ? { kind: 'system' as const } : {}) } : null;
+    // `kind` and `step` ride through the same JSON so a CLI modal keeps its answering
+    // rules after the round-trip; anything but 'system' is the ordinary tool menu.
+    return questions.length > 0
+      ? { questions, ...(parsed.kind === 'system' ? { kind: 'system' as const } : {}), ...(parsed.step ? { step: parsed.step } : {}) }
+      : null;
   } catch {
     return null;
   }
@@ -2908,7 +2914,7 @@ const currentDisplayName =
         kind: 'tool',
         toolName: 'AskUserQuestion',
         content: selectedSession.pendingQuestion.questions.map(q => q.question).join(' · ').slice(0, 200),
-        inputJson: JSON.stringify({ questions: selectedSession.pendingQuestion.questions, kind: selectedSession.pendingQuestion.kind }),
+        inputJson: JSON.stringify({ questions: selectedSession.pendingQuestion.questions, kind: selectedSession.pendingQuestion.kind, step: selectedSession.pendingQuestion.step }),
       }
     : null;
   // The assistant text above the menu. Claude writes nothing of an AskUserQuestion
