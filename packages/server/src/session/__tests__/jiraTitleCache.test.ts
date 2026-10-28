@@ -74,3 +74,29 @@ describe('invalidateJiraKeys', () => {
     expect(jira.calls).toBe(2);
   });
 });
+
+describe('a fetch that never settles', () => {
+  beforeEach(() => {
+    clearJiraTitleCache();
+    jira.summary = 'first summary';
+    jira.calls = 0;
+  });
+
+  it('frees its slot so the queue keeps draining', async () => {
+    vi.useFakeTimers();
+    try {
+      // Pending forever, deaf to abort — what wedged the queue live.
+      vi.stubGlobal('fetch', () => new Promise(() => {}));
+      for (const k of ['CORE-11', 'CORE-12', 'CORE-13']) getCachedJiraMeta(k);
+      stubFetch();
+      expect(getCachedJiraMeta('CORE-14')).toBeNull();  // queued behind the three
+      expect(jira.calls).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(jira.calls).toBe(1);
+      expect(getCachedJiraMeta('CORE-14')?.title).toBe('first summary');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

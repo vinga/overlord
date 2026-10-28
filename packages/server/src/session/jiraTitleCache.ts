@@ -14,6 +14,7 @@ function isLiveStatus(status?: string): boolean {
 }
 const FETCH_CONCURRENCY = 3;
 const FETCH_TIMEOUT_MS = 5000;
+const SLOT_DEADLINE_MS = FETCH_TIMEOUT_MS * 2;
 
 interface Entry {
   meta: JiraIssueMeta | null;
@@ -137,7 +138,19 @@ function drainQueue(): void {
     const key = queue.shift()!;
     if (inflight.has(key)) continue;
     activeFetches++;
-    const p = fetchOne(key).finally(() => {
+    // The abort timer alone is not enough: an undici fetch can stay pending
+    // after abort(), and three such hangs wedge the queue for good. The race
+    // frees the slot whatever the fetch does.
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const hardStop = new Promise<void>((resolve) => {
+      deadline = setTimeout(() => {
+        console.warn(`[jiraTitleCache] fetch for ${key} still pending after ${SLOT_DEADLINE_MS}ms — freeing its slot`);
+        if (!cache.has(key)) cache.set(key, { meta: null, fetchedAt: Date.now() });
+        resolve();
+      }, SLOT_DEADLINE_MS);
+    });
+    const p = Promise.race([fetchOne(key), hardStop]).finally(() => {
+      clearTimeout(deadline);
       activeFetches--;
       inflight.delete(key);
       drainQueue();
