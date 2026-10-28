@@ -2087,14 +2087,21 @@ export function DetailPanel({
         // bare-key tokens (which have no href) need the default suppressed.
         if (addBtn || jiraToken.tagName !== 'A') e.preventDefault();
         if (addBtn && selectedSession?.sessionId) {
-          // Optimistic: the chip lands on the next snapshot tick, which then
-          // owns the class via the sync effect below.
-          jiraToken.classList.add('jiraPinned');
+          // Optimistic: the POST pins the key at the front of the chips (adds it,
+          // or brings an attached one to the top). The next snapshot tick then
+          // owns the classes via the sync effect below.
+          const wasPinned = jiraToken.classList.contains('jiraPinned');
+          const wasFront = jiraToken.classList.contains('jiraFront');
+          const revert = () => {
+            jiraToken.classList.toggle('jiraPinned', wasPinned);
+            jiraToken.classList.toggle('jiraFront', wasFront);
+          };
+          jiraToken.classList.add('jiraPinned', 'jiraFront');
           void fetch(`/api/sessions/${selectedSession.sessionId}/jira-keys/${encodeURIComponent(key)}`, {
             method: 'POST',
           })
-            .then((r) => { if (!r.ok) jiraToken.classList.remove('jiraPinned'); })
-            .catch(() => { jiraToken.classList.remove('jiraPinned'); });
+            .then((r) => { if (!r.ok) revert(); })
+            .catch(revert);
           return;
         }
         if (jiraBaseUrl) {
@@ -2380,13 +2387,27 @@ const currentDisplayName =
   useEffect(() => {
     const root = transcriptRef.current;
     if (!root) return;
+    const frontKey = selectedSession?.jiraKeys?.[0];
     root.querySelectorAll<HTMLElement>('[data-jira-key]').forEach((el) => {
-      el.classList.toggle('jiraPinned', jiraKeySet.has(el.getAttribute('data-jira-key') ?? ''));
+      const key = el.getAttribute('data-jira-key') ?? '';
+      const pinned = jiraKeySet.has(key);
+      const front = pinned && key === frontKey;
+      el.classList.toggle('jiraPinned', pinned);
+      el.classList.toggle('jiraFront', front);
+      // Attached but not first: the `+` becomes bring-to-front (icon via CSS).
+      const btn = el.querySelector<HTMLElement>('.jiraAddBtn');
+      if (btn) {
+        const label = pinned && !front
+          ? `Move ${key} to the top of this session's tickets`
+          : `Add ${key} to this session's tickets`;
+        btn.setAttribute('title', label);
+        btn.setAttribute('aria-label', label);
+      }
     });
     root.querySelectorAll<HTMLElement>('[data-pr-ref]').forEach((el) => {
       el.classList.toggle('prPinned', prRefSet.has((el.getAttribute('data-pr-ref') ?? '').toLowerCase()));
     });
-  }, [jiraKeySet, prRefSet, selectedSession?.activityFeed, extraFeed, activeTab, transcriptRef]);
+  }, [jiraKeySet, selectedSession?.jiraKeys, prRefSet, selectedSession?.activityFeed, extraFeed, activeTab, transcriptRef]);
 
   // Recompute jump pill state when transcript tab or target changes
   useEffect(() => {

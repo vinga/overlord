@@ -2297,18 +2297,17 @@ export class StateManager {
     return true;
   }
 
-  /** User clicked + on an inline Jira key in the conversation feed. Pins the key
-   *  so it leads jiraKeys and survives every later transcript scan, and clears
-   *  any earlier dismissal. Idempotent; returns false only for unknown sessions. */
+  /** User clicked + (or bring-to-front) on an inline Jira key in the
+   *  conversation feed. Pins the key at the front of jiraKeys so it survives
+   *  every later transcript scan, and clears any earlier dismissal. Idempotent;
+   *  returns false only for unknown sessions. */
   pinJiraKey(sessionId: string, key: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!session || !session.overlordId) return false;
     const rec = sessionStore.getByOverlordId(session.overlordId);
     if (!rec) return false;
     const prevPinned = rec.jiraKeysPinned ?? [];
-    const nextPinned = prevPinned.includes(key)
-      ? prevPinned
-      : [...prevPinned, key].slice(-JIRA_KEYS_MAX);
+    const nextPinned = [key, ...prevPinned.filter(k => k !== key)].slice(0, JIRA_KEYS_MAX);
     const nextDismissed = (rec.jiraKeysDismissed ?? []).filter(k => k !== key);
     const nextKeys = mergeJiraKeys(session.jiraKeys, undefined, nextDismissed, nextPinned);
     session.jiraKeys = nextKeys;

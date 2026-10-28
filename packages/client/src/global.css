@@ -191,6 +191,20 @@ a.inlinePrRef[data-pr-ref],
   display: none;
 }
 
+/* Attached but not the first chip: the `+` turns into bring-to-front. */
+.inlineJiraKey.jiraPinned:not(.jiraFront) .jiraAddBtn {
+  display: inline-flex;
+  font-size: 0;
+}
+.inlineJiraKey.jiraPinned:not(.jiraFront) .jiraAddBtn::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 2.5h10M8 14V6M4.5 9.5 8 6l3.5 3.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 2.5h10M8 14V6M4.5 9.5 8 6l3.5 3.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
 /* Fenced code block: hover action bar (copy, and `render` on markdown fences) */
 .codeBlock,
 .mdFence {
