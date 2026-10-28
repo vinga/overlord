@@ -20,6 +20,22 @@
   font-family: 'Inter', system-ui, sans-serif;
 }
 
+/* Horizontal layout: a full-height column left of the rooms, two chips wide. */
+.side {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  align-content: start;
+  padding: 14px 12px;
+  border-top: 0;
+  border-bottom: 0;
+  border-right: 1px solid rgba(212, 175, 55, 0.22);
+}
+
+.strip.side:has(.withSessions) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .tab {
   position: relative;
   display: inline-flex;

@@ -453,6 +453,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       customNames={roomCustomNames}
       selectedSessionId={selectedSessionId}
       onSelectSession={roomOnSelectSession}
+      side={topOffset === 0}
     />
   );
 
@@ -555,6 +556,14 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       <div className={styles.panelSpacer} style={{ height: topOffset }} />
       {topOffset > 0 && filterBar}
       {topOffset > 0 && roomTabs}
+      {/* Horizontal layout: the room chips are a column left of the rooms. */}
+      <div className={styles.body}>
+      {topOffset === 0 && (filterBar || roomTabs) && (
+        <div className={styles.sideTabs}>
+          {filterBar}
+          {roomTabs}
+        </div>
+      )}
       <div ref={contentRef} className={styles.content}>
         {!hasRooms ? (
           <div className={styles.empty}>
@@ -618,8 +627,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           </div>
         )}
       </div>
-      {topOffset === 0 && filterBar}
-      {topOffset === 0 && roomTabs}
+      </div>
 
       <div className={styles.statusBar}>
         <span className={`${styles.statusIndicator} ${connected ? styles.connected : styles.reconnecting}`} />

@@ -15,6 +15,8 @@ interface RoomTabsProps {
   customNames?: Record<string, string>;
   selectedSessionId?: string | null;
   onSelectSession?: (session: Session) => void;
+  /** Docked as a column left of the rooms (horizontal layout) instead of a row. */
+  side?: boolean;
 }
 
 /** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read/parked). */
@@ -79,7 +81,7 @@ function roomEl(container: HTMLElement, id: string): HTMLElement | null {
 const NO_NAMES: Record<string, string> = {};
 
 export const RoomTabs = React.memo(function RoomTabs({
-  rooms, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession,
+  rooms, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, side = false,
 }: RoomTabsProps) {
   // Snapshot ticks rebuild rooms; tabs only re-render when what they show changes.
   const tabsKey = rooms
@@ -157,7 +159,7 @@ export const RoomTabs = React.memo(function RoomTabs({
   };
 
   return (
-    <nav className={styles.strip} aria-label="Rooms">
+    <nav className={`${styles.strip} ${side ? styles.side : ''}`} aria-label="Rooms">
       {tabs.map(t => (
         <div
           key={t.id}
