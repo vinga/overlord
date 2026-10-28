@@ -34,6 +34,8 @@ OVERLORD_OVR_ID (manual override) is set, every marker is also POSTed to
 \${OVERLORD_URL:-http://localhost:3173}/api/progress as
 {"ptyId"?,"ovrId"?,"watchId","line"}. Pushes are fire-and-forget (2s max each);
 the final marker's push is awaited before exit. Needs curl.
+Inside Claude Code (CLAUDECODE=1) a non-detached run does not push: Overlord
+already reads the background task's output, and a push would add a second card.
 
 Exit codes: 0 done, 1 --fail matched, 2 timeout (max rounds, no --until
 match), 130 stopped (SIGINT/SIGTERM), 64 usage error.
@@ -117,10 +119,11 @@ if [ "$DETACH" = 1 ]; then
   # command returns, which a nohup'd child is still in. macOS has no setsid(1),
   # hence python3 (already required). The child is reparented to launchd/init.
   python3 - "$LOG" "$0" --watch-id "$WID" --plain ${OPTS[@]+"${OPTS[@]}"} -- "$@" <<'PY'
-import subprocess, sys
+import os, subprocess, sys
 log = open(sys.argv[1], "ab")
 subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                 start_new_session=True, close_fds=True)
+                 start_new_session=True, close_fds=True,
+                 env={**os.environ, "OVR_WATCH_DETACHED": "1"})
 PY
   printf 'watching in background: %s (id %s, log %s)\n' "$LABEL" "$WID" "$LOG"
   exit 0
@@ -132,6 +135,10 @@ OVR_ID=${OVERLORD_OVR_ID:-}
 PUSH_URL="${OVERLORD_URL:-http://localhost:3173}"
 PUSH_URL="${PUSH_URL%/}/api/progress"
 if [ -z "$PTY_ID$OVR_ID" ] || ! command -v curl >/dev/null 2>&1; then PUSH=0; fi
+# Claude Code: Overlord already tails the background task's output file, so a
+# push would draw the same watch as a second card. A detached run writes to its
+# own log instead, and OVERLORD_OVR_ID is an explicit request — both still push.
+if [ "${CLAUDECODE:-}" = 1 ] && [ -z "${OVR_WATCH_DETACHED:-}" ] && [ -z "$OVR_ID" ]; then PUSH=0; fi
 
 # post <line>: POST one marker line; JSON built by python3. Never fails.
 post() {
