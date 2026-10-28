@@ -20,7 +20,7 @@
   font-family: 'Inter', system-ui, sans-serif;
 }
 
-/* Horizontal layout: a full-height column left of the rooms, two chips wide. */
+/* Horizontal layout: a full-height column left of the rooms, one chip wide. */
 .side {
   flex: 1;
   min-height: 0;
@@ -33,7 +33,7 @@
 }
 
 .strip.side:has(.withSessions) {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .tab {
