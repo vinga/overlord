@@ -45,7 +45,8 @@ export function QuestionPrompt({ sessionId, questionSet, initialStage, onStageCh
   const textInputRef = React.useRef<HTMLInputElement>(null);
 
   const questions = questionSet.questions ?? [];
-  const question = questions[stage];
+  // A screen set holds one question; it may replace a transcript set mid-way.
+  const question = questions[questionSet.step ? 0 : stage];
   const total = questions.length;
   // A CLI-owned modal (resume-from-summary, compaction) renders exactly the rows it
   // shows — no built-ins to synthesize. Adding them would send arrows past the last

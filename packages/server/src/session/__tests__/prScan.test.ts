@@ -126,3 +126,51 @@ describe('extractPrRefs', () => {
     expect(extractPrRefs(['nothing here', 'https://example.com/a/b'])).toEqual([]);
   });
 });
+
+const bashUse = (id: string, command: string) =>
+  JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
+const bashResult = (id: string, content: unknown) =>
+  userBlocks([{ type: 'tool_result', tool_use_id: id, content }]);
+
+describe('gatherScanSegments: own PRs and pushes', () => {
+  it('pairs `gh pr create` output with its call', () => {
+    const { prCreates, pushes } = gatherScanSegments([
+      bashUse('t1', 'gh pr create --title x --body y'),
+      bashResult('t1', 'https://github.com/o/r/pull/12\n'),
+    ]);
+    expect(prCreates).toEqual(['https://github.com/o/r/pull/12\n']);
+    expect(pushes).toEqual([]);
+  });
+
+  it('recognises the REST create fallback, not other gh api calls', () => {
+    const { prCreates } = gatherScanSegments([
+      bashUse('a', 'gh api repos/o/r/pulls --method POST -f title=x'),
+      bashResult('a', '{"html_url":"https://github.com/o/r/pull/3"}'),
+      bashUse('b', 'gh api repos/o/r/pulls/3/comments -X POST -f body=x'),
+      bashResult('b', 'https://github.com/o/r/pull/3#c1'),
+    ]);
+    expect(prCreates).toEqual(['{"html_url":"https://github.com/o/r/pull/3"}']);
+  });
+
+  it('does not treat a mentioned PR as authored', () => {
+    const { prCreates } = gatherScanSegments([
+      bashUse('t1', 'gh pr view 12'),
+      bashResult('t1', 'https://github.com/o/r/pull/12'),
+    ]);
+    expect(prCreates).toEqual([]);
+  });
+
+  it('collects `git push` output, including `git -C dir push`', () => {
+    const { pushes } = gatherScanSegments([
+      bashUse('p1', 'cd ../x && git -C ../x push -u origin feat'),
+      bashResult('p1', [{ type: 'text', text: 'To github.com:o/x.git\n * [new branch] feat -> feat' }]),
+    ]);
+    expect(pushes).toEqual(['To github.com:o/x.git\n * [new branch] feat -> feat']);
+  });
+
+  it('pairs Codex function calls by call_id', () => {
+    const call = JSON.stringify({ type: 'response_item', payload: { type: 'function_call', call_id: 'c1', arguments: '{"cmd":"git push origin main"}' } });
+    const out = JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: 'To https://github.com/o/r.git\n   a1b2c3d..e4f5a6b  main -> main' } });
+    expect(gatherScanSegments([call, out]).pushes).toEqual(['To https://github.com/o/r.git\n   a1b2c3d..e4f5a6b  main -> main']);
+  });
+});

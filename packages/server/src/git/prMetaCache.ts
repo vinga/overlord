@@ -124,6 +124,7 @@ export class PrMetaCache {
         state: entry.state,
         isDraft: entry.isDraft,
         url: entry.url,
+        headRef: entry.branch,
       };
     }
     return undefined;
@@ -136,6 +137,7 @@ interface RestPull {
   state?: string;
   draft?: boolean;
   merged_at?: string | null;
+  head?: { ref?: string };
 }
 
 async function fetchPrMeta(ref: string, cwd?: string): Promise<PrRefMeta | undefined> {
@@ -160,5 +162,6 @@ async function fetchPrMeta(ref: string, cwd?: string): Promise<PrRefMeta | undef
     state: state || undefined,
     isDraft: !!p.draft,
     url: p.html_url,
+    headRef: p.head?.ref,
   };
 }

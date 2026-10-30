@@ -134,3 +134,25 @@ describe('readTeammateId', () => {
     expect(readTeammateId(sid, transcript)).toBeUndefined();
   });
 });
+
+describe('readTeammate', () => {
+  it('resolves its own team name and the lead session from the team config', async () => {
+    const { readTeammate, clearSessionCaches } = await import('../session/transcriptReader.js');
+    const sid = 'sid-team-member';
+    const teamDir = path.join(tmpHome, '.claude', 'teams', 'session-lead1234');
+    fs.mkdirSync(teamDir, { recursive: true });
+    fs.writeFileSync(path.join(teamDir, 'config.json'), JSON.stringify({ leadSessionId: 'lead-sid' }));
+    const transcript = path.join(tmpHome, '.claude', 'projects', `${sid}.jsonl`);
+    const relay = JSON.parse(userLine('<teammate-message teammate_id="team-lead">Implement it.</teammate-message>', sid));
+    fs.writeFileSync(
+      transcript,
+      JSON.stringify({ ...relay, teamName: 'session-lead1234', agentName: 'impl-2840' }) + '\n',
+    );
+    clearSessionCaches(sid);
+    expect(readTeammate(sid, transcript)).toEqual({
+      teammateId: 'team-lead',
+      teammateName: 'impl-2840',
+      teamLeadSessionId: 'lead-sid',
+    });
+  });
+});

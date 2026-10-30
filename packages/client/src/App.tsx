@@ -28,7 +28,7 @@ import { SpawnDialog } from './components/SpawnDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
 import { SettingsModal, type PageId } from './components/SettingsModal';
 import type { GlobalSettings } from './types';
-import { SESSION_NAMES } from './components/Room';
+import { SESSION_NAMES, pickSessionName, resolveQuickSpawn } from './components/quickSpawn';
 import type { Room } from './types';
 
 function StatsModal({ onClose }: { onClose: () => void }) {
@@ -264,6 +264,22 @@ export function App() {
       setPendingSpawns(prev => prev.filter(p => !matched.has(p.id)));
     }
   }, [snapshot, pendingSpawns]);
+
+  // Fast session: select the spawned session once it lands. An embedded spawn is
+  // already selected via onSpawned; a bridge/plain one (external terminal) only
+  // shows up in the snapshot. Same cwd + proposedName + startedAt match as above.
+  const [pendingSelect, setPendingSelect] = useState<{ cwd: string; name: string; startedAt: number } | null>(null);
+  useEffect(() => {
+    if (!pendingSelect || !snapshot) return;
+    if (Date.now() - pendingSelect.startedAt > 25_000) { setPendingSelect(null); return; }
+    const room = snapshot.rooms.find(r => r.cwd === pendingSelect.cwd);
+    const hit = room?.sessions.find(s =>
+      s.proposedName === pendingSelect.name && s.startedAt >= pendingSelect.startedAt - 5_000
+    );
+    if (!hit) return;
+    setPendingSelect(null);
+    if ((hit.overlordId ?? hit.sessionId) !== selectedSessionId) handleSelectSession(hit);
+  }, [snapshot, pendingSelect, selectedSessionId]);
 
   // Tick every 2s while pendingSpawns non-empty so the timeout cleanup fires
   // even without snapshot changes.
@@ -692,6 +708,14 @@ export function App() {
     }
   }
 
+  // Header "Fast session": the room's quick spawn, then switch the panel to it.
+  async function handleFastSession(room: Room) {
+    const { prefix, mode, provider } = await resolveQuickSpawn(room.cwd, { prefix: '', mode: 'embedded', provider: 'claude' });
+    const name = prefix + pickSessionName(room, displayNames);
+    setPendingSelect({ cwd: room.cwd, name, startedAt: Date.now() });
+    handleNewFolderSpawn(room.cwd, name, mode, provider);
+  }
+
   async function createNote(cwd: string, name: string) {
     try {
       const res = await fetch('/api/notes', {
@@ -836,6 +860,7 @@ export function App() {
         customNames={displayNames}
         onSpawnSession={handleSpawnSession}
         onSpawnDirect={handleNewFolderSpawn}
+        onFastSession={handleFastSession}
         onNewTerminalSession={handleNewTerminalSession}
         onLogsClick={() => setView('logs')}
         onSettingsClick={() => { setSettingsPage(undefined); setShowSettings(true); }}
@@ -848,6 +873,7 @@ export function App() {
         rightOffset={dock === 'right' ? panelWidth : 0}
         topOffset={dock === 'bottom' ? panelHeight : 0}
         onRoomClick={handleRoomClick}
+        selectedRoomId={selectedRoomId}
         spawnCwd={spawnCwd}
         onSpawnNameChange={setPendingSpawnName}
         onSpawnCommit={handleSpawnCommit}

@@ -57,6 +57,8 @@ interface WorkerGroupProps {
   session: Session;
   onSelectSession: (session: Session, subagentId?: string) => void;
   customName?: string;
+  /** Display name of the team lead driving this session, when it is a teammate. */
+  teamLeadName?: string;
   onDeleteSession?: (sessionId: string) => void;
   onRename?: (sessionId: string, newName: string) => void;
   /** Desk card size in grid cells — larger cards show more. */
@@ -77,7 +79,7 @@ function readExpanded(sessionId: string): boolean {
   } catch { return true; }
 }
 
-export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, onDeleteSession, onRename, spanW = 1, spanH = 1 }: WorkerGroupProps) {
+export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession, customName, teamLeadName, onDeleteSession, onRename, spanW = 1, spanH = 1 }: WorkerGroupProps) {
   const maxVisibleSubagents = MAX_VISIBLE_SUBAGENTS * spanH;
   const [expanded] = useState(() => readExpanded(session.sessionId));
   const [overflowExpanded, setOverflowExpanded] = useState(false);
@@ -130,6 +132,8 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           notesSummary={notesMap.get(session.sessionId)}
           intent={session.intent}
           teammateId={session.teammateId}
+          teammateName={session.teammateName}
+          teamLeadName={teamLeadName}
           activeMonitors={session.activeMonitors}
           jiraKeys={session.jiraKeys}
           jiraBaseUrl={jiraBaseUrl}

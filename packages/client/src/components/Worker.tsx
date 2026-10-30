@@ -52,6 +52,10 @@ interface WorkerProps {
   intent?: string;
   /** teammate_id of the Claude Code lead driving this session, when it is a teammate. */
   teammateId?: string;
+  /** This session's own name in its team (e.g. "impl-2840"). */
+  teammateName?: string;
+  /** Display name of the lead session, when it is on screen. */
+  teamLeadName?: string;
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
   jiraBaseUrl?: string;
@@ -129,7 +133,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, teammateName, teamLeadName, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -341,8 +345,14 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       {/* Identity, not state: a teammate-run session is driven by another Claude,
           not by the user, so the sender rides above the transient chips. */}
       {!minimal && !isSubagent && teammateId && (
-        <span className={styles.teammateChip} title={`Driven by teammate ${teammateId}`}>
-          <span className={styles.teammateChipIcon}>⇄</span>{teammateId}
+        <span
+          className={styles.teammateChip}
+          title={`${teammateName ? `Teammate ${teammateName}` : 'Teammate'}, driven by ${teamLeadName ? `lead ${teamLeadName}` : teammateId}`}
+        >
+          <span className={styles.teammateChipIcon}>⇄</span>
+          {teammateName && <span className={styles.teammateChipText}>{teammateName}</span>}
+          <span className={styles.teammateChipMuted}>{teamLeadName ? 'lead' : 'via'}</span>
+          <span className={styles.teammateChipText}>{teamLeadName ?? teammateId}</span>
         </span>
       )}
       {!minimal && isNote && notePreview && (

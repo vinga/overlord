@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { mergePrRefs } from '../stateManager.js';
+import { mergePrRefs, mergeWorkRefs, PR_REFS_MAX } from '../stateManager.js';
+import { prRefKey } from '../../git/prRef.js';
+import { branchRefKey } from '../../git/pushRef.js';
 
 // Same three-source merge as mergeJiraKeys — scanner proposes, `+` pins, `×`
 // blocks — with one extra rule: GitHub owner/repo names are case-insensitive,
@@ -19,15 +21,24 @@ describe('mergePrRefs', () => {
       .toEqual(['o/r#9', 'o/r#1', 'o/r#2']);
   });
 
+  const refs = (n: number, from = 1) => Array.from({ length: n }, (_, i) => `o/r#${from + i}`);
+
   it('keeps a pinned ref when the scanner fills the cap', () => {
-    const scanned = ['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4', 'o/r#5'];
-    expect(mergePrRefs(undefined, scanned, undefined, ['o/r#9']))
-      .toEqual(['o/r#9', 'o/r#1', 'o/r#2', 'o/r#3', 'o/r#4']);
+    expect(mergePrRefs(undefined, refs(PR_REFS_MAX), undefined, ['o/r#99']))
+      .toEqual(['o/r#99', ...refs(PR_REFS_MAX - 1)]);
   });
 
-  it('caps at 5', () => {
-    const many = ['o/r#1', 'o/r#2', 'o/r#3', 'o/r#4', 'o/r#5', 'o/r#6'];
-    expect(mergePrRefs(many, undefined)).toHaveLength(5);
+  it(`caps at ${PR_REFS_MAX}`, () => {
+    expect(mergePrRefs(refs(PR_REFS_MAX + 1), undefined)).toHaveLength(PR_REFS_MAX);
+  });
+
+  it('puts authored refs after pins, so mentions cannot crowd them out', () => {
+    expect(mergePrRefs(refs(PR_REFS_MAX), undefined, undefined, ['o/r#99'], ['x/y#7']))
+      .toEqual(['o/r#99', 'x/y#7', ...refs(PR_REFS_MAX - 2)]);
+  });
+
+  it('filters a dismissed authored ref', () => {
+    expect(mergePrRefs(undefined, undefined, ['x/y#7'], undefined, ['x/y#7'])).toBeUndefined();
   });
 
   it('does not duplicate a ref that is both pinned and scanned', () => {
@@ -62,5 +73,28 @@ describe('mergePrRefs', () => {
 
   it('treats different repos with the same number as distinct', () => {
     expect(mergePrRefs(['a/x#12'], ['b/y#12'])).toEqual(['a/x#12', 'b/y#12']);
+  });
+});
+
+describe('mergeWorkRefs', () => {
+  it('returns undefined when empty', () => {
+    expect(mergeWorkRefs(undefined, [], prRefKey)).toBeUndefined();
+  });
+
+  it('unions chronologically, deduped by key', () => {
+    expect(mergeWorkRefs(['O/R#1'], ['o/r#1', 'o/r#2'], prRefKey)).toEqual(['O/R#1', 'o/r#2']);
+  });
+
+  it('drops the oldest past the cap of 10', () => {
+    const many = Array.from({ length: 12 }, (_, i) => `o/r:b${i}`);
+    expect(mergeWorkRefs(many, undefined, branchRefKey)).toEqual(many.slice(2));
+  });
+
+  it('treats branch names case-sensitively but repos not', () => {
+    expect(mergeWorkRefs(['O/R:Feat'], ['o/r:Feat', 'o/r:feat'], branchRefKey)).toEqual(['O/R:Feat', 'o/r:feat']);
+  });
+
+  it('filters dismissed refs', () => {
+    expect(mergeWorkRefs(['o/r#1', 'o/r#2'], undefined, prRefKey, ['O/R#1'])).toEqual(['o/r#2']);
   });
 });

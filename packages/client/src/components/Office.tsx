@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
 import ReactDOM from 'react-dom';
-import type { OfficeSnapshot, Session, SessionProvider } from '../types';
+import type { OfficeSnapshot, Room as RoomType, Session, SessionProvider } from '../types';
 import { Room } from './Room';
 import { OverlordLogo } from './OverlordLogo';
 import { ScratchpadPopup } from './ScratchpadPopup';
@@ -38,6 +38,8 @@ interface OfficeProps {
   /** Height of the session panel pinned under the header (vertical dock). */
   topOffset?: number;
   onRoomClick?: (roomId: string) => void;
+  /** Room open in the room detail panel — Fast session's fallback target. */
+  selectedRoomId?: string | null;
   spawnCwd?: string | null;
   onSpawnNameChange?: (name: string) => void;
   onSpawnCommit?: (name: string | null) => void;
@@ -56,6 +58,8 @@ interface OfficeProps {
   onLogsClick?: () => void;
   onSettingsClick?: () => void;
   onStatsClick?: () => void;
+  /** Header "Fast session": quick spawn in the given room and switch to it. */
+  onFastSession?: (room: RoomType) => void;
   onOpenAdvancedSearch?: (initialQuery?: string) => void;
   platform?: string;
   /** Header content after the search box (the voice chip). Memoize it in the
@@ -63,7 +67,7 @@ interface OfficeProps {
   headerExtra?: React.ReactNode;
 }
 
-function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onToggleActiveOnly }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void; activeOnly: boolean; onToggleActiveOnly: () => void }) {
+function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -115,26 +119,6 @@ function HeaderMenu({ onNewSession, onLogs, onSettings, onStats, activeOnly, onT
       </button>
       {open && menuPos && ReactDOM.createPortal(
         <div ref={menuRef} className={styles.headerMenuDropdown} style={{ position: 'fixed', top: menuPos.top, right: menuPos.right }} role="menu">
-          <button
-            className={styles.headerMenuItem}
-            onClick={() => { setOpen(false); onToggleActiveOnly(); }}
-            role="menuitemcheckbox"
-            aria-checked={activeOnly}
-          >
-            <span className={styles.headerMenuItemIcon}>
-              {activeOnly ? (
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="3 8.5 6.5 12 13 4" />
-                </svg>
-              ) : (
-                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="8" cy="8" r="3" fill="currentColor" />
-                </svg>
-              )}
-            </span>
-            <span className={styles.headerMenuItemLabel}>Active only</span>
-            <span className={styles.headerMenuItemHint}>{activeOnly ? 'On' : 'Off'}</span>
-          </button>
           {onNewSession && (
             <button
               className={styles.headerMenuItem}
@@ -214,8 +198,17 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, selectedRoomId, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onFastSession, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
+  // Room of the session open in the panel — where "Fast session" spawns.
+  // Falls back to the selected room, so a room whose sessions are all closed
+  // can still get a fresh one.
+  const fastRoom = useMemo(() => {
+    const bySession = selectedSessionId
+      ? snapshot?.rooms.find(r => r.sessions.some(s => s.overlordId === selectedSessionId || s.sessionId === selectedSessionId))
+      : undefined;
+    return bySession ?? (selectedRoomId ? snapshot?.rooms.find(r => r.id === selectedRoomId) : undefined);
+  }, [snapshot?.rooms, selectedSessionId, selectedRoomId]);
   useMarkSeenOnOpen(rooms, selectedSessionId);
   // App passes plain (re-created every render) handlers; stable wrappers keep the
   // memo'd Room from re-rendering on every snapshot tick. Not isPtySession: it is
@@ -317,12 +310,12 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       filtered = filtered.filter(room => !hiddenMap[room.id]);
     }
     if (activeOnly) {
-      filtered = filtered
-        .map(room => {
-          const sessions = room.sessions.filter(s => s.state !== 'closed');
-          return sessions.length > 0 ? { ...room, sessions } : null;
-        })
-        .filter((r): r is NonNullable<typeof r> => r !== null);
+      // Closed sessions leave; the room itself stays (unless hidden), even
+      // when nothing in it is active.
+      filtered = filtered.map(room => {
+        if (!room.sessions.some(s => s.state === 'closed')) return room;
+        return { ...room, sessions: room.sessions.filter(s => s.state !== 'closed') };
+      });
     }
     if (q) {
       filtered = filtered
@@ -590,6 +583,32 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onUnhide={unhide}
           onUnhideAll={() => unhideAll(allHiddenRooms)}
         />
+        <button
+          className={`${styles.advSearchBtn} ${activeOnly ? styles.headerToggleOn : ''}`}
+          onClick={toggleActiveOnly}
+          aria-pressed={activeOnly}
+          title={activeOnly ? 'Active sessions only — click to show all sessions' : 'Show active sessions only'}
+          aria-label="Active sessions only"
+        >
+          <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+            <circle cx="8" cy="8" r="2.6" fill="currentColor" />
+            <circle cx="8" cy="8" r="5.6" stroke="currentColor" strokeWidth="1.4" strokeOpacity={activeOnly ? 1 : 0.55} />
+          </svg>
+        </button>
+        {onFastSession && (
+          <button
+            className={styles.advSearchBtn}
+            onClick={() => { if (fastRoom) onFastSession(fastRoom); }}
+            disabled={!fastRoom}
+            title={fastRoom ? `Fast session in ${fastRoom.name} — quick spawn and switch to it` : 'Fast session — open a session or select a room first; it spawns in that room'}
+            aria-label="Fast session"
+          >
+            <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
+              <path d="M4 2.5v6M1 5.5h6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              <path d="M11.5 3L8.5 9h3.5L10 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
         {onOpenAdvancedSearch && (
           <button
             className={styles.advSearchBtn}
@@ -609,8 +628,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onLogs={onLogsClick}
           onSettings={onSettingsClick}
           onStats={onStatsClick}
-          activeOnly={activeOnly}
-          onToggleActiveOnly={toggleActiveOnly}
         />
         <ScratchpadPopup />
       </header>

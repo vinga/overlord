@@ -465,3 +465,15 @@
   background: rgba(212, 175, 55, 0.1);
 }
 
+
+/* Header icon toggles (Active only) while on. */
+.headerToggleOn {
+  background: rgba(212, 175, 55, 0.2);
+  border-color: rgba(212, 175, 55, 0.65);
+  color: #f0c947;
+}
+
+.advSearchBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}

@@ -846,6 +846,18 @@
   opacity: 0.8;
 }
 
+.teammateChipText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.teammateChipMuted {
+  flex-shrink: 0;
+  font-weight: 500;
+  opacity: 0.6;
+}
+
 /* Light animations (VITE_OVERLORD_LIGHT_ANIMATIONS, default on): static glow,
    pulse only transform + opacity so the compositor runs it without repaints.
    Flag off → these rules never match and the originals above apply. */

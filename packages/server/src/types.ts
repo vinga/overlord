@@ -263,6 +263,10 @@ export interface Session {
    *  user turn is a `<teammate-message>` hand-off. Derived from the transcript head
    *  on every read, never persisted. */
   teammateId?: string;
+  /** This session's own name in its Claude Code team (e.g. "impl-2840"). */
+  teammateName?: string;
+  /** sessionId of the team's lead, from `~/.claude/teams/<team>/config.json`. */
+  teamLeadSessionId?: string;
   replacedBy?: string;
   color: string;
   icon?: WorkerIcon;
@@ -317,8 +321,15 @@ export interface Session {
   jiraKeys?: string[];
   /** Pull requests this session touched, as `owner/repo#number`. Detected from PR
    *  URLs anywhere in the transcript (assistant + tool output included) and/or
-   *  pinned by hand. Union-merged across reads. Cap 5. */
+   *  pinned by hand. Union-merged across reads. Cap 10. */
   prRefs?: string[];
+  /** The prRefs this session opened itself (`gh pr create` output), as opposed
+   *  to PRs it only mentioned. Union across reads, wiped on /clear. Cap 10. */
+  prRefsAuthored?: string[];
+  /** Branches this session pushed, as `owner/repo:branch` — parsed from `git
+   *  push` output, so the repo is the push target, not the cwd. Union across
+   *  reads, newest last, wiped on /clear. Cap 10. */
+  branches?: string[];
   /** Skill/command names invoked in this session (union across transcript reads).
    *  Wiped on /clear (transcriptTruncated). */
   skillsUsed?: string[];
@@ -473,6 +484,9 @@ export interface OverlordSession {
    *  Lead the merge, exempt from prRefsDismissed (pinning is the un-dismiss),
    *  survive /clear. Cap 5. */
   prRefsPinned?: string[];
+  /** See Session.prRefsAuthored / Session.branches. */
+  prRefsAuthored?: string[];
+  branches?: string[];
   /** Persisted skill/command names invoked in this session (union across
    *  transcript reads). Wiped on /clear. */
   skillsUsed?: string[];
@@ -539,6 +553,8 @@ export interface LiveSession {
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
   prRefs?: string[];
+  prRefsAuthored?: string[];
+  branches?: string[];
   skillsUsed?: string[];
   providerSessionId?: string;
   requestSummary?: string;
@@ -602,6 +618,8 @@ export interface PrRefMeta {
   isDraft?: boolean;
   /** Real URL, preserving the originating host (GitHub Enterprise). */
   url?: string;
+  /** The PR's head branch — lets a pushed branch fold into its PR's row. */
+  headRef?: string;
 }
 
 export interface OfficeSnapshot {

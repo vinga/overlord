@@ -210,6 +210,10 @@ interface Session {
   /** teammate_id of the Claude Code lead driving this session — set when its first
    *  user turn is a `<teammate-message>` hand-off. Derived, never persisted. */
   teammateId?: string;
+  /** This session's own name in its Claude Code team (e.g. "impl-2840"). */
+  teammateName?: string;
+  /** sessionId of the team's lead — resolve its display name client-side. */
+  teamLeadSessionId?: string;
   /** True when sessionType==='embedded' and the server has a live PTY for this ovrId. */
   ptyAlive?: boolean;
   bridgeTty?: string;         // e.g. "/dev/ttys003" — TTY of the Terminal.app tab (macOS only)
@@ -235,6 +239,10 @@ interface Session {
   /** `owner/repo#number` refs for PRs this session touched — autodetected from PR
    *  URLs in the transcript and/or pinned via the `+` on a PR link in the feed. */
   prRefs?: string[];
+  /** The prRefs this session opened itself (`gh pr create`). */
+  prRefsAuthored?: string[];
+  /** Branches this session pushed, as `owner/repo:branch`. */
+  branches?: string[];
   skillsUsed?: string[];         // skill/command names invoked in this session, accumulated server-side
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
    *  auto-clears on the next turn; 'parked' is deliberate and sticky. */
@@ -331,6 +339,7 @@ export interface PrRefMeta {
   state?: string;    // OPEN | CLOSED | MERGED
   isDraft?: boolean;
   url?: string;      // real URL, preserving a GitHub Enterprise host
+  headRef?: string;  // the PR's head branch
 }
 
 interface OfficeSnapshot {

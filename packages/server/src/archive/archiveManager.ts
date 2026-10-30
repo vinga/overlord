@@ -103,7 +103,12 @@ export class ArchiveManager {
     // A note has no transcript — its content stays in noteStore, so the
     // archive block carries no transcript copies.
     const isNote = rec.sessionType === 'note';
-    if (!isNote && (!params.sourceTranscriptPath || !fs.existsSync(params.sourceTranscriptPath))) {
+    // No path from the caller: fall back to the one on the lineage entry — the
+    // only place a Codex/OpenCode rollout is recorded.
+    const sourceTranscriptPath = params.sourceTranscriptPath
+      ?? rec.lineage.history.find(h => h.sessionId === params.sessionId)?.transcriptPath
+      ?? null;
+    if (!isNote && (!sourceTranscriptPath || !fs.existsSync(sourceTranscriptPath))) {
       return null;
     }
 
@@ -116,7 +121,7 @@ export class ArchiveManager {
     const transcripts: ArchivedTranscript[] = [];
     if (!isNote) ensureDir(destDir);
     for (const h of isNote ? [] : rec.lineage.history) {
-      const src = h.sessionId === params.sessionId ? params.sourceTranscriptPath : h.transcriptPath;
+      const src = h.sessionId === params.sessionId ? sourceTranscriptPath : h.transcriptPath;
       if (!src || !fs.existsSync(src)) continue;
       const dest = path.join(destDir, `${h.sessionId}.jsonl`);
       try {
@@ -179,6 +184,21 @@ export class ArchiveManager {
     const archived = rec?.archive?.transcripts.find(t => t.sessionId === sessionId);
     if (!rec || !archived) return null;
     if (!fs.existsSync(archived.path)) return null;
+    // Codex / OpenCode resume from their own rollout store by their own id: put
+    // the bytes back where the rollout lived, untouched. ~/.claude/projects is
+    // only for Claude, and rewriting `sessionId` into a rollout corrupts it.
+    if (rec.provider === 'codex' || rec.provider === 'opencode') {
+      const original = rec.lineage.history.find(h => h.sessionId === sessionId)?.transcriptPath;
+      if (!original || original.replace(/\\/g, '/').includes('/.claude/projects/')) return null;
+      if (fs.existsSync(original)) return original;
+      try {
+        ensureDir(path.dirname(original));
+        fs.copyFileSync(archived.path, original);
+      } catch {
+        return null;
+      }
+      return original;
+    }
     // Match Claude CLI's project-dir slug exactly: convert `/`, `\`, `:`, `.` to `-`
     // and keep any leading dash. Do NOT strip leading dashes — `claude --resume`
     // looks in `~/.claude/projects/-Users-.../` and won't find files written to

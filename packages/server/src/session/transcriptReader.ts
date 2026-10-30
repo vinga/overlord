@@ -6,6 +6,7 @@ import { sessionStore } from './sessionStore.js';
 import { shadowPathFor } from './transcriptShadow.js';
 import { globalSettingsStore } from './globalSettingsStore.js';
 import { parsePrUrl, prRefKey } from '../git/prRef.js';
+import { parseGitPushOutput } from '../git/pushRef.js';
 import { codexOutputText, summarizeCodexExec } from './codexExecSummary.js';
 
 const JIRA_MAX_KEYS = 5;
@@ -66,15 +67,48 @@ function getJiraProjectRegex(): RegExp | null {
  *   `created` — JIRA keys from issue-create responses in tool_result output
  *            (see JIRA_CREATE_RESPONSE). A session that files a ticket owns it,
  *            even though the user never typed the key.
+ *
+ *   `prCreates` / `pushes` — output of shell calls that ran `gh pr create` /
+ *            `git push`, paired to their call by tool-use id (Claude) or
+ *            call_id (Codex). A PR this session opened, or a branch it pushed,
+ *            is its own work rather than a mention.
  */
-export function gatherScanSegments(last30: string[]): { user: string[]; wide: string[]; created: string[] } {
+export function gatherScanSegments(last30: string[]): {
+  user: string[]; wide: string[]; created: string[]; prCreates: string[]; pushes: string[];
+} {
   const user: string[] = [];
   const wide: string[] = [];
   const created: string[] = [];
+  const prCreates: string[] = [];
+  const pushes: string[] = [];
+  const shellCalls = new Map<string, 'pr' | 'push'>();
+  const noteShellCall = (id: unknown, command: unknown) => {
+    if (typeof id !== 'string' || typeof command !== 'string') return;
+    if (GH_PR_CREATE.test(command)) shellCalls.set(id, 'pr');
+    else if (GIT_PUSH.test(command)) shellCalls.set(id, 'push');
+  };
+  const takeShellOutput = (id: unknown, texts: string[]) => {
+    const kind = typeof id === 'string' ? shellCalls.get(id) : undefined;
+    if (!kind) return;
+    (kind === 'pr' ? prCreates : pushes).push(...texts);
+  };
   for (const line of last30) {
     if (!line) continue;
-    let parsed: { type?: string; isMeta?: boolean; message?: { content?: unknown } };
+    let parsed: {
+      type?: string; isMeta?: boolean; message?: { content?: unknown };
+      payload?: { type?: string; call_id?: unknown; arguments?: unknown; output?: unknown };
+    };
     try { parsed = JSON.parse(line) as typeof parsed; } catch { continue; }
+    if (parsed.type === 'response_item') {
+      // Codex: the command sits in the call's JSON-encoded arguments.
+      const p = parsed.payload;
+      if (p?.type === 'function_call') noteShellCall(p.call_id, p.arguments);
+      else if (p?.type === 'function_call_output') {
+        const out = typeof p.output === 'string' ? p.output : JSON.stringify(p.output ?? '');
+        takeShellOutput(p.call_id, [out]);
+      }
+      continue;
+    }
     if (parsed.type === 'user') {
       if (parsed.isMeta === true) continue;
       const c = parsed.message?.content;
@@ -82,7 +116,7 @@ export function gatherScanSegments(last30: string[]): { user: string[]; wide: st
         user.push(c);
         wide.push(c);
       } else if (Array.isArray(c)) {
-        for (const block of c as Array<{ type?: string; text?: string; content?: unknown }>) {
+        for (const block of c as Array<{ type?: string; text?: string; content?: unknown; tool_use_id?: unknown }>) {
           if (block.type === 'text' && typeof block.text === 'string') {
             user.push(block.text);
             wide.push(block.text);
@@ -91,6 +125,7 @@ export function gatherScanSegments(last30: string[]): { user: string[]; wide: st
             const from = wide.length;
             pushToolResultText(block.content, wide);
             for (let i = from; i < wide.length; i++) pushCreatedJiraKeys(wide[i], created);
+            takeShellOutput(block.tool_use_id, wide.slice(from));
           }
         }
       }
@@ -101,15 +136,20 @@ export function gatherScanSegments(last30: string[]): { user: string[]; wide: st
       if (typeof c === 'string') {
         wide.push(c);
       } else if (Array.isArray(c)) {
-        for (const block of c as Array<{ type?: string; text?: string }>) {
+        for (const block of c as Array<{ type?: string; text?: string; id?: unknown; input?: { command?: unknown } }>) {
           if (block.type === 'text' && typeof block.text === 'string') wide.push(block.text);
-          // skip tool_use input, thinking
+          // tool_use input is never scanned, only remembered to classify its result
+          else if (block.type === 'tool_use') noteShellCall(block.id, block.input?.command);
         }
       }
     }
   }
-  return { user, wide, created };
+  return { user, wide, created, prCreates, pushes };
 }
+
+// `gh pr create`, or its REST stand-in `gh api repos/o/r/pulls -X POST`.
+const GH_PR_CREATE = /\bgh\s+pr\s+create\b|\bgh\s+api\b[^\n]*\/pulls(?=[\s'"]|$)[^\n]*(?:-X|--method)\s+POST\b/;
+const GIT_PUSH = /\bgit\s+(?:-C\s+\S+\s+)?push\b/;
 
 /**
  * Jira's POST /issue response: `{"id":"150408","key":"BACKEND-2728","self":".../rest/api/3/issue/150408"}`
@@ -407,9 +447,9 @@ const subagentsDirCache = new Map<string, SubagentsDirCache>();
 
 const proposedNameCache = new Map<string, string>();
 
-/** sessionId → teammate_id of the lead that drives it, or '' for "not a teammate".
+/** sessionId → who drives this teammate session, or null for "not a teammate".
  *  Derived from the transcript head, so it is stable for the life of the session. */
-const teammateIdCache = new Map<string, string>();
+const teammateIdCache = new Map<string, TeammateInfo | null>();
 
 export function clearTranscriptCache(filePath: string): void {
   transcriptCache.delete(filePath);
@@ -1312,6 +1352,10 @@ export function readTranscriptState(filePath: string): {
   jiraKeys?: string[];
   // `owner/repo#number` refs from PR URLs in the tail (wider scan). Capped at 5.
   prRefs?: string[];
+  // The subset printed by this session's own `gh pr create`.
+  prRefsAuthored?: string[];
+  // `owner/repo:branch` refs this session pushed (from `git push` output).
+  branches?: string[];
   // Skill/command names from slash-command invocations in the tail. Capped at 12.
   skillsUsed?: string[];
   // <status> of background-task notifications seen in this window, by tool-use-id.
@@ -1960,6 +2004,8 @@ export function readTranscriptState(filePath: string): {
     const scanSegments = gatherScanSegments(last30);
     const jiraKeys = extractJiraKeys([...scanSegments.user, ...scanSegments.created], getJiraProjectRegex());
     const prRefs = extractPrRefs(scanSegments.wide);
+    const prRefsAuthored = extractPrRefs(scanSegments.prCreates);
+    const branches = scanSegments.pushes.flatMap(parseGitPushOutput);
     const skillsUsed = unionSkillNames(extractSkillsUsed(scanSegments.user), extractSkillToolUses(last30));
 
     const result = {
@@ -1985,6 +2031,8 @@ export function readTranscriptState(filePath: string): {
       backgroundTasks: backgroundTasks.length > 0 ? backgroundTasks : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
       prRefs: prRefs.length > 0 ? prRefs : undefined,
+      prRefsAuthored: prRefsAuthored.length > 0 ? prRefsAuthored : undefined,
+      branches: branches.length > 0 ? branches : undefined,
       skillsUsed: skillsUsed.length > 0 ? skillsUsed : undefined,
       backgroundTaskStatuses: Object.keys(backgroundTaskStatuses).length > 0 ? backgroundTaskStatuses : undefined,
     };
@@ -2015,6 +2063,8 @@ function readCodexTranscriptState(filePath: string): {
   activeMonitors?: ActiveMonitor[];
   jiraKeys?: string[];
   prRefs?: string[];
+  prRefsAuthored?: string[];
+  branches?: string[];
 } {
   try {
     const now = Date.now();
@@ -2244,6 +2294,8 @@ function readCodexTranscriptState(filePath: string): {
     const codexSegments = gatherScanSegments(last30);
     const jiraKeys = extractJiraKeys([...codexSegments.user, ...codexSegments.created], getJiraProjectRegex());
     const prRefs = extractPrRefs(codexSegments.wide);
+    const prRefsAuthored = extractPrRefs(codexSegments.prCreates);
+    const branches = codexSegments.pushes.flatMap(parseGitPushOutput);
 
     const result = {
       state,
@@ -2255,6 +2307,8 @@ function readCodexTranscriptState(filePath: string): {
       activeMonitors: activeMonitors.length > 0 ? activeMonitors : undefined,
       jiraKeys: jiraKeys.length > 0 ? jiraKeys : undefined,
       prRefs: prRefs.length > 0 ? prRefs : undefined,
+      prRefsAuthored: prRefsAuthored.length > 0 ? prRefsAuthored : undefined,
+      branches: branches.length > 0 ? branches : undefined,
     };
     transcriptCache.set(filePath, { mtimeMs: fileModifiedMs, fileSize: stat.size, fileModifiedMs, lastCheckedAt: now, stateHint, result, dirty: false });
     evictTranscriptCache(now);
@@ -2488,22 +2542,47 @@ export function readProposedName(sessionId: string, transcriptPath: string): str
   return undefined;
 }
 
+export interface TeammateInfo {
+  /** teammate_id of the sender of the hand-off — usually the role "team-lead". */
+  teammateId: string;
+  /** This session's own name in the team (`agentName`, e.g. "impl-2840"). */
+  teammateName?: string;
+  /** sessionId of the team's lead, from `~/.claude/teams/<teamName>/config.json`. */
+  teamLeadSessionId?: string;
+}
+
+/** `leadSessionId` from the team config, or undefined when it is missing or unreadable. */
+function readTeamLeadSessionId(teamName: string): string | undefined {
+  try {
+    const configPath = path.join(os.homedir(), '.claude', 'teams', teamName, 'config.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { leadSessionId?: unknown };
+    return typeof config.leadSessionId === 'string' ? config.leadSessionId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The teammate_id of the lead driving this session, or undefined for an ordinary one. */
+export function readTeammateId(sessionId: string, transcriptPath: string): string | undefined {
+  return readTeammate(sessionId, transcriptPath)?.teammateId;
+}
+
 /**
- * The teammate_id of the lead driving this session, or undefined for an ordinary one.
+ * Who drives this session when it is a Claude Code teammate, or undefined for an ordinary one.
  *
  * Head-read, not tail-read: a teammate session's FIRST user message is the lead's
  * task hand-off, and the tail window loses it within a few turns. Cached per
  * sessionId (cleared by clearSessionCaches) so the per-tick cost is a Map lookup.
  */
-export function readTeammateId(sessionId: string, transcriptPath: string): string | undefined {
+export function readTeammate(sessionId: string, transcriptPath: string): TeammateInfo | undefined {
   const cached = teammateIdCache.get(sessionId);
-  if (cached !== undefined) return cached || undefined;
+  if (cached !== undefined) return cached ?? undefined;
   if (isCodexTranscript(transcriptPath)) {
-    teammateIdCache.set(sessionId, '');
+    teammateIdCache.set(sessionId, null);
     return undefined;
   }
 
-  let teammateId = '';
+  let info: TeammateInfo | null = null;
   try {
     const fd = fs.openSync(transcriptPath, 'r');
     let content: string;
@@ -2518,7 +2597,12 @@ export function readTeammateId(sessionId: string, transcriptPath: string): strin
     }
     for (const line of content.split('\n')) {
       if (!line.trim()) continue;
-      let parsed: { type?: string; message?: { content?: string | Array<{ type?: string; text?: string }> } };
+      let parsed: {
+        type?: string;
+        teamName?: string;
+        agentName?: string;
+        message?: { content?: string | Array<{ type?: string; text?: string }> };
+      };
       try { parsed = JSON.parse(line) as typeof parsed; } catch { continue; }
       if (parsed.type !== 'user') continue;
       const raw = parsed.message?.content;
@@ -2528,7 +2612,14 @@ export function readTeammateId(sessionId: string, transcriptPath: string): strin
       if (!text?.trim()) continue;
       // First substantive user turn decides. A teammate hand-off is always first;
       // anything else means this session is driven by a human.
-      teammateId = parseTeammateMessage(text)?.teammateId ?? '';
+      const teammateId = parseTeammateMessage(text)?.teammateId;
+      if (teammateId) {
+        info = {
+          teammateId,
+          ...(parsed.agentName ? { teammateName: parsed.agentName } : {}),
+          ...(parsed.teamName ? { teamLeadSessionId: readTeamLeadSessionId(parsed.teamName) } : {}),
+        };
+      }
       break;
     }
   } catch {
@@ -2536,8 +2627,8 @@ export function readTeammateId(sessionId: string, transcriptPath: string): strin
     return undefined;
   }
 
-  teammateIdCache.set(sessionId, teammateId);
-  return teammateId || undefined;
+  teammateIdCache.set(sessionId, info);
+  return info ?? undefined;
 }
 
 export function readSubagents(cwd: string, sessionId: string, transcriptPath?: string | null): Subagent[] {

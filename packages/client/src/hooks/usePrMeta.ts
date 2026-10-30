@@ -9,7 +9,7 @@ const listeners = new Set<() => void>();
 
 function sameMeta(a: PrRefMeta, b: PrRefMeta): boolean {
   return a.title === b.title && a.state === b.state
-    && a.isDraft === b.isDraft && a.url === b.url;
+    && a.isDraft === b.isDraft && a.url === b.url && a.headRef === b.headRef;
 }
 
 export function setPrMeta(next: Record<string, PrRefMeta> | undefined): void {

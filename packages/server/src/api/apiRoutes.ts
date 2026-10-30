@@ -14,6 +14,7 @@ import express from 'express';
 import type { Express } from 'express';
 import type { WebSocket } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
+import { resolveTranscriptPath } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
@@ -1776,10 +1777,12 @@ export function registerApiRoutes(
         res.json({ ok: true, entry: archiveManager.get(sessionId), alreadyArchived: true });
         return;
       }
-      // Resolve transcript: own sessionId first, then walk --resume parent chain.
-      // Sessions spawned via `--resume` often share the parent's transcript and never
-      // write one under their own sessionId, so the direct lookup misses them.
-      let sourceTranscript: string | null = findTranscriptPath(session.cwd, sessionId) ?? findTranscriptPathAnywhere(sessionId);
+      // Resolve transcript: the same resolver the live reader uses (Codex /
+      // OpenCode rollouts live outside ~/.claude/projects, under their own id),
+      // then walk the --resume parent chain. Sessions spawned via `--resume`
+      // often share the parent's transcript and never write one under their own
+      // sessionId, so the direct lookup misses them.
+      let sourceTranscript: string | null = resolveTranscriptPath(session);
       if (!sourceTranscript) {
         const visited = new Set<string>([sessionId]);
         let cursor: string | undefined = session.resumedFrom;
@@ -1863,8 +1866,11 @@ export function registerApiRoutes(
         return;
       }
       if (!entry) {
-        deleteSession(sessionId, pidToKill, 'archive-failed');
-        log('session:killed', 'Session archive failed (transcript missing)', { sessionId });
+        // Nothing was copied, so deleting would lose the session. Put it back
+        // (still running) and tell the client.
+        stateManager.rehydrateFromSessionStore(sessionId);
+        if (broadcastRaw) broadcastRaw({ type: 'archive:failed', sessionId, reason: 'transcript not found' });
+        log('info', 'Session archive failed (transcript missing) — session kept', { sessionId, sessionName: capturedName });
         return;
       }
       deleteSession(sessionId, pidToKill, 'archive');

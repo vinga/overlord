@@ -9,6 +9,7 @@ import { PrCache } from '../git/prCache.js';
 import { PrHistoryStore } from '../git/prHistoryStore.js';
 import { PrMetaCache } from '../git/prMetaCache.js';
 import { prRefKey, splitPrRef } from '../git/prRef.js';
+import { branchRefKey } from '../git/pushRef.js';
 import { readGitAhead } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
@@ -124,7 +125,7 @@ import {
   readSubagents,
   readSlug,
   readProposedName,
-  readTeammateId,
+  readTeammate,
   clearSessionCaches,
 } from './transcriptReader.js';
 import { syncSession as syncProgress, getProgressCards } from './progressStore.js';
@@ -308,19 +309,21 @@ export function mergeJiraKeys(
   return out.length > 0 ? out : undefined;
 }
 
-export const PR_REFS_MAX = 5;
+export const PR_REFS_MAX = 10;
 const PR_DISMISSED_MAX = 50;
 /** Union-merge for `owner/repo#number` refs. Same rules as mergeJiraKeys —
  *  pinned first and exempt from the dismissed filter — but deduplication is
  *  case-insensitive, since GitHub owner/repo names are, while the casing as
- *  written is what gets stored and shown. */
+ *  written is what gets stored and shown. Refs the session authored follow the
+ *  pins, so mentions never crowd them out of the cap. */
 export function mergePrRefs(
   existing: string[] | undefined,
   fresh: string[] | undefined,
   dismissed?: string[],
   pinned?: string[],
+  authored?: string[],
 ): string[] | undefined {
-  if (!existing?.length && !fresh?.length && !pinned?.length) return undefined;
+  if (!existing?.length && !fresh?.length && !pinned?.length && !authored?.length) return undefined;
   const blocked = dismissed && dismissed.length > 0
     ? new Set(dismissed.map(prRefKey))
     : null;
@@ -333,7 +336,7 @@ export function mergePrRefs(
     out.push(r);
     if (out.length >= PR_REFS_MAX) return out;
   }
-  for (const r of existing ?? []) {
+  for (const r of [...(authored ?? []), ...(existing ?? [])]) {
     const key = prRefKey(r);
     if (seen.has(key) || (blocked && blocked.has(key))) continue;
     seen.add(key);
@@ -369,6 +372,28 @@ export function mergeSkillsUsed(
 }
 
 /** Shallow array equality — avoids JSON.stringify which allocates large temp strings on every 3s poll. */
+const WORK_REFS_MAX = 10;
+/** Union for a session's own work — authored PR refs (`prRefKey`) and pushed
+ *  branches (`branchRefKey`). Chronological, newest last; when the cap bites the
+ *  oldest go. Dismissed refs are filtered out. */
+export function mergeWorkRefs(
+  existing: string[] | undefined,
+  fresh: string[] | undefined,
+  keyOf: (ref: string) => string,
+  dismissed?: string[],
+): string[] | undefined {
+  const blocked = dismissed?.length ? new Set(dismissed.map(keyOf)) : null;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of [...(existing ?? []), ...(fresh ?? [])]) {
+    const key = keyOf(r);
+    if (seen.has(key) || blocked?.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out.length > 0 ? out.slice(-WORK_REFS_MAX) : undefined;
+}
+
 function shallowArrayEquals(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -1095,7 +1120,7 @@ export class StateManager {
     const proposedName = resolvedName?.startsWith('<local-command-caveat') ? undefined : resolvedName;
 
     // Cached head-read — a Map lookup after the first tick.
-    const teammateId = transcriptPath ? readTeammateId(sessionId, transcriptPath) : undefined;
+    const teammate = transcriptPath ? readTeammate(sessionId, transcriptPath) : undefined;
 
     const subagents = readSubagents(cwd, sessionId, transcriptPath);
     // Color resolution deferred until after overlordId is computed below
@@ -1238,7 +1263,7 @@ export class StateManager {
       isCompacting: transcript?.isCompacting,
       ideName,
       sessionType,
-      teammateId,
+      ...teammate,
       color,
       icon: spawnIcon ?? existingSession?.icon,
       subagents,
@@ -1288,11 +1313,23 @@ export class StateManager {
         sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
         sessionStore.getByOverlordId(overlordId)?.jiraKeysPinned,
       ),
+      prRefsAuthored: mergeWorkRefs(
+        existingSession?.prRefsAuthored ?? sessionStore.getByOverlordId(overlordId)?.prRefsAuthored,
+        transcript?.prRefsAuthored,
+        prRefKey,
+        sessionStore.getByOverlordId(overlordId)?.prRefsDismissed,
+      ),
+      branches: mergeWorkRefs(
+        existingSession?.branches ?? sessionStore.getByOverlordId(overlordId)?.branches,
+        transcript?.branches,
+        branchRefKey,
+      ),
       prRefs: mergePrRefs(
         existingSession?.prRefs ?? sessionStore.getByOverlordId(overlordId)?.prRefs,
         transcript?.prRefs,
         sessionStore.getByOverlordId(overlordId)?.prRefsDismissed,
         sessionStore.getByOverlordId(overlordId)?.prRefsPinned,
+        transcript?.prRefsAuthored,
       ),
       skillsUsed: mergeSkillsUsed(
         existingSession?.skillsUsed ?? sessionStore.getByOverlordId(overlordId)?.skillsUsed,
@@ -2027,7 +2064,9 @@ export class StateManager {
         ? sessionStore.getByOverlordId(session.overlordId)?.prRefsPinned
         : undefined;
       session.prRefs = mergePrRefs(undefined, undefined, undefined, clearedPrPins);
-      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, jiraKeysPinned: undefined, skillsUsed: undefined, prRefs: session.prRefs });
+      session.prRefsAuthored = undefined;
+      session.branches = undefined;
+      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, jiraKeysPinned: undefined, skillsUsed: undefined, prRefs: session.prRefs, prRefsAuthored: undefined, branches: undefined });
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
@@ -2046,9 +2085,17 @@ export class StateManager {
       ? (result.skillsUsed && result.skillsUsed.length > 0 ? result.skillsUsed : undefined)
       : mergeSkillsUsed(session.skillsUsed, result.skillsUsed);
     // Same shape for PR refs: truncation wipes the scanner's history, pins stay.
+    const mergedAuthored = mergeWorkRefs(
+      result.transcriptTruncated ? undefined : session.prRefsAuthored,
+      result.prRefsAuthored, prRefKey, jiraRec?.prRefsDismissed,
+    );
+    const mergedBranches = mergeWorkRefs(
+      result.transcriptTruncated ? undefined : session.branches,
+      result.branches, branchRefKey,
+    );
     const mergedPrRefs = result.transcriptTruncated
-      ? mergePrRefs(undefined, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned)
-      : mergePrRefs(session.prRefs, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned);
+      ? mergePrRefs(undefined, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned, mergedAuthored)
+      : mergePrRefs(session.prRefs, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned, mergedAuthored);
 
     let changed =
       session.state !== result.state ||
@@ -2068,6 +2115,8 @@ export class StateManager {
       session.proposedName !== proposedName ||
       !shallowArrayEquals(session.jiraKeys, mergedJiraKeys) ||
       !shallowArrayEquals(session.prRefs, mergedPrRefs) ||
+      !shallowArrayEquals(session.prRefsAuthored, mergedAuthored) ||
+      !shallowArrayEquals(session.branches, mergedBranches) ||
       !shallowArrayEquals(session.skillsUsed, mergedSkillsUsed) ||
       !shallowArrayEquals(session.subagents, subagents);
 
@@ -2233,6 +2282,14 @@ export class StateManager {
         session.prRefs = mergedPrRefs;
         if (session.overlordId) sessionStore.patch(session.overlordId, { prRefs: mergedPrRefs });
       }
+      if (!shallowArrayEquals(session.prRefsAuthored, mergedAuthored)) {
+        session.prRefsAuthored = mergedAuthored;
+        if (session.overlordId) sessionStore.patch(session.overlordId, { prRefsAuthored: mergedAuthored });
+      }
+      if (!shallowArrayEquals(session.branches, mergedBranches)) {
+        session.branches = mergedBranches;
+        if (session.overlordId) sessionStore.patch(session.overlordId, { branches: mergedBranches });
+      }
       if (!shallowArrayEquals(session.skillsUsed, mergedSkillsUsed)) {
         session.skillsUsed = mergedSkillsUsed;
         if (session.overlordId) sessionStore.patch(session.overlordId, { skillsUsed: mergedSkillsUsed });
@@ -2336,9 +2393,12 @@ export class StateManager {
       ? prevDismissed
       : [ref, ...prevDismissed].slice(0, PR_DISMISSED_MAX);
     const nextPinned = (rec.prRefsPinned ?? []).filter(r => prRefKey(r) !== key);
+    const nextAuthored = (session.prRefsAuthored ?? []).filter(r => prRefKey(r) !== key);
     session.prRefs = nextRefs.length > 0 ? nextRefs : undefined;
+    session.prRefsAuthored = nextAuthored.length > 0 ? nextAuthored : undefined;
     sessionStore.patch(session.overlordId, {
       prRefs: nextRefs.length > 0 ? nextRefs : undefined,
+      prRefsAuthored: session.prRefsAuthored,
       prRefsDismissed: nextDismissed,
       prRefsPinned: nextPinned.length > 0 ? nextPinned : undefined,
     });
@@ -3198,6 +3258,8 @@ export class StateManager {
       }
       out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
       out.prRefs = overlord.prRefs ?? session.prRefs;
+      out.prRefsAuthored = overlord.prRefsAuthored ?? session.prRefsAuthored;
+      out.branches = overlord.branches ?? session.branches;
       out.skillsUsed = overlord.skillsUsed ?? session.skillsUsed;
     }
     if (latestPlan) out.latestPlan = latestPlan;
@@ -3211,7 +3273,10 @@ export class StateManager {
     // TUI question only exists in screenQuestion (set by permissionChecker).
     // Surface it as pendingQuestion here — addOrUpdate's fallback never
     // re-runs for embedded sessions with no raw record to poll.
-    if (!out.pendingQuestion && session.screenQuestion) {
+    // When both exist the screen wins: it alone knows the caret row and what is
+    // already ticked or typed. Answering from the transcript copy assumes a fresh
+    // menu, so arrows land on the wrong row and typed text ends up queued.
+    if (session.screenQuestion) {
       out.pendingQuestion = session.screenQuestion;
     }
     // A transcript-derived question the screen says is no longer on the menu: the
@@ -3612,7 +3677,7 @@ export class StateManager {
       proposedName: rec.proposedName,
       sessionType: rec.sessionType,
       // Not persisted — re-derived from the transcript head on every boot.
-      teammateId: transcriptPath ? readTeammateId(sessionId, transcriptPath) : undefined,
+      ...(transcriptPath ? readTeammate(sessionId, transcriptPath) : undefined),
       color: rec.color,
       icon: rec.icon,
       subagents: [],
@@ -3626,7 +3691,9 @@ export class StateManager {
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
       jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, rec.jiraKeysPinned),
-      prRefs: mergePrRefs(rec.prRefs, transcriptState?.prRefs, rec.prRefsDismissed, rec.prRefsPinned),
+      prRefsAuthored: mergeWorkRefs(rec.prRefsAuthored, transcriptState?.prRefsAuthored, prRefKey, rec.prRefsDismissed),
+      branches: mergeWorkRefs(rec.branches, transcriptState?.branches, branchRefKey),
+      prRefs: mergePrRefs(rec.prRefs, transcriptState?.prRefs, rec.prRefsDismissed, rec.prRefsPinned, rec.prRefsAuthored),
       ...readReview(rec),
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),
@@ -3731,7 +3798,7 @@ export class StateManager {
           if (transcriptState.lastActivity && new Date(transcriptState.lastActivity) < oneDayAgo) continue;
 
           const proposedName = readProposedName(sessionId, transcriptPath);
-          const teammateId = readTeammateId(sessionId, transcriptPath);
+          const teammate = readTeammate(sessionId, transcriptPath);
           const subagents = readSubagents(cwd, sessionId, transcriptPath);
 
           const recoveredOvrId = this.generateOvrId();
@@ -3756,7 +3823,7 @@ export class StateManager {
             proposedName,
             ideName: undefined,
             sessionType: 'plain', // historical recovery — can't verify IDE parentage
-            teammateId,
+            ...teammate,
             color,
             subagents,
             needsPermission: false,

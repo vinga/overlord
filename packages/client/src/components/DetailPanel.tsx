@@ -30,6 +30,7 @@ import { DiffViewer } from './DiffViewer';
 import { SelectionMenu } from './SelectionMenu';
 import { DeskMenu } from './DeskMenu';
 import { GitBranchBadge } from './GitBranchBadge';
+import { WorkBar } from './WorkBar';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
 import { SkillChips } from './SkillChips';
@@ -288,12 +289,14 @@ function renderWithLinks(text: string, linkClass: string): React.ReactNode[] {
 function assistantLabel(provider?: Session['provider']): string {
   if (provider === 'codex') return 'codex';
   if (provider === 'opencode') return 'opencode';
+  if (provider === 'aider') return 'aider';
   return 'claude';
 }
 
 function assistantDisplayName(provider?: Session['provider']): string {
   if (provider === 'codex') return 'Codex';
   if (provider === 'opencode') return 'OpenCode';
+  if (provider === 'aider') return 'Aider';
   return 'Claude';
 }
 
@@ -1307,6 +1310,9 @@ interface FeedSegmentsProps {
   /** Server says the live screen has no AskUserQuestion menu — the pending question
    *  in the transcript can no longer be answered by injecting keystrokes. */
   questionStale?: boolean;
+  /** The menu as read off the live screen (caret row, ticks, typed text). Answers a
+   *  pending transcript question instead of its static tool input when present. */
+  liveQuestion?: PendingQuestionSet;
   /** Tag user messages so useStickyUserMessage can pin them. Only the two
    *  top-level feeds set this — inline subagent feeds nest inside the same
    *  scroll container and their prompts aren't the user's. */
@@ -1358,7 +1364,7 @@ function conversationText(feed: ActivityItem[]): string {
     .join('\n\n---\n\n');
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, markUserMessages, progressCards, progressSessionId }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, liveQuestion, markUserMessages, progressCards, progressSessionId }: FeedSegmentsProps) {
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   // The in-flight group is expanded by default; this records an explicit collapse of it.
@@ -1415,7 +1421,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           // Pending (unanswered, live in the TUI) → interactive prompt that injects
           // the choice. Answered, or stale (TUI no longer on the menu) → read-only.
           const isPending = !seg.item.resultJson;
-          const qSet = isPending && !questionStale ? questionInputToSet(seg.item.inputJson) : null;
+          const qSet = isPending && !questionStale ? (liveQuestion ?? questionInputToSet(seg.item.inputJson)) : null;
           if (isPending && qSet && questionSessionId && questionStageRef) {
             return (
               <div key={segIdx} data-ts={seg.item.timestamp} style={{ display: 'contents' }}>
@@ -2911,6 +2917,11 @@ const currentDisplayName =
   // inline and interactive (no floating overlay). Skip if the feed already ends with
   // an unanswered AskUserQuestion (avoid double-showing).
   const lastRealItem = realFeed[realFeed.length - 1];
+  // A screen-read question (it carries the caret row) drives the interactive prompt
+  // even when the transcript already holds the same AskUserQuestion.
+  const liveQuestion = selectedSession?.pendingQuestion?.questions.some(q => q.cursor !== undefined)
+    ? selectedSession.pendingQuestion
+    : undefined;
   const feedTrailsPendingQuestion = lastRealItem?.toolName === 'AskUserQuestion' && !lastRealItem.resultJson;
   const pendingQuestionItem: ActivityItem | null = (selectedSession?.pendingQuestion && !feedTrailsPendingQuestion)
     ? {
@@ -3516,9 +3527,21 @@ const currentDisplayName =
                       );
                     })()}
                     </>)}
+                    <span
+                      className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
+                      data-tooltip={`Assistant: ${assistantDisplayName(selectedSession.provider)}`}
+                    >
+                      {assistantDisplayName(selectedSession.provider)}
+                    </span>
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
+                  <WorkBar
+                    prRefs={selectedSession.prRefs}
+                    prRefsAuthored={selectedSession.prRefsAuthored}
+                    branches={selectedSession.branches}
+                    sessionId={selectedSession.sessionId}
+                  />
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
                 </div>
@@ -3794,6 +3817,7 @@ const currentDisplayName =
                                     questionStageRef={questionStageRef}
                                     onQuestionDismissedToChat={() => sendTextareaRef.current?.focus()}
                                     questionStale={selectedSession.questionStale}
+                                    liveQuestion={liveQuestion}
                                     markUserMessages
                                     progressCards={progressCards}
                                     progressSessionId={selectedSession.sessionId}
