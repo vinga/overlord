@@ -1531,7 +1531,10 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
           const isRaw = rawSegments.has(segIdx);
           const prevSeg = segIdx > 0 ? segments[segIdx - 1] : null;
           const isAfterTools = seg.item.role === 'user' && prevSeg?.type === 'toolGroup';
-          const isSkillDef = seg.item.role === 'user' && seg.item.content?.startsWith('Base directory for this skill');
+          // Skill preambles and compaction summaries: long harness text, shown as a small scroll box.
+          const isSkillDef = seg.item.role === 'user' && (
+            seg.item.content?.startsWith('Base directory for this skill')
+            || seg.item.content?.trimStart().startsWith('This session is being continued from a previous conversation'));
           return (
             <div
               key={segIdx}

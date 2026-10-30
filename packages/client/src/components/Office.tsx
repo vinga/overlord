@@ -458,12 +458,12 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       customNames={roomCustomNames}
       selectedSessionId={selectedSessionId}
       onSelectSession={roomOnSelectSession}
-      side={topOffset === 0}
+      side
     />
   );
 
-  // Horizontal layout: the chip column's width is dragged from its right edge
-  // and remembered per browser.
+  // The chip column's width is dragged from its right edge and remembered per
+  // browser.
   const [sideTabsWidth, setSideTabsWidth] = useState<number>(() => {
     try {
       const saved = parseInt(localStorage.getItem(SIDE_TABS_WIDTH_KEY) ?? '', 10);
@@ -513,6 +513,31 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       </button>
     </div>
   );
+
+  const docked = topOffset > 0;
+  const sideTabs = (filterBar || roomTabs) && (
+    <div className={styles.sideTabs} style={{ width: sideTabsWidth }}>
+      {filterBar}
+      {roomTabs}
+      <div
+        className={styles.sideTabsResize}
+        onPointerDown={onSideTabsResizeStart}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize room list"
+        title="Drag to resize"
+      />
+    </div>
+  );
+  // The bottom-docked session panel is position:fixed outside this tree; it
+  // reads the chip column's width to sit right of it.
+  const sideTabsBesidePanel = docked && !!sideTabs;
+  useEffect(() => {
+    const root = document.documentElement.style;
+    if (sideTabsBesidePanel) root.setProperty('--side-tabs-width', `${sideTabsWidth}px`);
+    else root.removeProperty('--side-tabs-width');
+    return () => { root.removeProperty('--side-tabs-width'); };
+  }, [sideTabsBesidePanel, sideTabsWidth]);
 
   return (
     <div className={styles.office} style={{ paddingRight: rightOffset, transition: 'padding-right 200ms ease' }}>
@@ -589,26 +614,15 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         />
         <ScratchpadPopup />
       </header>
-      {/* Vertical dock: the panel is pinned under the header, then room tabs, then rooms. */}
-      <div className={styles.panelSpacer} style={{ height: topOffset }} />
-      {topOffset > 0 && filterBar}
-      {topOffset > 0 && roomTabs}
+      {/* Vertical dock: the session panel is pinned under the header with the
+          room chips on its left (the panel reads --side-tabs-width); rooms
+          below at full width. */}
+      <div className={styles.panelSpacer} style={{ height: topOffset }}>
+        {docked && sideTabs}
+      </div>
       {/* Horizontal layout: the room chips are a column left of the rooms. */}
       <div className={styles.body}>
-      {topOffset === 0 && (filterBar || roomTabs) && (
-        <div className={styles.sideTabs} style={{ width: sideTabsWidth }}>
-          {filterBar}
-          {roomTabs}
-          <div
-            className={styles.sideTabsResize}
-            onPointerDown={onSideTabsResizeStart}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize room list"
-            title="Drag to resize"
-          />
-        </div>
-      )}
+      {!docked && sideTabs}
       <div ref={contentRef} className={styles.content}>
         {!hasRooms ? (
           <div className={styles.empty}>
