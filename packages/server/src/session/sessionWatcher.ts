@@ -18,6 +18,13 @@ export interface RawSession {
   transcriptPath?: string;
 }
 
+/** True when the session's process started before the current OS boot, so it
+ *  cannot still be running. `startedAt` is epoch ms; missing ⇒ false. */
+export function startedBeforeBoot(raw: Pick<RawSession, 'startedAt'>, nowMs = Date.now(), uptimeSec = os.uptime()): boolean {
+  if (typeof raw.startedAt !== 'number' || raw.startedAt <= 0) return false;
+  return raw.startedAt < nowMs - uptimeSec * 1000;
+}
+
 export interface SessionSource {
   on(event: 'added', listener: (raw: RawSession) => void): this;
   on(event: 'changed', listener: (raw: RawSession) => void): this;
@@ -50,7 +57,11 @@ export class SessionWatcher extends EventEmitter {
             continue;
           }
           const data = this.readSession(filePath);
-          if (data) {
+          // A pid file older than the OS boot belongs to a process the reboot
+          // killed (claude never got to unlink it). Emitting it would register a
+          // live-looking session that hides the closed one from auto-resume
+          // until ProcessChecker catches up — by then auto-resume has run.
+          if (data && !startedBeforeBoot(data)) {
             this.sessionIdByPath.set(filePath, data.sessionId);
             this.emit('added', data);
           }
