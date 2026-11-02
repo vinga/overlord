@@ -38,7 +38,9 @@ interface OfficeProps {
   /** Height of the session panel pinned under the header (vertical dock). */
   topOffset?: number;
   onRoomClick?: (roomId: string) => void;
-  /** Room open in the room detail panel — Fast session's fallback target. */
+  /** Opens a room's details in the panel (room chip click; never toggles closed). */
+  onOpenRoom?: (roomId: string) => void;
+  /** Room shown in the panel — Fast session's fallback target. */
   selectedRoomId?: string | null;
   spawnCwd?: string | null;
   onSpawnNameChange?: (name: string) => void;
@@ -198,7 +200,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, selectedRoomId, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onFastSession, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, onOpenRoom, selectedRoomId, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onFastSession, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   // Room of the session open in the panel — where "Fast session" spawns.
   // Falls back to the selected room, so a room whose sessions are all closed
@@ -218,6 +220,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   const roomOnSpawnDirect = useStableCallback(onSpawnDirect);
   const roomOnNewTerminalSession = useStableCallback(onNewTerminalSession);
   const roomOnRoomClick = useStableCallback(onRoomClick);
+  const tabsOnOpenRoom = useStableCallback(onOpenRoom);
   const roomOnSpawnNameChange = useStableCallback(onSpawnNameChange);
   const roomOnSpawnCommit = useStableCallback(onSpawnCommit);
   const roomOnTerminalSpawnCommit = useStableCallback(onTerminalSpawnCommit);
@@ -451,6 +454,8 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       customNames={roomCustomNames}
       selectedSessionId={selectedSessionId}
       onSelectSession={roomOnSelectSession}
+      openRoomId={fastRoom?.id ?? null}
+      onOpenRoom={tabsOnOpenRoom}
       side
     />
   );

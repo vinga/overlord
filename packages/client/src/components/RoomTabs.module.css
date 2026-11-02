@@ -112,6 +112,13 @@
   color: #f2dc8c;
 }
 
+/* The room shown in the panel: a gold edge, independent of the scroll highlight. */
+.open {
+  box-shadow: inset 2px 0 0 #d4af37;
+  color: #f2dc8c;
+  font-weight: 600;
+}
+
 .dragging {
   opacity: 0.4;
 }

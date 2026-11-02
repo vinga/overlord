@@ -22,7 +22,7 @@ import { Office } from './components/Office';
 import { DetailPanel, setJiraProjects } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
 import { NotePanel } from './components/NotePanel';
-import { TaskListPanel } from './components/TaskListPanel';
+import { RoomPanel } from './components/RoomPanel';
 import { LogsPage } from './components/LogsPage';
 import { SpawnDialog } from './components/SpawnDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
@@ -634,8 +634,19 @@ export function App() {
     setSelectionNonce(n => n + 1);
   }
 
+  // The panel shows a session or a room. Opening a room closes the session view;
+  // clicking the shown room again closes it.
   function handleRoomClick(roomId: string) {
-    setSelectedRoomId(prev => prev === roomId ? null : roomId);
+    if (selectedRoomId === roomId && !selectedSessionId) {
+      setSelectedRoomId(null);
+      return;
+    }
+    handleOpenRoom(roomId);
+  }
+
+  function handleOpenRoom(roomId: string) {
+    handleClose();
+    setSelectedRoomId(roomId);
   }
 
   // Breadcrumb navigation from the detail panel header. Resolve cwd → room, scroll
@@ -647,14 +658,16 @@ export function App() {
     expandRoom(room.id);
     const el = document.querySelector(`[data-room-id="${CSS.escape(room.id)}"]`);
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    if (open) setSelectedRoomId(room.id);
+    if (open) handleOpenRoom(room.id);
   }
 
   function handleRoomDetailClose() {
     setSelectedRoomId(null);
   }
 
+  // Closing a session falls back to its room's details instead of an empty panel.
   function handleClose() {
+    if (selectedSessionRoom) setSelectedRoomId(selectedSessionRoom.id);
     setSelectedSessionId(null);
     setSelectedSubagentId(undefined);
     setArchivedSession(null);
@@ -873,6 +886,7 @@ export function App() {
         rightOffset={dock === 'right' ? panelWidth : 0}
         topOffset={dock === 'bottom' ? panelHeight : 0}
         onRoomClick={handleRoomClick}
+        onOpenRoom={handleOpenRoom}
         selectedRoomId={selectedRoomId}
         spawnCwd={spawnCwd}
         onSpawnNameChange={setPendingSpawnName}
@@ -974,6 +988,16 @@ export function App() {
           panelSize={panelSize}
           onPanelSizeChange={setPanelSize}
         />
+      ) : !selectedSessionId && selectedRoom ? (
+        <RoomPanel
+          key={selectedRoom.id}
+          room={selectedRoom}
+          customNames={displayNames}
+          onClose={handleRoomDetailClose}
+          dock={dock}
+          panelSize={panelSize}
+          onPanelSizeChange={setPanelSize}
+        />
       ) : <DetailPanel
         selectedSession={selectedSession}
         selectedSessionId={selectedSessionId}
@@ -1037,14 +1061,6 @@ export function App() {
         onScrollTargetConsumed={() => setScrollTarget(null)}
         onNavigateRoom={handleNavigateRoom}
       />}
-      {selectedRoom && (
-        <TaskListPanel
-          room={selectedRoom}
-          customNames={displayNames}
-          onSelectSession={(s, timestamp, query) => handleSelectSession(s, undefined, timestamp, query)}
-          onClose={handleRoomDetailClose}
-        />
-      )}
     </>
   );
 }

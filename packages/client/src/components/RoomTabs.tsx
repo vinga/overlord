@@ -15,6 +15,10 @@ interface RoomTabsProps {
   customNames?: Record<string, string>;
   selectedSessionId?: string | null;
   onSelectSession?: (session: Session) => void;
+  /** Room shown in the panel (its details, or the open session's room). */
+  openRoomId?: string | null;
+  /** Tab click: also opens the room's details in the panel. */
+  onOpenRoom?: (roomId: string) => void;
   /** Docked as a column left of the rooms (horizontal layout) instead of a row. */
   side?: boolean;
 }
@@ -80,7 +84,7 @@ function roomEl(container: HTMLElement, id: string): HTMLElement | null {
 const NO_NAMES: Record<string, string> = {};
 
 export const RoomTabs = React.memo(function RoomTabs({
-  rooms, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, side = false,
+  rooms, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false,
 }: RoomTabsProps) {
   // Snapshot ticks rebuild rooms; tabs only re-render when what they show changes.
   const tabsKey = rooms
@@ -165,11 +169,12 @@ export const RoomTabs = React.memo(function RoomTabs({
           className={[
             styles.tab,
             activeId === t.id ? styles.active : '',
+            openRoomId === t.id ? styles.open : '',
             draggedId === t.id ? styles.dragging : '',
             dropTargetId === t.id ? styles.dropTarget : '',
             showSessions && t.sessions.length > 0 ? styles.withSessions : '',
           ].filter(Boolean).join(' ')}
-          onClick={() => jump(t.id)}
+          onClick={() => { jump(t.id); onOpenRoom?.(t.id); }}
           draggable
           onDragStart={(e) => {
             e.dataTransfer.effectAllowed = 'move';
