@@ -76,12 +76,17 @@ type Mode = 'preview' | 'rich' | 'edit' | 'diff';
 /** WYSIWYG markdown editing, styled like the preview. Opening it never touches
  *  the file: tiptap only reports user edits, and only those re-serialize the
  *  markdown (which may normalize its formatting, e.g. `*` lists to `-`). */
-function RichMarkdownPane({ content, onChange }: { content: string; onChange: (markdown: string) => void }) {
+export function RichMarkdownPane({ content, onChange, placeholder = 'Empty file', className }: {
+  content: string;
+  onChange: (markdown: string) => void;
+  placeholder?: string;
+  className?: string;
+}) {
   // What the editor last produced — an incoming `content` equal to it is our own
   // echo, anything else (a reload) replaces the document.
   const emitted = useRef<string | null>(null);
   const { editor, openLinkEditor, handleKeyDown, linkBar } = useMarkdownEditor({
-    placeholder: 'Empty file',
+    placeholder,
     forFile: true,
     proseClassName: `${styles.markdownContent} ${styles.richProse}`,
     onChange: (markdown) => {
@@ -97,7 +102,7 @@ function RichMarkdownPane({ content, onChange }: { content: string; onChange: (m
   }, [editor, content]);
 
   return (
-    <div className={styles.richPane} onKeyDown={handleKeyDown}>
+    <div className={`${styles.richPane} ${className ?? ''}`} onKeyDown={handleKeyDown}>
       <div className={styles.richToolbar}>
         <MarkdownToolbar editor={editor} onLink={openLinkEditor} extended />
       </div>

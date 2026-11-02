@@ -24,6 +24,31 @@
   letter-spacing: 0.08em;
 }
 
+.labelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Frame for the rich editor — same box as the textarea. */
+.richBox {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.richBox:focus-within {
+  border-color: rgba(212, 175, 55, 0.5);
+  background: rgba(212, 175, 55, 0.04);
+}
+
 .textarea {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 13px;

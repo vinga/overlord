@@ -2,14 +2,28 @@ import { useEffect, useRef, useState } from 'react';
 import type { Artifact, ArtifactStatus, Session } from '../types';
 import { useArtifactsByCwd } from '../hooks/useArtifactsByCwd';
 import styles from './RoomDetailsTab.module.css';
+import editorStyles from './FileEditorOverlay.module.css';
+import { RichMarkdownPane } from './FileEditorOverlay';
 
 interface Props {
   cwd: string;
 }
 
 const AUTOSAVE_DELAY_MS = 800;
+const DESCRIPTION_MODE_KEY = 'overlord:roomDescriptionMode';
+
+type DescriptionMode = 'rich' | 'edit';
 
 export function RoomDetailsTab({ cwd }: Props) {
+  // Rich markdown by default, like the room file browser; the source view is
+  // one click away and remembered.
+  const [mode, setMode] = useState<DescriptionMode>(() => {
+    try { return localStorage.getItem(DESCRIPTION_MODE_KEY) === 'edit' ? 'edit' : 'rich'; } catch { return 'rich'; }
+  });
+  const changeMode = (next: DescriptionMode) => {
+    setMode(next);
+    try { localStorage.setItem(DESCRIPTION_MODE_KEY, next); } catch { /* storage blocked */ }
+  };
   const [description, setDescription] = useState('');
   const [descriptionInitial, setDescriptionInitial] = useState('');
   const [loaded, setLoaded] = useState(false);
@@ -123,18 +137,46 @@ export function RoomDetailsTab({ cwd }: Props) {
   return (
     <div className={styles.panel}>
       <div className={styles.field}>
-        <label className={styles.label} htmlFor="room-description">Description</label>
-        <textarea
-          id="room-description"
-          ref={descriptionRef}
-          className={styles.textarea}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          onBlur={flushNow}
-          placeholder="What is this room for?"
-          disabled={!loaded}
-          spellCheck={false}
-        />
+        <div className={styles.labelRow}>
+          <label className={styles.label} htmlFor="room-description">Description</label>
+          <div className={editorStyles.toggleGroup}>
+            <button
+              className={`${editorStyles.toggleBtn} ${mode === 'rich' ? editorStyles.active : ''}`}
+              onClick={() => changeMode('rich')}
+              title="Edit the rendered markdown"
+            >Rich</button>
+            <button
+              className={`${editorStyles.toggleBtn} ${mode === 'edit' ? editorStyles.active : ''}`}
+              onClick={() => changeMode('edit')}
+              title="Edit the markdown source"
+            >Edit</button>
+          </div>
+        </div>
+        {mode === 'rich' ? (
+          // Mounted only once loaded: the pane seeds its document from the first
+          // `content` it sees. Blur bubbles from the editor to flush the save.
+          loaded && (
+            <div className={styles.richBox} onBlur={flushNow}>
+              <RichMarkdownPane
+                content={description}
+                onChange={setDescription}
+                placeholder="What is this room for?"
+              />
+            </div>
+          )
+        ) : (
+          <textarea
+            id="room-description"
+            ref={descriptionRef}
+            className={styles.textarea}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            onBlur={flushNow}
+            placeholder="What is this room for?"
+            disabled={!loaded}
+            spellCheck={false}
+          />
+        )}
         <span className={styles.hint}>
           The first line is shown as a subtitle under the room name. If empty, nothing is shown.
         </span>
