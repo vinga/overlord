@@ -23,8 +23,9 @@
 .panelBottom {
   top: 56px;
   bottom: auto;
-  /* Right of the room chip column (set by Office). */
-  left: var(--side-tabs-width, 0px);
+  /* Right of the room chip column (set by Office) and of the search panel
+     while it is open (set by AdvancedSearchPopup). */
+  left: max(var(--side-tabs-width, 0px), var(--search-panel-width, 0px));
   right: 0;
   border-left: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);

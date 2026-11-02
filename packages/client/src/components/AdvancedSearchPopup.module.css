@@ -10,7 +10,9 @@
   backdrop-filter: blur(10px);
   display: flex;
   flex-direction: column;
-  z-index: 50;
+  /* Above the session panels (100/101): opening a result must not cover the
+     list it came from. */
+  z-index: 102;
   font-family: 'Inter', system-ui, sans-serif;
   color: #e8e8e8;
   animation: slideIn 180ms ease-out;

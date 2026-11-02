@@ -26,6 +26,8 @@ interface ArchiveSearchResponse {
 }
 
 const INCLUDE_ARCHIVED_KEY = 'overlord:searchIncludeArchived';
+/** Matches `.panel` width in AdvancedSearchPopup.module.css. */
+const SEARCH_PANEL_WIDTH = 440;
 
 interface SessionResult {
   key: string;
@@ -88,6 +90,14 @@ export function AdvancedSearchPopup({
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 20);
+  }, []);
+
+  // The bottom-docked session panel is position:fixed elsewhere; it reads this
+  // to sit right of the search column instead of covering it.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    root.setProperty('--search-panel-width', `${SEARCH_PANEL_WIDTH}px`);
+    return () => { root.removeProperty('--search-panel-width'); };
   }, []);
 
   useEffect(() => {
