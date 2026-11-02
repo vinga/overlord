@@ -82,10 +82,11 @@ describe('PendingSpawnIcons', () => {
 interface FakeState {
   tracked: Map<string, string>;
   cleared: string[];
+  names: Map<string, string>;
 }
 
 function makeCtx(opts: { spawnThrows?: boolean } = {}): { ctx: SpawnContext; state: FakeState } {
-  const state: FakeState = { tracked: new Map(), cleared: [] };
+  const state: FakeState = { tracked: new Map(), cleared: [], names: new Map() };
   let minted = 0;
   const stateManager = {
     mintReservedOvrId: () => `ovr-fake-${++minted}`,
@@ -94,6 +95,8 @@ function makeCtx(opts: { spawnThrows?: boolean } = {}): { ctx: SpawnContext; sta
     takePendingInitialPrompt: () => undefined,
     trackPendingSpawnIcon: (ovrId: string, icon: string) => { state.tracked.set(ovrId, icon); },
     clearPendingSpawnIcon: (ovrId: string) => { state.cleared.push(ovrId); state.tracked.delete(ovrId); },
+    trackPendingSpawnName: (ovrId: string, name: string) => { state.names.set(ovrId, name); },
+    clearPendingSpawnName: (ovrId: string) => { state.names.delete(ovrId); },
   };
   const ptyManager = {
     spawn: () => { if (opts.spawnThrows) throw new Error('spawn boom'); },
@@ -145,5 +148,29 @@ describe('spawnClaudeSession — icon', () => {
     expect(thrownOvrId).toBeTruthy();
     expect(state.cleared).toContain(thrownOvrId!);
     expect(state.tracked.size).toBe(0);
+  });
+});
+
+describe('spawnClaudeSession — name', () => {
+  const cwd = process.cwd();
+
+  // claude's first {pid}.json can lack `name`; without the queue the record is
+  // created nameless and the --name is lost.
+  it('queues the --name under the ovrId it returns', () => {
+    const { ctx, state } = makeCtx();
+    const { ovrId } = spawnClaudeSession(ctx, { cwd, name: 'Maren' });
+    expect(state.names.get(ovrId)).toBe('Maren');
+  });
+
+  it('queues nothing without a name', () => {
+    const { ctx, state } = makeCtx();
+    spawnClaudeSession(ctx, { cwd });
+    expect(state.names.size).toBe(0);
+  });
+
+  it('clears the queued name when the PTY spawn throws', () => {
+    const { ctx, state } = makeCtx({ spawnThrows: true });
+    expect(() => spawnClaudeSession(ctx, { cwd, name: 'Maren' })).toThrow('spawn boom');
+    expect(state.names.size).toBe(0);
   });
 });

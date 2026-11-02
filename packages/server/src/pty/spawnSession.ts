@@ -73,6 +73,8 @@ export function spawnClaudeSession(
   if (opts.icon && opts.icon !== 'user') {
     ctx.stateManager.trackPendingSpawnIcon(ovrId, opts.icon);
   }
+  // Same for the name: the first `{pid}.json` may not carry `--name` yet.
+  if (name) ctx.stateManager.trackPendingSpawnName(ovrId, name);
 
   ctx.broadcastRaw({ type: 'terminal:spawned', sessionId: ovrId, pid: 0 });
 
@@ -93,6 +95,7 @@ export function spawnClaudeSession(
     ctx.ovrToPty.delete(ovrId);
     ctx.ptyToOvr.delete(ptySessionId);
     ctx.stateManager.clearPendingSpawnIcon(ovrId);
+    ctx.stateManager.clearPendingSpawnName(ovrId);
     const e = err as Error & { ovrId?: string };
     e.ovrId = ovrId;
     throw e;

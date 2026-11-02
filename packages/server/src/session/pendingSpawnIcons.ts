@@ -13,27 +13,31 @@ import type { WorkerIcon } from '../types.js';
  * for phantom sessions, and a phantom tick must not swallow the icon. The entry
  * is dropped only via `clear`, once it has actually been persisted (or when the
  * PTY spawn failed).
+ *
+ * The same gap loses the `--name` given at spawn: claude writes `{pid}.json`
+ * without `name` first (newer builds may not write it at all), so the record is
+ * created nameless. `PendingSpawnNames` queues it the same way.
  */
-export class PendingSpawnIcons {
+export class PendingSpawnValues<T> {
   /** Matches OvrIdReservation's window — past it the reservation is gone too. */
   static readonly TTL_MS = 5 * 60 * 1000;
 
-  private byOvrId = new Map<string, { icon: WorkerIcon; at: number }>();
+  private byOvrId = new Map<string, { value: T; at: number }>();
 
-  track(ovrId: string, icon: WorkerIcon): void {
+  track(ovrId: string, value: T): void {
     this.prune();
-    this.byOvrId.set(ovrId, { icon, at: Date.now() });
+    this.byOvrId.set(ovrId, { value, at: Date.now() });
   }
 
   /** Non-consuming read. Stale entries are dropped rather than returned. */
-  peek(ovrId: string): WorkerIcon | undefined {
+  peek(ovrId: string): T | undefined {
     const entry = this.byOvrId.get(ovrId);
     if (!entry) return undefined;
-    if (Date.now() - entry.at > PendingSpawnIcons.TTL_MS) {
+    if (Date.now() - entry.at > PendingSpawnValues.TTL_MS) {
       this.byOvrId.delete(ovrId);
       return undefined;
     }
-    return entry.icon;
+    return entry.value;
   }
 
   clear(ovrId: string): void {
@@ -43,7 +47,10 @@ export class PendingSpawnIcons {
   private prune(): void {
     const now = Date.now();
     for (const [ovrId, entry] of this.byOvrId) {
-      if (now - entry.at > PendingSpawnIcons.TTL_MS) this.byOvrId.delete(ovrId);
+      if (now - entry.at > PendingSpawnValues.TTL_MS) this.byOvrId.delete(ovrId);
     }
   }
 }
+
+export class PendingSpawnIcons extends PendingSpawnValues<WorkerIcon> {}
+export class PendingSpawnNames extends PendingSpawnValues<string> {}

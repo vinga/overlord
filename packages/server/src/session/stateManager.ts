@@ -22,7 +22,7 @@ import { getCachedJiraMeta, invalidateJiraKeys } from './jiraTitleCache.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
-import { PendingSpawnIcons } from './pendingSpawnIcons.js';
+import { PendingSpawnIcons, PendingSpawnNames } from './pendingSpawnIcons.js';
 import { normalizePath } from './pathNormalize.js';
 import { log } from '../logger.js';
 
@@ -915,6 +915,18 @@ export class StateManager {
     this.pendingSpawnIcons.clear(ovrId);
   }
 
+  // `--name` given at spawn, keyed like the icon. claude's first `{pid}.json`
+  // can lack `name` (or never appear), which used to leave the record nameless.
+  private pendingSpawnNames = new PendingSpawnNames();
+
+  trackPendingSpawnName(ovrId: string, name: string): void {
+    this.pendingSpawnNames.track(ovrId, name);
+  }
+
+  clearPendingSpawnName(ovrId: string): void {
+    this.pendingSpawnNames.clear(ovrId);
+  }
+
   hasPendingResume(cwd: string): boolean {
     return this.resumeTracker.hasResume(cwd);
   }
@@ -1111,8 +1123,11 @@ export class StateManager {
     const resumedFromName = resumedFrom
       ? (this.sessions.get(resumedFrom)?.proposedName ?? sessionStore.getBySessionId(resumedFrom)?.proposedName)
       : undefined;
+    // Peeked, not consumed — cleared below once persisted (same as spawnIcon).
+    const spawnName = ovrIdForSession ? this.pendingSpawnNames.peek(ovrIdForSession) : undefined;
     const resolvedName = storedName
       ?? existingName
+      ?? spawnName
       ?? resumedFromName
       ?? (rawName || undefined)
       ?? (transcriptPath ? readProposedName(sessionId, transcriptPath) : undefined);
@@ -1369,6 +1384,10 @@ export class StateManager {
       if (spawnIcon) {
         if (rec.icon !== spawnIcon) sessionStore.patch(overlordId, { icon: spawnIcon });
         this.pendingSpawnIcons.clear(overlordId);
+      }
+      if (spawnName) {
+        if (!rec.proposedName) sessionStore.patch(overlordId, { proposedName: spawnName });
+        this.pendingSpawnNames.clear(overlordId);
       }
     }
 
