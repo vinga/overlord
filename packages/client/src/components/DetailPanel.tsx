@@ -427,6 +427,8 @@ interface SessionActions {
   onOpenInTerminal?: (sessionId: string, cwd: string) => void;
   onOpenBridged?: (sessionId: string, cwd: string) => void;
   onFocusBridge?: (sessionId: string) => void;
+  /** Quick spawn in the given room and switch to it (header "Fast session"). */
+  onFastSession?: (room: Room) => void;
 }
 
 interface DetailPanelProps {
@@ -1995,7 +1997,7 @@ export function DetailPanel({
   voiceMic = 'ready',
 }: DetailPanelProps) {
   const { sendInput, injectText, resizePty, registerOutputHandler, exitedSessions, getError } = pty;
-  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onCloseSession, onArchiveSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge } = actions;
+  const { onDeleteSession, onResumeSession, onResumeArchived, onCloneArchived, onCloneSession, onCloseSession, onArchiveSession, onDeleteArchived, onOpenInTerminal, onOpenBridged, onFocusBridge, onFastSession } = actions;
   // Panel is "open" if we have a session OR a pending PTY session ID
   const effectiveSessionId = selectedSession?.sessionId ?? selectedSessionId;
   // selectedSessionId is now an ovrId — use it directly for PTY routing.
@@ -3306,6 +3308,7 @@ const currentDisplayName =
                         } : undefined}
                         onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
                         onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
+                        onNewSession={onFastSession && room ? () => onFastSession(room) : undefined}
                         getConversationText={() => conversationText(mergedFeed)}
                       />
                     )}

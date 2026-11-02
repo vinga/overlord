@@ -1039,6 +1039,7 @@ export function App() {
           onOpenInTerminal: (sessionId, cwd) => terminal.openInTerminal(sessionId, cwd),
           onOpenBridged: (sessionId, cwd) => terminal.openBridgedTerminal(sessionId, cwd),
           onFocusBridge: (sessionId) => sendMessage({ type: 'terminal:focus', sessionId }),
+          onFastSession: handleFastSession,
         }}
 
         dock={dock}

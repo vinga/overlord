@@ -5,8 +5,10 @@ import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 
 /** Session burger menu — shared by the desk card (Room) and the detail panel header. */
-export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getConversationText, sessionRef, session, anchorStyle, buttonSize = 22 }: {
+export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNewSession, getConversationText, sessionRef, session, anchorStyle, buttonSize = 22 }: {
   onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void;
+  /** Adds a "New session here" item: quick spawn in the same room (detail panel only). */
+  onNewSession?: () => void;
   /** Adds a "Copy conversation" item (detail panel only). */
   getConversationText?: () => string;
   sessionRef: string; session: Session;
@@ -115,6 +117,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, getCo
             />
           )}
           <MenuItem icon={ICONS.palette} label="Icon & color…" onClick={act(() => setAppearanceOpen(true))} />
+          {onNewSession && <MenuItem icon={ICONS.newSession} label="New session here" title="Quick spawn in this room and switch to it" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onNewSession)} />}
           {onClone && <MenuItem icon={ICONS.clone} label="Clone" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onClone)} />}
           {onClear && <MenuItem icon={ICONS.clear} label="Clear" hover="#fb923c" hoverBg="rgba(251,146,60,0.1)" onClick={act(onClear)} />}
           <MenuDivider />
@@ -149,6 +152,7 @@ const ICONS = {
   palette: svg(<><path d="M12 3a9 9 0 1 0 0 18c1 0 1.5-.8 1.5-1.5 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.8.7-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-7.8-9-7.8z" /><circle cx="7.5" cy="10.5" r="1" /><circle cx="12" cy="7.5" r="1" /><circle cx="16.5" cy="10.5" r="1" /></>),
   clone: svg(<><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M4 16V5a1 1 0 0 1 1-1h11M14.5 11.5v6M11.5 14.5h6" /></>),
   clear: svg(<path d="M3 6h18M7 12h10M10 18h4" />),
+  newSession: svg(<><path d="M7 3v8M3 7h8" /><path d="M16 4l-4 8h5l-3 8" /></>),
   trash: svg(<><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" /></>),
   check: svg(<path d="M5 12l5 5L20 7" />),
 };
