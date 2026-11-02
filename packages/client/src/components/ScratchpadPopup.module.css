@@ -25,9 +25,9 @@
 }
 
 .popup {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  /* Portaled to <body>; `right` is set inline from the trigger's position. */
+  position: fixed;
+  top: 50px;
   width: min(680px, calc(100vw - 48px));
   max-height: 76vh;
   display: flex;

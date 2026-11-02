@@ -116,17 +116,34 @@ export function ScratchpadPopup() {
     }
   }, [open, pinned, close]);
 
-  // Large mode portals to <body> to escape the sticky header's backdrop-filter
-  // containing block, so hover open/close needs handlers on the popup itself.
+  // Small mode hangs under the trigger, right edges aligned; read on open and
+  // on resize since the popup no longer lives inside the trigger's box.
+  const [anchorRight, setAnchorRight] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const r = rootRef.current?.getBoundingClientRect();
+      if (r) setAnchorRight(Math.max(0, window.innerWidth - r.right));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open]);
+
+  // Always portaled to <body>: inside the header it is capped by the header's
+  // stacking context (z 10) and slides under the session panel (z 101). The
+  // portal also escapes the header's backdrop-filter containing block. Hover
+  // open/close therefore needs handlers on the popup itself.
   const popup = open && (
     <div
       ref={popupRef}
       className={`${styles.popup} ${large ? styles.popupLarge : ''}`}
+      style={large ? undefined : { right: anchorRight }}
       role="dialog"
       aria-label="Scratchpad"
       onKeyDown={handlePopupKeyDown}
-      onMouseEnter={large ? handleMouseEnter : undefined}
-      onMouseLeave={large ? handleMouseLeave : undefined}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
           <div className={styles.popupHeader}>
             <span className={styles.popupTitle}>Scratchpad</span>
@@ -180,7 +197,7 @@ export function ScratchpadPopup() {
           <path d="M9.8 3.6l2.6 2.6" />
         </svg>
       </button>
-      {large ? createPortal(popup, document.body) : popup}
+      {popup && createPortal(popup, document.body)}
     </div>
   );
 }
