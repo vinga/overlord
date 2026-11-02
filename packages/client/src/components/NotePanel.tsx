@@ -66,7 +66,6 @@ export function NotePanel({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const saveTimer = useRef<number | undefined>(undefined);
   const dirtyRef = useRef(false);
@@ -167,12 +166,6 @@ export function NotePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [horizontal, onPanelSizeChange]);
 
-  useEffect(() => {
-    if (!confirmDelete) return;
-    const id = window.setTimeout(() => setConfirmDelete(false), 3000);
-    return () => window.clearTimeout(id);
-  }, [confirmDelete]);
-
   const displayName = customName ?? session?.proposedName ?? 'Untitled note';
   const isClosed = session?.state === 'closed';
 
@@ -270,16 +263,14 @@ export function NotePanel({
             </button>
           )}
           <button
-            className={`${styles.deleteBtn} ${confirmDelete ? styles.deleteBtnConfirm : ''}`}
-            onClick={() => (confirmDelete ? onDelete(sessionId) : setConfirmDelete(true))}
+            className={styles.deleteBtn}
+            onClick={() => onDelete(sessionId)}
             title="Delete note"
             aria-label="Delete note"
           >
-            {confirmDelete ? 'Delete?' : (
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4" />
-              </svg>
-            )}
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4" />
+            </svg>
           </button>
           {onClose && (
             <button className={panelStyles.closeButton} onClick={onClose} title="Close panel">×</button>

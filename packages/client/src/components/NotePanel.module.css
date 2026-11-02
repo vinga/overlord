@@ -51,12 +51,6 @@
   color: #e06c75;
   background: rgba(224, 108, 117, 0.08);
 }
-.deleteBtnConfirm,
-.deleteBtnConfirm:hover {
-  color: #e06c75;
-  background: rgba(224, 108, 117, 0.12);
-  border-color: rgba(224, 108, 117, 0.4);
-}
 
 .toolbarRow {
   display: flex;
