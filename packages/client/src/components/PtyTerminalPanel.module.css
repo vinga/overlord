@@ -23,7 +23,8 @@
 .panelBottom {
   top: 56px;
   bottom: auto;
-  left: 0;
+  /* Right of the room chip column (set by Office). */
+  left: var(--side-tabs-width, 0px);
   right: 0;
   border-left: none;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -55,8 +56,10 @@
 .resizeHandleTop {
   top: auto;
   bottom: 0;
+  /* Reaches under the room chip column too: the whole width drags. */
+  left: calc(-1 * var(--side-tabs-width, 0px));
   right: 0;
-  width: 100%;
+  width: auto;
   height: 5px;
   cursor: row-resize;
 }
