@@ -2346,7 +2346,6 @@ export function DetailPanel({
   const prevSessionIdRef = useRef<string | undefined>(undefined);
   const prevOvrIdRef = useRef<string | undefined>(undefined);
   const [pastedImage, setPastedImage] = useState<{ path: string; previewUrl: string } | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDeleteArchive, setConfirmDeleteArchive] = useState(false);
   const [copyIdConfirm, setCopyIdConfirm] = useState(false);
   const [killing, setKilling] = useState(false);
@@ -2653,7 +2652,6 @@ const currentDisplayName =
     setHistoryIndex(null);
     setShowHistoryMenu(false);
     preHistoryDraft.current = '';
-    setConfirmDelete(false);
     setConfirmDeleteArchive(false);
     setPastedImage(null);
     setKilling(false);
@@ -3245,12 +3243,6 @@ const currentDisplayName =
                         <button className={`${styles.nameBtn} ${styles.nameBtnVisible}`} onClick={commitEdit} title="Save">✓</button>
                         <button className={`${styles.nameBtn} ${styles.nameBtnVisible}`} onClick={() => setIsEditing(false)} title="Cancel">✕</button>
                       </>
-                    ) : confirmDelete ? (
-                      <>
-                        <span className={styles.deleteConfirmInline}>Remove session?</span>
-                        <button className={styles.deleteConfirmBtn} onClick={() => { onDeleteSession!(selectedSession.sessionId); onClose(); }}>Yes</button>
-                        <button className={styles.deleteCancelBtn} onClick={() => setConfirmDelete(false)}>No</button>
-                      </>
                     ) : (
                       <>
                         {roomLabel && (
@@ -3297,7 +3289,7 @@ const currentDisplayName =
                         sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
                         anchorStyle={{ position: 'relative' }}
                         buttonSize={28}
-                        onDelete={() => setConfirmDelete(true)}
+                        onDelete={() => { onDeleteSession(selectedSession.sessionId); onClose(); }}
                         onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
                         onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
                           void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
