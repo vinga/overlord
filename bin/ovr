@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# ovr — Overlord CLI for agents running inside an Overlord session.
+# Works on macOS bash 3.2 and Linux bash. Needs curl + python3.
+
+PROG=${0##*/}
+BASE="${OVERLORD_HOST:-http://localhost:3173}"
+
+usage() {
+  cat <<EOF
+Usage: $PROG <command> [args]
+
+Commands:
+  whoami                         This session: overlordId, sessionId, cwd
+  pin add <url> [options]        Pin a link to this session (or its room)
+      --title TEXT               Chip title (default: derived from the URL)
+      --kind ticket|pr|branch|link   (default: derived from the URL)
+      --room                     Pin to this session's room instead
+  pin ls [--room]                List pins (id, kind, title, url)
+  pin rm <pinId> [--room]        Remove a pin
+  help                           Show this help
+
+Target session: \$OVERLORD_PTY_ID (set by Overlord at spawn), else the
+nearest ancestor process Overlord knows. Override: --session <overlordId>.
+Server: \$OVERLORD_HOST (default http://localhost:3173).
+
+Examples:
+  $PROG pin add https://hypatos.atlassian.net/browse/BACKEND-1234
+  $PROG pin add https://github.com/hypatos/repo/pull/30 --title "Fix retries"
+  $PROG pin add https://github.com/hypatos/repo/tree/feat/x --room
+EOF
+}
+
+die() { echo "$PROG: $*" >&2; exit "${EXIT:-1}"; }
+
+# --- target resolution -------------------------------------------------------
+# Prints a JSON object fragment identifying the session, e.g. {"ptyId": "..."}.
+SESSION_OVERRIDE=""
+target_json() {
+  if [ -n "$SESSION_OVERRIDE" ]; then
+    python3 -c 'import json,sys; print(json.dumps({"overlordId": sys.argv[1]}))' "$SESSION_OVERRIDE"; return
+  fi
+  if [ -n "$OVERLORD_PTY_ID" ]; then
+    python3 -c 'import json,sys; print(json.dumps({"ptyId": sys.argv[1]}))' "$OVERLORD_PTY_ID"; return
+  fi
+  # Walk up the process tree: the first ancestor Overlord can resolve wins.
+  local pid=$PPID i=0 out
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ $i -lt 8 ]; do
+    out=$(curl -fsS "$BASE/api/resolve?pid=$pid" 2>/dev/null)
+    if [ -n "$out" ]; then
+      printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps({"overlordId": d["overlordId"]}))' && return
+    fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    i=$((i + 1))
+  done
+  EXIT=2 die "cannot identify this session (no OVERLORD_PTY_ID, no known ancestor). Use --session <overlordId>."
+}
+
+# JSON object → query string.
+to_query() { python3 -c 'import json,sys,urllib.parse; print(urllib.parse.urlencode(json.loads(sys.argv[1])))' "$1"; }
+
+# Merge two JSON objects.
+merge() { python3 -c 'import json,sys; a=json.loads(sys.argv[1]); a.update(json.loads(sys.argv[2])); print(json.dumps(a))' "$1" "$2"; }
+
+# curl wrapper: prints body, fails with the server's error message on non-2xx.
+call() {
+  local method=$1 path=$2 data=$3 out code
+  if [ -n "$data" ]; then
+    out=$(curl -sS -w '\n%{http_code}' -X "$method" "$BASE$path" -H 'Content-Type: application/json' --data-binary "$data" 2>&1)
+  else
+    out=$(curl -sS -w '\n%{http_code}' -X "$method" "$BASE$path" 2>&1)
+  fi
+  [ $? -eq 0 ] || EXIT=2 die "cannot reach Overlord at $BASE — is the server running?"
+  code=${out##*$'\n'}
+  out=${out%$'\n'*}
+  case $code in
+    2??) printf '%s' "$out" ;;
+    *) msg=$(printf '%s' "$out" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("error",""))
+except Exception: print("")' 2>/dev/null)
+       die "HTTP $code${msg:+: $msg}" ;;
+  esac
+}
+
+# --- commands ----------------------------------------------------------------
+cmd_whoami() {
+  local t; t=$(target_json) || exit $?
+  local r; r=$(call GET "/api/resolve?$(to_query "$t" | sed 's/overlordId=/ptyId=/')") || exit $?
+  printf '%s' "$r" | python3 -c '
+import json,sys; d=json.load(sys.stdin)
+print("overlordId  %s\nsessionId   %s\ncwd         %s" % (d["overlordId"], d["sessionId"], d["cwd"]))'
+}
+
+cmd_pin() {
+  local sub=$1; shift || true
+  local room="" title="" kind="" pos=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --room) room=1 ;;
+      --title) [ $# -ge 2 ] || die "--title needs a value"; title=$2; shift ;;
+      --kind) [ $# -ge 2 ] || die "--kind needs a value"; kind=$2; shift ;;
+      --session) [ $# -ge 2 ] || die "--session needs a value"; SESSION_OVERRIDE=$2; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) [ -z "$pos" ] || die "unexpected argument: $1"; pos=$1 ;;
+    esac
+    shift
+  done
+  local t; t=$(target_json) || exit $?
+  # "1", not JSON true: urlencode turns True into "True" in query strings.
+  [ -n "$room" ] && t=$(merge "$t" '{"room": "1"}')
+
+  case $sub in
+    add)
+      [ -n "$pos" ] || die "usage: $PROG pin add <url> [--title T] [--kind K] [--room]"
+      local body; body=$(python3 -c '
+import json,sys
+d={"url": sys.argv[1]}
+if sys.argv[2]: d["title"]=sys.argv[2]
+if sys.argv[3]: d["kind"]=sys.argv[3]
+print(json.dumps(d))' "$pos" "$title" "$kind")
+      local r; r=$(call POST /api/pins "$(merge "$t" "$body")") || exit $?
+      printf '%s' "$r" | python3 -c '
+import json,sys; d=json.load(sys.stdin); p=d["pin"]; t=d["target"]
+where = "room " + t["room"] if "room" in t else t["overlordId"]
+print("pinned %s  [%s] %s  -> %s" % (p["id"], p["kind"], p["title"], where))' ;;
+    ls|list)
+      local r; r=$(call GET "/api/pins?$(to_query "$t")") || exit $?
+      printf '%s' "$r" | python3 -c '
+import json,sys; d=json.load(sys.stdin)
+if not d["pins"]: print("no pins")
+for p in d["pins"]: print("\t".join([p["id"], p["kind"], p["title"], p["url"]]))' ;;
+    rm|remove)
+      [ -n "$pos" ] || die "usage: $PROG pin rm <pinId> [--room]"
+      call DELETE "/api/pins/$pos?$(to_query "$t")" >/dev/null || exit $?
+      echo "removed $pos" ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown pin command: $sub (add|ls|rm)" ;;
+  esac
+}
+
+case ${1:-help} in
+  whoami) shift; while [ $# -gt 0 ]; do case $1 in --session) SESSION_OVERRIDE=$2; shift ;; esac; shift; done; cmd_whoami ;;
+  pin) shift; cmd_pin "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

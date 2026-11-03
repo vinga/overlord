@@ -33,6 +33,8 @@ import { archiveManager } from '../archive/archiveManager.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
+import { validatePinInput, upsertPin, removePin } from '../session/pins.js';
+import type { Pin } from '../types.js';
 import { PARK_REASON_MAX } from '../ai/taskStorage.js';
 import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
@@ -322,6 +324,63 @@ export function registerApiRoutes(
       : undefined;
     if (!session) { res.status(404).json({ error: 'session not found' }); return; }
     if (ingestPushed(session.sessionId, watchId, line)) stateManager.refreshProgressCards(session.sessionId);
+    res.json({ ok: true });
+  });
+
+  // ── Pins: links pinned to a session or a room ────────────────────────────
+  // Target: { cwd } = room; { overlordId | ptyId | sessionId } = session, plus
+  // `room: true` to pin to that session's room instead (bin/ovr pin --room).
+  type PinTarget = { kind: 'session'; ovrId: string; pins?: Pin[] } | { kind: 'room'; cwd: string; pins?: Pin[] };
+  const resolvePinTarget = (src: Record<string, unknown>): PinTarget | { status: number; error: string } => {
+    const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+    const wantRoom = src.room === true || src.room === 'true' || src.room === '1';
+    const cwd = str(src.cwd);
+    if (cwd) {
+      if (!stateManager.isKnownRoomCwd(cwd)) return { status: 404, error: 'unknown cwd' };
+      return { kind: 'room', cwd, pins: readRoomConfig(cwd).pins };
+    }
+    const ptyId = str(src.ptyId);
+    const ovrId = str(src.overlordId) ?? (ptyId ? (ptyToOvr.get(ptyId) ?? ptyId) : undefined);
+    const sessionId = str(src.sessionId);
+    let rec = ovrId ? sessionStore.getByOverlordId(ovrId) : sessionId ? sessionStore.getBySessionId(sessionId) : undefined;
+    if (!rec) {
+      const live = ovrId ? stateManager.getActiveClaudeByOvr(ovrId) : sessionId ? stateManager.getSession(sessionId) : undefined;
+      if (live) rec = sessionStore.ensureFromLive(live);
+    }
+    if (!ovrId && !sessionId) return { status: 400, error: 'cwd, overlordId, ptyId or sessionId required' };
+    if (!rec) return { status: 404, error: 'session not found' };
+    if (wantRoom) return { kind: 'room', cwd: rec.cwd, pins: readRoomConfig(rec.cwd).pins };
+    return { kind: 'session', ovrId: rec.overlordId, pins: rec.pins };
+  };
+  const savePins = (t: PinTarget, pins: Pin[]) => {
+    if (t.kind === 'room') stateManager.setRoomPins(t.cwd, pins);
+    else stateManager.setSessionPins(t.ovrId, pins);
+  };
+
+  app.get('/api/pins', (req, res) => {
+    const t = resolvePinTarget(req.query as Record<string, unknown>);
+    if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
+    res.json({ target: t.kind === 'room' ? { room: t.cwd } : { overlordId: t.ovrId }, pins: t.pins ?? [] });
+  });
+
+  app.post('/api/pins', express.json(), (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const t = resolvePinTarget(body);
+    if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
+    const input = validatePinInput({ url: body.url, title: body.title, kind: body.kind });
+    if ('error' in input) { res.status(400).json({ error: input.error }); return; }
+    const result = upsertPin(t.pins, input);
+    if ('error' in result) { res.status(400).json({ error: result.error }); return; }
+    savePins(t, result.pins);
+    res.json({ target: t.kind === 'room' ? { room: t.cwd } : { overlordId: t.ovrId }, pin: result.pin });
+  });
+
+  app.delete('/api/pins/:pinId', (req, res) => {
+    const t = resolvePinTarget(req.query as Record<string, unknown>);
+    if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
+    const next = removePin(t.pins, req.params.pinId);
+    if (!next) { res.status(404).json({ error: 'pin not found' }); return; }
+    savePins(t, next);
     res.json({ ok: true });
   });
 
@@ -982,6 +1041,7 @@ export function registerApiRoutes(
     if (!stateManager.isKnownRoomCwd(cwd)) { res.status(404).json({ error: 'unknown cwd' }); return; }
     const current = readRoomConfig(cwd);
     writeRoomConfig(cwd, {
+      ...current,
       prefix: prefix !== undefined ? prefix : current.prefix,
       description: description !== undefined ? description : current.description,
       lastMode: lastMode !== undefined ? (lastMode as typeof validModes[number]) : current.lastMode,
@@ -1946,6 +2006,15 @@ export function registerApiRoutes(
   // ── Resolve session by PID ───────────────────────────────────────────────
 
   app.get('/api/resolve', (req, res) => {
+    // `ptyId` (OVERLORD_PTY_ID from the spawn env) works for every provider and
+    // does not depend on ~/.claude/sessions/{pid}.json, which newer claude omits.
+    const ptyRaw = req.query.ptyId;
+    if (typeof ptyRaw === 'string' && ptyRaw) {
+      const rec = sessionStore.getByOverlordId(ptyToOvr.get(ptyRaw) ?? ptyRaw);
+      if (!rec) { res.status(404).json({ error: `ptyId ${ptyRaw} not tracked by overlord` }); return; }
+      res.json({ overlordId: rec.overlordId, sessionId: rec.lineage.currentSessionId, cwd: rec.cwd });
+      return;
+    }
     const pidRaw = req.query.pid;
     if (typeof pidRaw !== 'string' || !/^\d+$/.test(pidRaw)) {
       res.status(400).json({ error: 'pid query param required (numeric)' });

@@ -41,6 +41,8 @@ Deep dives: `docs/architecture.md`, `docs/session-lifecycle.md`.
 
 **Background progress:** `bin/ovr-watch` prints `::progress …::` markers; `progressStore` tails background-task output files (Claude) or takes them over `POST /api/progress` (Codex, `OVERLORD_PTY_ID`) into cards pinned above the composer, zero tokens. Default agent rules: `GET /api/agent-instructions` → Claude `SessionStart` hook / Codex `~/.codex/AGENTS.md` block. See `docs/architecture.md#background-progress`.
 
+**Pins:** `bin/ovr pin add <url> [--room]` → `/api/pins` → chips above session tabs / in room view. See `docs/architecture.md#pins`.
+
 ## Bridge Binary
 
 Source: `packages/bridge/` (Go). Binary resolved via `getBridgePath()` in `packages/server/src/pty/pipeInjector.ts` → **`bridge/overlord-bridge`** at project root.

@@ -3,6 +3,16 @@
 import type { VoiceInputConfig } from './session/globalSettingsStore.js';
 
 export interface DeskSpan { w: number; h: number }
+
+export type PinKind = 'ticket' | 'pr' | 'branch' | 'link';
+/** A link pinned to a session or a room. */
+export interface Pin {
+  id: string;
+  url: string;
+  title: string;
+  kind: PinKind;
+  createdAt: number;
+}
 export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;
 
 export function isDeskSpan(v: unknown): v is DeskSpan {
@@ -272,6 +282,8 @@ export interface Session {
   icon?: WorkerIcon;
   /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
   deskSpan?: DeskSpan;
+  /** Pinned links, from the OverlordSession record. */
+  pins?: Pin[];
   subagents: Subagent[];
   resumedFrom?: string;
   needsPermission?: boolean;
@@ -448,6 +460,8 @@ export interface OverlordSession {
   historyOnly?: boolean;
   /** Notepad sessions only: user closed the note (card dims). Editing reopens it. */
   noteClosed?: boolean;
+  /** Links pinned to this session (ticket, PR, branch, any URL). */
+  pins?: Pin[];
 
   lastActivity?: string;
   lastMessage?: string;
@@ -584,6 +598,7 @@ export interface Room {
   gitWarning?: string;  // present when gh/git pr lookup failed
   description?: string;  // free-form per-room notes; first line renders in header
   hidden?: boolean;  // persisted room-config hidden flag; client union-seeds its local store from it
+  pins?: Pin[];  // room-config pinned links
 }
 
 export interface GlobalSettings {

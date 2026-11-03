@@ -5,6 +5,7 @@ import styles from './RoomPanel.module.css';
 import { BrainTab } from './BrainTab';
 import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
+import { PinBar } from './PinBar';
 
 // Same sizing and storage keys as DetailPanel / NotePanel so panel size
 // persists across panel types.
@@ -101,6 +102,8 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
         </div>
         <button className={styles.closeBtn} onClick={onClose} title="Close room details" aria-label="Close room details">✕</button>
       </div>
+
+      <PinBar pins={room.pins} cwd={room.cwd} />
 
       {/* Tab bar */}
       <div className={styles.tabBar}>

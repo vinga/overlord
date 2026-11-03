@@ -38,6 +38,7 @@ import { JiraChips } from './JiraChips';
 import { PrChips } from './PrChips';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import { ArtifactsTab } from './ArtifactsTab';
+import { PinBar } from './PinBar';
 import { QuestionPrompt } from './QuestionPrompt';
 import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
@@ -3540,6 +3541,10 @@ const currentDisplayName =
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
                 </div>
+
+                {selectedSession.overlordId && (
+                  <PinBar pins={selectedSession.pins} overlordId={selectedSession.overlordId} />
+                )}
 
                 {/* Tab bar */}
                 <div className={styles.tabBar}>

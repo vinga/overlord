@@ -1,5 +1,23 @@
 # bin/
 
+## ovr
+
+Overlord CLI for agents inside an Overlord session. Today: pins.
+
+```bash
+ovr pin add https://hypatos.atlassian.net/browse/BACKEND-1234   # pin to this session
+ovr pin add https://github.com/o/r/pull/30 --title "Fix retries"
+ovr pin add https://github.com/o/r/tree/feat/x --room            # pin to the session's room
+ovr pin ls [--room]
+ovr pin rm <pinId> [--room]
+ovr whoami
+```
+
+Session: `$OVERLORD_PTY_ID`, else the nearest ancestor pid `GET /api/resolve` knows, else
+`--session <overlordId>`. Server: `$OVERLORD_HOST`. Exit codes: `0` ok, `1` usage/HTTP error,
+`2` server unreachable or session unknown. Backed by `GET|POST /api/pins`, `DELETE /api/pins/:id`.
+`install-agent-defaults --apply` links it to `~/.local/bin/ovr`.
+
 ## ovr-watch
 
 Polling wrapper for long waits (deploys, CI). It runs a check command every N

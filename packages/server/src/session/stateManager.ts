@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
-import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, BackgroundProgress, SessionReview, DeskSpan } from '../types.js';
+import type { Session, Room, OfficeSnapshot, WorkerState, Subagent, OverlordSession, JiraIssueMeta, PrRefMeta, PendingQuestionSet, PlanSummary, WorkerIcon, BackgroundTask, BackgroundProgress, SessionReview, DeskSpan, Pin } from '../types.js';
 import { getBridgePath } from '../pty/pipeInjector.js';
 import { GitWatcher } from '../git/gitWatcher.js';
 import { PrCache } from '../git/prCache.js';
@@ -12,7 +12,7 @@ import { prRefKey, splitPrRef } from '../git/prRef.js';
 import { branchRefKey } from '../git/pushRef.js';
 import { readGitAhead } from '../git/gitStatus.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
-import { readRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
+import { readRoomConfig, writeRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
 import { sessionStore, scrubReplacedBy } from './sessionStore.js';
 import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
@@ -3034,6 +3034,7 @@ export class StateManager {
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;
       if (cfg.hidden) room.hidden = true;
+      if (cfg.pins) room.pins = cfg.pins;
     }
     this.gitWatcher.retain(activeCwds);
     this.prCache.retain(activeCwds);
@@ -3251,6 +3252,7 @@ export class StateManager {
       out.color = overlord.color ?? session.color;
       out.icon = overlord.icon ?? session.icon;
       out.deskSpan = overlord.deskSpan;
+      out.pins = overlord.pins;
       out.slug = overlord.slug ?? session.slug;
       out.model = overlord.model ?? session.model;
       out.intent = overlord.intent ?? session.intent;
@@ -3436,6 +3438,20 @@ export class StateManager {
     sessionStore.patch(rec.overlordId, { deskSpan: next });
     this.onChange();
     return true;
+  }
+
+  /** Replace a session's pinned links (OverlordSession record, survives restart). */
+  setSessionPins(ovrId: string, pins: Pin[]): boolean {
+    const rec = sessionStore.patch(ovrId, { pins: pins.length ? pins : undefined });
+    if (!rec) return false;
+    this.onChange();
+    return true;
+  }
+
+  /** Replace a room's pinned links (room-config file). */
+  setRoomPins(cwd: string, pins: Pin[]): void {
+    writeRoomConfig(cwd, { ...readRoomConfig(cwd), pins: pins.length ? pins : undefined });
+    this.onChange();
   }
 
   setSessionIcon(sessionId: string, icon: WorkerIcon): boolean {

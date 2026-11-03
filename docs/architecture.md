@@ -242,3 +242,22 @@ Default rules for every new session come from `GET /api/agent-instructions`
 Claude Code pulls them through a `SessionStart` hook (`bin/agent-instructions-hook`,
 installed by `bin/install-agent-defaults --apply`); Codex reads the managed
 block Overlord keeps in `~/.codex/AGENTS.md` (synced on boot and on every PUT).
+
+## Pins
+
+Links (ticket, PR, branch, any URL) pinned to a session or a room, shown as chips
+above the session tabs (`PinBar` in `DetailPanel`) and in the room panel.
+
+```
+bin/ovr pin add|ls|rm ─► GET|POST /api/pins, DELETE /api/pins/:id
+   target: {overlordId | ptyId | sessionId} (+ room: true) | {cwd}
+   session pins → OverlordSession.pins (sessionStore record) ─► Session.pins in snapshot
+   room pins    → room-config file `pins`                     ─► Room.pins in snapshot
+```
+
+- Pure logic in `server/src/session/pins.ts`: `classifyPinUrl` derives kind + title
+  from the URL (no network), same URL = update, max 30 per target, `http(s)` only.
+- `ovr` targets `$OVERLORD_PTY_ID`, else the nearest ancestor pid `/api/resolve` knows.
+  `/api/resolve?ptyId=` exists for this — it does not need `~/.claude/sessions/{pid}.json`.
+- Agents learn about `ovr pin` from the default agent rules and the `overlord-pins` skill
+  (`skill-templates/overlord-pins`, linked by `bin/install-agent-defaults --apply`).

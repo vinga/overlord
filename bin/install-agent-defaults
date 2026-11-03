@@ -11,11 +11,21 @@ HOOK="$BIN/agent-instructions-hook"
 SETTINGS="$HOME/.claude/settings.json"
 APPLY=0; [ "${1:-}" = "--apply" ] && APPLY=1
 
-# 1. ovr-watch on PATH
-LINK="$HOME/.local/bin/ovr-watch"
-if [ "$(readlink "$LINK" 2>/dev/null)" = "$BIN/ovr-watch" ]; then echo "ok   ovr-watch already linked at $LINK"
-elif [ $APPLY = 1 ]; then mkdir -p "$(dirname "$LINK")"; ln -sf "$BIN/ovr-watch" "$LINK"; echo "done linked $LINK"
-else echo "todo link $LINK -> $BIN/ovr-watch"; fi
+# 1. ovr-watch and ovr on PATH
+for TOOL in ovr-watch ovr; do
+  LINK="$HOME/.local/bin/$TOOL"
+  if [ "$(readlink "$LINK" 2>/dev/null)" = "$BIN/$TOOL" ]; then echo "ok   $TOOL already linked at $LINK"
+  elif [ $APPLY = 1 ]; then mkdir -p "$(dirname "$LINK")"; ln -sf "$BIN/$TOOL" "$LINK"; echo "done linked $LINK"
+  else echo "todo link $LINK -> $BIN/$TOOL"; fi
+done
+
+# 1b. overlord-pins skill
+SKILL_LINK="$HOME/.claude/skills/overlord-pins"
+SKILL_SRC="$(dirname "$BIN")/skill-templates/overlord-pins"
+if [ "$(readlink "$SKILL_LINK" 2>/dev/null)" = "$SKILL_SRC" ]; then echo "ok   overlord-pins skill already linked"
+elif [ -e "$SKILL_LINK" ]; then echo "skip $SKILL_LINK exists and is not our link"
+elif [ $APPLY = 1 ]; then mkdir -p "$(dirname "$SKILL_LINK")"; ln -s "$SKILL_SRC" "$SKILL_LINK"; echo "done linked $SKILL_LINK"
+else echo "todo link $SKILL_LINK -> $SKILL_SRC"; fi
 
 # 2. Claude SessionStart hook
 NEW=$(python3 - "$SETTINGS" "$HOOK" <<'PY'

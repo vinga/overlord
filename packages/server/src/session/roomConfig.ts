@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import chokidar, { type FSWatcher } from 'chokidar';
+import type { Pin } from '../types.js';
+import { sanitizePins } from './pins.js';
 
 export type RoomLastMode = 'embedded' | 'bridge' | 'plain' | 'raw' | 'note';
 export type RoomLastProvider = 'claude' | 'opencode' | 'codex';
@@ -13,6 +15,8 @@ export interface RoomConfig {
   lastProvider?: RoomLastProvider;
   /** Room hidden in the office view. Only `true` is stored; absent = visible. */
   hidden?: boolean;
+  /** Links pinned to the room. */
+  pins?: Pin[];
 }
 
 const DEFAULT_CONFIG: RoomConfig = { prefix: '', description: '' };
@@ -91,6 +95,7 @@ function loadFromDisk(cwd: string): RoomConfig {
         ? parsed.lastProvider
         : undefined,
       hidden: parsed.hidden === true ? true : undefined,
+      pins: sanitizePins(parsed.pins),
     };
   } catch {
     return { ...DEFAULT_CONFIG };

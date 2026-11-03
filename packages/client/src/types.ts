@@ -173,6 +173,16 @@ export type WorkerIcon = typeof WORKER_ICONS[number];
 /** User-set review marker. There is deliberately no 'done'. */
 export type SessionReview = 'read' | 'parked';
 
+export type PinKind = 'ticket' | 'pr' | 'branch' | 'link';
+/** A link pinned to a session or a room. */
+export interface Pin {
+  id: string;
+  url: string;
+  title: string;
+  kind: PinKind;
+  createdAt: number;
+}
+
 interface Session {
   sessionId: string;
   overlordId?: string;       // stable identity across /clear and compaction
@@ -259,6 +269,8 @@ interface Session {
   archivedAt?: string;            // ISO timestamp of archival (only when isArchived)
   archivedGitBranch?: string;     // snapshot of branch at archive time
   archivedPullRequest?: { number: number; url: string; title: string; state: string; isDraft: boolean };
+  /** Pinned links, from the OverlordSession record. */
+  pins?: Pin[];
 }
 
 interface Room {
@@ -278,6 +290,7 @@ interface Room {
   gitWarning?: string;
   description?: string;
   hidden?: boolean;       // server-persisted hidden flag (room config)
+  pins?: Pin[];           // room-config pinned links
 }
 
 interface ArchiveEntry {

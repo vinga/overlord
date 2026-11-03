@@ -23,7 +23,11 @@ For anything that takes minutes (deploy, CI, rollout, waiting for a slot):
 - Claude Code: run the poll with Bash \`run_in_background: true\`, using \`ovr-watch\` (on PATH) or a script. You are notified once when it exits.
 - Codex: run \`ovr-watch --detach --label "<what>" --every 60 --until '<regex>' -- <check command>\`. It returns at once; you get one \`[ovr-watch] …\` message when it ends. Do not poll it.
 - Scripts may print \`::progress id=<row> label="<text>" step=N/M state=<word>:: <message>\` lines. Overlord shows them live, pinned above the composer, at no token cost. \`ovr-watch --help\` has the details.
-- No foreground \`sleep\`, and no wakeups or follow-up polls just to report progress.`;
+- No foreground \`sleep\`, and no wakeups or follow-up polls just to report progress.
+
+## Pin the links that matter
+
+When you start on a Jira ticket, open a PR, or push a branch, pin its URL: \`ovr pin add <url>\` (add \`--room\` for links every session in the folder needs). Overlord shows pins as chips above the session tabs. \`ovr help\` has the details.`;
 
 function home(): string {
   // $HOME first so tests can stub it (os.homedir() ignores the env on macOS).
