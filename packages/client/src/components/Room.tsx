@@ -166,8 +166,6 @@ interface RoomProps {
   isPtySession?: (sessionId: string) => boolean;
   pendingSpawns?: Array<{ id: string; cwd: string; fullName: string; startedAt: number }>;
   platform?: string;
-  onRoomDragStart?: (e: React.DragEvent, roomId: string) => void;
-  onRoomDragEnd?: () => void;
   /** True when this room is hidden but rendered because it matches an active search. */
   searchRevealed?: boolean;
 }
@@ -333,7 +331,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
 
 // memo: snapshots reuse unchanged room objects (shareSnapshot), so an idle room
 // skips the per-tick re-render. Its own 30s tick keeps the age labels fresh.
-export const Room = memo(function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', onRoomDragStart, onRoomDragEnd, searchRevealed = false }: RoomProps) {
+export const Room = memo(function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', searchRevealed = false }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -529,16 +527,6 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   return (
     <div ref={roomRef} className={`${styles.room} ${collapsed ? styles.roomCollapsed : ''}`}>
       <div className={styles.titleBar}>
-        {onRoomDragStart && (
-          <span
-            className={styles.roomDragHandle}
-            draggable
-            onDragStart={e => onRoomDragStart(e, room.id)}
-            onDragEnd={onRoomDragEnd}
-            title="Drag to reorder room"
-            aria-hidden="true"
-          >⠿</span>
-        )}
         <button
           className={styles.collapseBtn}
           onClick={() => toggle(room.id)}

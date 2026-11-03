@@ -411,40 +411,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
 
   const hasRooms = visibleRooms.length > 0;
 
-  // Drag-and-drop state
-  const draggedId = useRef<string | null>(null);
-  const [dragOverId, setDragOverId] = useState<string | null>(null);
-
-  const handleDragStart = useCallback((e: React.DragEvent, roomId: string) => {
-    draggedId.current = roomId;
-    e.dataTransfer.effectAllowed = 'move';
-    // Use the room wrapper as the drag image so the user sees the full card
-    const wrapper = (e.currentTarget as HTMLElement).closest('[data-room-id]') as HTMLElement | null;
-    if (wrapper) e.dataTransfer.setDragImage(wrapper, 20, 20);
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent, roomId: string) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (draggedId.current && roomId !== draggedId.current) {
-      setDragOverId(roomId);
-    }
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
-    e.preventDefault();
-    if (draggedId.current && draggedId.current !== targetId) {
-      moveRoom(draggedId.current, targetId);
-    }
-    draggedId.current = null;
-    setDragOverId(null);
-  }, [moveRoom]);
-
-  const handleDragEnd = useCallback(() => {
-    draggedId.current = null;
-    setDragOverId(null);
-  }, []);
-
   const roomTabs = hasRooms && (
     <RoomTabs
       rooms={visibleRooms}
@@ -671,9 +637,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
               <div
                 key={room.id}
                 data-room-id={room.id}
-                className={`${styles.roomWrapper} ${dragOverId === room.id ? styles.dragOver : ''}`}
-                onDragOver={e => handleDragOver(e, room.id)}
-                onDrop={e => handleDrop(e, room.id)}
+                className={styles.roomWrapper}
               >
                 <Room
                   room={room}
@@ -699,8 +663,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
                   isPtySession={isPtySession}
                   pendingSpawns={pendingSpawnsByCwd.get(room.cwd)}
                   platform={platform}
-                  onRoomDragStart={handleDragStart}
-                  onRoomDragEnd={handleDragEnd}
                   searchRevealed={filterQuery.trim().length > 0 && !!hiddenMap[room.id]}
                 />
               </div>
