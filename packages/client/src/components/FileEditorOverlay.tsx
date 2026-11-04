@@ -7,6 +7,7 @@ import { useMarkdownEditor, MarkdownToolbar, MarkdownEditorContent } from './Mar
 import 'highlight.js/styles/github-dark.css';
 
 export const FILE_EDITOR_MODE_KEY = 'overlord:fileEditorMode';
+const AUTOSAVE_DELAY_MS = 800;
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
 
@@ -257,28 +258,52 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
     [codeLines, content, language],
   );
 
+  // Content whose save failed — autosave does not retry it until it changes.
+  const failedRef = useRef<string | null>(null);
+
   const handleSave = useCallback(async () => {
+    const saved = content;
     setSaving(true);
     setSaveError('');
     try {
-      const r = await src.save(effective.path, content);
+      const r = await src.save(effective.path, saved);
       if (!r.ok) {
         const reason = await r.json().then((b: { error?: string }) => b.error).catch(() => undefined);
+        failedRef.current = saved;
         setSaveError(reason ?? (r.status === 403 ? 'File is read-only' : `Error ${r.status}`));
         setSaving(false);
         return;
       }
-      setOriginal(content);
+      failedRef.current = null;
+      setOriginal(saved);
       setSaveFlash('Saved');
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
       flashTimerRef.current = setTimeout(() => setSaveFlash(''), 2000);
     } catch (err) {
+      failedRef.current = saved;
       setSaveError(String(err));
     }
     setSaving(false);
   }, [effective.path, content, src]);
 
-  useEffect(() => { onDirtyChange?.(isDirty); }, [isDirty, onDirtyChange]);
+  // Autosave: write the file once typing pauses.
+  const canAutosave = isDirty && writable && !missing && !loading && !tooLarge;
+  useEffect(() => {
+    if (!canAutosave || saving || content === failedRef.current) return;
+    const t = setTimeout(() => { void handleSave(); }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [canAutosave, saving, content, handleSave]);
+
+  // Switching file or closing inside the debounce window: flush the pending edit.
+  const flushRef = useRef<(() => void) | null>(null);
+  flushRef.current = canAutosave && content !== failedRef.current
+    ? () => { void src.save(effective.path, content).catch(() => {}); }
+    : null;
+  useEffect(() => () => flushRef.current?.(), []);
+
+  // Pending edits are flushed on unmount, so only an unsavable edit counts as dirty.
+  const unsaved = isDirty && (!writable || content === failedRef.current);
+  useEffect(() => { onDirtyChange?.(unsaved); }, [unsaved, onDirtyChange]);
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   const handleModeChange = useCallback((m: Mode) => {
