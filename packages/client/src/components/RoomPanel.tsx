@@ -21,9 +21,9 @@ const MIN_HEIGHT = 240;
 type Tab = RoomPanelTab;
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'details', label: 'Details' },
-  { id: 'files', label: 'Files' },
   { id: 'room', label: 'Room' },
+  { id: 'files', label: 'Files' },
+  { id: 'details', label: 'Description' },
   { id: 'plans', label: 'Plans' },
   { id: 'brain', label: 'Brain' },
 ];
@@ -42,7 +42,7 @@ interface RoomPanelProps {
 /** Room details docked in the session panel's slot — shown when a room is
  *  selected and no session is open. */
 export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange, roomView }: RoomPanelProps) {
-  const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'details');
+  const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'room');
   const horizontal = dock !== 'bottom';
 
   // A request for this room while it is already shown (folder button, "Show in Files").
