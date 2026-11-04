@@ -122,3 +122,8 @@
   overflow: hidden;
   padding: 0;
 }
+
+/* Room tab: the office room card, padded off the panel edges. */
+.roomView {
+  padding: 6px 12px 12px;
+}

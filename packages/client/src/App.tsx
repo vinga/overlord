@@ -24,6 +24,7 @@ import { DetailPanel, setJiraProjects } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
 import { NotePanel } from './components/NotePanel';
 import { RoomPanel } from './components/RoomPanel';
+import { Room as RoomCard } from './components/Room';
 import { LogsPage } from './components/LogsPage';
 import { SpawnDialog } from './components/SpawnDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
@@ -364,6 +365,11 @@ export function App() {
     selectedRoomId != null
       ? (snapshot?.rooms.find(r => r.id === selectedRoomId) ?? null)
       : null;
+  const selectedRoomCwd = selectedRoom?.cwd;
+  const roomPendingSpawns = useMemo(
+    () => pendingSpawns.filter(p => p.cwd === selectedRoomCwd),
+    [pendingSpawns, selectedRoomCwd],
+  );
 
   // ── Hands-free voice control ───────────────────────────────────────────────
   // Effective config is defaults < global settings < the open worker's override.
@@ -1010,6 +1016,32 @@ export function App() {
           dock={dock}
           panelSize={panelSize}
           onPanelSizeChange={setPanelSize}
+          roomView={
+            <RoomCard
+              room={selectedRoom}
+              onSelectSession={handleSelectSession}
+              customNames={displayNames}
+              onSpawnSession={handleSpawnSession}
+              onSpawnDirect={handleNewFolderSpawn}
+              onNewTerminalSession={handleNewTerminalSession}
+              selectedSessionId={selectedSessionId}
+              isSpawning={spawnCwd === selectedRoom.cwd}
+              onSpawnNameChange={setPendingSpawnName}
+              onSpawnCommit={handleSpawnCommit}
+              terminalSpawnCwd={terminalSpawnCwd}
+              onTerminalSpawnCommit={handleTerminalSpawnCommit}
+              onDeleteSession={handleDeleteSession}
+              onCloseSession={handleCloseSession}
+              onArchiveSession={handleArchiveSession}
+              onOpenArchive={handleOpenArchive}
+              onDeleteArchive={handleDeleteArchived}
+              onRenameSession={rename}
+              onCloneSession={handleCloneSession}
+              isPtySession={terminal.isPtySession}
+              pendingSpawns={roomPendingSpawns}
+              platform={snapshot?.platform ?? 'darwin'}
+            />
+          }
         />
       ) : <DetailPanel
         selectedSession={selectedSession}

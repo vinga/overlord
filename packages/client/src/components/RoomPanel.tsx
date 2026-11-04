@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Room } from '../types';
 import panelStyles from './PtyTerminalPanel.module.css';
 import styles from './RoomPanel.module.css';
@@ -23,6 +23,7 @@ type Tab = RoomPanelTab;
 const TABS: { id: Tab; label: string }[] = [
   { id: 'details', label: 'Details' },
   { id: 'files', label: 'Files' },
+  { id: 'room', label: 'Room' },
   { id: 'plans', label: 'Plans' },
   { id: 'brain', label: 'Brain' },
 ];
@@ -34,11 +35,13 @@ interface RoomPanelProps {
   dock?: 'right' | 'bottom';
   panelSize: number;
   onPanelSizeChange: (size: number) => void;
+  /** The room card from the office, shown in the Room tab. */
+  roomView?: ReactNode;
 }
 
 /** Room details docked in the session panel's slot — shown when a room is
  *  selected and no session is open. */
-export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange }: RoomPanelProps) {
+export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange, roomView }: RoomPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'details');
   const horizontal = dock !== 'bottom';
 
@@ -149,6 +152,7 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
       <div className={`${styles.content} ${activeTab === 'files' ? styles.contentFill : ''}`}>
         {activeTab === 'brain' && <BrainTab cwd={room.cwd} />}
         {activeTab === 'details' && <RoomDetailsTab cwd={room.cwd} />}
+        {activeTab === 'room' && <div className={styles.roomView}>{roomView}</div>}
         {activeTab === 'files' && (
           <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} stacked={horizontal && panelSize < 640} />
         )}

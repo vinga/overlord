@@ -1,4 +1,4 @@
-export type RoomPanelTab = 'details' | 'files' | 'plans' | 'brain';
+export type RoomPanelTab = 'details' | 'files' | 'room' | 'plans' | 'brain';
 
 /** Ask the app to open the room panel for `roomId` on `tab`. App opens the
  *  panel; RoomPanel picks the tab — at mount from `pending`, or from the event
