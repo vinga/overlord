@@ -35,6 +35,7 @@ import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
 import { SkillChips } from './SkillChips';
 import { JiraChips } from './JiraChips';
+import { ActiveTicket } from './ActiveTicket';
 import { PrChips } from './PrChips';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import { ArtifactsTab } from './ArtifactsTab';
@@ -3532,6 +3533,9 @@ const currentDisplayName =
                     <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
+                  {selectedSession.jiraKeys?.[0] && (
+                    <ActiveTicket ticketKey={selectedSession.jiraKeys[0]} baseUrl={jiraBaseUrl} />
+                  )}
                   <WorkBar
                     prRefs={selectedSession.prRefs}
                     prRefsAuthored={selectedSession.prRefsAuthored}
