@@ -114,3 +114,11 @@
   overflow-y: auto;
   padding: 6px 0;
 }
+
+/* Files tab: the browser owns its own scrolling and fills the panel. */
+.contentFill {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}

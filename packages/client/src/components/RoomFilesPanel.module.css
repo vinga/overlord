@@ -1,12 +1,9 @@
+/* Fills the room panel's Files tab. */
 .panel {
   display: flex;
-  height: 440px;
-  min-height: 220px;
-  max-height: 85vh;
-  resize: vertical;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 8px;
   background: #0b0b14;
   font-family: 'Inter', system-ui, sans-serif;
 }
@@ -19,6 +16,19 @@
   border-right: 1px solid rgba(255, 255, 255, 0.07);
   background: #0a0a12;
   min-height: 0;
+}
+
+/* Narrow panel: tree on top, file below. */
+.stacked {
+  flex-direction: column;
+}
+
+.stacked .sidebar {
+  width: auto;
+  height: 40%;
+  min-height: 160px;
+  border-right: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
 
 .toolbar {

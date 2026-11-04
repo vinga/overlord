@@ -238,11 +238,6 @@
   outline: none;
 }
 
-/* Open: the folder fills in. */
-.filesButtonActive svg {
-  fill: rgba(212, 175, 55, 0.3);
-}
-
 .quickSpawnButton {
   background: none;
   border: 1px solid rgba(255, 255, 255, 0.07);

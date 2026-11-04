@@ -20,6 +20,8 @@ interface Props {
   cwd: string;
   /** Labels the branch scope "In PR" instead of "In branch". */
   hasPr?: boolean;
+  /** Tree above the file instead of beside it — for a narrow panel. */
+  stacked?: boolean;
 }
 
 type Scope = 'all' | 'uncommitted' | 'pr';
@@ -80,7 +82,7 @@ function roomSource(cwd: string): FileSource {
  * editor on the right. Only mounted while the room's Files section is open,
  * and only fetches on mount / refresh — git spawns are too costly for a timer.
  */
-export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false }: Props) {
+export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false, stacked = false }: Props) {
   const [data, setData] = useState<RoomFilesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -229,7 +231,7 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false 
   }, [reveal, data]);
 
   return (
-    <div className={styles.panel}>
+    <div className={`${styles.panel} ${stacked ? styles.stacked : ''}`}>
       <div className={styles.sidebar}>
         <div className={styles.toolbar}>
           <div className={styles.searchWrap}>

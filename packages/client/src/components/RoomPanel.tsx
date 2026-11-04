@@ -7,6 +7,8 @@ import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
 import { PinBar } from './PinBar';
 import { RoomGitInfo } from './RoomGitInfo';
+import { RoomFilesPanel } from './RoomFilesPanel';
+import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
 
 // Same sizing and storage keys as DetailPanel / NotePanel so panel size
 // persists across panel types.
@@ -16,7 +18,14 @@ const MIN_WIDTH = 320;
 const MAX_WIDTH = 900;
 const MIN_HEIGHT = 240;
 
-type Tab = 'brain' | 'details' | 'plans';
+type Tab = RoomPanelTab;
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'details', label: 'Details' },
+  { id: 'files', label: 'Files' },
+  { id: 'plans', label: 'Plans' },
+  { id: 'brain', label: 'Brain' },
+];
 
 interface RoomPanelProps {
   room: Room;
@@ -30,8 +39,18 @@ interface RoomPanelProps {
 /** Room details docked in the session panel's slot — shown when a room is
  *  selected and no session is open. */
 export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange }: RoomPanelProps) {
-  const [activeTab, setActiveTab] = useState<Tab>('details');
+  const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'details');
   const horizontal = dock !== 'bottom';
+
+  // A request for this room while it is already shown (folder button, "Show in Files").
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const tab = takeRoomTab(room.id);
+      if (tab && (ev as CustomEvent<{ roomId: string }>).detail?.roomId === room.id) setActiveTab(tab);
+    };
+    window.addEventListener(OPEN_ROOM_TAB_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ROOM_TAB_EVENT, onOpen);
+  }, [room.id]);
 
   const dragging = useRef(false);
   const startPos = useRef(0);
@@ -115,30 +134,24 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
 
       {/* Tab bar */}
       <div className={styles.tabBar}>
-        <button
-          className={`${styles.tab} ${activeTab === 'details' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('details')}
-        >
-          Details
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'plans' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('plans')}
-        >
-          Plans
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === 'brain' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('brain')}
-        >
-          Brain
-        </button>
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            className={`${styles.tab} ${activeTab === t.id ? styles.tabActive : ''}`}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Content */}
-      <div className={styles.content}>
+      <div className={`${styles.content} ${activeTab === 'files' ? styles.contentFill : ''}`}>
         {activeTab === 'brain' && <BrainTab cwd={room.cwd} />}
         {activeTab === 'details' && <RoomDetailsTab cwd={room.cwd} />}
+        {activeTab === 'files' && (
+          <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} stacked={horizontal && panelSize < 640} />
+        )}
         {activeTab === 'plans' && (
           <RoomPlansTab cwd={room.cwd} sessions={room.sessions} customNames={customNames} />
         )}

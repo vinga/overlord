@@ -8,6 +8,7 @@ import { setJiraBaseUrl } from './hooks/useJiraBaseUrl';
 import { setJiraMeta } from './hooks/useJiraMeta';
 import { setPrMeta } from './hooks/usePrMeta';
 import { expandRoom } from './hooks/useRoomCollapsed';
+import { OPEN_ROOM_TAB_EVENT } from './lib/roomPanelTab';
 import { useVoiceAgent } from './hooks/useVoiceAgent';
 import { resolveVoiceConfig } from './lib/voiceConfig';
 import type { VoiceDispatch, VoiceWorker } from './lib/resolveVoiceTarget';
@@ -660,6 +661,18 @@ export function App() {
     el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     if (open) handleOpenRoom(room.id);
   }
+
+  // Folder button / "Show in Files": open the room panel (RoomPanel picks the tab).
+  const openRoomRef = useRef(handleOpenRoom);
+  openRoomRef.current = handleOpenRoom;
+  useEffect(() => {
+    const onOpen = (ev: Event) => {
+      const roomId = (ev as CustomEvent<{ roomId: string }>).detail?.roomId;
+      if (roomId) openRoomRef.current(roomId);
+    };
+    window.addEventListener(OPEN_ROOM_TAB_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ROOM_TAB_EVENT, onOpen);
+  }, []);
 
   function handleRoomDetailClose() {
     setSelectedRoomId(null);

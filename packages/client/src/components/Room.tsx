@@ -10,10 +10,10 @@ import { SessionCommands } from './SessionCommands';
 import styles from './Room.module.css';
 import { SpawnDialog } from './SpawnDialog';
 import { useRoomOrder } from '../hooks/useRoomOrder';
-import { useRoomCollapsed, expandRoom } from '../hooks/useRoomCollapsed';
+import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 import { useRoomHidden } from '../hooks/useRoomHidden';
-import { useRoomFilesOpen, openRoomFiles } from '../hooks/useRoomFilesOpen';
-import { RoomFilesPanel, REVEAL_ROOM_FILE_EVENT } from './RoomFilesPanel';
+import { openRoomTab } from '../lib/roomPanelTab';
+import { REVEAL_ROOM_FILE_EVENT } from './RoomFilesPanel';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
@@ -376,18 +376,14 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   const collapsed = isCollapsed(room.id);
   const { isHidden, hide, unhide } = useRoomHidden();
   const hidden = isHidden(room.id);
-  const { isFilesOpen, toggleFiles } = useRoomFilesOpen();
-  const filesOpen = isFilesOpen(room.id);
   const roomRef = useRef<HTMLDivElement>(null);
 
-  // "Show in Files" from a chat file link: open this room's Files section and
-  // bring the room into view. RoomFilesPanel itself selects the file.
+  // "Show in Files" from a chat file link: open this room's panel on the Files
+  // tab. RoomFilesPanel itself selects the file.
   useEffect(() => {
     const onReveal = (ev: Event) => {
       if ((ev as CustomEvent<{ cwd: string }>).detail?.cwd !== room.cwd) return;
-      expandRoom(room.id);
-      openRoomFiles(room.id);
-      requestAnimationFrame(() => roomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+      openRoomTab(room.id, 'files');
     };
     window.addEventListener(REVEAL_ROOM_FILE_EVENT, onReveal);
     return () => window.removeEventListener(REVEAL_ROOM_FILE_EVENT, onReveal);
@@ -554,21 +550,14 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
         <div className={styles.roomNameStack}>
           <div className={styles.roomTitleRow}>
             <button
-              className={`${styles.filesButton} ${filesOpen && !collapsed ? styles.filesButtonActive : ''}`}
+              className={styles.filesButton}
               onClick={(e) => {
                 e.stopPropagation();
-                // On a collapsed room the click means "show me the files": expand it too.
-                if (collapsed) {
-                  toggle(room.id);
-                  if (!filesOpen) toggleFiles(room.id);
-                } else {
-                  toggleFiles(room.id);
-                }
+                openRoomTab(room.id, 'files');
               }}
-              data-tooltip={filesOpen && !collapsed ? 'Hide files' : 'Browse files'}
+              data-tooltip="Browse files"
               data-tooltip-dir="down"
-              aria-label={filesOpen && !collapsed ? 'Hide files' : 'Browse files'}
-              aria-pressed={filesOpen && !collapsed}
+              aria-label="Browse files"
             >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round">
                 <path d="M1.5 4.5c0-.6.4-1 1-1h3.6l1.5 1.5h5.9c.6 0 1 .4 1 1v6.5c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" />
@@ -719,7 +708,6 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onDone={() => setClearToast(null)}
         />
       )}
-      {!collapsed && filesOpen && <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} />}
       {!collapsed && <div className={styles.desks} ref={deskResize.desksRef}>
         {sortedSessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;
