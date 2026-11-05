@@ -847,7 +847,11 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                                 </span>
                               )}
                               {prLabel && (
-                                <span className={styles.archiveEntryPr}>{prLabel}</span>
+                                <span
+                                  className={styles.archiveEntryPr}
+                                  data-state={entry.pullRequest!.isDraft && entry.pullRequest!.state === 'OPEN' ? 'DRAFT' : entry.pullRequest!.state}
+                                  title={`${entry.pullRequest!.title} — ${entry.pullRequest!.isDraft && entry.pullRequest!.state === 'OPEN' ? 'draft' : entry.pullRequest!.state.toLowerCase()}`}
+                                >{prLabel}</span>
                               )}
                             </span>
                           )}

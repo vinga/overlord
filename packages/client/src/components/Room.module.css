@@ -1097,6 +1097,25 @@
   white-space: nowrap;
 }
 
+/* Same state colors as GitHub: merged violet, closed red, draft grey. */
+.archiveEntryPr[data-state='MERGED'] {
+  background: rgba(163, 113, 247, 0.12);
+  border-color: rgba(163, 113, 247, 0.3);
+  color: rgba(196, 160, 255, 0.95);
+}
+
+.archiveEntryPr[data-state='CLOSED'] {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.28);
+  color: rgba(252, 140, 140, 0.9);
+}
+
+.archiveEntryPr[data-state='DRAFT'] {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.55);
+}
+
 .archiveEntryTime {
   font-size: 10px;
   color: rgba(255, 255, 255, 0.3);

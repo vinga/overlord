@@ -30,6 +30,7 @@ import { globalSettingsStore, sanitizeVoiceOverride } from '../session/globalSet
 import { scratchpadStore } from '../session/scratchpadStore.js';
 import { noteStore, isNoteId, notePreview } from '../session/noteStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
+import { ArchivePrState } from '../archive/archivePrState.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
@@ -111,6 +112,8 @@ export function registerApiRoutes(
   broadcastRaw?: (msg: object) => void,
 ): void {
   const { ovrToPty, ptyToOvr, linkageTracker } = ptyMaps;
+  // Archived PR chips show the PR's current state, not the one at archive time.
+  const archivePrState = new ArchivePrState(stateManager.getPrHistoryStore());
 
   // Server info endpoint — returns bridge binary path and platform
   app.get('/api/info', (_req, res) => {
@@ -1646,12 +1649,12 @@ export function registerApiRoutes(
   // Archive: list entries for a room
   app.get('/api/archive/by-room/:roomId', (req, res) => {
     const { roomId } = req.params;
-    res.json({ entries: archiveManager.listByRoom(roomId) });
+    res.json({ entries: archivePrState.apply(archiveManager.listByRoom(roomId)) });
   });
 
   // Archive: full list
   app.get('/api/archive', (_req, res) => {
-    res.json({ entries: archiveManager.list() });
+    res.json({ entries: archivePrState.apply(archiveManager.list()) });
   });
 
   // Archive: on-demand stats for an archived session (start/finish/duration/counts)
