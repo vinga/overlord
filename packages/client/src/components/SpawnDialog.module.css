@@ -450,3 +450,49 @@
   width: 55px;
   color: rgba(255, 255, 255, 0.4);
 }
+
+/* Quick-spawn default switch — left side of the actions row. */
+.defaultToggle {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+}
+.defaultToggle:hover { color: rgba(255, 255, 255, 0.8); }
+.defaultToggleOn,
+.defaultToggleOn:hover {
+  color: #d4af37;
+  cursor: default;
+}
+
+.defaultTrack {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.defaultThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  transition: transform 0.15s, background 0.15s;
+}
+.defaultToggleOn .defaultTrack { background: rgba(212, 175, 55, 0.35); }
+.defaultToggleOn .defaultThumb {
+  transform: translateX(12px);
+  background: #d4af37;
+}

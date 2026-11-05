@@ -99,9 +99,10 @@ export interface QuickSpawnChoice {
   provider: SessionProvider;
 }
 
-/** What quick spawn uses in a room: the name prefix and the last mode / provider
- *  from room-config, written back so the next quick spawn repeats them. `fallback`
- *  stands in when room-config can't be read. */
+/** What quick spawn uses in a room: the name prefix and the default mode /
+ *  provider from room-config (stored as lastMode / lastProvider; set only by the
+ *  spawn dialog's quick-spawn default toggle). `fallback` stands in when
+ *  room-config can't be read. */
 export async function resolveQuickSpawn(cwd: string, fallback: QuickSpawnChoice): Promise<QuickSpawnChoice> {
   let { prefix, mode, provider } = fallback;
   try {
@@ -114,10 +115,5 @@ export async function resolveQuickSpawn(cwd: string, fallback: QuickSpawnChoice)
     }
   } catch { /* fall back to cached values */ }
   if (provider === 'opencode' || provider === 'codex') mode = 'embedded';
-  fetch('/api/room-config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cwd, lastMode: mode, lastProvider: provider }),
-  }).catch(() => {});
   return { prefix, mode, provider };
 }

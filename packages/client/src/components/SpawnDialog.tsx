@@ -23,6 +23,10 @@ interface Props {
   onPrefixSaved?: (prefix: string) => void;
   bridgePath?: string;
   onCopyAndClose?: () => void;
+  /** Room variant only — the room's quick-spawn default. The dialog opens on it
+   *  and shows a toggle that saves the current selection as the new default. */
+  quickDefault?: { mode: TerminalSpawnMode; provider: SessionProvider };
+  onQuickDefaultSaved?: (mode: TerminalSpawnMode, provider: SessionProvider) => void;
 }
 
 function InfoTooltip({ text }: { text: string }) {
@@ -97,7 +101,7 @@ const MODE_TOOLTIPS: Record<string, string> = {
  * - room (`fixedCwd` set): directory collapsed to the room path (expandable),
  *   with the room-scoped name prefix input.
  */
-export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose }: Props) {
+export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose, quickDefault, onQuickDefaultSaved }: Props) {
   const isRoom = fixedCwd != null;
   // Room prefix is behind VITE_OVERLORD_ROOM_PREFIX — off by default, so the
   // input is hidden, nothing is saved, and no prefix reaches the spawned name.
@@ -111,8 +115,11 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
   const [error, setError] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState(suggestedName || '');
   const [prefix, setPrefix] = useState(initialPrefix || '');
-  const [mode, setMode] = useState<TerminalSpawnMode>('embedded');
-  const [uiProvider, setUiProvider] = useState<UiProvider>('claude');
+  const [mode, setMode] = useState<TerminalSpawnMode>(quickDefault?.mode ?? 'embedded');
+  const [uiProvider, setUiProvider] = useState<UiProvider>(
+    quickDefault?.provider === 'opencode' || quickDefault?.provider === 'codex' ? quickDefault.provider : 'claude',
+  );
+  const [savingDefault, setSavingDefault] = useState(false);
   const [fetchedBridgePath, setFetchedBridgePath] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const pathInputRef = useRef<HTMLInputElement>(null);
@@ -253,12 +260,30 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
   const marker = markerRef.current;
   const effectiveMode = availableModes.includes(mode) ? mode : 'embedded';
 
+  const selectedProvider: SessionProvider =
+    uiProvider === 'opencode' ? 'opencode' : uiProvider === 'codex' ? 'codex' : 'claude';
+
   const handleSpawn = () => {
     if (!currentPath || !sessionName.trim()) return;
-    const spawnMode: TerminalSpawnMode = effectiveMode;
-    const provider: SessionProvider =
-      uiProvider === 'opencode' ? 'opencode' : uiProvider === 'codex' ? 'codex' : 'claude';
-    onSpawn(currentPath, effPrefix + sessionName.trim(), spawnMode, provider, effPrefix);
+    onSpawn(currentPath, effPrefix + sessionName.trim(), effectiveMode, selectedProvider, effPrefix);
+  };
+
+  // Quick-spawn default: on when the selection is the room's default. Turning it
+  // on saves right away — no Spawn needed.
+  const isQuickDefault = !!quickDefault
+    && quickDefault.mode === effectiveMode && quickDefault.provider === selectedProvider;
+  const saveQuickDefault = () => {
+    if (!isRoom || isQuickDefault || savingDefault) return;
+    const mode = effectiveMode;
+    const provider = selectedProvider;
+    setSavingDefault(true);
+    fetch('/api/room-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd: fixedCwd, lastMode: mode, lastProvider: provider }),
+    }).then(r => {
+      if (r.ok) onQuickDefaultSaved?.(mode, provider);
+    }).catch(() => {}).finally(() => setSavingDefault(false));
   };
 
   const modeRows = [
@@ -413,6 +438,22 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
 
         {/* Actions */}
         <div className={styles.actions}>
+          {isRoom && quickDefault && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isQuickDefault}
+              className={`${styles.defaultToggle} ${isQuickDefault ? styles.defaultToggleOn : ''}`}
+              onClick={saveQuickDefault}
+              disabled={savingDefault}
+              title={isQuickDefault
+                ? 'Quick spawn (+⚡) in this room uses this provider and mode'
+                : 'Make this provider and mode the quick-spawn default for this room — saved immediately'}
+            >
+              <span className={styles.defaultTrack}><span className={styles.defaultThumb} /></span>
+              Quick-spawn default
+            </button>
+          )}
           <button className={styles.cancelBtn} onClick={onClose}>Cancel</button>
           <button
             className={styles.spawnBtn}

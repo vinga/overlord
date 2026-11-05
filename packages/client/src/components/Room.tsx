@@ -609,7 +609,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
               setLastProvider(provider);
               onSpawnDirect(room.cwd, prefix + baseName, mode, provider);
             }}
-            data-tooltip={`Quick spawn — reuse last selection (${lastProvider}, ${lastMode})`}
+            data-tooltip={`Quick spawn — room default (${lastProvider}, ${lastMode})`}
             data-tooltip-dir="down"
             data-tooltip-align="right"
             aria-label="Quick spawn"
@@ -634,21 +634,24 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           fixedCwd={room.cwd}
           suggestedName={spawnPanelName}
           initialPrefix={namePrefix}
+          // Spawning does not touch the quick-spawn default — only the dialog's toggle does.
           onSpawn={(cwd, fullName, mode, provider, prefix) => {
-            fetch('/api/room-config', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ cwd: room.cwd, prefix, lastMode: mode, lastProvider: provider }),
-            }).catch(() => {});
+            if (ROOM_PREFIX_ENABLED) {
+              fetch('/api/room-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cwd: room.cwd, prefix }),
+              }).catch(() => {});
+            }
             setNamePrefix(prefix);
-            setLastMode(mode);
-            setLastProvider(provider);
             onSpawnDirect(cwd, fullName, mode, provider);
             setShowSpawnPanel(false);
           }}
           onClose={() => setShowSpawnPanel(false)}
           onCopyAndClose={() => setShowCopyToast(true)}
           onPrefixSaved={(p) => setNamePrefix(p)}
+          quickDefault={{ mode: lastMode, provider: lastProvider }}
+          onQuickDefaultSaved={(mode, provider) => { setLastMode(mode); setLastProvider(provider); }}
         />
       )}
       {showCopyToast && <CommandCopiedToast onDone={() => setShowCopyToast(false)} />}
