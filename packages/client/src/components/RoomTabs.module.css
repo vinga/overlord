@@ -161,8 +161,8 @@
   box-shadow: 0 0 0 2px #0b0b13;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
-  background: #f59e0b;
-  color: #1a1206;
+  background: #a78bfa;
+  color: #170f2b;
   font-size: 10px;
   font-weight: 700;
   line-height: 15px;
@@ -240,9 +240,11 @@
   box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
 }
 
+/* Finished while you weren't looking — violet, so it stands out from the
+   orange ring of a reply you have already read. */
 .unseen .statusDot {
-  background: #f59e0b;
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.65);
+  background: #a78bfa;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.7);
 }
 
 .seen .statusDot {
