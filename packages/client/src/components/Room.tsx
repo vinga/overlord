@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, memo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import ReactDOM from 'react-dom';
 import type { Room as RoomType, Session, SessionProvider, TerminalSpawnMode, ArchiveEntry } from '../types';
 import { getLaunchInfo } from '../types';
@@ -14,6 +14,7 @@ import { useRoomCollapsed } from '../hooks/useRoomCollapsed';
 import { useRoomHidden } from '../hooks/useRoomHidden';
 import { openRoomTab } from '../lib/roomPanelTab';
 import { REVEAL_ROOM_FILE_EVENT } from './RoomFilesPanel';
+import { orderKey, sortRoomSessions } from '../lib/roomSessionOrder';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
@@ -452,51 +453,10 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   }
 
   // Build sorted sessions list respecting custom order.
-  // Ordering is keyed by overlordId (stable across /clear and --resume) so
-  // resuming a session doesn't reshuffle its slot. Falls back to sessionId
-  // for any session without an overlordId.
-  const orderKey = (s: Session): string => s.overlordId ?? s.sessionId;
-  // Stable fallback when no custom order exists: oldest startedAt first.
-  // Idle time is intentionally NOT used — workers must not reshuffle as
-  // closed sessions age past arbitrary thresholds.
-  const byStartedAt = (a: Session, b: Session): number =>
-    a.startedAt < b.startedAt ? -1 : a.startedAt > b.startedAt ? 1 : 0;
-  // Dedup by overlordId: a single lineage (same overlordId across resumes)
-  // should render as one worker. Prefer an active session over closed, then
-  // most recent by startedAt.
-  const dedupByOverlord = (sessions: Session[]): Session[] => {
-    const bestByOvr = new Map<string, Session>();
-    for (const s of sessions) {
-      const key = s.overlordId ?? s.sessionId;
-      const cur = bestByOvr.get(key);
-      if (!cur) { bestByOvr.set(key, s); continue; }
-      const sActive = s.state !== 'closed';
-      const curActive = cur.state !== 'closed';
-      if (sActive !== curActive) {
-        if (sActive) bestByOvr.set(key, s);
-        continue;
-      }
-      if (s.startedAt > cur.startedAt) bestByOvr.set(key, s);
-    }
-    return [...bestByOvr.values()];
-  };
-  const allSessions = dedupByOverlord(room.sessions);
-
-  const storedOrder = getOrder(roomKey);
-
-  let sortedSessions: Session[];
-  if (storedOrder.length > 0) {
-    const orderedMap = new Map(storedOrder.map((id, idx) => [id, idx]));
-    const inOrder = allSessions
-      .filter(s => orderedMap.has(orderKey(s)))
-      .sort((a, b) => (orderedMap.get(orderKey(a)) ?? 0) - (orderedMap.get(orderKey(b)) ?? 0));
-    const notInOrder = allSessions
-      .filter(s => !orderedMap.has(orderKey(s)))
-      .sort(byStartedAt);
-    sortedSessions = [...inOrder, ...notInOrder];
-  } else {
-    sortedSessions = [...allSessions].sort(byStartedAt);
-  }
+  const sortedSessions = useMemo(
+    () => sortRoomSessions(room.sessions, getOrder(roomKey)),
+    [room.sessions, getOrder, roomKey],
+  );
 
   const handleDrop = (targetId: string) => {
     if (!draggedId || draggedId === targetId) return;

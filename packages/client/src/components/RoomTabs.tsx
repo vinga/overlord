@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Room, Session } from '../types';
 import { expandRoom } from '../hooks/useRoomCollapsed';
+import { useRoomOrder } from '../hooks/useRoomOrder';
+import { sortRoomSessions } from '../lib/roomSessionOrder';
 import { hasBackground, isAgent, isBusy, needsUser } from '../lib/sessionAttention';
 import styles from './RoomTabs.module.css';
 
@@ -86,11 +88,13 @@ const NO_NAMES: Record<string, string> = {};
 export const RoomTabs = React.memo(function RoomTabs({
   rooms, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false,
 }: RoomTabsProps) {
+  // Session dots follow the desk order inside each room (drag order, then oldest first).
+  const { getOrder } = useRoomOrder();
   // Snapshot ticks rebuild rooms; tabs only re-render when what they show changes.
   const tabsKey = rooms
     .map(r => {
       const waiting = r.sessions.filter(isWaiting).length;
-      const dots = showSessions ? JSON.stringify(sessionDots(r.sessions, customNames)) : '[]';
+      const dots = showSessions ? JSON.stringify(sessionDots(sortRoomSessions(r.sessions, getOrder(r.id)), customNames)) : '[]';
       return `${r.id}\u0001${r.name}\u0001${r.cwd}\u0001${waiting}\u0001${dots}`;
     })
     .join('\u0002');
