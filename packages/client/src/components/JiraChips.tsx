@@ -2,8 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import styles from './JiraChips.module.css';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { JiraTypeIcon } from './JiraTypeIcon';
-import { jiraSessionTitle, jiraTypeToWorkerIcon } from '../lib/jiraIcon';
-import { ICON_COLORS } from './iconColors';
+import { adoptJiraTicket, JIRA_DBLCLICK_MS as DBLCLICK_MS } from '../lib/jiraAdopt';
 
 interface Props {
   keys: string[];
@@ -15,10 +14,6 @@ interface Props {
 }
 
 const VISIBLE = 3;
-
-/** Single click opens JIRA, double click adopts the ticket. Navigation is held
- *  for this long so a double click never also opens a tab. */
-const DBLCLICK_MS = 260;
 
 export function JiraChips({ keys, baseUrl, sessionId, onRename }: Props) {
   const meta = useJiraMeta();
@@ -43,30 +38,9 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename }: Props) {
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
-  const put = (path: string, body: unknown) =>
-    fetch(`/api/sessions/${encodeURIComponent(sessionId!)}/${path}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }).then(r => {
-      if (!r.ok) console.warn(`[jira-adopt] ${path} PUT failed`, r.status, sessionId);
-    }).catch(e => console.warn(`[jira-adopt] ${path} PUT error`, e));
-
-  // Adopt the ticket onto the session: title becomes "KEY Summary", and — only
-  // when the JIRA issue type resolved — the avatar takes the matching glyph and
-  // its paired colour. An undeducible type leaves icon and colour untouched.
   const adopt = (key: string) => {
     if (!sessionId) return;
-    const m = meta?.[key];
-    const name = jiraSessionTitle(key, m?.title);
-    if (onRename) onRename(name);
-    else void put('name', { name });
-
-    const icon = jiraTypeToWorkerIcon(m?.type);
-    if (icon) {
-      void put('icon', { icon });
-      void put('color', { color: ICON_COLORS[icon] });
-    }
+    adoptJiraTicket(sessionId, key, meta?.[key], onRename);
 
     setAdopted(key);
     setTimeout(() => setAdopted(prev => (prev === key ? null : prev)), 700);

@@ -3534,7 +3534,12 @@ const currentDisplayName =
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   {selectedSession.jiraKeys?.[0] && (
-                    <ActiveTicket ticketKey={selectedSession.jiraKeys[0]} baseUrl={jiraBaseUrl} />
+                    <ActiveTicket
+                      ticketKey={selectedSession.jiraKeys[0]}
+                      baseUrl={jiraBaseUrl}
+                      sessionId={selectedSession.sessionId}
+                      onRename={(name) => onRename(selectedSession.sessionId, name)}
+                    />
                   )}
                   <WorkBar
                     prRefs={selectedSession.prRefs}
