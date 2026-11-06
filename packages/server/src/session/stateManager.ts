@@ -1253,7 +1253,12 @@ export class StateManager {
       const carried: ReviewState = existingSession?.review
         ? { review: existingSession.review, parkReason: existingSession.parkReason, parkedAt: existingSession.parkedAt }
         : (isNew ? loadReview(sessionId) : {});
-      if (carried.review === 'read' && state !== 'waiting') return {};
+      if (carried.review === 'read' && state !== 'waiting') {
+        // Persist the clear too: the snapshot reads review from sessionStore,
+        // so a stale on-disk 'read' would silence every later finished turn.
+        if (readReview(sessionStore.getBySessionId(sessionId)).review === 'read') saveReview(sessionId, {});
+        return {};
+      }
       return carried;
     })();
 
@@ -2144,7 +2149,9 @@ export class StateManager {
         // Leaving waiting = a real turn started; drop any stale unknown-command bubble.
         session.unknownCommand = undefined;
         // 'read' is a per-turn silencer; 'parked' is deliberate and survives.
-        if (session.review === 'read') {
+        // Check the store too: the snapshot shows its value, and a live copy
+        // cleared without persisting left a stale on-disk 'read' behind.
+        if (session.review === 'read' || readReview(sessionStore.getBySessionId(sessionId)).review === 'read') {
           session.review = undefined;
           saveReview(sessionId, {});
         }
