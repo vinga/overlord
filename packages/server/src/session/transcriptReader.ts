@@ -1066,6 +1066,9 @@ function readFileTailIncremental(
   return { lines: trimmed, parsedUpToBytes: fileSize - partialBytes };
 }
 
+/** Read size for the compact_boundary scan — far below V8's ~512MB string cap. */
+const COMPACT_SCAN_CHUNK_BYTES = 16 * 1024 * 1024;
+
 /**
  * Incrementally scan for compact_boundary events.
  * Only reads new content since the last scan, caching the count.
@@ -1082,31 +1085,45 @@ function detectCompactionIncremental(filePath: string, fileSize: number): { comp
   const scanFrom = fileShrank ? 0 : (cached?.fileSize ?? 0);
 
   if (scanFrom < fileSize) {
-    // Read only the new portion of the file
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const chunkSize = fileSize - scanFrom;
-      const buf = Buffer.alloc(chunkSize);
-      fs.readSync(fd, buf, 0, chunkSize, scanFrom);
-      const raw = buf.toString('utf-8');
-      // Quick string check before JSON parsing — much faster for large chunks
-      if (raw.includes('compact_boundary')) {
-        for (const line of raw.split('\n')) {
-          if (!line.includes('compact_boundary')) continue;
-          try {
-            const parsed = JSON.parse(line) as { type?: string; subtype?: string; timestamp?: string };
-            if (parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
-              compactCount++;
-              if (parsed.timestamp) {
-                const ts = new Date(parsed.timestamp).getTime();
-                if (!isNaN(ts) && (lastCompactTimestamp === undefined || ts > lastCompactTimestamp)) {
-                  lastCompactTimestamp = ts;
-                }
+    // Read only the new portion of the file, in chunks: a first scan of a
+    // >512MB transcript as one string throws ERR_STRING_TOO_LONG, and the
+    // caller's catch then reports a live session as closed.
+    const scan = (part: Buffer) => {
+      // Quick byte check before decoding/JSON parsing — most chunks have none.
+      if (part.indexOf('compact_boundary') === -1) return;
+      for (const line of part.toString('utf-8').split('\n')) {
+        if (!line.includes('compact_boundary')) continue;
+        try {
+          const parsed = JSON.parse(line) as { type?: string; subtype?: string; timestamp?: string };
+          if (parsed.type === 'system' && parsed.subtype === 'compact_boundary') {
+            compactCount++;
+            if (parsed.timestamp) {
+              const ts = new Date(parsed.timestamp).getTime();
+              if (!isNaN(ts) && (lastCompactTimestamp === undefined || ts > lastCompactTimestamp)) {
+                lastCompactTimestamp = ts;
               }
             }
-          } catch { /* skip */ }
-        }
+          }
+        } catch { /* skip */ }
       }
+    };
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      let carry: Buffer = Buffer.alloc(0);
+      for (let pos = scanFrom; pos < fileSize; ) {
+        const len = Math.min(COMPACT_SCAN_CHUNK_BYTES, fileSize - pos);
+        const chunk = Buffer.alloc(len);
+        const n = fs.readSync(fd, chunk, 0, len, pos);
+        if (n <= 0) break;
+        pos += n;
+        const buf = carry.length ? Buffer.concat([carry, chunk.subarray(0, n)]) : chunk.subarray(0, n);
+        // Scan whole lines only; carry a trailing partial line into the next chunk.
+        const nl = buf.lastIndexOf(10);
+        if (nl === -1) { carry = buf; continue; }
+        scan(buf.subarray(0, nl));
+        carry = buf.subarray(nl + 1);
+      }
+      if (carry.length) scan(carry);
     } finally {
       fs.closeSync(fd);
     }
