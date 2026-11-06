@@ -57,7 +57,8 @@ function sessionDots(sessions: Session[], customNames: Record<string, string>): 
     const id = dotId(s);
     if (seen.has(id)) continue;
     seen.add(id);
-    const status: DotStatus = isBusy(s) ? 'busy'
+    const status: DotStatus = s.sessionType === 'note' ? 'seen' // a note is a standing to-do for you
+      : isBusy(s) ? 'busy'
       // `review` ('read' / 'parked') is set when you open the session — see useMarkSeenOnOpen.
       // A finished turn is unseen even with a wakeup/background task pending,
       // and keeps the `seen` ring once read (the blue dot marks the background work).
