@@ -10,11 +10,6 @@ export const isBusy = (s: Session) => isAgent(s) && (s.state === 'working' || s.
  *  background command will resume it later. Drives the unseen dot. */
 export const turnEnded = (s: Session) => isAgent(s) && s.state === 'waiting';
 
-/** Waiting on the user, not on a machine: a pending wakeup or background
- *  command means the harness will resume the session by itself. */
-export const needsUser = (s: Session) => isAgent(s) && s.state === 'waiting'
-  && s.scheduledWakeupAt == null && !(s.backgroundTasks?.length);
-
 /** Background command, Monitor watch, or scheduled wakeup in flight. */
 export const hasBackground = (s: Session) => isAgent(s)
   && ((s.backgroundTasks?.length ?? 0) > 0 || (s.activeMonitors?.length ?? 0) > 0 || s.scheduledWakeupAt != null);
