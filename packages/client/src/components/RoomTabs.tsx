@@ -3,7 +3,7 @@ import type { Room, Session } from '../types';
 import { expandRoom } from '../hooks/useRoomCollapsed';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { sortRoomSessions } from '../lib/roomSessionOrder';
-import { hasBackground, isAgent, isBusy, needsUser } from '../lib/sessionAttention';
+import { hasBackground, isAgent, isBusy, needsUser, turnEnded } from '../lib/sessionAttention';
 import styles from './RoomTabs.module.css';
 
 interface RoomTabsProps {
@@ -59,7 +59,10 @@ function sessionDots(sessions: Session[], customNames: Record<string, string>): 
     seen.add(id);
     const status: DotStatus = isBusy(s) ? 'busy'
       // `review` ('read' / 'parked') is set when you open the session — see useMarkSeenOnOpen.
-      : needsUser(s) ? (s.review == null ? 'unseen' : 'seen')
+      // A finished turn is unseen even with a wakeup/background task pending;
+      // once read, only a session that waits on you keeps the `seen` ring.
+      : turnEnded(s) && s.review == null ? 'unseen'
+      : needsUser(s) ? 'seen'
       : 'idle';
     out.push({
       id,

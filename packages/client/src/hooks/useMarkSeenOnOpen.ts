@@ -1,6 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Room } from '../types';
-import { needsUser } from '../lib/sessionAttention';
+import { turnEnded } from '../lib/sessionAttention';
 
 /** The window is in front of the user: tab visible and window focused. */
 function isLooking(): boolean {
@@ -32,7 +32,7 @@ export function useMarkSeenOnOpen(rooms: Room[], selectedSessionId: string | nul
     for (const r of rooms) {
       const s = r.sessions.find(x => x.overlordId === selectedSessionId || x.sessionId === selectedSessionId);
       if (s) {
-        if (needsUser(s) && s.review == null) target = s.sessionId;
+        if (turnEnded(s) && s.review == null) target = s.sessionId;
         break;
       }
     }
