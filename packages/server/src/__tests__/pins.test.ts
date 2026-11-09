@@ -144,3 +144,37 @@ describe('pins as the session\'s hand-picked tickets and PRs', () => {
     expect(added[0]).toMatchObject({ url: 'https://x.atlassian.net/browse/BACKEND-3', kind: 'ticket', createdAt: 5 });
   });
 });
+
+describe('text pins', () => {
+  it('validate: text becomes the pin, first line the title, url empty', () => {
+    expect(validatePinInput({ url: undefined, kind: 'text', text: '  \n First line \nsecond  ' }))
+      .toEqual({ url: '', title: 'First line', kind: 'text', text: 'First line \nsecond' });
+  });
+
+  it('validate: rejects empty, too long and NUL text', () => {
+    expect(validatePinInput({ url: undefined, kind: 'text', text: '   ' })).toEqual({ error: 'text required' });
+    expect(validatePinInput({ url: undefined, kind: 'text', text: 'x'.repeat(2001) })).toHaveProperty('error');
+    expect(validatePinInput({ url: undefined, kind: 'text', text: 'a\0b' })).toHaveProperty('error');
+  });
+
+  it('upsert: the same text is one pin; text pins never match link pins', () => {
+    const link = upsertPin(undefined, { url: 'https://x.dev', title: 'x', kind: 'link' });
+    if ('error' in link) throw new Error(link.error);
+    const a = upsertPin(link.pins, { url: '', title: 'note', kind: 'text', text: 'note' });
+    if ('error' in a) throw new Error(a.error);
+    expect(a.pins).toHaveLength(2);
+    expect(a.pin.text).toBe('note');
+    const b = upsertPin(a.pins, { url: '', title: 'note', kind: 'text', text: 'note' });
+    if ('error' in b) throw new Error(b.error);
+    expect(b.pins).toHaveLength(2);
+    const c = upsertPin(b.pins, { url: '', title: 'other', kind: 'text', text: 'other' });
+    if ('error' in c) throw new Error(c.error);
+    expect(c.pins).toHaveLength(3);
+  });
+
+  it('sanitize: keeps text pins with text, drops ones without', () => {
+    const ok: Pin = { id: 'p1', url: '', title: 't', kind: 'text', text: 't', createdAt: 1 };
+    const bad = { id: 'p2', url: '', title: 't', kind: 'text', createdAt: 1 };
+    expect(sanitizePins([ok, bad])).toEqual([ok]);
+  });
+});

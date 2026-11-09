@@ -1,7 +1,8 @@
 import type { Pin, PinKind } from '../types.js';
 
-export const PIN_KINDS: readonly PinKind[] = ['ticket', 'pr', 'branch', 'link'];
+export const PIN_KINDS: readonly PinKind[] = ['ticket', 'pr', 'branch', 'link', 'text'];
 export const MAX_PINS = 30;
+export const MAX_TEXT = 2000;
 const MAX_URL = 2048;
 const MAX_TITLE = 120;
 
@@ -85,7 +86,7 @@ export function withoutPinsFor(
 /** Move the pin with `url` to the front, adding it when missing. */
 export function frontPin(
   list: readonly Pin[] | undefined,
-  input: { url: string; title: string; kind: PinKind },
+  input: { url: string; title: string; kind: PinKind; text?: string },
   now = Date.now(),
 ): Pin[] {
   const pins = [...(list ?? [])];
@@ -94,11 +95,20 @@ export function frontPin(
   return [pin, ...pins].slice(0, MAX_PINS);
 }
 
-export interface PinInput { url: unknown; title?: unknown; kind?: unknown }
+export interface PinInput { url: unknown; title?: unknown; kind?: unknown; text?: unknown }
 
-/** Validate raw input; returns the normalized fields or an error string. */
-export function validatePinInput(input: PinInput): { url: string; title: string; kind: PinKind } | { error: string } {
-  const { url, title, kind } = input;
+/** Validate raw input; returns the normalized fields or an error string.
+ *  `kind: 'text'` pins a piece of text instead of a URL (url becomes ''). */
+export function validatePinInput(input: PinInput): { url: string; title: string; kind: PinKind; text?: string } | { error: string } {
+  const { url, title, kind, text } = input;
+  if (kind === 'text') {
+    if (typeof text !== 'string' || !text.trim()) return { error: 'text required' };
+    const t = text.trim();
+    if (t.length > MAX_TEXT) return { error: `text longer than ${MAX_TEXT}` };
+    if (t.includes('\0')) return { error: 'text must not contain NUL' };
+    const firstLine = t.split('\n').map(l => l.trim()).find(Boolean) ?? t;
+    return { url: '', title: firstLine.slice(0, MAX_TITLE), kind: 'text', text: t };
+  }
   if (typeof url !== 'string' || !url.trim()) return { error: 'url required' };
   const trimmed = url.trim();
   if (trimmed.length > MAX_URL) return { error: `url longer than ${MAX_URL}` };
@@ -119,11 +129,14 @@ function newPinId(now: number): string {
 /** Add or update (same url) a pin. Returns the new list and the pin, or an error at the cap. */
 export function upsertPin(
   list: readonly Pin[] | undefined,
-  input: { url: string; title: string; kind: PinKind },
+  input: { url: string; title: string; kind: PinKind; text?: string },
   now = Date.now(),
 ): { pins: Pin[]; pin: Pin } | { error: string } {
   const pins = [...(list ?? [])];
-  const i = pins.findIndex(p => p.url === input.url);
+  // Text pins are the same pin when the text matches; link pins when the url does.
+  const i = input.kind === 'text'
+    ? pins.findIndex(p => p.kind === 'text' && p.text === input.text)
+    : pins.findIndex(p => p.kind !== 'text' && p.url === input.url);
   if (i >= 0) {
     const pin = { ...pins[i], title: input.title, kind: input.kind };
     pins[i] = pin;
@@ -131,6 +144,7 @@ export function upsertPin(
   }
   if (pins.length >= MAX_PINS) return { error: `at most ${MAX_PINS} pins` };
   const pin: Pin = { id: newPinId(now), url: input.url, title: input.title, kind: input.kind, createdAt: now };
+  if (input.kind === 'text') pin.text = input.text;
   pins.push(pin);
   return { pins, pin };
 }
@@ -148,6 +162,7 @@ export function sanitizePins(v: unknown): Pin[] | undefined {
     !!p && typeof p === 'object'
     && typeof (p as Pin).id === 'string' && typeof (p as Pin).url === 'string'
     && typeof (p as Pin).title === 'string' && isPinKind((p as Pin).kind)
-    && typeof (p as Pin).createdAt === 'number');
+    && typeof (p as Pin).createdAt === 'number'
+    && ((p as Pin).kind !== 'text' || typeof (p as Pin).text === 'string'));
   return out.length ? out : undefined;
 }

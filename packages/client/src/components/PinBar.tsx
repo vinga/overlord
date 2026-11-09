@@ -59,6 +59,12 @@ export function KindIcon({ kind }: { kind: PinKind }) {
     'aria-hidden': true,
   } as const;
   switch (kind) {
+    case 'text':
+      return (
+        <svg {...common}>
+          <path d="M3 4.5A1.5 1.5 0 0 1 4.5 3h2A1.5 1.5 0 0 1 8 4.5v2a3.5 3.5 0 0 1-3.5 3.5.75.75 0 0 1 0-1.5 2 2 0 0 0 1.9-1.5H4.5A1.5 1.5 0 0 1 3 5.5zm6 0A1.5 1.5 0 0 1 10.5 3h2A1.5 1.5 0 0 1 14 4.5v2a3.5 3.5 0 0 1-3.5 3.5.75.75 0 0 1 0-1.5 2 2 0 0 0 1.9-1.5h-1.9A1.5 1.5 0 0 1 9 5.5z" />
+        </svg>
+      );
     case 'pr':
       return (
         <svg {...common}>
@@ -100,10 +106,61 @@ interface ChipProps {
   /** Ticket chips: double click names the session after the ticket (title +
    *  icon), like JiraChips; single click opens Jira after the dblclick window. */
   onAdopt?: () => void;
+  /** Text pins: the pinned text (rendered as a quote, not a link). */
+  text?: string;
+  /** Text pins: full quote card (clamped, expandable) instead of a one-line chip. */
+  multiline?: boolean;
+}
+
+/** A pinned piece of text: a quote card in the context column (4 lines,
+ *  click to expand, copy + ×), a one-line chip elsewhere. */
+function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: string; label?: string; onRemove: () => void; removeLabel: string; multiline?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); });
+  };
+  return (
+    <span className={`${styles.chip} ${styles.chipText} ${multiline ? styles.chipTextCard : ''}`} data-kind="text">
+      {multiline ? (
+        <button type="button" className={`${styles.quote} ${expanded ? styles.quoteOpen : ''}`}
+          onClick={() => setExpanded(v => !v)} title={expanded ? 'Collapse' : 'Expand'}>
+          {text}
+        </button>
+      ) : (
+        <span className={styles.link} title={text}>
+          <KindIcon kind="text" />
+          <span className={styles.label}>{label || text}</span>
+        </span>
+      )}
+      {multiline && (
+        <button type="button" className={styles.copy} onClick={copy} aria-label="Copy pinned text" title="Copy">
+          {copied ? '✓' : '⧉'}
+        </button>
+      )}
+      <button
+        type="button"
+        className={styles.remove}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(); }}
+        aria-label={removeLabel}
+        title={removeLabel}
+      >
+        ×
+      </button>
+    </span>
+  );
 }
 
 /** One chip: a Jira ticket (rich) or any other link. × calls `onRemove`. */
-export function PinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt }: ChipProps) {
+export function PinChip(props: ChipProps) {
+  if (props.kind === 'text' && props.text !== undefined) {
+    return <TextPinChip text={props.text} label={props.label} onRemove={props.onRemove} removeLabel={props.removeLabel} multiline={props.multiline} />;
+  }
+  return <LinkPinChip {...props} />;
+}
+
+function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt }: ChipProps) {
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
   const adoptable = !!(jiraKey && onAdopt);
@@ -292,6 +349,8 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multilin
               label={pin.title}
               onRemove={() => deletePin(pin.id, { overlordId, cwd })}
               removeLabel={`Unpin ${pin.title || pin.url}`}
+              text={pin.text}
+              multiline={multiline}
               onAdopt={key && adoptSessionId ? () => adoptJiraTicket(adoptSessionId, key, jiraMeta[key]) : undefined}
             />
           );

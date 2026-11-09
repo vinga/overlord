@@ -1,4 +1,6 @@
 .menu {
+  display: flex;
+  gap: 6px;
   position: fixed;
   z-index: 9999;
   transform: translateX(-50%);
@@ -56,4 +58,11 @@
 @keyframes fadeIn {
   from { opacity: 0; transform: translateX(-50%) translateY(2px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.buttonDone,
+.buttonDone:hover {
+  color: #4ec38a;
+  border-color: rgba(78, 195, 138, 0.5);
+  cursor: default;
 }

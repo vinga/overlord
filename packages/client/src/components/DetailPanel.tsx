@@ -32,6 +32,7 @@ import { SelectionMenu } from './SelectionMenu';
 import { DeskMenu } from './DeskMenu';
 import { GitBranchBadge } from './GitBranchBadge';
 import { GitSyncStatus } from './GitSyncStatus';
+import { ConversationPinner, pinToSession } from './ConversationPinner';
 import { WorkBar } from './WorkBar';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
@@ -4759,6 +4760,10 @@ const currentDisplayName =
         )}
       </div>
       <FilePathPopover cwd={selectedSession?.cwd} platform={platform} onOpen={setFileEditorTarget} />
+      {/* Hover a link in the feed → pin it to this session (text: SelectionMenu). */}
+      {selectedSession?.overlordId && !selectedSubagent && !selectedSession.isArchived && activeTab === 'conversation' && (
+        <ConversationPinner containerRef={transcriptRef} overlordId={selectedSession.overlordId} />
+      )}
       {fileEditorTarget && (
         <FileEditorOverlay
           path={fileEditorTarget.path}
@@ -4784,7 +4789,13 @@ const currentDisplayName =
           }}
         />
       )}
-      <SelectionMenu containerRef={transcriptRef} onExplain={handleExplain} />
+      <SelectionMenu
+        containerRef={transcriptRef}
+        onExplain={handleExplain}
+        onPin={selectedSession?.overlordId && !selectedSubagent && !selectedSession.isArchived
+          ? (text) => pinToSession(selectedSession.overlordId!, { text })
+          : undefined}
+      />
     </>
   );
 }

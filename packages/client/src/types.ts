@@ -173,13 +173,15 @@ export type WorkerIcon = typeof WORKER_ICONS[number];
 /** User-set review marker. There is deliberately no 'done'. */
 export type SessionReview = 'read' | 'parked';
 
-export type PinKind = 'ticket' | 'pr' | 'branch' | 'link';
+export type PinKind = 'ticket' | 'pr' | 'branch' | 'link' | 'text';
 /** A link pinned to a session or a room. */
 export interface Pin {
   id: string;
   url: string;
   title: string;
   kind: PinKind;
+  /** Text pins only (`kind: 'text'`, session pins): the pinned text; `url` is ''. */
+  text?: string;
   createdAt: number;
 }
 

@@ -379,8 +379,9 @@ export function registerApiRoutes(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const t = resolvePinTarget(body);
     if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
-    const input = validatePinInput({ url: body.url, title: body.title, kind: body.kind });
+    const input = validatePinInput({ url: body.url, title: body.title, kind: body.kind, text: body.text });
     if ('error' in input) { res.status(400).json({ error: input.error }); return; }
+    if (input.kind === 'text' && t.kind === 'room') { res.status(400).json({ error: 'text pins are per session' }); return; }
     const result = upsertPin(t.pins, input);
     if ('error' in result) { res.status(400).json({ error: result.error }); return; }
     savePins(t, result.pins);

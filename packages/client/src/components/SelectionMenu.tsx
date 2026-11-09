@@ -4,6 +4,8 @@ import styles from './SelectionMenu.module.css';
 interface Props {
   containerRef: RefObject<HTMLElement | null>;
   onExplain: (quotedText: string) => void;
+  /** Pin the selected text to the session; resolves to an error or null. */
+  onPin?: (text: string) => Promise<string | null>;
 }
 
 interface MenuPos {
@@ -35,9 +37,11 @@ function selectionInContainer(sel: Selection, container: HTMLElement): boolean {
   return container.contains(anchor) && container.contains(focus);
 }
 
-export function SelectionMenu({ containerRef, onExplain }: Props): React.JSX.Element | null {
+export function SelectionMenu({ containerRef, onExplain, onPin }: Props): React.JSX.Element | null {
   const [pos, setPos] = useState<MenuPos | null>(null);
   const [quoted, setQuoted] = useState<string>('');
+  const [raw, setRaw] = useState<string>('');
+  const [pinFlash, setPinFlash] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const compute = useCallback(() => {
@@ -65,12 +69,14 @@ export function SelectionMenu({ containerRef, onExplain }: Props): React.JSX.Ele
     }
 
     let left = rect.left + rect.width / 2;
-    const estWidth = 96;
+    const estWidth = onPin ? 170 : 96;
     left = Math.max(VIEWPORT_PAD + estWidth / 2, Math.min(vw - VIEWPORT_PAD - estWidth / 2, left));
 
     setQuoted(quoteSelection(text));
+    setRaw(text.trim());
+    setPinFlash(null);
     setPos({ top, left, above });
-  }, [containerRef]);
+  }, [containerRef, onPin]);
 
   useEffect(() => {
     function onSelectionChange() {
@@ -128,6 +134,35 @@ export function SelectionMenu({ containerRef, onExplain }: Props): React.JSX.Ele
         <span className={styles.glyph}>⌘</span>
         <span className={styles.label}>Explain</span>
       </button>
+      {onPin && (
+        <button
+          type="button"
+          className={`${styles.button} ${pinFlash ? styles.buttonDone : ''}`}
+          title="Pin the selected text to this session"
+          aria-label="Pin selected text"
+          onClick={async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!raw || pinFlash) return;
+            const err = await onPin(raw);
+            setPinFlash(err ? 'Not pinned' : 'Pinned');
+            setTimeout(() => {
+              setPos(null);
+              if (!err) window.getSelection()?.removeAllRanges();
+            }, err ? 2000 : 700);
+          }}
+        >
+          {pinFlash ? <span className={styles.label}>{pinFlash}</span> : (
+            <>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9.5 2.5l4 4-2 1-2.5 2.5-.5 3-1-1L5 8.5l-1-1 3-.5L9.5 4.5z" />
+                <line x1="5.2" y1="10.8" x2="2" y2="14" />
+              </svg>
+              <span className={styles.label}>Pin</span>
+            </>
+          )}
+        </button>
+      )}
     </div>
   );
 }
