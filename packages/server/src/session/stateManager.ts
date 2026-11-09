@@ -19,7 +19,7 @@ import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore, type VoiceInputConfig } from './globalSettingsStore.js';
 import { getCachedJiraMeta, invalidateJiraKeys } from './jiraTitleCache.js';
-import { jiraKeyOfPin } from './pins.js';
+import { jiraKeyOfPin, prRefOfPin, pinnedJiraKeys, pinnedPrRefs, withoutPinsFor, frontPin, classifyPinUrl, upsertPin } from './pins.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
@@ -1332,7 +1332,7 @@ export class StateManager {
         existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
         transcript?.jiraKeys,
         sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
-        sessionStore.getByOverlordId(overlordId)?.jiraKeysPinned,
+        pinnedJiraKeys(sessionStore.getByOverlordId(overlordId)),
       ),
       prRefsAuthored: mergeWorkRefs(
         existingSession?.prRefsAuthored ?? sessionStore.getByOverlordId(overlordId)?.prRefsAuthored,
@@ -1349,7 +1349,7 @@ export class StateManager {
         existingSession?.prRefs ?? sessionStore.getByOverlordId(overlordId)?.prRefs,
         transcript?.prRefs,
         sessionStore.getByOverlordId(overlordId)?.prRefsDismissed,
-        sessionStore.getByOverlordId(overlordId)?.prRefsPinned,
+        pinnedPrRefs(sessionStore.getByOverlordId(overlordId)),
         transcript?.prRefsAuthored,
       ),
       skillsUsed: mergeSkillsUsed(
@@ -2080,18 +2080,16 @@ export class StateManager {
       session.parkReason = undefined;
       session.parkedAt = undefined;
       saveReview(sessionId, {});
-      session.jiraKeys = undefined;
       session.skillsUsed = undefined;
-      // PR refs collapse to the hand-pinned ones: the scanner's history died with
-      // the transcript, but a pinned PR is a statement about the work, not about
-      // the conversation, so it survives the clear.
-      const clearedPrPins = session.overlordId
-        ? sessionStore.getByOverlordId(session.overlordId)?.prRefsPinned
-        : undefined;
-      session.prRefs = mergePrRefs(undefined, undefined, undefined, clearedPrPins);
+      // Tickets and PR refs collapse to the pinned ones: the scanner's history
+      // died with the transcript, but a pin is a statement about the work, not
+      // about the conversation, so it survives the clear.
+      const clearedRec = session.overlordId ? sessionStore.getByOverlordId(session.overlordId) : undefined;
+      session.jiraKeys = mergeJiraKeys(undefined, undefined, undefined, pinnedJiraKeys(clearedRec));
+      session.prRefs = mergePrRefs(undefined, undefined, undefined, pinnedPrRefs(clearedRec));
       session.prRefsAuthored = undefined;
       session.branches = undefined;
-      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: undefined, jiraKeysPinned: undefined, skillsUsed: undefined, prRefs: session.prRefs, prRefsAuthored: undefined, branches: undefined });
+      if (session.overlordId) sessionStore.patch(session.overlordId, { jiraKeys: session.jiraKeys, skillsUsed: undefined, prRefs: session.prRefs, prRefsAuthored: undefined, branches: undefined });
       log('clear:detected', 'In-place transcript truncation', {
         sessionId,
         sessionName: session.proposedName ?? sessionId.slice(0, 8),
@@ -2102,7 +2100,8 @@ export class StateManager {
     const dismissedKeys = jiraRec?.jiraKeysDismissed;
     // Truncation drops the scanner's history, but user-pinned keys are not
     // transcript-derived — they survive it.
-    const pinnedKeys = jiraRec?.jiraKeysPinned;
+    const pinnedKeys = pinnedJiraKeys(jiraRec);
+    const pinnedRefs = pinnedPrRefs(jiraRec);
     const mergedJiraKeys = result.transcriptTruncated
       ? mergeJiraKeys(undefined, result.jiraKeys, dismissedKeys, pinnedKeys)
       : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys, pinnedKeys);
@@ -2119,8 +2118,8 @@ export class StateManager {
       result.branches, branchRefKey,
     );
     const mergedPrRefs = result.transcriptTruncated
-      ? mergePrRefs(undefined, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned, mergedAuthored)
-      : mergePrRefs(session.prRefs, result.prRefs, jiraRec?.prRefsDismissed, jiraRec?.prRefsPinned, mergedAuthored);
+      ? mergePrRefs(undefined, result.prRefs, jiraRec?.prRefsDismissed, pinnedRefs, mergedAuthored)
+      : mergePrRefs(session.prRefs, result.prRefs, jiraRec?.prRefsDismissed, pinnedRefs, mergedAuthored);
 
     let changed =
       session.state !== result.state ||
@@ -2371,11 +2370,13 @@ export class StateManager {
     // on the next transcript read (pinned is exempt from the dismissed filter).
     const prevPinned = rec.jiraKeysPinned ?? [];
     const nextPinned = prevPinned.filter(k => k !== key);
+    const nextPins = withoutPinsFor(rec.pins, { jiraKey: key });
     session.jiraKeys = nextKeys.length > 0 ? nextKeys : undefined;
     sessionStore.patch(session.overlordId, {
       jiraKeys: nextKeys.length > 0 ? nextKeys : undefined,
       jiraKeysDismissed: nextDismissed,
       jiraKeysPinned: nextPinned.length > 0 ? nextPinned : undefined,
+      ...(nextPins ? { pins: nextPins.length > 0 ? nextPins : undefined } : {}),
     });
     this.onChange();
     return true;
@@ -2390,14 +2391,24 @@ export class StateManager {
     if (!session || !session.overlordId) return false;
     const rec = sessionStore.getByOverlordId(session.overlordId);
     if (!rec) return false;
-    const prevPinned = rec.jiraKeysPinned ?? [];
-    const nextPinned = [key, ...prevPinned.filter(k => k !== key)].slice(0, JIRA_KEYS_MAX);
     const nextDismissed = (rec.jiraKeysDismissed ?? []).filter(k => k !== key);
-    const nextKeys = mergeJiraKeys(session.jiraKeys, undefined, nextDismissed, nextPinned);
+    // The key becomes a ticket pin at the front. Without a Jira base URL there
+    // is no link to pin, so it falls back to the legacy key-only list.
+    const base = globalSettingsStore.get().jiraBaseUrl?.replace(/\/+$/, '');
+    let nextPins = rec.pins;
+    let nextLegacy = (rec.jiraKeysPinned ?? []).filter(k => k !== key);
+    if (base) {
+      nextPins = frontPin(rec.pins, { url: `${base}/browse/${key}`, title: key, kind: 'ticket' });
+    } else {
+      nextLegacy = [key, ...nextLegacy].slice(0, JIRA_KEYS_MAX);
+    }
+    const pinned = pinnedJiraKeys({ pins: nextPins, jiraKeysPinned: nextLegacy });
+    const nextKeys = mergeJiraKeys(session.jiraKeys, undefined, nextDismissed, pinned);
     session.jiraKeys = nextKeys;
     sessionStore.patch(session.overlordId, {
       jiraKeys: nextKeys,
-      jiraKeysPinned: nextPinned,
+      pins: nextPins,
+      jiraKeysPinned: nextLegacy.length > 0 ? nextLegacy : undefined,
       jiraKeysDismissed: nextDismissed.length > 0 ? nextDismissed : undefined,
     });
     this.onChange();
@@ -2421,6 +2432,7 @@ export class StateManager {
       : [ref, ...prevDismissed].slice(0, PR_DISMISSED_MAX);
     const nextPinned = (rec.prRefsPinned ?? []).filter(r => prRefKey(r) !== key);
     const nextAuthored = (session.prRefsAuthored ?? []).filter(r => prRefKey(r) !== key);
+    const nextPins = withoutPinsFor(rec.pins, { prRef: ref });
     session.prRefs = nextRefs.length > 0 ? nextRefs : undefined;
     session.prRefsAuthored = nextAuthored.length > 0 ? nextAuthored : undefined;
     sessionStore.patch(session.overlordId, {
@@ -2428,6 +2440,7 @@ export class StateManager {
       prRefsAuthored: session.prRefsAuthored,
       prRefsDismissed: nextDismissed,
       prRefsPinned: nextPinned.length > 0 ? nextPinned : undefined,
+      ...(nextPins ? { pins: nextPins.length > 0 ? nextPins : undefined } : {}),
     });
     this.onChange();
     return true;
@@ -2442,16 +2455,22 @@ export class StateManager {
     const rec = sessionStore.getByOverlordId(session.overlordId);
     if (!rec) return false;
     const key = prRefKey(ref);
-    const prevPinned = rec.prRefsPinned ?? [];
-    const nextPinned = prevPinned.some(r => prRefKey(r) === key)
-      ? prevPinned
-      : [...prevPinned, ref].slice(-PR_REFS_MAX);
     const nextDismissed = (rec.prRefsDismissed ?? []).filter(r => prRefKey(r) !== key);
-    const nextRefs = mergePrRefs(session.prRefs, undefined, nextDismissed, nextPinned);
+    // The ref becomes a PR pin, unless one already points at it.
+    const hasPin = (rec.pins ?? []).some(p => { const r = prRefOfPin(p); return r !== undefined && prRefKey(r) === key; });
+    let nextPins = rec.pins;
+    if (!hasPin) {
+      const i = ref.lastIndexOf('#');
+      const url = `https://github.com/${ref.slice(0, i)}/pull/${ref.slice(i + 1)}`;
+      const added = upsertPin(rec.pins, { url, ...classifyPinUrl(url) });
+      if ('error' in added) return false;
+      nextPins = added.pins;
+    }
+    const nextRefs = mergePrRefs(session.prRefs, undefined, nextDismissed, pinnedPrRefs({ pins: nextPins, prRefsPinned: rec.prRefsPinned }));
     session.prRefs = nextRefs;
     sessionStore.patch(session.overlordId, {
       prRefs: nextRefs,
-      prRefsPinned: nextPinned,
+      pins: nextPins,
       prRefsDismissed: nextDismissed.length > 0 ? nextDismissed : undefined,
     });
     this.onChange();
@@ -3455,8 +3474,23 @@ export class StateManager {
 
   /** Replace a session's pinned links (OverlordSession record, survives restart). */
   setSessionPins(ovrId: string, pins: Pin[]): boolean {
-    const rec = sessionStore.patch(ovrId, { pins: pins.length ? pins : undefined });
-    if (!rec) return false;
+    const prev = sessionStore.getByOverlordId(ovrId);
+    if (!prev) return false;
+    // Ticket and PR pins are the session's hand-picked tickets / PRs: they lead
+    // jiraKeys / prRefs. A removed pin takes its key along — the next transcript
+    // scan re-adds it if the conversation itself names it.
+    const removedKeys = new Set(pinnedJiraKeys({ pins: prev.pins }) ?? []);
+    for (const k of pinnedJiraKeys({ pins }) ?? []) removedKeys.delete(k);
+    const removedRefs = new Set((pinnedPrRefs({ pins: prev.pins }) ?? []).map(prRefKey));
+    for (const r of pinnedPrRefs({ pins }) ?? []) removedRefs.delete(prRefKey(r));
+    const next = { pins: pins.length ? pins : undefined, jiraKeysPinned: prev.jiraKeysPinned, prRefsPinned: prev.prRefsPinned };
+    const live = [...this.sessions.values()].find(s => s.overlordId === ovrId);
+    const baseKeys = (live?.jiraKeys ?? prev.jiraKeys)?.filter(k => !removedKeys.has(k));
+    const baseRefs = (live?.prRefs ?? prev.prRefs)?.filter(r => !removedRefs.has(prRefKey(r)));
+    const jiraKeys = mergeJiraKeys(baseKeys, undefined, prev.jiraKeysDismissed, pinnedJiraKeys(next));
+    const prRefs = mergePrRefs(baseRefs, undefined, prev.prRefsDismissed, pinnedPrRefs(next));
+    sessionStore.patch(ovrId, { pins: next.pins, jiraKeys, prRefs });
+    if (live) { live.jiraKeys = jiraKeys; live.prRefs = prRefs; }
     this.onChange();
     return true;
   }
@@ -3738,10 +3772,10 @@ export class StateManager {
       bridgeMarker: rec.bridgeMarker,
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
-      jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, rec.jiraKeysPinned),
+      jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, pinnedJiraKeys(rec)),
       prRefsAuthored: mergeWorkRefs(rec.prRefsAuthored, transcriptState?.prRefsAuthored, prRefKey, rec.prRefsDismissed),
       branches: mergeWorkRefs(rec.branches, transcriptState?.branches, branchRefKey),
-      prRefs: mergePrRefs(rec.prRefs, transcriptState?.prRefs, rec.prRefsDismissed, rec.prRefsPinned, rec.prRefsAuthored),
+      prRefs: mergePrRefs(rec.prRefs, transcriptState?.prRefs, rec.prRefsDismissed, pinnedPrRefs(rec), rec.prRefsAuthored),
       ...readReview(rec),
       historyOnly: rec.historyOnly,
       loadedAt: Date.now(),

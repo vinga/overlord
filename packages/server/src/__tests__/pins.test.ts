@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyPinUrl, validatePinInput, upsertPin, removePin, sanitizePins, jiraKeyOfPin, MAX_PINS } from '../session/pins.js';
+import { classifyPinUrl, validatePinInput, upsertPin, removePin, sanitizePins, jiraKeyOfPin, prRefOfPin, pinnedJiraKeys, pinnedPrRefs, withoutPinsFor, frontPin, MAX_PINS } from '../session/pins.js';
 import type { Pin } from '../types.js';
 
 describe('classifyPinUrl', () => {
@@ -103,5 +103,44 @@ describe('jiraKeyOfPin', () => {
   it('ignores non-ticket pins and GitHub issues', () => {
     expect(jiraKeyOfPin(pin('https://x.atlassian.net/browse/BACKEND-12', 'link'))).toBeUndefined();
     expect(jiraKeyOfPin(pin('https://github.com/o/r/issues/5'))).toBeUndefined();
+  });
+});
+
+describe('pins as the session\'s hand-picked tickets and PRs', () => {
+  let n = 0;
+  const mk = (url: string, kind: Pin['kind']): Pin => ({ id: `p${++n}`, url, title: 't', kind, createdAt: n });
+  const t1 = mk('https://x.atlassian.net/browse/BACKEND-1', 'ticket');
+  const t2 = mk('https://x.atlassian.net/browse/BACKEND-2', 'ticket');
+  const pr = mk('https://github.com/Hypatos/Repo/pull/42', 'pr');
+  const link = mk('https://example.com/a', 'link');
+
+  it('prRefOfPin reads owner/repo#N from PR pins only', () => {
+    expect(prRefOfPin(pr)).toBe('Hypatos/Repo#42');
+    expect(prRefOfPin(link)).toBeUndefined();
+    expect(prRefOfPin(mk('https://github.com/o/r/pull/7', 'link'))).toBeUndefined();
+  });
+
+  it('pinnedJiraKeys: ticket pins first, then legacy keys, deduped', () => {
+    expect(pinnedJiraKeys({ pins: [link, t2, t1], jiraKeysPinned: ['BACKEND-1', 'BACKEND-9'] }))
+      .toEqual(['BACKEND-2', 'BACKEND-1', 'BACKEND-9']);
+    expect(pinnedJiraKeys({ pins: [link] })).toBeUndefined();
+    expect(pinnedJiraKeys(undefined)).toBeUndefined();
+  });
+
+  it('pinnedPrRefs dedupes case-insensitively against legacy refs', () => {
+    expect(pinnedPrRefs({ pins: [pr], prRefsPinned: ['hypatos/repo#42', 'o/r#1'] })).toEqual(['Hypatos/Repo#42', 'o/r#1']);
+  });
+
+  it('withoutPinsFor drops matching ticket / PR pins, undefined when none match', () => {
+    expect(withoutPinsFor([t1, t2, link], { jiraKey: 'BACKEND-1' })).toEqual([t2, link]);
+    expect(withoutPinsFor([pr, link], { prRef: 'hypatos/repo#42' })).toEqual([link]);
+    expect(withoutPinsFor([t1, link], { jiraKey: 'BACKEND-7' })).toBeUndefined();
+  });
+
+  it('frontPin moves an existing pin to the front or adds a new one there', () => {
+    expect(frontPin([t1, t2], { url: t2.url, title: 'x', kind: 'ticket' }).map(p => p.id)).toEqual([t2.id, t1.id]);
+    const added = frontPin([t1], { url: 'https://x.atlassian.net/browse/BACKEND-3', title: 'BACKEND-3', kind: 'ticket' }, 5);
+    expect(added).toHaveLength(2);
+    expect(added[0]).toMatchObject({ url: 'https://x.atlassian.net/browse/BACKEND-3', kind: 'ticket', createdAt: 5 });
   });
 });

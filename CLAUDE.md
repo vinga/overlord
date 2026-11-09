@@ -41,7 +41,7 @@ Deep dives: `docs/architecture.md`, `docs/session-lifecycle.md`.
 
 **Background progress:** `bin/ovr-watch` prints `::progress …::` markers; `progressStore` tails background-task output files (Claude) or takes them over `POST /api/progress` (Codex, `OVERLORD_PTY_ID`) into cards pinned above the composer, zero tokens. Default agent rules: `GET /api/agent-instructions` → Claude `SessionStart` hook / Codex `~/.codex/AGENTS.md` block. See `docs/architecture.md#background-progress`.
 
-**Pins:** `bin/ovr pin add <url> [--room]` → `/api/pins` → chips above session tabs / in room view. See `docs/architecture.md#pins`.
+**Pins:** `bin/ovr pin add <url> [--room]` → `/api/pins`. Ticket/PR pins lead the session's `jiraKeys`/`prRefs` (one header bar); room pins in room view. See `docs/architecture.md#pins`.
 
 ## Bridge Binary
 

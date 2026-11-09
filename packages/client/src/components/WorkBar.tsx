@@ -2,12 +2,24 @@ import React, { useMemo, useState } from 'react';
 import styles from './WorkBar.module.css';
 import { usePrMeta } from '../hooks/usePrMeta';
 import { buildWorkRows, type WorkRow } from '../lib/workRows';
+import { useJiraMeta } from '../hooks/useJiraMeta';
+import type { Pin } from '../types';
+import { PinAdder, PinChip, deletePin, jiraKeyOf, pinRef, hiddenPinRefs } from './PinBar';
 
 interface Props {
+  /** The session's tickets; the first is shown by ActiveTicket, the rest here. */
+  jiraKeys?: string[];
+  jiraBaseUrl?: string;
   prRefs?: string[];
   prRefsAuthored?: string[];
   branches?: string[];
+  /** Hand-added links. Ticket / PR pins already feed jiraKeys / prRefs on the
+   *  server, so they render as those; the rest render as link chips. */
+  pins?: Pin[];
+  /** The room's PR — shown in the header badge, so a pin of it is left out. */
+  roomPrUrl?: string;
   sessionId: string;
+  overlordId?: string;
 }
 
 function BranchGlyph() {
@@ -43,17 +55,48 @@ function tooltipOf(row: WorkRow): string {
 
 /** The session's own PRs and pushed branches across repos, one chip each.
  *  PRs it only mentioned collapse into "+N mentioned". */
-export function WorkBar({ prRefs, prRefsAuthored, branches, sessionId }: Props) {
+export function WorkBar({ jiraKeys, jiraBaseUrl, prRefs, prRefsAuthored, branches, pins, roomPrUrl, sessionId, overlordId }: Props) {
   const meta = usePrMeta();
+  const jiraMeta = useJiraMeta();
   const [showMentioned, setShowMentioned] = useState(false);
   const [dismissing, setDismissing] = useState<Set<string>>(() => new Set());
+  // A pinned PR is the session's own work, never just "mentioned".
+  const ownRefs = useMemo(() => {
+    const pinnedPrs = (pins ?? []).flatMap(p => {
+      const m = p.kind === 'pr' ? p.url.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/i) : null;
+      return m ? [`${m[1]}#${m[2]}`] : [];
+    });
+    return pinnedPrs.length ? [...(prRefsAuthored ?? []), ...pinnedPrs] : prRefsAuthored;
+  }, [pins, prRefsAuthored]);
   const { own, mentioned } = useMemo(
-    () => buildWorkRows(prRefs, prRefsAuthored, branches, meta),
-    [prRefs, prRefsAuthored, branches, meta],
+    () => buildWorkRows(prRefs, ownRefs, branches, meta),
+    [prRefs, ownRefs, branches, meta],
   );
+  const otherTickets = useMemo(() => {
+    const titles = new Map<string, string>();
+    for (const p of pins ?? []) { const k = jiraKeyOf(p); if (k) titles.set(k, p.title); }
+    return (jiraKeys ?? []).slice(1).map(k => ({ key: k, title: titles.get(k) }));
+  }, [jiraKeys, pins]);
+  // Pins not already on screen as a ticket, a PR row or the room's PR badge.
+  const linkPins = useMemo(() => {
+    const shown = new Set(hiddenPinRefs(jiraKeys, prRefs, roomPrUrl).split('\n'));
+    for (const r of ownRefs ?? []) shown.add(`pr:${r.toLowerCase()}`);
+    return (pins ?? []).filter(p => { const r = pinRef(p); return r === undefined || !shown.has(r); });
+  }, [pins, jiraKeys, prRefs, ownRefs, roomPrUrl]);
+
   const visibleOwn = own.filter(r => !r.ref || !dismissing.has(r.ref));
   const visibleMentioned = mentioned.filter(r => !r.ref || !dismissing.has(r.ref));
-  if (visibleOwn.length === 0 && visibleMentioned.length === 0) return null;
+  const visibleTickets = otherTickets.filter(t => !dismissing.has(t.key));
+  const base = jiraBaseUrl?.replace(/\/+$/, '');
+  if (!overlordId && visibleTickets.length === 0 && visibleOwn.length === 0
+    && visibleMentioned.length === 0 && linkPins.length === 0) return null;
+
+  const dismissTicket = (key: string) => {
+    const undo = () => setDismissing(prev => { const next = new Set(prev); next.delete(key); return next; });
+    setDismissing(prev => new Set(prev).add(key));
+    void fetch(`/api/sessions/${sessionId}/jira-keys/${encodeURIComponent(key)}`, { method: 'DELETE' })
+      .then(r => { if (!r.ok) undo(); }).catch(undo);
+  };
 
   const dismiss = (e: React.MouseEvent, ref: string) => {
     e.preventDefault();
@@ -102,7 +145,30 @@ export function WorkBar({ prRefs, prRefsAuthored, branches, sessionId }: Props) 
 
   return (
     <div className={styles.bar}>
+      {visibleTickets.map(t => (
+        <PinChip
+          key={`jira:${t.key}`}
+          href={base ? `${base}/browse/${encodeURIComponent(t.key)}` : '#'}
+          jiraKey={t.key}
+          jiraMeta={jiraMeta[t.key]}
+          label={t.title}
+          onRemove={() => dismissTicket(t.key)}
+          removeLabel={`Dismiss ${t.key}`}
+        />
+      ))}
       {visibleOwn.map(r => chip(r, false))}
+      {linkPins.map(p => (
+        <PinChip
+          key={p.id}
+          href={p.url}
+          jiraKey={jiraKeyOf(p)}
+          jiraMeta={(() => { const k = jiraKeyOf(p); return k ? jiraMeta[k] : undefined; })()}
+          kind={p.kind}
+          label={p.title}
+          onRemove={() => deletePin(p.id, { overlordId })}
+          removeLabel={`Unpin ${p.title || p.url}`}
+        />
+      ))}
       {showMentioned && visibleMentioned.map(r => chip(r, true))}
       {visibleMentioned.length > 0 && (
         <button
@@ -114,6 +180,7 @@ export function WorkBar({ prRefs, prRefsAuthored, branches, sessionId }: Props) 
           {showMentioned ? 'hide mentioned' : `+${visibleMentioned.length} mentioned`}
         </button>
       )}
+      {overlordId && <PinAdder overlordId={overlordId} />}
     </div>
   );
 }

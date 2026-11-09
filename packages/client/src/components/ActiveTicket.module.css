@@ -96,3 +96,35 @@ a.ticket:hover {
   color: #4ec38a;
   background: rgba(78, 195, 138, 0.16);
 }
+
+/* × — unpins the ticket; shown on hover like the other header chips. */
+.dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 2px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+
+.ticket:hover .dismiss,
+.dismiss:focus-visible {
+  opacity: 1;
+}
+
+.dismiss:hover {
+  color: rgba(248, 113, 113, 0.95);
+  background: rgba(248, 113, 113, 0.14);
+}

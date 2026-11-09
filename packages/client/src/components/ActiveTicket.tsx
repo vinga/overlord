@@ -13,6 +13,12 @@ interface Props {
   onRename?: (name: string) => void;
 }
 
+/** Drop the ticket from the session: dismisses it (the scanner won't re-add
+ *  it) and removes its pin. The next ticket, if any, takes its place. */
+function dismissTicket(sessionId: string, key: string): void {
+  void fetch(`/api/sessions/${sessionId}/jira-keys/${encodeURIComponent(key)}`, { method: 'DELETE' }).catch(() => {});
+}
+
 /** The ticket the session works on, shown in the conversation header:
  *  type, key, title and Jira status. Click opens Jira (when the base URL is
  *  set); double click names the session after the ticket and sets its icon. */
@@ -60,6 +66,16 @@ export function ActiveTicket({ ticketKey, baseUrl, sessionId, onRename }: Props)
       {m?.status && (
         <span className={styles.status} data-cat={m.statusCategory ?? 'unknown'}>{m.status}</span>
       )}
+      <button
+        type="button"
+        className={styles.dismiss}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissTicket(sessionId, ticketKey); }}
+        onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        aria-label={`Unpin ${ticketKey}`}
+        title={`Unpin ${ticketKey}`}
+      >
+        ×
+      </button>
     </>
   );
 

@@ -42,6 +42,58 @@ export function jiraKeyOfPin(pin: Pin): string | undefined {
   return sel && /^[A-Z][A-Z0-9_]*-\d+$/.test(sel) ? sel : undefined;
 }
 
+/** `owner/repo#N` of a PR pin (`github.com/o/r/pull/N`), else undefined. */
+export function prRefOfPin(pin: Pin): string | undefined {
+  if (pin.kind !== 'pr') return undefined;
+  const m = pin.url.match(/^https?:\/\/github\.com\/([^/?#]+\/[^/?#]+)\/pull\/(\d+)/i);
+  return m ? `${m[1]}#${m[2]}` : undefined;
+}
+
+/** Ticket keys the user pinned: ticket pins first, then the legacy
+ *  `jiraKeysPinned` (inline `+` from before pins existed). Feeds mergeJiraKeys. */
+export function pinnedJiraKeys(rec: { pins?: Pin[]; jiraKeysPinned?: string[] } | undefined): string[] | undefined {
+  const out: string[] = [];
+  for (const p of rec?.pins ?? []) { const k = jiraKeyOfPin(p); if (k && !out.includes(k)) out.push(k); }
+  for (const k of rec?.jiraKeysPinned ?? []) if (!out.includes(k)) out.push(k);
+  return out.length ? out : undefined;
+}
+
+/** PR refs the user pinned: PR pins first, then the legacy `prRefsPinned`. Feeds mergePrRefs. */
+export function pinnedPrRefs(rec: { pins?: Pin[]; prRefsPinned?: string[] } | undefined): string[] | undefined {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (r: string) => { const k = r.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(r); } };
+  for (const p of rec?.pins ?? []) { const r = prRefOfPin(p); if (r) add(r); }
+  for (const r of rec?.prRefsPinned ?? []) add(r);
+  return out.length ? out : undefined;
+}
+
+/** Pins with that Jira key (ticket) or PR ref (case-insensitive) removed;
+ *  undefined when nothing matched. */
+export function withoutPinsFor(
+  list: readonly Pin[] | undefined,
+  match: { jiraKey?: string; prRef?: string },
+): Pin[] | undefined {
+  const pr = match.prRef?.toLowerCase();
+  const next = (list ?? []).filter(p => !(
+    (match.jiraKey && jiraKeyOfPin(p) === match.jiraKey)
+    || (pr && prRefOfPin(p)?.toLowerCase() === pr)
+  ));
+  return next.length === (list ?? []).length ? undefined : next;
+}
+
+/** Move the pin with `url` to the front, adding it when missing. */
+export function frontPin(
+  list: readonly Pin[] | undefined,
+  input: { url: string; title: string; kind: PinKind },
+  now = Date.now(),
+): Pin[] {
+  const pins = [...(list ?? [])];
+  const i = pins.findIndex(p => p.url === input.url);
+  const pin = i >= 0 ? pins.splice(i, 1)[0] : { id: newPinId(now), ...input, createdAt: now };
+  return [pin, ...pins].slice(0, MAX_PINS);
+}
+
 export interface PinInput { url: unknown; title?: unknown; kind?: unknown }
 
 /** Validate raw input; returns the normalized fields or an error string. */

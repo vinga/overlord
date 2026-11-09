@@ -245,8 +245,18 @@ block Overlord keeps in `~/.codex/AGENTS.md` (synced on boot and on every PUT).
 
 ## Pins
 
-Links (ticket, PR, branch, any URL) pinned to a session or a room, shown as chips
-above the session tabs (`PinBar` in `DetailPanel`) and in the room panel.
+Links (ticket, PR, branch, any URL) pinned to a session or a room. Room pins show in
+the room panel (`PinBar`). Session pins share one header bar with the session's
+detected tickets and PRs (`ActiveTicket` + `WorkBar` in `DetailPanel`).
+
+**Pins are the hand-picked half of a session's tickets and PRs.** Ticket pins lead
+`jiraKeys` and PR pins lead `prRefs` (`pinnedJiraKeys` / `pinnedPrRefs` feed
+`mergeJiraKeys` / `mergePrRefs` as the pinned list), so a pinned ticket reaches the
+office card, search and the Jira fetch like a detected one. The inline `+` in the
+conversation creates a pin; `×` on a ticket/PR chip dismisses it and drops its pin;
+removing a pin drops its key until the transcript names it again. Pins survive
+`/clear`. The legacy `jiraKeysPinned` / `prRefsPinned` are still read, no longer
+written (except `jiraKeysPinned` when no Jira base URL is set).
 
 ```
 bin/ovr pin add|ls|rm ─► GET|POST /api/pins, DELETE /api/pins/:id

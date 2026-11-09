@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { Pin, PinKind } from '../types';
+import type { JiraIssueMeta, Pin, PinKind } from '../types';
 import styles from './PinBar.module.css';
 import jiraStyles from './JiraChips.module.css';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 
 /** Jira key of a ticket pin — mirrors server `jiraKeyOfPin`. */
-function jiraKeyOf(pin: Pin): string | undefined {
+export function jiraKeyOf(pin: Pin): string | undefined {
   if (pin.kind !== 'ticket') return undefined;
   try {
     const u = new URL(pin.url);
@@ -26,7 +26,7 @@ function prRefOfUrl(url: string | undefined): string | undefined {
 }
 
 /** Identity used to drop pins already shown elsewhere: `jira:KEY` or `pr:o/r#n`. */
-function pinRef(pin: Pin): string | undefined {
+export function pinRef(pin: Pin): string | undefined {
   const key = jiraKeyOf(pin);
   if (key) return `jira:${key}`;
   if (pin.kind === 'pr') {
@@ -38,37 +38,17 @@ function pinRef(pin: Pin): string | undefined {
 
 /** The refs a PinBar should leave out, joined into one string so it is a
  *  primitive prop. `prRefs` are `owner/repo#N`; `prUrl` a GitHub PR URL. */
-export function hiddenPinRefs(jiraKey?: string, prRefs?: string[], prUrl?: string): string {
+export function hiddenPinRefs(jiraKeys?: string[], prRefs?: string[], prUrl?: string): string {
   const out: string[] = [];
-  if (jiraKey) out.push(`jira:${jiraKey}`);
+  for (const k of jiraKeys ?? []) out.push(`jira:${k}`);
   for (const r of prRefs ?? []) out.push(`pr:${r.toLowerCase()}`);
   const fromUrl = prRefOfUrl(prUrl);
   if (fromUrl) out.push(`pr:${fromUrl}`);
   return out.join('\n');
 }
 
-/** Who the pins belong to — a session (by overlordId) or a room (by cwd). */
-type PinTarget = { overlordId: string } | { cwd: string };
-
-/** Exactly one of overlordId / cwd. Primitives, not a target object, so the
- *  React.memo shallow compare holds across WebSocket ticks. */
-type Props = {
-  pins: Pin[] | undefined;
-  /** From `hiddenPinRefs` — pins already shown elsewhere on screen. */
-  hide?: string;
-} & (
-  | { overlordId: string; cwd?: undefined }
-  | { cwd: string; overlordId?: undefined }
-);
-
-function targetQuery(target: PinTarget): string {
-  return 'overlordId' in target
-    ? `overlordId=${encodeURIComponent(target.overlordId)}`
-    : `cwd=${encodeURIComponent(target.cwd)}`;
-}
-
 /** Octicon-style 16px glyphs, filled with currentColor. */
-function KindIcon({ kind }: { kind: PinKind }) {
+export function KindIcon({ kind }: { kind: PinKind }) {
   const common = {
     className: styles.icon,
     width: 12,
@@ -105,23 +85,71 @@ function KindIcon({ kind }: { kind: PinKind }) {
   }
 }
 
-/** Links pinned to a session or a room — one row of chips above the tab bar.
- *  Hidden when empty (the first pin is added via the CLI). The snapshot
- *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlordId, cwd }: Props) {
-  const pins = useMemo(() => {
-    if (!allPins || !hide) return allPins;
-    const hidden = new Set(hide.split('\n'));
-    if (!allPins.some((p) => { const r = pinRef(p); return r !== undefined && hidden.has(r); })) return allPins;
-    return allPins.filter((p) => { const r = pinRef(p); return r === undefined || !hidden.has(r); });
-  }, [allPins, hide]);
+interface ChipProps {
+  href: string;
+  /** A Jira key: renders type badge + key + summary + status lozenge. */
+  jiraKey?: string;
+  jiraMeta?: JiraIssueMeta;
+  /** Plain chips: the kind icon and label. Ticket chips: a custom summary
+   *  that wins over the Jira title. */
+  kind?: PinKind;
+  label?: string;
+  onRemove: () => void;
+  removeLabel: string;
+}
+
+/** One chip: a Jira ticket (rich) or any other link. × calls `onRemove`. */
+export function PinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel }: ChipProps) {
+  const summary = jiraKey && label && label !== jiraKey ? label : m?.title;
+  const tip = [jiraKey && [m?.type, m?.status].filter(Boolean).join(' · '), jiraKey ? summary : label, href]
+    .filter(Boolean).join('\n');
+  return (
+    <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''}`} data-kind={jiraKey ? 'ticket' : kind}>
+      <a className={styles.link} href={href} target="_blank" rel="noopener noreferrer" title={tip}>
+        {jiraKey ? (
+          <>
+            <JiraTypeIcon type={m?.type} />
+            <span className={styles.key}>{jiraKey}</span>
+            {summary && <span className={`${styles.label} ${styles.summary}`}>{summary}</span>}
+            {m?.status && (
+              <span className={jiraStyles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>{m.status}</span>
+            )}
+          </>
+        ) : (
+          <>
+            <KindIcon kind={kind} />
+            <span className={styles.label}>{label || href}</span>
+          </>
+        )}
+      </a>
+      <button
+        type="button"
+        className={styles.remove}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRemove(); }}
+        aria-label={removeLabel}
+        title={removeLabel}
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
+/** Unpin by id from a session or room. */
+export function deletePin(pinId: string, target: { overlordId?: string; cwd?: string }): void {
+  const q = target.overlordId !== undefined
+    ? `overlordId=${encodeURIComponent(target.overlordId)}`
+    : `cwd=${encodeURIComponent(target.cwd ?? '')}`;
+  void fetch(`/api/pins/${encodeURIComponent(pinId)}?${q}`, { method: 'DELETE' }).catch(() => {});
+}
+
+/** "+" that turns into a URL input; POSTs a pin to the session (overlordId) or room (cwd). */
+export function PinAdder({ overlordId, cwd }: { overlordId?: string; cwd?: string }) {
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const jiraMeta = useJiraMeta();
-  const target: PinTarget = overlordId !== undefined ? { overlordId } : { cwd: cwd as string };
   const targetKey = overlordId ?? cwd;
 
   // A different session/room — drop any half-typed draft.
@@ -134,8 +162,6 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlord
   useEffect(() => {
     if (adding) inputRef.current?.focus();
   }, [adding]);
-
-  if (!pins || pins.length === 0) return null;
 
   const cancel = () => {
     setAdding(false);
@@ -152,7 +178,7 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlord
       const r = await fetch('/api/pins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...target, url: trimmed }),
+        body: JSON.stringify({ ...(overlordId !== undefined ? { overlordId } : { cwd }), url: trimmed }),
       });
       if (!r.ok) {
         const body = await r.json().catch(() => null) as { error?: string } | null;
@@ -167,88 +193,83 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlord
     }
   };
 
-  const remove = (e: React.MouseEvent, pinId: string) => {
-    e.preventDefault();
-    e.stopPropagation();
-    void fetch(`/api/pins/${encodeURIComponent(pinId)}?${targetQuery(target)}`, { method: 'DELETE' }).catch(() => {});
-  };
+  return (
+    <>
+      {adding ? (
+        <input
+          ref={inputRef}
+          className={`${styles.input} ${error ? styles.inputError : ''}`}
+          value={url}
+          placeholder="Paste a URL…"
+          disabled={busy}
+          onChange={(e) => { setUrl(e.target.value); if (error) setError(null); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); void submit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
+          }}
+          onBlur={() => { if (!url.trim()) cancel(); }}
+        />
+      ) : (
+        <button
+          type="button"
+          className={styles.add}
+          onClick={() => setAdding(true)}
+          title="Pin a link"
+          aria-label="Pin a link"
+        >
+          +
+        </button>
+      )}
+      {error && <span className={styles.error}>{error}</span>}
+    </>
+  );
+}
+
+/** Exactly one of overlordId / cwd. Primitives, not a target object, so the
+ *  React.memo shallow compare holds across WebSocket ticks. */
+type Props = {
+  pins: Pin[] | undefined;
+  /** From `hiddenPinRefs` — pins already shown elsewhere on screen. */
+  hide?: string;
+} & (
+  | { overlordId: string; cwd?: undefined }
+  | { cwd: string; overlordId?: undefined }
+);
+
+/** Links pinned to a room — one wrapping row of chips above the tab bar.
+ *  Hidden when empty (the first pin is added via the CLI). The snapshot
+ *  rebroadcasts after every change, so there is no local copy of the list. */
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlordId, cwd }: Props) {
+  const pins = useMemo(() => {
+    if (!allPins || !hide) return allPins;
+    const hidden = new Set(hide.split('\n'));
+    if (!allPins.some((p) => { const r = pinRef(p); return r !== undefined && hidden.has(r); })) return allPins;
+    return allPins.filter((p) => { const r = pinRef(p); return r === undefined || !hidden.has(r); });
+  }, [allPins, hide]);
+  const jiraMeta = useJiraMeta();
+
+  if (!pins || pins.length === 0) return null;
 
   return (
     <div className={styles.bar}>
       <div className={styles.row}>
         {pins.map((pin) => {
           const key = jiraKeyOf(pin);
-          const m = key ? jiraMeta[key] : undefined;
-          // A custom pin title wins over the Jira summary; the default title is the bare key.
-          const summary = key && pin.title && pin.title !== key ? pin.title : m?.title;
-          const tip = [key && [m?.type, m?.status].filter(Boolean).join(' · '), summary, pin.url]
-            .filter(Boolean).join('\n');
           return (
-          <span key={pin.id} className={`${styles.chip} ${key ? styles.chipJira : ''}`} data-kind={pin.kind}>
-            <a
-              className={styles.link}
+            <PinChip
+              key={pin.id}
               href={pin.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={tip}
-            >
-              {key ? (
-                <>
-                  <JiraTypeIcon type={m?.type} />
-                  <span className={styles.key}>{key}</span>
-                  {summary && <span className={`${styles.label} ${styles.summary}`}>{summary}</span>}
-                  {m?.status && (
-                    <span className={jiraStyles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>
-                      {m.status}
-                    </span>
-                  )}
-                </>
-              ) : (
-                <>
-                  <KindIcon kind={pin.kind} />
-                  <span className={styles.label}>{pin.title || pin.url}</span>
-                </>
-              )}
-            </a>
-            <button
-              type="button"
-              className={styles.remove}
-              onClick={(e) => remove(e, pin.id)}
-              aria-label={`Unpin ${pin.title || pin.url}`}
-              title="Unpin"
-            >
-              ×
-            </button>
-          </span>
+              jiraKey={key}
+              jiraMeta={key ? jiraMeta[key] : undefined}
+              kind={pin.kind}
+              label={pin.title}
+              onRemove={() => deletePin(pin.id, { overlordId, cwd })}
+              removeLabel={`Unpin ${pin.title || pin.url}`}
+            />
           );
         })}
-        {adding ? (
-          <input
-            ref={inputRef}
-            className={`${styles.input} ${error ? styles.inputError : ''}`}
-            value={url}
-            placeholder="Paste a URL…"
-            disabled={busy}
-            onChange={(e) => { setUrl(e.target.value); if (error) setError(null); }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); void submit(); }
-              else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
-            }}
-            onBlur={() => { if (!url.trim()) cancel(); }}
-          />
-        ) : (
-          <button
-            type="button"
-            className={styles.add}
-            onClick={() => setAdding(true)}
-            title="Pin a link"
-            aria-label="Pin a link"
-          >
-            +
-          </button>
-        )}
+        <PinAdder overlordId={overlordId} cwd={cwd} />
       </div>
-      {error && <div className={styles.error}>{error}</div>}
     </div>
   );
 });
