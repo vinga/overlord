@@ -155,12 +155,14 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
   const [writable, setWritable] = useState(false);
   const [loading, setLoading] = useState(true);
   const [tooLarge, setTooLarge] = useState(false);
+  const isMarkdown = path.toLowerCase().endsWith('.md');
+  // Markdown always opens in Rich; other files in the remembered mode.
   const [mode, setMode] = useState<Mode>(() => {
+    if (isMarkdown && line === undefined) return 'rich';
     let saved: string | null = null;
     try { saved = localStorage.getItem(modeStorageKey); } catch { /* storage blocked */ }
     return (saved === 'rich' || saved === 'edit' || saved === 'diff' ? saved : 'preview') as Mode;
   });
-  const isMarkdown = path.toLowerCase().endsWith('.md');
   // A remembered 'diff' falls back to preview on files with nothing to diff,
   // 'rich' to the plain editor on non-markdown files; a deleted file has
   // nothing but the diff.
@@ -392,15 +394,8 @@ export function FileEditorView({ path, line, cwd, source, onClose, onDirtyChange
           )}
           {saveFlash && <span className={styles.saveFlash}>{saveFlash}</span>}
           {saveError && !saveFlash && <span className={styles.saveError}>{saveError}</span>}
-          {!isImage && !missing && (
-            <button
-              className={styles.saveBtn}
-              onClick={handleSave}
-              disabled={!isDirty || !writable || saving}
-            >
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          )}
+          {/* Edits autosave once typing pauses — no Save button, just the state. */}
+          {!isImage && !missing && saving && <span className={styles.saveFlash}>Saving…</span>}
           {onClose && (
             <button className={styles.closeBtn} onClick={onClose} title="Close (Esc)">✕</button>
           )}

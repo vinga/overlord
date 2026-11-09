@@ -1286,3 +1286,13 @@
   font-size: 12.5px;
   color: rgba(255, 255, 255, 0.35);
 }
+
+/* Archive tab (bare room): the list is the whole view — read at body size. */
+.roomBare .archiveEntry { font-size: 14px; }
+.roomBare .archiveEntryName { font-size: 14px; }
+.roomBare .archiveEntryIntent,
+.roomBare .archiveEntryDesc,
+.roomBare .archiveEntryNotes { font-size: 13px; line-height: 1.5; }
+.roomBare .archiveEntryTime,
+.roomBare .archiveEntryBranch { font-size: 12px; }
+.roomBare .archiveGroupLabel { font-size: 11px; }
