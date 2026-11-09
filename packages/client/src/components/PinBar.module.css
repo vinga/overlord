@@ -175,3 +175,28 @@
 .summary {
   color: rgba(255, 255, 255, 0.6);
 }
+
+/* Card variant: titles wrap like JiraChips instead of truncating. */
+.multiline {
+  padding: 4px 0 0;
+}
+
+.multiline .chip {
+  height: auto;
+  min-height: 22px;
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.multiline .link {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.multiline .label {
+  overflow: visible;
+  overflow-wrap: anywhere;
+}

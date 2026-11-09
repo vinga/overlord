@@ -231,6 +231,9 @@ type Props = {
   pins: Pin[] | undefined;
   /** From `hiddenPinRefs` — pins already shown elsewhere on screen. */
   hide?: string;
+  /** Chips wrap their title over several lines instead of truncating, and the
+   *  bar drops its side padding — for a card, not a header strip. */
+  multiline?: boolean;
 } & (
   | { overlordId: string; cwd?: undefined }
   | { cwd: string; overlordId?: undefined }
@@ -239,7 +242,7 @@ type Props = {
 /** Links pinned to a room — one wrapping row of chips above the tab bar.
  *  Hidden when empty (the first pin is added via the CLI). The snapshot
  *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlordId, cwd }: Props) {
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, overlordId, cwd }: Props) {
   const pins = useMemo(() => {
     if (!allPins || !hide) return allPins;
     const hidden = new Set(hide.split('\n'));
@@ -251,7 +254,7 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlord
   if (!pins || pins.length === 0) return null;
 
   return (
-    <div className={styles.bar}>
+    <div className={`${styles.bar} ${multiline ? styles.multiline : ''}`}>
       <div className={styles.row}>
         {pins.map((pin) => {
           const key = jiraKeyOf(pin);
