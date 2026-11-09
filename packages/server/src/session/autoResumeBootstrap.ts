@@ -7,6 +7,18 @@ import { buildOpencodeResumeArgs } from './opencodeSession.js';
 import { buildCodexResumeArgs, scheduleCodexTranscriptCapture } from './codexSession.js';
 import { sessionStore } from './sessionStore.js';
 import type { LiveAtShutdownEntry } from './liveAtShutdownStore.js';
+import * as fs from 'fs';
+
+/** Resumes running at once. Each `claude --resume` redraws its whole
+ *  conversation through the headless terminal on the main thread; 24 at once
+ *  starved the event loop for ~60s (first transcript poll: 58.6s). */
+export const RESUME_CONCURRENCY = 2;
+/** A resumed PTY frees its slot once its output has been quiet this long… */
+export const RESUME_QUIET_MS = 1500;
+/** …or after this long at most (a TUI with a spinner never goes quiet). */
+export const RESUME_CAP_MS = 12_000;
+
+type ResumeItem = { sessionId: string; cwd: string; provider?: string; providerSessionId?: string };
 
 export interface AutoResumeDeps {
   stateManager: StateManager;
@@ -54,15 +66,108 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
     console.log('[auto-resume] no live-at-shutdown sessions to resume');
     return;
   }
-  console.log(`[auto-resume] resuming ${sessions.length} of ${captured.length} live-at-shutdown session(s)`);
-  // Resume in parallel: the PTY child processes boot concurrently anyway, and
-  // running the per-session setup work in parallel lets the sync filesystem
-  // I/O (transcript shadow restore, sessionStore lookups) interleave via the
-  // microtask queue instead of blocking the event loop serially. Each task
-  // starts with `await setImmediate` so the WS upgrade handler and first
-  // snapshot send win the first event-loop tick.
-  await Promise.all(sessions.map(async ({ sessionId, cwd, provider, providerSessionId }) => {
-    await new Promise<void>(resolve => setImmediate(resolve));
+  console.log(`[auto-resume] resuming ${sessions.length} of ${captured.length} live-at-shutdown session(s), ${RESUME_CONCURRENCY} at a time, most recent first`);
+  const started = Date.now();
+  const ordered = orderByRecency(sessions, deps);
+  let n = 0;
+  await runResumeQueue(ordered, {
+    concurrency: RESUME_CONCURRENCY,
+    // The user may have resumed it by hand while it waited in the queue.
+    alreadyLive: (item) => hasLivePty(item.sessionId, deps),
+    resume: async (item) => {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      n++;
+      console.log(`[auto-resume] ${n}/${ordered.length} resuming ${item.sessionId.slice(0, 8)}`);
+      return resumeOne(item, deps);
+    },
+    settle: (ptyId) => waitForQuiet(ptyId, deps.ptyManager, RESUME_QUIET_MS, RESUME_CAP_MS),
+  });
+  console.log(`[auto-resume] done: ${ordered.length} session(s) in ${Math.round((Date.now() - started) / 1000)}s`);
+}
+
+/** Newest transcript first (transcript mtime — the freshness source, not
+ *  `lastActivity`); sessions without a readable transcript go last. */
+export function orderByRecency<T extends ResumeItem>(items: T[], deps: Pick<AutoResumeDeps, 'stateManager'>): T[] {
+  const mtime = (item: T): number => {
+    try {
+      const path = item.provider === 'codex' || item.provider === 'opencode'
+        ? (deps.stateManager as { getSession?: (sid: string) => { transcriptPath?: string } | undefined }).getSession?.(item.sessionId)?.transcriptPath
+        : resolveResumableSessionId(item.sessionId, item.cwd)?.transcriptPath;
+      return path ? fs.statSync(path).mtimeMs : 0;
+    } catch { return 0; }
+  };
+  return items
+    .map(item => ({ item, t: mtime(item) }))
+    .sort((a, b) => b.t - a.t)
+    .map(({ item }) => item);
+}
+
+/** Pull items through `concurrency` workers. A worker resumes an item, then
+ *  holds its slot until `settle` resolves for the spawned PTY. */
+export async function runResumeQueue<T>(items: T[], opts: {
+  concurrency: number;
+  alreadyLive: (item: T) => boolean;
+  resume: (item: T) => Promise<string | null>;
+  settle: (ptyId: string) => Promise<void>;
+}): Promise<void> {
+  const queue = [...items];
+  const worker = async () => {
+    for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
+      if (opts.alreadyLive(item)) continue;
+      const ptyId = await opts.resume(item);
+      if (ptyId) await opts.settle(ptyId);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, opts.concurrency) }, worker));
+}
+
+/** Resolves when `ptyId` has produced no output for `quietMs`, after `capMs`,
+ *  or when it exits — whichever comes first. */
+export function waitForQuiet(
+  ptyId: string,
+  ptyManager: AutoResumeDeps['ptyManager'],
+  quietMs: number,
+  capMs: number,
+): Promise<void> {
+  const pm = ptyManager as unknown as {
+    on?: (ev: string, fn: (...a: unknown[]) => void) => void;
+    off?: (ev: string, fn: (...a: unknown[]) => void) => void;
+  };
+  if (typeof pm.on !== 'function' || typeof pm.off !== 'function') return Promise.resolve();
+  return new Promise<void>(resolve => {
+    let quiet: ReturnType<typeof setTimeout>;
+    const done = () => {
+      clearTimeout(quiet);
+      clearTimeout(cap);
+      pm.off!('output', onOutput);
+      pm.off!('exit', onExit);
+      resolve();
+    };
+    const onOutput = (id: unknown) => {
+      if (id !== ptyId) return;
+      clearTimeout(quiet);
+      quiet = setTimeout(done, quietMs);
+    };
+    const onExit = (id: unknown) => { if (id === ptyId) done(); };
+    quiet = setTimeout(done, quietMs);
+    const cap = setTimeout(done, capMs);
+    pm.on!('output', onOutput);
+    pm.on!('exit', onExit);
+  });
+}
+
+function hasLivePty(sessionId: string, deps: AutoResumeDeps): boolean {
+  const ovr = sessionStore.resolveOverlordId(sessionId) ?? sessionId;
+  const ptyId = deps.ovrToPty.get(ovr) ?? deps.ovrToPty.get(sessionId);
+  const pm = deps.ptyManager as unknown as { has?: (id: string) => boolean };
+  return !!ptyId && typeof pm.has === 'function' && pm.has(ptyId);
+}
+
+/** Resume one session (provider-specific). Returns the spawned PTY id, or
+ *  null when skipped or failed. */
+async function resumeOne({ sessionId, cwd, provider, providerSessionId }: ResumeItem, deps: AutoResumeDeps): Promise<string | null> {
+  const { stateManager, ptyManager, ovrToPty, ptyToOvr, linkageTracker } = deps;
+  {
     if (provider === 'opencode') {
       try {
         ptyManager.spawn(sessionId, cwd, 220, 50, buildOpencodeResumeArgs(providerSessionId), 'opencode');
@@ -71,10 +176,11 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
         ovrToPty.set(sessionId, sessionId);
         ptyToOvr.set(sessionId, sessionId);
         console.log(`[auto-resume] resumed OpenCode PTY ${sessionId.slice(0, 8)}`);
+        return sessionId;
       } catch (err) {
         console.warn(`[auto-resume] failed to resume OpenCode PTY for ${sessionId.slice(0, 8)}:`, err);
       }
-      return;
+      return null;
     }
     if (provider === 'codex') {
       try {
@@ -88,10 +194,11 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
         ptyToOvr.set(sessionId, sessionId);
         scheduleCodexTranscriptCapture(stateManager, sessionId, cwd, startedAfterMs, { replaceExisting: true });
         console.log(`[auto-resume] resumed Codex PTY ${sessionId.slice(0, 18)}`);
+        return sessionId;
       } catch (err) {
         console.warn(`[auto-resume] failed to resume Codex PTY for ${sessionId.slice(0, 18)}:`, err);
       }
-      return;
+      return null;
     }
     // Claude --resume requires the transcript file to exist at
     // ~/.claude/projects/<slug>/<sessionId>.jsonl. If cleanupStaleTranscripts
@@ -108,7 +215,7 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
       // the source of the OV Cedar disappearance — once a sid landed in
       // deleted-sessions.json, hydrate skipped it forever.
       console.warn(`[auto-resume] skipping ${sessionId.slice(0, 8)}: transcript missing (record retained)`);
-      return;
+      return null;
     }
     const effectiveResumeId = resolved.sessionId;
     if (effectiveResumeId !== sessionId) {
@@ -155,8 +262,10 @@ export async function autoResumePtySessions(deps: AutoResumeDeps): Promise<void>
       }
       linkageTracker.trackResume(effectiveResumeId, { ptySessionId, timestamp: Date.now() });
       console.log(`[auto-resume] spawned PTY ${ptySessionId} for session ${sessionId.slice(0, 8)}`);
+      return ptySessionId;
     } catch (err) {
       console.warn(`[auto-resume] failed to spawn PTY for ${sessionId.slice(0, 8)}:`, err);
     }
-  }));
+  }
+  return null;
 }
