@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
 import { PrChips, PrGlyph } from './PrChips';
 import prStyles from './PrChips.module.css';
 import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
-import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 
@@ -15,11 +15,45 @@ interface Props {
   jiraBaseUrl?: string;
 }
 
+/** First few lines of the plan as plain text — headings and markdown marks
+ *  stripped, the leading title line dropped (the card shows the title). */
+function planExcerpt(body: string): string {
+  return body.split('\n')
+    .map(l => l.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '').replace(/[*_`>]/g, '').trim())
+    .filter(Boolean)
+    .slice(1, 6)
+    .join(' · ');
+}
+
+/** The full plan in a centred dialog, 70% of the viewport. Esc / backdrop closes. */
+function PlanDialog({ title, status, body, onClose }: { title: string; status: string; body: string | null; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return createPortal(
+    <div className={styles.dialogBackdrop} onMouseDown={onClose}>
+      <div className={styles.dialog} role="dialog" aria-label={`Plan: ${title}`} onMouseDown={e => e.stopPropagation()}>
+        <div className={styles.dialogHeader}>
+          <span className={styles.dialogTitle}>{title}</span>
+          <span className={styles.planStatus} data-status={status}>{status}</span>
+          <button type="button" className={styles.dialogClose} onClick={onClose} aria-label="Close plan">✕</button>
+        </div>
+        <div className={`${styles.markdown} ${styles.dialogBody}`}
+          dangerouslySetInnerHTML={{ __html: body === null ? 'Loading…' : renderMarkdown(body) }} />
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props) {
   const plan = session?.latestPlan;
   const [body, setBody] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [planOpen, setPlanOpen] = useState(false);
   useEffect(() => {
     setBody(null);
     setError(false);
@@ -99,11 +133,18 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
       <section className={styles.card} aria-label="Plan">
         <h3>Plan</h3>
         {plan ? <>
-          <WorkerArtifactPill artifactId={plan.artifactId} title={plan.title}
-            planStatus={plan.status as 'draft' | 'active' | 'done' | 'archived'} timestamp={plan.updatedAt} />
-          {error ? <p className={styles.muted}>Could not load plan. <button onClick={() => setRetry(n => n + 1)}>Retry</button></p>
-            : body === null ? <p className={styles.muted}>Loading plan…</p>
-            : <div className={styles.markdown} dangerouslySetInnerHTML={{ __html: renderMarkdown(body) }} />}
+          {/* A small card like the ticket ones; the full plan opens in a dialog. */}
+          <button type="button" className={styles.planCard} onClick={() => setPlanOpen(true)} title="Open plan">
+            <span className={styles.planCardTop}>
+              <span className={styles.planTitle}>{plan.title}</span>
+              <span className={styles.planStatus} data-status={plan.status}>{plan.status}</span>
+            </span>
+            {error ? <span className={styles.planExcerpt}>Could not load plan</span>
+              : body === null ? <span className={styles.planExcerpt}>Loading…</span>
+              : <span className={styles.planExcerpt}>{planExcerpt(body)}</span>}
+          </button>
+          {error && <button className={styles.retry} onClick={() => setRetry(n => n + 1)}>Retry</button>}
+          {planOpen && <PlanDialog title={plan.title} status={plan.status} body={body} onClose={() => setPlanOpen(false)} />}
         </> : <p className={styles.muted}>No plan attached</p>}
       </section>
       <section className={styles.card} aria-label="Pins">
