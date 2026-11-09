@@ -281,14 +281,21 @@
   color: color-mix(in srgb, var(--tint) 22%, #fff);
 }
 
-.selected.tinted .sessionName {
-  color: inherit;
-}
-
 /* Open session: gold, like the active room chip. */
 .selected,
 .selected:hover {
   background: rgba(212, 175, 55, 0.16);
   color: #f2dc8c;
   font-weight: 600;
+}
+
+/* Open session with a picked colour: its own hue, stronger, instead of gold. */
+.selected.tinted,
+.selected.tinted:hover {
+  background: color-mix(in srgb, var(--tint) 16%, transparent);
+}
+
+.selected.tinted .sessionName {
+  color: color-mix(in srgb, var(--tint) 60%, #fff);
+  font-weight: 700;
 }
