@@ -3434,7 +3434,44 @@ const currentDisplayName =
                       </>
                     )}
                   {/* Right end of the name row: the room's branch/PR badge + the session burger */}
-                  {!contextPanel && <div className={styles.headerActions}>{headerActions}</div>}
+                  {/* Search and the session menu sit up here, at the right end of the name
+                      row. Without the context column the branch badge joins them. */}
+                  <div className={styles.headerActions}>
+                    {!contextPanel && branchBadge}
+                  {/* In-panel search */}
+                  <div className={styles.panelSearchWrap} >
+                    <div className={styles.panelSearchInputWrap}>
+                      <svg className={styles.panelSearchIcon} width="14" height="14" viewBox="0 0 16 16" fill="none">
+                        <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        ref={panelSearchRef}
+                        type="text"
+                        className={styles.panelSearchInput}
+                        placeholder="Search this session…"
+                        value={panelSearchQuery}
+                        onChange={e => setPanelSearchQuery(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Escape') setPanelSearchQuery('');
+                        }}
+                      />
+                      {panelSearchQuery && (
+                        <>
+                          <span className={styles.panelSearchCount}>
+                            {panelSearchResults.length}
+                          </span>
+                          <button
+                            className={styles.panelSearchClose}
+                            onClick={() => setPanelSearchQuery('')}
+                            title="Clear (Esc)"
+                          >✕</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                    {sessionMenu}
+                  </div>
                   </div>
 
                   {/* Notes line is always rendered (empty shows a click-to-edit placeholder)
@@ -3589,39 +3626,6 @@ const currentDisplayName =
                       )}
                     </button>
                   )}
-                  {/* In-panel search */}
-                  <div className={styles.panelSearchWrap} style={{ marginLeft: 'auto' }}>
-                    <div className={styles.panelSearchInputWrap}>
-                      <svg className={styles.panelSearchIcon} width="14" height="14" viewBox="0 0 16 16" fill="none">
-                        <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.5" />
-                        <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                      <input
-                        ref={panelSearchRef}
-                        type="text"
-                        className={styles.panelSearchInput}
-                        placeholder="Search this session…"
-                        value={panelSearchQuery}
-                        onChange={e => setPanelSearchQuery(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Escape') setPanelSearchQuery('');
-                        }}
-                      />
-                      {panelSearchQuery && (
-                        <>
-                          <span className={styles.panelSearchCount}>
-                            {panelSearchResults.length}
-                          </span>
-                          <button
-                            className={styles.panelSearchClose}
-                            onClick={() => setPanelSearchQuery('')}
-                            title="Clear (Esc)"
-                          >✕</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  {contextPanel && sessionMenu && <div className={styles.tabBarMenu}>{sessionMenu}</div>}
                   {/* Conversation menu — archived sessions only; live ones use the header burger */}
                   {selectedSession.isArchived && (
                   <div className={styles.convMenuAnchor} ref={convMenuRef}>
