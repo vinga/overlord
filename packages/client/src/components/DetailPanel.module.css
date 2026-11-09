@@ -4704,3 +4704,62 @@
   display: flex;
   flex-direction: column;
 }
+
+/* ── Details tab: a grid of titled cards ─────────────────────────────── */
+.detailsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  padding: 16px;
+  align-items: start;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.detailsCard {
+  min-width: 0;
+  padding: 14px 16px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.detailsCardWide {
+  grid-column: 1 / -1;
+}
+
+.detailsCardTitle {
+  margin: 0 0 12px;
+  color: #8a8a96;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Denser label / value rows inside the cards. */
+.detailsCard .field {
+  margin-bottom: 8px;
+  font-size: 13px;
+  align-items: center;
+}
+
+.detailsCard .fieldLabel {
+  min-width: 92px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+}
+
+.detailsCard .fieldValue {
+  min-width: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.detailsCard .detailsBadges {
+  margin-bottom: 12px;
+}
+
+/* The connect block brings its own outer margin; the card supplies it now. */
+.detailsCard .resumeSection {
+  margin: 0;
+}

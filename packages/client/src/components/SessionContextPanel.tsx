@@ -15,16 +15,6 @@ interface Props {
   jiraBaseUrl?: string;
 }
 
-/** First few lines of the plan as plain text — headings and markdown marks
- *  stripped, the leading title line dropped (the card shows the title). */
-function planExcerpt(body: string): string {
-  return body.split('\n')
-    .map(l => l.replace(/^#+\s*/, '').replace(/^[-*]\s+/, '').replace(/[*_`>]/g, '').trim())
-    .filter(Boolean)
-    .slice(1, 6)
-    .join(' · ');
-}
-
 /** The full plan in a centred dialog, 70% of the viewport. Esc / backdrop closes. */
 function PlanDialog({ title, status, body, onClose }: { title: string; status: string; body: string | null; onClose: () => void }) {
   useEffect(() => {
@@ -136,12 +126,15 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
           {/* A small card like the ticket ones; the full plan opens in a dialog. */}
           <button type="button" className={styles.planCard} onClick={() => setPlanOpen(true)} title="Open plan">
             <span className={styles.planCardTop}>
+              <svg className={styles.planIcon} width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="1.75" width="10" height="12.5" rx="1.5" />
+                <line x1="5.75" y1="5.5" x2="10.25" y2="5.5" />
+                <line x1="5.75" y1="8" x2="10.25" y2="8" />
+                <line x1="5.75" y1="10.5" x2="8.5" y2="10.5" />
+              </svg>
               <span className={styles.planTitle}>{plan.title}</span>
               <span className={styles.planStatus} data-status={plan.status}>{plan.status}</span>
             </span>
-            {error ? <span className={styles.planExcerpt}>Could not load plan</span>
-              : body === null ? <span className={styles.planExcerpt}>Loading…</span>
-              : <span className={styles.planExcerpt}>{planExcerpt(body)}</span>}
           </button>
           {error && <button className={styles.retry} onClick={() => setRetry(n => n + 1)}>Retry</button>}
           {planOpen && <PlanDialog title={plan.title} status={plan.status} body={body} onClose={() => setPlanOpen(false)} />}

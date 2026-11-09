@@ -4266,9 +4266,11 @@ const currentDisplayName =
                 {/* Tab: Details */}
                 {activeTab === 'details' && (
                   <div className={styles.scrollArea}>
-                    {/* Launch, permissions and voice — moved out of the header, which keeps
-                        only state, assistant and model. */}
-                    <section className={styles.section}>
+                    {/* Cards in a grid. With the context column shown, what it already
+                        has (assistant, model, tickets, PRs) is left out here. */}
+                    <div className={styles.detailsGrid}>
+                      <section className={styles.detailsCard}>
+                        <h4 className={styles.detailsCardTitle}>Runtime</h4>
                       {!selectedSession.isArchived && (
                         <div className={styles.detailsBadges}>
                           {voiceInput?.enabled && (
@@ -4336,21 +4338,96 @@ const currentDisplayName =
                           })()}
                         </div>
                       )}
+                      {(() => {
+                        const launch = getLaunchInfo(selectedSession, isPty);
+                        return (
+                          <div className={styles.field}>
+                            <span className={styles.fieldLabel}>Launched from</span>
+                            {launch.category === 'pty' ? (
+                              <span className={isPty ? styles.overlordPill : styles.overlordPillEnded}>
+                                <span className={`${styles.statusDot} ${isPty ? styles.statusDotActive : styles.statusDotEnded}`} />
+                                Overlord {isPty ? '(active)' : '(ended)'}
+                              </span>
+                            ) : (
+                              <span className={styles.fieldValue}>{launch.name}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                      {!contextPanel && (<>
+                      {selectedSession.provider && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Assistant</span>
+                          <span
+                            className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
+                          >
+                            {assistantDisplayName(selectedSession.provider)}
+                          </span>
+                        </div>
+                      )}
+                      {selectedSession.model && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Model</span>
+                          <span className={styles.fieldValue}>{formatModel(selectedSession.model)}</span>
+                        </div>
+                      )}
+                      </>)}
+                      {selectedSession.inputTokens !== undefined && (() => {
+                        const contextWindow = getContextWindow(selectedSession.model, selectedSession.inputTokens);
+                        const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
+                        const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
+                        const totalK = (contextWindow / 1000).toFixed(0);
+                        const barColor = selectedSession.color;
+                        const compactCount = selectedSession.compactCount ?? 0;
+                        return (
+                          <div className={styles.field}>
+                            <span className={styles.fieldLabel}>Context</span>
+                            <span className={`${styles.fieldValue} ${styles.contextFieldValue}`}>
+                              <span>
+                                <span className={styles.contextText}>{usedK}k / {totalK}k</span> · {pct.toFixed(0)}%
+                                {compactCount > 0 && (
+                                  <span className={styles.compactInline}> · {compactCount}× compacted</span>
+                                )}
+                                {selectedSession.isCompacting && (
+                                  <span className={styles.compactingBadge}> ● compacting</span>
+                                )}
+                              </span>
+                              <div className={styles.contextBar}>
+                                <div className={styles.contextBarFill} style={{ width: `${pct}%`, background: barColor }} />
+                              </div>
+                            </span>
+                          </div>
+                        );
+                      })()}
+                      </section>
+                      <section className={styles.detailsCard}>
+                        <h4 className={styles.detailsCardTitle}>Activity</h4>
+                      <div className={styles.field}>
+                        <span className={styles.fieldLabel}>Duration</span>
+                        <span className={styles.fieldValue}>{formatDuration(selectedSession.startedAt)}</span>
+                      </div>
+                      <div className={styles.field}>
+                        <span className={styles.fieldLabel}>Started</span>
+                        <span className={styles.fieldValue}>{formatStartedAt(selectedSession.startedAt)}</span>
+                      </div>
                       <div className={styles.field}>
                         <span className={styles.fieldLabel}>Last activity</span>
                         <span className={styles.fieldValue}>{new Date(selectedSession.lastActivity).toLocaleString()} · {formatRelativeTime(selectedSession.lastActivity)}</span>
                       </div>
-                    </section>
-                    {selectedSession.scheduledWakeupAt != null && (
-                      <section className={styles.section}>
-                        <ScheduledWakeupsStats
-                          sessionId={selectedSession.sessionId}
-                          nextFireAt={selectedSession.scheduledWakeupAt}
-                          reason={selectedSession.scheduledWakeupReason}
-                        />
+                      {selectedSession.resumedFrom && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Resumed from</span>
+                          <span
+                            className={styles.detailLink}
+                            title={selectedSession.resumedFrom}
+                          >
+                            {customNames?.[selectedSession.resumedFrom] ?? selectedSession.resumedFrom.slice(0, 8)}
+                          </span>
+                        </div>
+                      )}
                       </section>
-                    )}
-                    <section className={styles.section}>
+                      <section className={styles.detailsCard}>
+                        <h4 className={styles.detailsCardTitle}>Identity</h4>
                       <div className={styles.field}>
                         <span className={styles.fieldLabel}>ID</span>
                         <span className={styles.fieldValue} title={selectedSession.sessionId}>
@@ -4412,6 +4489,10 @@ const currentDisplayName =
                           </span>
                         </div>
                       )}
+                      <div className={styles.field}>
+                        <span className={styles.fieldLabel}>Workspace</span>
+                        <span className={`${styles.fieldValue} ${styles.cwd}`}>{selectedSession.cwd}</span>
+                      </div>
                       {selectedSession.sessionHistory && selectedSession.sessionHistory.length > 0 && (
                         <div className={styles.field} style={{ alignItems: 'flex-start' }}>
                           <span className={styles.fieldLabel} style={{ paddingTop: '2px' }}>Lineage</span>
@@ -4435,88 +4516,10 @@ const currentDisplayName =
                           </div>
                         </div>
                       )}
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Workspace</span>
-                        <span className={`${styles.fieldValue} ${styles.cwd}`}>{selectedSession.cwd}</span>
-                      </div>
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Duration</span>
-                        <span className={styles.fieldValue}>{formatDuration(selectedSession.startedAt)}</span>
-                      </div>
-                      <div className={styles.field}>
-                        <span className={styles.fieldLabel}>Started</span>
-                        <span className={styles.fieldValue}>{formatStartedAt(selectedSession.startedAt)}</span>
-                      </div>
-                      {(() => {
-                        const launch = getLaunchInfo(selectedSession, isPty);
-                        return (
-                          <div className={styles.field}>
-                            <span className={styles.fieldLabel}>Launched from</span>
-                            {launch.category === 'pty' ? (
-                              <span className={isPty ? styles.overlordPill : styles.overlordPillEnded}>
-                                <span className={`${styles.statusDot} ${isPty ? styles.statusDotActive : styles.statusDotEnded}`} />
-                                Overlord {isPty ? '(active)' : '(ended)'}
-                              </span>
-                            ) : (
-                              <span className={styles.fieldValue}>{launch.name}</span>
-                            )}
-                          </div>
-                        );
-                      })()}
-                      {selectedSession.provider && (
-                        <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Assistant</span>
-                          <span
-                            className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
-                          >
-                            {assistantDisplayName(selectedSession.provider)}
-                          </span>
-                        </div>
-                      )}
-                      {selectedSession.resumedFrom && (
-                        <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Resumed from</span>
-                          <span
-                            className={styles.detailLink}
-                            title={selectedSession.resumedFrom}
-                          >
-                            {customNames?.[selectedSession.resumedFrom] ?? selectedSession.resumedFrom.slice(0, 8)}
-                          </span>
-                        </div>
-                      )}
-                      {selectedSession.model && (
-                        <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Model</span>
-                          <span className={styles.fieldValue}>{formatModel(selectedSession.model)}</span>
-                        </div>
-                      )}
-                      {selectedSession.inputTokens !== undefined && (() => {
-                        const contextWindow = getContextWindow(selectedSession.model, selectedSession.inputTokens);
-                        const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
-                        const usedK = (selectedSession.inputTokens / 1000).toFixed(0);
-                        const totalK = (contextWindow / 1000).toFixed(0);
-                        const barColor = selectedSession.color;
-                        const compactCount = selectedSession.compactCount ?? 0;
-                        return (
-                          <div className={styles.field}>
-                            <span className={styles.fieldLabel}>Context</span>
-                            <span className={`${styles.fieldValue} ${styles.contextFieldValue}`}>
-                              <span>
-                                <span className={styles.contextText}>{usedK}k / {totalK}k</span> · {pct.toFixed(0)}%
-                                {compactCount > 0 && (
-                                  <span className={styles.compactInline}> · {compactCount}× compacted</span>
-                                )}
-                                {selectedSession.isCompacting && (
-                                  <span className={styles.compactingBadge}> ● compacting</span>
-                                )}
-                              </span>
-                              <div className={styles.contextBar}>
-                                <div className={styles.contextBarFill} style={{ width: `${pct}%`, background: barColor }} />
-                              </div>
-                            </span>
-                          </div>
-                        );
-                      })()}
+                      </section>
+                    {!contextPanel && (
+                      <section className={styles.detailsCard}>
+                        <h4 className={styles.detailsCardTitle}>Work</h4>
                       {selectedSession.jiraKeys && selectedSession.jiraKeys.length > 0 && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>
@@ -4552,9 +4555,12 @@ const currentDisplayName =
                         </div>
                       )}
 
+                      </section>
+                    )}
                       {selectedSession.skillsUsed && selectedSession.skillsUsed.length > 0 && (
+                      <section className={styles.detailsCard}>
+                        <h4 className={styles.detailsCardTitle}>Skills</h4>
                         <div className={styles.field}>
-                          <span className={styles.fieldLabel}>Skills</span>
                           <span className={styles.fieldValue}>
                             <SkillChips
                               skills={selectedSession.skillsUsed}
@@ -4562,9 +4568,20 @@ const currentDisplayName =
                             />
                           </span>
                         </div>
+                      </section>
                       )}
-
-
+                    {selectedSession.scheduledWakeupAt != null && (
+                      <section className={`${styles.detailsCard} ${styles.detailsCardWide}`}>
+                        <h4 className={styles.detailsCardTitle}>Scheduled</h4>
+                          <ScheduledWakeupsStats
+                          sessionId={selectedSession.sessionId}
+                          nextFireAt={selectedSession.scheduledWakeupAt}
+                          reason={selectedSession.scheduledWakeupReason}
+                        />
+                      </section>
+                    )}
+                      <section className={`${styles.detailsCard} ${styles.detailsCardWide}`}>
+                        <h4 className={styles.detailsCardTitle}>Connect</h4>
                       {/* Resume / Connect section */}
                       {(() => {
                         const supportsExternalConnect = selectedSession.provider !== 'opencode';
@@ -4667,7 +4684,8 @@ const currentDisplayName =
                           </div>
                         );
                       })()}
-                    </section>
+                      </section>
+                    </div>
                   </div>
                 )}
 
