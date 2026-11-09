@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
-import { PrChips } from './PrChips';
+import { PrChips, PrGlyph } from './PrChips';
+import prStyles from './PrChips.module.css';
 import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
 import { WorkerArtifactPill } from './WorkerArtifactPill';
 import { renderMarkdown } from '../lib/renderMarkdown';
@@ -67,7 +68,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
     <aside className={styles.panel} aria-label="Session context">
       <section className={styles.card} aria-label="Ticket">
         <h3>Ticket</h3>
-        <JiraChips keys={tickets} baseUrl={jiraBaseUrl} sessionId={session.sessionId} />
+        <JiraChips keys={tickets} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card />
         {pinsOfKind('ticket')}
         {!tickets.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
       </section>
@@ -75,10 +76,24 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
         <h3>PR</h3>
         <PrChips refs={prs} card sessionId={session.sessionId} />
         {pinsOfKind('pr')}
-        {showRoomPr && <a className={styles.prLink} href={roomPr.url} target="_blank" rel="noopener noreferrer">
-          <span>#{roomPr.number} · {roomPr.isDraft ? 'DRAFT' : roomPr.state}</span>
-          <strong>{roomPr.title}</strong>
-        </a>}
+        {/* The room's branch PR, drawn as the same card as PrChips. */}
+        {showRoomPr && (() => {
+          const repo = roomPr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//i)?.[1];
+          const state = roomPr.isDraft && roomPr.state === 'OPEN' ? 'DRAFT' : roomPr.state;
+          return (
+            <div className={`${prStyles.row} ${prStyles.card}`}>
+              <span className={prStyles.chipWrap}>
+                <a className={prStyles.chip} href={roomPr.url} target="_blank" rel="noopener noreferrer" title={`${repo ?? ''}#${roomPr.number} — ${roomPr.title}`}>
+                  <PrGlyph />
+                  <span className={prStyles.chipRef}>#{roomPr.number}</span>
+                  {repo && <span className={prStyles.chipRepo}>{repo}</span>}
+                  <span className={prStyles.chipTitle}>{roomPr.title}</span>
+                  <span className={prStyles.state} data-state={state}>{state}</span>
+                </a>
+              </span>
+            </div>
+          );
+        })()}
         {!prs.length && !showRoomPr && !allPins.some(p => p.kind === 'pr') && <p className={styles.muted}>No PR attached</p>}
       </section>
       <section className={styles.card} aria-label="Plan">

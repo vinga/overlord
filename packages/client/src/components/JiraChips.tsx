@@ -11,11 +11,13 @@ interface Props {
   /** Optimistic rename path (same one the label editor uses). When absent the
    *  adopt gesture PUTs the name directly. */
   onRename?: (name: string) => void;
+  /** Full-width cards: key + status on the first line, title below. */
+  card?: boolean;
 }
 
 const VISIBLE = 3;
 
-export function JiraChips({ keys, baseUrl, sessionId, onRename }: Props) {
+export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: Props) {
   const meta = useJiraMeta();
   const [expanded, setExpanded] = useState(false);
   const [dismissing, setDismissing] = useState<Set<string>>(() => new Set());
@@ -67,7 +69,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename }: Props) {
   };
 
   return (
-    <div className={styles.row} onClick={stop}>
+    <div className={`${styles.row} ${card ? styles.card : ''}`} onClick={stop}>
       {visible.map((key) => {
         const isLink = !!trimmedBase;
         const m = meta?.[key];

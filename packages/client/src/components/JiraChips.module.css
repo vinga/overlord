@@ -176,3 +176,29 @@
   color: rgba(255, 255, 255, 0.85);
   border-color: rgba(255, 255, 255, 0.25);
 }
+
+/* Card variant (session context column): matches the pinned-ticket cards —
+ * full width, key + status on the first line, title below. */
+.card {
+  justify-content: flex-start;
+}
+
+.card .chipWrap,
+.card .chip {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.card .chip {
+  row-gap: 2px;
+  padding-right: 20px;
+}
+
+.card .chipStatus {
+  margin-left: auto;
+}
+
+.card .chipTitle {
+  order: 1;
+  flex-basis: 100%;
+}
