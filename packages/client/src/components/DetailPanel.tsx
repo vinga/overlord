@@ -3030,6 +3030,43 @@ const currentDisplayName =
     : selectedSession?.state === 'thinking' ? styles.stateBarThinking
     : styles.stateBarActive;
 
+  // Branch badge + session burger: right end of the header's name row, or the
+  // top of the context column when that is shown.
+  const headerActions = selectedSession ? (
+    <>
+                    {room?.gitBranch && (
+                      <GitBranchBadge
+                        branch={room.gitBranch}
+                        cwd={room.cwd}
+                        gitWarning={room.gitWarning}
+                        pullRequest={room.pullRequest}
+                        gitAhead={room.gitAhead}
+                      />
+                    )}
+                    {!selectedSession.isArchived && onDeleteSession && (
+                      <DeskMenu
+                        session={selectedSession}
+                        sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
+                        anchorStyle={{ position: 'relative' }}
+                        buttonSize={28}
+                        onDelete={() => { onDeleteSession(selectedSession.sessionId); onClose(); }}
+                        onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
+                        onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
+                          void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: '/clear\r' }),
+                          }).catch(() => {});
+                        } : undefined}
+                        onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
+                        onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
+                        onNewSession={onFastSession && room ? () => onFastSession(room) : undefined}
+                        getConversationText={() => conversationText(mergedFeed)}
+                      />
+                    )}
+    </>
+  ) : null;
+
   // No room grid to share the office with: the panel takes the whole area
   // under the header, right of the room chips.
   const fillsOffice = !ROOM_GRID_ENABLED && dock !== 'bottom';
@@ -3232,6 +3269,8 @@ const currentDisplayName =
             ) : (
               /* Session view */
               <>
+                <div className={styles.tabsWithContext}>
+                <div className={styles.tabsColumn}>
                 {/* Sticky header */}
                 <div className={styles.panelHeader}>
                   <div className={styles.headerWithAvatar}>
@@ -3290,38 +3329,7 @@ const currentDisplayName =
                       </>
                     )}
                   {/* Right end of the name row: the room's branch/PR badge + the session burger */}
-                  <div className={styles.headerActions}>
-                    {room?.gitBranch && (
-                      <GitBranchBadge
-                        branch={room.gitBranch}
-                        cwd={room.cwd}
-                        gitWarning={room.gitWarning}
-                        pullRequest={room.pullRequest}
-                        gitAhead={room.gitAhead}
-                      />
-                    )}
-                    {!selectedSession.isArchived && onDeleteSession && (
-                      <DeskMenu
-                        session={selectedSession}
-                        sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
-                        anchorStyle={{ position: 'relative' }}
-                        buttonSize={28}
-                        onDelete={() => { onDeleteSession(selectedSession.sessionId); onClose(); }}
-                        onClone={onCloneSession && selectedSession.hasActivity ? () => onCloneSession(selectedSession.sessionId) : undefined}
-                        onClear={selectedSession.state !== 'closed' && selectedSession.sessionType !== 'note' ? () => {
-                          void fetch(`/api/sessions/${selectedSession.sessionId}/inject`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ text: '/clear\r' }),
-                          }).catch(() => {});
-                        } : undefined}
-                        onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
-                        onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
-                        onNewSession={onFastSession && room ? () => onFastSession(room) : undefined}
-                        getConversationText={() => conversationText(mergedFeed)}
-                      />
-                    )}
-                  </div>
+                  {!contextPanel && <div className={styles.headerActions}>{headerActions}</div>}
                   </div>
 
                   {/* Notes line is always rendered (empty shows a click-to-edit placeholder)
@@ -3510,8 +3518,6 @@ const currentDisplayName =
                   </div>{/* headerWithAvatar */}
                 </div>
 
-                <div className={styles.tabsWithContext}>
-                <div className={styles.tabsColumn}>
                 {/* Tab bar */}
                 <div className={styles.tabBar}>
                   <button
@@ -4714,7 +4720,12 @@ const currentDisplayName =
                   </div>
                 )}
                 </div>{/* tabsColumn */}
-                {contextPanel && <aside className={styles.contextColumn}>{contextPanel}</aside>}
+                {contextPanel && (
+                  <aside className={styles.contextColumn}>
+                    <div className={styles.contextTop}>{headerActions}</div>
+                    {contextPanel}
+                  </aside>
+                )}
                 </div>{/* tabsWithContext */}
 
               </>
