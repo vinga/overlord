@@ -2708,24 +2708,10 @@ const currentDisplayName =
     return cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? '';
   }, [selectedSession?.cwd]);
 
-  // Crumb click = scroll the room into view on the left; double-click = also open
-  // its detail panel. Debounce the single click so it doesn't fire mid-double-click.
-  const crumbClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (crumbClickTimer.current) clearTimeout(crumbClickTimer.current); }, []);
+  // Click opens the room (and scrolls to it).
   const handleCrumbClick = () => {
     const cwd = selectedSession?.cwd;
-    if (!cwd) return;
-    if (crumbClickTimer.current) clearTimeout(crumbClickTimer.current);
-    crumbClickTimer.current = setTimeout(() => {
-      crumbClickTimer.current = null;
-      onNavigateRoom?.(cwd, false);
-    }, 220);
-  };
-  const handleCrumbDoubleClick = () => {
-    const cwd = selectedSession?.cwd;
-    if (!cwd) return;
-    if (crumbClickTimer.current) { clearTimeout(crumbClickTimer.current); crumbClickTimer.current = null; }
-    onNavigateRoom?.(cwd, true);
+    if (cwd) onNavigateRoom?.(cwd, true);
   };
 
   useEffect(() => {
@@ -3261,12 +3247,11 @@ const currentDisplayName =
                         {roomLabel && (
                           <span
                             className={`${styles.roomCrumb} ${onNavigateRoom ? styles.roomCrumbClickable : ''}`}
-                            title={onNavigateRoom ? `${selectedSession.cwd}\n\nClick: scroll to room · Double-click: open room details` : selectedSession.cwd}
+                            title={onNavigateRoom ? `${selectedSession.cwd}\n\nClick: open room` : selectedSession.cwd}
                             role={onNavigateRoom ? 'button' : undefined}
                             tabIndex={onNavigateRoom ? 0 : undefined}
                             onClick={onNavigateRoom ? handleCrumbClick : undefined}
-                            onDoubleClick={onNavigateRoom ? handleCrumbDoubleClick : undefined}
-                            onKeyDown={onNavigateRoom ? (e) => { if (e.key === 'Enter') handleCrumbDoubleClick(); } : undefined}
+                            onKeyDown={onNavigateRoom ? (e) => { if (e.key === 'Enter') handleCrumbClick(); } : undefined}
                           >
                             {roomLabel}
                             <span className={styles.roomCrumbSep} aria-hidden="true">›</span>

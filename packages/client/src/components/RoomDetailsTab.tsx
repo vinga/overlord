@@ -138,7 +138,7 @@ export function RoomDetailsTab({ cwd }: Props) {
     <div className={styles.panel}>
       <div className={styles.field}>
         <div className={styles.labelRow}>
-          <label className={styles.label} htmlFor="room-description">Description</label>
+          <label className={styles.label} htmlFor="room-description">Notes</label>
           <div className={editorStyles.toggleGroup}>
             <button
               className={`${editorStyles.toggleBtn} ${mode === 'rich' ? editorStyles.active : ''}`}

@@ -23,7 +23,7 @@ type Tab = RoomPanelTab;
 const TABS: { id: Tab; label: string }[] = [
   { id: 'room', label: 'Room' },
   { id: 'files', label: 'Files' },
-  { id: 'details', label: 'Description' },
+  { id: 'details', label: 'Notes' },
   { id: 'plans', label: 'Plans' },
   { id: 'brain', label: 'Brain' },
 ];
