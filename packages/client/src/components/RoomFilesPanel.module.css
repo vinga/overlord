@@ -312,3 +312,68 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   }
 }
+
+/* New-file path input, between the filters and the tree. */
+.createRow {
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.createRow .search {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.createHint {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.32);
+}
+
+.createError {
+  color: #e07070;
+}
+
+.iconBtn[aria-pressed='true'] {
+  background: rgba(212, 175, 55, 0.14);
+  border-color: rgba(212, 175, 55, 0.4);
+  color: #d4af37;
+}
+
+/* Folder rows: hover actions (new file here, open in Finder). */
+.dirWrap {
+  position: relative;
+}
+
+.dirActions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  gap: 2px;
+}
+
+.dirWrap:hover .dirActions,
+.dirWrap:focus-within .dirActions {
+  display: flex;
+}
+
+.dirAction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: #16161f;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 0;
+}
+
+.dirAction:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: #20202c;
+}

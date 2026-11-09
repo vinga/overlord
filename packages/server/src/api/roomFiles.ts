@@ -408,6 +408,47 @@ export async function checkRoomFile(cwdRaw: string, rel: unknown): Promise<RoomF
   return { ok: true, abs };
 }
 
+export type CreateRoomFileResult =
+  | { ok: true; rel: string; abs: string; /** Created, but the tree will not list it (gitignored…). */ hidden?: string }
+  | { ok: false; status: number; reason: string };
+
+/** Create an empty file at a cwd-relative path, making missing parent folders.
+ *  Stricter than checkRoomFile: no link following at all — the nearest existing
+ *  ancestor must realpath inside the room — and never overwrites. */
+export async function createRoomFile(cwdRaw: string, rel: unknown): Promise<CreateRoomFileResult> {
+  if (typeof rel !== 'string' || !rel.trim() || rel.includes('\0') || isAbsolute(rel) || /[\\/]$/.test(rel)) {
+    return { ok: false, status: 400, reason: 'relative file path required' };
+  }
+  const cwd = realOrResolved(cwdRaw);
+  const requested = resolve(cwd, rel.trim());
+  const prefix = cwd.endsWith(sep) ? cwd : cwd + sep;
+  if (!requested.startsWith(prefix)) return { ok: false, status: 403, reason: 'path is outside the room' };
+  const relReq = relative(cwd, requested).split(sep).join('/');
+  if (isDeniedRel(relReq)) return { ok: false, status: 403, reason: 'path is hidden from the browser' };
+
+  // Walk up to the nearest existing ancestor; it must resolve inside the room.
+  let anc = resolve(requested, '..');
+  while (!fs.existsSync(anc)) anc = resolve(anc, '..');
+  const ancReal = realOrResolved(anc);
+  if (ancReal !== cwd && !ancReal.startsWith(prefix)) return { ok: false, status: 403, reason: 'path is outside the room' };
+  if (!fs.statSync(ancReal).isDirectory()) return { ok: false, status: 400, reason: 'parent is not a folder' };
+
+  try {
+    await fs.promises.mkdir(resolve(requested, '..'), { recursive: true });
+    await fs.promises.writeFile(requested, '', { flag: 'wx' });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') return { ok: false, status: 409, reason: 'already exists' };
+    if (code === 'ENOTDIR') return { ok: false, status: 400, reason: 'parent is not a folder' };
+    return { ok: false, status: 500, reason: (err as Error).message };
+  }
+  invalidateRoomFiles(cwd);
+  const verdict = await checkRoomFile(cwd, relReq);
+  return verdict.ok
+    ? { ok: true, rel: relReq, abs: verdict.abs }
+    : { ok: true, rel: relReq, abs: requested, hidden: verdict.reason };
+}
+
 /** A text file the editor can show: not too large, no NUL bytes. */
 export function readRoomFileText(abs: string): { ok: true; content: string } | { ok: false; status: number; reason: string } {
   const size = fs.statSync(abs).size;

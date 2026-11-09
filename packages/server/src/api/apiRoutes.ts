@@ -47,7 +47,7 @@ import { resolveAllowedPath } from './pathGuard.js';
 import { resolvePathCandidates } from './pathCandidates.js';
 import { getProgressCards, getProgressHistory, ingestPushed } from '../session/progressStore.js';
 import { instructionsFor, writeInstructions, syncCodexAgentsMd } from '../session/agentInstructions.js';
-import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles, readRoomFileDiff } from './roomFiles.js';
+import { listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent, invalidateRoomFiles, readRoomFileDiff, createRoomFile } from './roomFiles.js';
 
 const BTW_MAX_CHARS = 4000;
 const BTW_TIMEOUT_MS = 120_000;
@@ -1319,6 +1319,20 @@ export function registerApiRoutes(
     }
   });
 
+  // New empty file in the room tree (parents made as needed, never overwrites).
+  app.post('/api/room-file', express.json(), async (req, res) => {
+    const { cwd: rawCwd, path: rel } = (req.body ?? {}) as { cwd?: unknown; path?: unknown };
+    const cwd = roomCwdOf(rawCwd, res);
+    if (!cwd) return;
+    try {
+      const made = await createRoomFile(cwd, rel);
+      if (!made.ok) { res.status(made.status).json({ error: made.reason }); return; }
+      res.status(201).json({ path: made.rel, abs: made.abs, hidden: made.hidden });
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   app.put('/api/file', express.json({ limit: '10mb' }), (req, res) => {
     const { path: rawPath, content } = req.body as { path: string; content: string };
     if (typeof content !== 'string') { res.status(400).json({ error: 'path and content required' }); return; }
@@ -1405,16 +1419,18 @@ export function registerApiRoutes(
 
   // Reveal a file or folder in the OS file manager (Finder: selected in its
   // folder). Unguarded on purpose: it reads nothing, only points Finder at it.
+  // `open: true` on a directory opens it as a window instead of selecting it.
   app.post('/api/reveal-path', express.json(), (req, res) => {
-    const raw = (req.body as { path?: unknown }).path;
+    const { path: raw, open } = req.body as { path?: unknown; open?: unknown };
     if (typeof raw !== 'string' || !isAbsolute(raw)) { res.status(400).json({ error: 'absolute path required' }); return; }
     const filePath = resolve(raw);
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'not found' }); return; }
+    const openDir = open === true && fs.statSync(filePath).isDirectory();
     let file: string;
     let args: string[];
-    if (process.platform === 'darwin') { file = 'open'; args = ['-R', filePath]; }
-    else if (process.platform === 'win32') { file = 'explorer.exe'; args = [`/select,${filePath}`]; }
-    else { file = 'xdg-open'; args = [dirname(filePath)]; }
+    if (process.platform === 'darwin') { file = 'open'; args = openDir ? [filePath] : ['-R', filePath]; }
+    else if (process.platform === 'win32') { file = 'explorer.exe'; args = [openDir ? filePath : `/select,${filePath}`]; }
+    else { file = 'xdg-open'; args = [openDir ? filePath : dirname(filePath)]; }
     execFile(file, args, (err) => {
       // explorer.exe exits 1 even on success.
       if (err && process.platform !== 'win32') res.status(500).json({ error: err.message });

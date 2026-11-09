@@ -51,6 +51,27 @@ export function revealRoomFile(cwd: string, rel: string): void {
   window.dispatchEvent(new CustomEvent(REVEAL_ROOM_FILE_EVENT, { detail: { cwd, rel } }));
 }
 
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent);
+const IS_WIN = typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || navigator.userAgent);
+const FOLDER_APP = IS_MAC ? 'Finder' : IS_WIN ? 'Explorer' : 'file manager';
+
+/** Open a folder (or select a file in its folder) in the OS file manager. */
+function revealInOs(abs: string, open: boolean): void {
+  void fetch('/api/reveal-path', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: abs, open }),
+  });
+}
+
+function parentDir(path: string | null): string {
+  if (!path) return '';
+  const i = path.lastIndexOf('/');
+  return i < 0 ? '' : path.slice(0, i + 1);
+}
+
+const NEW_FILE_NAME = 'untitled.txt';
+
 function ancestors(path: string): string[] {
   const parts = path.split('/');
   return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
@@ -116,6 +137,13 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false,
   });
 
   const source = useMemo(() => roomSource(cwd), [cwd]);
+  const root = cwd.replace(/\/+$/, '');
+
+  // New-file input: the path being typed, or null when closed.
+  const [creating, setCreating] = useState<string | null>(null);
+  const [createError, setCreateError] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
+  const createInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     const req = ++reqRef.current;
@@ -202,6 +230,52 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false,
 
   const onDirtyChange = useCallback((d: boolean) => { dirtyRef.current = d; }, []);
 
+  const startCreate = useCallback((dir: string) => {
+    setCreateError('');
+    setCreating(dir + NEW_FILE_NAME);
+  }, []);
+
+  // Select just the name stem, so typing replaces "untitled" and keeps the folder + extension.
+  useEffect(() => {
+    const el = createInputRef.current;
+    if (creating === null || !el || document.activeElement === el) return;
+    el.focus();
+    const start = creating.lastIndexOf('/') + 1;
+    const dot = creating.lastIndexOf('.');
+    el.setSelectionRange(start, dot > start ? dot : creating.length);
+  }, [creating]);
+
+  const submitCreate = useCallback(async () => {
+    const rel = (creating ?? '').trim().replace(/^\/+/, '');
+    if (!rel || createBusy) return;
+    if (dirtyRef.current && !window.confirm('Discard unsaved changes?')) return;
+    setCreateBusy(true);
+    setCreateError('');
+    try {
+      const r = await fetch('/api/room-file', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd, path: rel }),
+      });
+      const body = await r.json().catch(() => ({})) as { path?: string; hidden?: string; error?: string };
+      if (!r.ok || !body.path) { setCreateError(body.error ?? `Error ${r.status}`); return; }
+      if (body.hidden) { setCreateError(`Created, but not shown here: ${body.hidden}`); await load(); return; }
+      const made = body.path;
+      setCreating(null);
+      dirtyRef.current = false;
+      setQuery('');
+      setScope('all');
+      await load();
+      setSelected(made);
+      setExpanded(prev => new Set([...prev, ...ancestors(made)]));
+      setReveal(rv => ({ path: made, n: (rv?.n ?? 0) + 1 }));
+    } catch (err) {
+      setCreateError(String(err));
+    } finally {
+      setCreateBusy(false);
+    }
+  }, [creating, createBusy, cwd, load, setScope, setSelected]);
+
   useEffect(() => {
     const onReveal = (ev: Event) => {
       const detail = (ev as CustomEvent<{ cwd: string; rel: string }>).detail;
@@ -253,6 +327,32 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false,
           </div>
           <button
             className={styles.iconBtn}
+            onClick={() => (creating === null ? startCreate(parentDir(selected)) : setCreating(null))}
+            data-tooltip="New file"
+            data-tooltip-dir="down"
+            aria-label="New file"
+            aria-pressed={creating !== null}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 1.5H4a1.5 1.5 0 0 0-1.5 1.5v10A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5V6z" />
+              <polyline points="9 1.5 9 6 13.5 6" />
+              <line x1="8" y1="8.5" x2="8" y2="12" />
+              <line x1="6.25" y1="10.25" x2="9.75" y2="10.25" />
+            </svg>
+          </button>
+          <button
+            className={styles.iconBtn}
+            onClick={() => revealInOs(root, true)}
+            data-tooltip={`Open folder in ${FOLDER_APP}`}
+            data-tooltip-dir="down"
+            aria-label={`Open in ${FOLDER_APP}`}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1.5 4.5a1.5 1.5 0 0 1 1.5-1.5h3l1.5 1.75H13a1.5 1.5 0 0 1 1.5 1.5V12a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12z" />
+            </svg>
+          </button>
+          <button
+            className={styles.iconBtn}
             onClick={() => void load()}
             disabled={loading}
             data-tooltip="Refresh"
@@ -300,6 +400,30 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false,
           </div>
         )}
 
+        {creating !== null && (
+          <div className={styles.createRow}>
+            <input
+              ref={createInputRef}
+              className={styles.search}
+              value={creating}
+              onChange={e => { setCreating(e.target.value); setCreateError(''); }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); void submitCreate(); }
+                else if (e.key === 'Escape') { e.preventDefault(); setCreating(null); }
+              }}
+              placeholder="folder/new-file.txt"
+              spellCheck={false}
+              disabled={createBusy}
+              aria-label="New file path"
+            />
+            <div className={styles.createHint}>
+              {createError
+                ? <span className={styles.createError}>{createError}</span>
+                : <>Enter to create · Esc to cancel</>}
+            </div>
+          </div>
+        )}
+
         <div className={styles.tree} role="tree" ref={treeRef}>
           {error && <div className={styles.empty}>{error}</div>}
           {!error && loading && !data && <div className={styles.empty}>Loading…</div>}
@@ -311,21 +435,45 @@ export const RoomFilesPanel = memo(function RoomFilesPanel({ cwd, hasPr = false,
             if (row.kind === 'dir') {
               const open = expandAll || expanded.has(row.path);
               return (
-                <button
-                  key={`d:${row.path}`}
-                  className={styles.row}
-                  style={pad}
-                  onClick={() => toggleDir(row.path)}
-                  disabled={expandAll}
-                  role="treeitem"
-                  aria-expanded={open}
-                >
-                  <svg className={styles.chevron} width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
-                    style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)' }}>
-                    <polyline points="2 3 5 6 8 3" />
-                  </svg>
-                  <span className={styles.dirName}>{row.name}</span>
-                </button>
+                <div key={`d:${row.path}`} className={styles.dirWrap}>
+                  <button
+                    className={styles.row}
+                    style={pad}
+                    onClick={() => toggleDir(row.path)}
+                    disabled={expandAll}
+                    role="treeitem"
+                    aria-expanded={open}
+                  >
+                    <svg className={styles.chevron} width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                      style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)' }}>
+                      <polyline points="2 3 5 6 8 3" />
+                    </svg>
+                    <span className={styles.dirName}>{row.name}</span>
+                  </button>
+                  <span className={styles.dirActions}>
+                    <button
+                      className={styles.dirAction}
+                      onClick={() => startCreate(`${row.path}/`)}
+                      title={`New file in ${row.path}/`}
+                      aria-label={`New file in ${row.path}`}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+                        <line x1="8" y1="3" x2="8" y2="13" />
+                        <line x1="3" y1="8" x2="13" y2="8" />
+                      </svg>
+                    </button>
+                    <button
+                      className={styles.dirAction}
+                      onClick={() => revealInOs(`${root}/${row.path}`, true)}
+                      title={`Open in ${FOLDER_APP}`}
+                      aria-label={`Open ${row.path} in ${FOLDER_APP}`}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1.5 4.5a1.5 1.5 0 0 1 1.5-1.5h3l1.5 1.75H13a1.5 1.5 0 0 1 1.5 1.5V12a1.5 1.5 0 0 1-1.5 1.5H3A1.5 1.5 0 0 1 1.5 12z" />
+                      </svg>
+                    </button>
+                  </span>
+                </div>
               );
             }
             const change = changes[row.path];

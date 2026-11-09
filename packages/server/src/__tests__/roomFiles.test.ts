@@ -6,7 +6,7 @@ import { execFileSync } from 'child_process';
 import {
   listRoomFiles, checkRoomFile, readRoomFileText, validateRoomFileContent,
   parseGitignore, parsePorcelain, invalidateRoomFiles, MAX_ROOM_FILE_BYTES,
-  parseNameStatus, resolveBase, readRoomFileDiff,
+  parseNameStatus, resolveBase, readRoomFileDiff, createRoomFile,
 } from '../api/roomFiles.js';
 
 // Real repos on disk: listing shells out to git and the gate resolves symlinks.
@@ -281,5 +281,41 @@ describe('PR scope', () => {
   it('parseNameStatus keeps the new side of renames', () => {
     expect(parseNameStatus('M\0a.ts\0R087\0old.ts\0new.ts\0D\0x.ts\0A\0y.ts\0'))
       .toEqual({ 'a.ts': 'M', 'new.ts': 'R', 'x.ts': 'D', 'y.ts': 'A' });
+  });
+});
+
+describe('createRoomFile', () => {
+  let room: string;
+  beforeAll(() => {
+    room = join(sandbox, 'home', 'create');
+    write(join(room, '.gitignore'), '*.log\n');
+    write(join(room, 'exists.txt'), 'keep');
+    fs.symlinkSync(join(sandbox), join(room, 'out'));
+  });
+
+  it('creates an empty file, making missing folders', async () => {
+    const r = await createRoomFile(room, 'notes/deep/todo.txt');
+    expect(r).toMatchObject({ ok: true, rel: 'notes/deep/todo.txt' });
+    expect(fs.readFileSync(join(room, 'notes', 'deep', 'todo.txt'), 'utf8')).toBe('');
+  });
+
+  it('never overwrites', async () => {
+    expect(await createRoomFile(room, 'exists.txt')).toMatchObject({ ok: false, status: 409 });
+    expect(fs.readFileSync(join(room, 'exists.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('refuses paths outside the room, through links, or hidden', async () => {
+    for (const bad of ['../x.txt', '/tmp/x.txt', 'out/x.txt', 'out/new/x.txt']) {
+      expect(await createRoomFile(room, bad)).toMatchObject({ ok: false, status: expect.any(Number) });
+    }
+    expect(fs.existsSync(join(sandbox, 'x.txt'))).toBe(false);
+    expect(await createRoomFile(room, '.env')).toMatchObject({ ok: false, status: 403 });
+    expect(await createRoomFile(room, 'node_modules/a.js')).toMatchObject({ ok: false, status: 403 });
+    expect(await createRoomFile(room, 'dir/')).toMatchObject({ ok: false, status: 400 });
+  });
+
+  it('reports a created file the tree will not list', async () => {
+    const r = await createRoomFile(room, 'run.log');
+    expect(r).toMatchObject({ ok: true, hidden: 'file is gitignored' });
   });
 });
