@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+/** How long a tab switch keeps re-applying the restored scroll position. */
+const RESTORE_WINDOW_MS = 1000;
+
 type JumpLabel = { label: string; depth: number } | null;
 type JumpAction = { label: string; depth: number; run: () => void };
 
@@ -34,6 +37,9 @@ export function useTranscriptScroll({
   // few scroll frames would otherwise re-mark us as "at bottom" and let the feed
   // autoscroll effect hijack the scroll back to MAX_SAFE_INTEGER.
   const autoScrollLockUntilRef = useRef(0);
+  // Last scroll offset the user had — the transcript unmounts while another tab
+  // (Notes, Details…) is open, and a remount starts at the top.
+  const lastScrollTopRef = useRef(0);
   const [scrollJumpLabels, setScrollJumpLabels] = useState<{ up: JumpLabel; down: JumpLabel }>({ up: null, down: null });
 
   const onReachedBottomRef = useRef(onReachedBottomWithTarget);
@@ -163,6 +169,7 @@ export function useTranscriptScroll({
     if (!el) return;
     const threshold = 40;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    lastScrollTopRef.current = el.scrollTop;
     if (!(atBottom && Date.now() < autoScrollLockUntilRef.current)) {
       isAtBottomRef.current = atBottom;
     }
@@ -212,7 +219,41 @@ export function useTranscriptScroll({
       });
     });
     return () => cancelAnimationFrame(raf);
-  }, [feed, extraFeed, subagentFeed, activeTab]);
+  }, [feed, extraFeed, subagentFeed]);
+
+  // Back on a tab that shows the transcript: restore where the user was. At the
+  // bottom → stay pinned there while late content (markdown, images, code) grows
+  // the feed; scrolled up → return to that offset. Two frames after a single
+  // scroll-to-bottom were not enough, so the view landed above the end.
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el) return;
+    const wasAtBottom = isAtBottomRef.current;
+    const target = lastScrollTopRef.current;
+    let userMoved = false;
+    const apply = () => {
+      if (userMoved) return;
+      if (wasAtBottom) el.scrollTop = Number.MAX_SAFE_INTEGER;
+      else el.scrollTop = target;
+    };
+    apply();
+    // The container holds several blocks (watch list, feed…) — watch each.
+    const ro = new ResizeObserver(apply);
+    for (const child of Array.from(el.children)) ro.observe(child);
+    // Any user scroll input ends the restore.
+    const stop = () => { userMoved = true; };
+    el.addEventListener('wheel', stop, { passive: true });
+    el.addEventListener('touchstart', stop, { passive: true });
+    el.addEventListener('keydown', stop);
+    const done = setTimeout(() => ro.disconnect(), RESTORE_WINDOW_MS);
+    return () => {
+      clearTimeout(done);
+      ro.disconnect();
+      el.removeEventListener('wheel', stop);
+      el.removeEventListener('touchstart', stop);
+      el.removeEventListener('keydown', stop);
+    };
+  }, [activeTab]);
 
   // Force scroll to bottom when user sends a message
   useEffect(() => {
