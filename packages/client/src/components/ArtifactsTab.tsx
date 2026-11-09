@@ -3,6 +3,7 @@ import type { Artifact, ArtifactKind, ArtifactStatus } from '../types';
 import { useArtifacts } from '../hooks/useArtifacts';
 import { renderMarkdown } from '../lib/markdown';
 import styles from './ArtifactsTab.module.css';
+import { RichMarkdownPane } from './FileEditorOverlay';
 
 const STATUS_OPTIONS: ArtifactStatus[] = ['draft', 'active', 'done', 'archived'];
 
@@ -40,7 +41,8 @@ export function ArtifactsTab({ overlordId }: { overlordId: string | undefined })
   const [activeKind, setActiveKind] = useState<ArtifactKind>('plan');
   const { artifacts, isLoading, error, createArtifact, updateArtifact, deleteArtifact } = useArtifacts(overlordId, activeKind);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [mode, setMode] = useState<'edit' | 'preview'>('edit');
+  // Rich text by default; markdown source and a read-only preview on request.
+  const [mode, setMode] = useState<'rich' | 'edit' | 'preview'>('rich');
   const [titleDraft, setTitleDraft] = useState('');
   const [bodyDraft, setBodyDraft] = useState('');
   const [statusDraft, setStatusDraft] = useState<ArtifactStatus>('draft');
@@ -144,7 +146,7 @@ export function ArtifactsTab({ overlordId }: { overlordId: string | undefined })
     const artifact = await createArtifact({ title: defaultTitle, body: '', status: 'draft', kind: activeKind });
     if (artifact) {
       setSelectedId(artifact.artifactId);
-      setMode('edit');
+      setMode('rich');
     }
   };
 
@@ -258,10 +260,16 @@ export function ArtifactsTab({ overlordId }: { overlordId: string | undefined })
             <div className={styles.editorBody}>
               <div className={styles.modeRow}>
                 <button
+                  className={`${styles.modeBtn} ${mode === 'rich' ? styles.modeBtnActive : ''}`}
+                  onClick={() => setMode('rich')}
+                >
+                  Rich
+                </button>
+                <button
                   className={`${styles.modeBtn} ${mode === 'edit' ? styles.modeBtnActive : ''}`}
                   onClick={() => setMode('edit')}
                 >
-                  Edit
+                  Markdown
                 </button>
                 <button
                   className={`${styles.modeBtn} ${mode === 'preview' ? styles.modeBtnActive : ''}`}
@@ -279,7 +287,15 @@ export function ArtifactsTab({ overlordId }: { overlordId: string | undefined })
                         : `Saved ${formatUpdatedAt(selected.updatedAt)}`}
                 </span>
               </div>
-              {mode === 'edit' ? (
+              {mode === 'rich' ? (
+                <RichMarkdownPane
+                  key={selected.artifactId}
+                  className={styles.richBody}
+                  content={bodyDraft}
+                  onChange={handleBodyChange}
+                  placeholder="Write here… bold, bullets, links"
+                />
+              ) : mode === 'edit' ? (
                 <textarea
                   className={styles.bodyTextarea}
                   value={bodyDraft}

@@ -415,3 +415,13 @@
   border-radius: 6px;
   font-size: 12px;
 }
+
+/* Rich-text body: same frame as the textarea and preview. */
+.richBody {
+  flex: 1;
+  min-height: 0;
+  background: #0a0a0a;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+}

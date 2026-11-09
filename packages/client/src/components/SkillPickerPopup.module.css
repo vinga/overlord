@@ -481,3 +481,18 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Rich editor frame — same box as the source textarea. */
+.richEditor {
+  flex: 1;
+  min-height: 240px;
+  overflow: hidden;
+  background: #0a0a0a;
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+}
+
+.modeOn {
+  border-color: rgba(212, 175, 55, 0.45);
+  color: #f2dc8c;
+}

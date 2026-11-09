@@ -592,3 +592,26 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* Autosave status next to the editor's mode buttons. */
+.editStatus {
+  margin-right: auto;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.modeOn {
+  border-color: rgba(212, 175, 55, 0.45);
+  color: #f2dc8c;
+}
+
+/* Rich editor frame — same box as the source textarea. */
+.richEdit {
+  height: 420px;
+  min-height: 240px;
+  resize: vertical;
+  overflow: hidden;
+  background: #0a0a0a;
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+}

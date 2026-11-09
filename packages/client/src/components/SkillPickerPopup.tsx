@@ -1,6 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import styles from './SkillPickerPopup.module.css';
 import { renderMarkdown, stripFrontmatter } from '../lib/markdown';
+import { RichMarkdownPane } from './FileEditorOverlay';
+
+const SKILL_AUTOSAVE_MS = 800;
+const SKILL_EDIT_MODE_KEY = 'overlord.skillEditMode';
+const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+type SkillEditMode = 'rich' | 'markdown';
+function loadSkillEditMode(): SkillEditMode {
+  try { return localStorage.getItem(SKILL_EDIT_MODE_KEY) === 'markdown' ? 'markdown' : 'rich'; } catch { return 'rich'; }
+}
 
 interface Skill {
   name: string;
@@ -56,6 +65,11 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState<SkillEditMode>(loadSkillEditMode);
+  // Autosave: what is on disk, and the debounce in flight.
+  const savedRef = useRef('');
+  const draftRef = useRef('');
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [saveFlash, setSaveFlash] = useState(false);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -147,35 +161,32 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
 
   useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
 
-  const isDirty = editing && draft !== (content ?? '');
+  draftRef.current = draft;
+  const isDirty = editing && draft !== savedRef.current;
 
   const startEdit = useCallback(() => {
     if (content === null) return;
     setDraft(content);
+    savedRef.current = content;
     setSaveError(null);
     setEditing(true);
   }, [content]);
 
-  const cancelEdit = useCallback(() => {
-    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
-    setEditing(false);
-    setSaveError(null);
-  }, [isDirty]);
-
-  const save = useCallback(async () => {
-    if (!picked?.path || saving) return;
+  const persist = useCallback(async (value: string) => {
+    const path = picked?.path;
+    if (!path || value === savedRef.current) return;
     setSaving(true);
     setSaveError(null);
     try {
       const res = await fetch('/api/file', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: picked.path, content: draft }),
+        body: JSON.stringify({ path, content: value }),
       });
       if (res.status === 403) throw new Error('file is read-only');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setContent(draft);
-      setEditing(false);
+      savedRef.current = value;
+      setContent(value);
       setSaveFlash(true);
       if (flashTimer.current) clearTimeout(flashTimer.current);
       flashTimer.current = setTimeout(() => setSaveFlash(false), 2000);
@@ -184,7 +195,37 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
     } finally {
       setSaving(false);
     }
-  }, [picked, draft, saving]);
+  }, [picked]);
+
+  /** Save what is pending now (blur, ⌘S, leaving the editor). */
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    if (draftRef.current !== savedRef.current) void persist(draftRef.current);
+  }, [persist]);
+
+  useEffect(() => {
+    if (!editing || draft === savedRef.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { saveTimer.current = null; void persist(draft); }, SKILL_AUTOSAVE_MS);
+  }, [draft, editing, persist]);
+
+  const flushRef = useRef(flushSave);
+  flushRef.current = flushSave;
+  useEffect(() => () => flushRef.current(), []);
+
+  // Autosaved — leaving the editor keeps the edits.
+  const cancelEdit = useCallback(() => {
+    flushSave();
+    setEditing(false);
+  }, [flushSave]);
+
+  const switchEditMode = (next: SkillEditMode) => {
+    setEditMode(next);
+    try { localStorage.setItem(SKILL_EDIT_MODE_KEY, next); } catch { /* per-viewer convenience */ }
+  };
+
+  // Rich mode edits the body only; the frontmatter (name, description) stays verbatim.
+  const frontmatter = draft.match(FRONTMATTER_RE)?.[0] ?? '';
 
   // Project (local, this repo) skills rank first, then user (global), then plugins.
   const sourceRank = (s?: string) => (s === 'project' ? 0 : s === 'user' ? 1 : 2);
@@ -221,10 +262,10 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
   }, []);
 
   const back = useCallback(() => {
-    if (editing && isDirty && !window.confirm('Discard unsaved changes?')) return;
+    if (editing) flushSave();
     setEditing(false);
     setPicked(null);
-  }, [editing, isDirty]);
+  }, [editing, flushSave]);
 
   const moveSelection = useCallback(
     (dir: 1 | -1) => {
@@ -267,12 +308,12 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
 
   const handleBackdrop = (e: React.MouseEvent) => {
     if (e.target !== e.currentTarget) return;
-    if (isDirty && !window.confirm('Discard unsaved changes?')) return;
+    if (editing) flushSave();
     onClose();
   };
 
-  const onEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); void save(); }
+  const onEditorKeyDown = (e: React.KeyboardEvent) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); flushSave(); }
   };
 
   const title = mode === 'view'
@@ -380,13 +421,23 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(stripFrontmatter(content)) }}
                 />
               )}
-              {editing && (
+              {editing && editMode === 'rich' && (
+                <div className={styles.richEditor} onKeyDown={onEditorKeyDown} onBlur={flushSave}>
+                  <RichMarkdownPane
+                    content={draft.slice(frontmatter.length)}
+                    onChange={md => setDraft(frontmatter + md)}
+                    placeholder="Empty skill"
+                  />
+                </div>
+              )}
+              {editing && editMode === 'markdown' && (
                 <textarea
                   ref={editorRef}
                   className={styles.editor}
                   value={draft}
                   onChange={e => setDraft(e.target.value)}
                   onKeyDown={onEditorKeyDown}
+                  onBlur={flushSave}
                   spellCheck={false}
                 />
               )}
@@ -396,11 +447,10 @@ export function SkillPickerPopup({ cwd, onPick, onClose, initialSkill, mode = 'i
             <div className={styles.footer}>
               {editing ? (
                 <div className={styles.footerBtns}>
-                  <span className={styles.footerHint}>⌘S to save</span>
-                  <button className={styles.cancelBtn} onClick={cancelEdit}>Cancel</button>
-                  <button className={styles.insertBtn} onClick={() => void save()} disabled={!isDirty || saving}>
-                    {saving ? 'Saving…' : 'Save'}
-                  </button>
+                  <span className={styles.footerHint}>{saving ? 'Saving…' : isDirty ? 'Unsaved' : 'Saved'}</span>
+                  <button className={`${styles.cancelBtn} ${editMode === 'rich' ? styles.modeOn : ''}`} onClick={() => switchEditMode('rich')}>Rich</button>
+                  <button className={`${styles.cancelBtn} ${editMode === 'markdown' ? styles.modeOn : ''}`} onClick={() => switchEditMode('markdown')}>Markdown</button>
+                  <button className={styles.insertBtn} onClick={cancelEdit}>Done</button>
                 </div>
               ) : (
                 <>

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { renderMarkdown, stripFrontmatter } from '../lib/markdown';
 import styles from './BrainTab.module.css';
+import { RichMarkdownPane } from './FileEditorOverlay';
 
 type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'unknown';
 
@@ -579,6 +580,14 @@ function EffortCard({ effort, open, onToggle }: {
   );
 }
 
+const BRAIN_AUTOSAVE_MS = 800;
+const BRAIN_EDIT_MODE_KEY = 'overlord.brainEditMode';
+const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+type BrainEditMode = 'rich' | 'markdown';
+function loadBrainEditMode(): BrainEditMode {
+  try { return localStorage.getItem(BRAIN_EDIT_MODE_KEY) === 'markdown' ? 'markdown' : 'rich'; } catch { return 'rich'; }
+}
+
 function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggle, fileState, editable, onSave, onDelete, asMarkdown }: {
   path: string;
   name?: string;
@@ -597,12 +606,49 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState<BrainEditMode>(loadBrainEditMode);
+  // Autosave: what is on disk, and the debounce in flight.
+  const savedRef = useRef('');
+  const draftRef = useRef('');
+  draftRef.current = draft;
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [armed, setArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const persist = useCallback(async (value: string) => {
+    if (!onSave || value === savedRef.current) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(value);
+      savedRef.current = value;
+    } catch (err) {
+      setSaveError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }, [onSave]);
+
+  const flushSave = useCallback(() => {
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    if (draftRef.current !== savedRef.current) void persist(draftRef.current);
+  }, [persist]);
+
+  useEffect(() => {
+    if (!editing || draft === savedRef.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { saveTimer.current = null; void persist(draft); }, BRAIN_AUTOSAVE_MS);
+  }, [draft, editing, persist]);
+
+  // Leaving the row (collapse / unmount) saves what is pending.
+  const flushRef = useRef(flushSave);
+  flushRef.current = flushSave;
+  useEffect(() => () => flushRef.current(), []);
+
   useEffect(() => {
     if (!expanded) {
+      if (editing) flushSave();
       setEditing(false);
       setSaveError(null);
       setArmed(false);
@@ -616,28 +662,24 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
   const startEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
     setDraft(content ?? '');
+    savedRef.current = content ?? '';
     setSaveError(null);
     setEditing(true);
   };
 
-  const cancelEdit = () => {
+  const finishEdit = () => {
+    flushSave();
     setEditing(false);
-    setSaveError(null);
   };
 
-  const commitSave = async () => {
-    if (!onSave) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      await onSave(draft);
-      setEditing(false);
-    } catch (err) {
-      setSaveError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
+  const switchEditMode = (next: BrainEditMode) => {
+    setEditMode(next);
+    try { localStorage.setItem(BRAIN_EDIT_MODE_KEY, next); } catch { /* per-viewer convenience */ }
   };
+
+  // Rich mode edits the body only; the frontmatter (memory metadata) is kept verbatim.
+  const frontmatter = draft.match(FRONTMATTER_RE)?.[0] ?? '';
+  const body = draft.slice(frontmatter.length);
 
   const commitDelete = async () => {
     if (!onDelete) return;
@@ -718,20 +760,31 @@ function FileRow({ path, name, secondary, metaLeft, metaRight, expanded, onToggl
           )}
           {content !== null && editing && (
             <>
-              <textarea
-                className={styles.editTextarea}
-                value={draft}
-                onChange={e => setDraft(e.target.value)}
-                spellCheck={false}
-                disabled={saving}
-              />
               <div className={styles.editActions}>
-                {saveError && <span className={styles.editError}>Error: {saveError}</span>}
-                <button className={styles.refreshBtn} onClick={cancelEdit} disabled={saving}>Cancel</button>
-                <button className={styles.refreshBtn} onClick={() => void commitSave()} disabled={saving}>
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
+                {saveError
+                  ? <span className={styles.editError}>Error: {saveError}</span>
+                  : <span className={styles.editStatus}>{saving ? 'Saving…' : draft === savedRef.current ? 'Saved' : 'Unsaved'}</span>}
+                <button className={`${styles.refreshBtn} ${editMode === 'rich' ? styles.modeOn : ''}`} onClick={() => switchEditMode('rich')}>Rich</button>
+                <button className={`${styles.refreshBtn} ${editMode === 'markdown' ? styles.modeOn : ''}`} onClick={() => switchEditMode('markdown')}>Markdown</button>
+                <button className={styles.refreshBtn} onClick={finishEdit}>Done</button>
               </div>
+              {editMode === 'rich' ? (
+                <div className={styles.richEdit} onBlur={flushSave}>
+                  <RichMarkdownPane
+                    content={body}
+                    onChange={md => setDraft(frontmatter + md)}
+                    placeholder="Empty file"
+                  />
+                </div>
+              ) : (
+                <textarea
+                  className={styles.editTextarea}
+                  value={draft}
+                  onChange={e => setDraft(e.target.value)}
+                  onBlur={flushSave}
+                  spellCheck={false}
+                />
+              )}
             </>
           )}
         </div>
