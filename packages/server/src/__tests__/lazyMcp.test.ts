@@ -152,3 +152,17 @@ describe('claudeJsonServerNames', () => {
     expect(names.get('other')).toEqual(['/p']);
   });
 });
+
+describe('command resolution', () => {
+  it('resolves a symlinked PATH dir to its real location', () => {
+    const real = path.join(tmp, 'real-bin');
+    fs.mkdirSync(real);
+    fs.writeFileSync(path.join(real, 'fake-mcp'), '#!/bin/sh\n', { mode: 0o755 });
+    const link = path.join(tmp, 'shell-bin');
+    fs.symlinkSync(real, link);
+    vi.stubEnv('PATH', link);
+    const cfg = resolveLazyMcp({ enabled: true, servers: { 'chrome-devtools': { command: 'fake-mcp', browser: 'none' } } });
+    const args = buildMcpConfig(cfg, '/bin/shim', '/d').mcpServers['chrome-devtools'].args;
+    expect(args[args.indexOf('--') + 1]).toBe(path.join(fs.realpathSync(real), 'fake-mcp'));
+  });
+});

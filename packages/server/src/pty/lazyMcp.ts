@@ -46,7 +46,10 @@ function resolveOnPath(cmd: string): string {
       const candidate = path.join(dir, cmd + ext);
       try {
         fs.accessSync(candidate, fs.constants.X_OK);
-        return candidate;
+        // Resolve the directory, not the file: version managers put a per-shell
+        // symlinked bin dir on PATH (fnm_multishells/<id>) that can vanish with
+        // that shell. The file stays as named, so npm's bin shim still runs.
+        return path.join(fs.realpathSync(dir), cmd + ext);
       } catch { /* keep looking */ }
     }
   }
