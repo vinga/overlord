@@ -3,7 +3,34 @@ import {
   shouldUseExtraEnter,
   scheduleInject,
   computeFirstEnterDelay,
+  bracketForPty,
 } from '../pty/injectScheduler.js';
+
+// ── bracketForPty ─────────────────────────────────────────────────────────────
+
+describe('bracketForPty', () => {
+  it('leaves short single-line text as typed keystrokes', () => {
+    expect(bracketForPty('tak', false)).toBe('tak');
+    expect(bracketForPty('/clear', false)).toBe('/clear');
+  });
+
+  it('brackets multi-line text as one paste', () => {
+    expect(bracketForPty('a\nb', false)).toBe('\x1b[200~a\nb\x1b[201~');
+  });
+
+  it('brackets long single-line text that would straddle a tty read', () => {
+    const long = 'x'.repeat(1300);
+    expect(bracketForPty(long, false)).toBe(`\x1b[200~${long}\x1b[201~`);
+  });
+
+  it('keeps @file text unbracketed so autocomplete still fires', () => {
+    expect(bracketForPty('see @a.png\nmore', true)).toBe('see @a.png\nmore');
+  });
+
+  it('strips an embedded end marker so the paste cannot close early', () => {
+    expect(bracketForPty('a\x1b[201~\nb', false)).toBe('\x1b[200~a\nb\x1b[201~');
+  });
+});
 
 // ── shouldUseExtraEnter ───────────────────────────────────────────────────────
 

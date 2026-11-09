@@ -24,6 +24,26 @@ export function computeFirstEnterDelay(text: string, extraEnter: boolean, autoSe
   return extraEnter ? autoSelectMs : Math.min(600, Math.max(150, text.length));
 }
 
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+/** Above this many bytes, unbracketed text can straddle a tty read. */
+const BRACKET_MIN_BYTES = 512;
+
+/**
+ * Wraps multi-line or long text in a bracketed paste for a PTY write.
+ *
+ * The tty hands the TUI at most ~1 KB per read. Unbracketed, a longer write
+ * arrives as several reads, and Claude Code kept only the last one — the
+ * "Generate a title" prompt (1.3 KB) reached the agent as its final 260
+ * chars. Paste markers make the TUI buffer every read until the end marker.
+ * `@file` text (extraEnter) stays unbracketed: autocomplete needs keystrokes.
+ */
+export function bracketForPty(text: string, extraEnter: boolean): string {
+  if (extraEnter) return text;
+  if (!text.includes('\n') && Buffer.byteLength(text) <= BRACKET_MIN_BYTES) return text;
+  return PASTE_START + text.split(PASTE_END).join('') + PASTE_END;
+}
+
 /**
  * Injects text into a synchronous-write target (PTY stdin) using the two-step
  * text/\r split that React Ink requires, with a three-step sequence for
@@ -55,7 +75,7 @@ export function scheduleInject(
   autoSelectMs = 400,
   submitMs = 300,
 ): void {
-  if (!write(text)) {
+  if (!write(bracketForPty(text, extraEnter))) {
     onWriteFail(text, true);
     return;
   }
