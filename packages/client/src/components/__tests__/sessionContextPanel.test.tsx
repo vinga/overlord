@@ -27,14 +27,18 @@ afterEach(() => {
 });
 
 describe('workspace context', () => {
-  it('shows the selected session ticket, PR, plan body and pins', async () => {
+  it('shows the selected session ticket, PR, plan card and pins; the plan body opens in a dialog', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ artifact: { body: '# Steps\nBuild the feature. <script>bad()</script>' } }) })));
     await act(async () => root.render(<SessionContextPanel session={session} room={room} jiraBaseUrl="https://jira.example.com" />));
     expect(container.querySelector('a[href="https://jira.example.com/browse/ABC-12"]')).not.toBeNull();
     expect(container.querySelector('a[href="https://github.com/org/repo/pull/34"]')).not.toBeNull();
     expect(container.querySelector('a[href="https://example.com/design"]')).not.toBeNull();
-    expect(container.textContent).toContain('Build the feature.');
-    expect(container.querySelector('script')).toBeNull();
+    // The card shows the title only; the body lives in the dialog.
+    expect(container.textContent).not.toContain('Build the feature.');
+    act(() => { container.querySelector<HTMLButtonElement>('button[title="Open plan"]')!.click(); });
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('Build the feature.');
+    expect(dialog.querySelector('script')).toBeNull();
   });
 
   it('reserves an empty space for a selected room and clears the session context', async () => {

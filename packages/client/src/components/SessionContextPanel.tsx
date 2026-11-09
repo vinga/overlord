@@ -77,8 +77,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
     const matches = (p: typeof sessionPins[number]) => kind === 'other'
       ? p.kind !== 'ticket' && p.kind !== 'pr' : p.kind === kind;
     return <>
-      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} />
-      {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} />}
+      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />
+      {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
     </>;
   };
   const roomPr = room?.pullRequest;
@@ -91,13 +91,13 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   return (
     <aside className={styles.panel} aria-label="Session context">
       <section className={styles.card} aria-label="Ticket">
-        <h3>Ticket</h3>
+        <h3 className={styles.sectionHead}>Ticket<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         <JiraChips keys={tickets} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card />
         {pinsOfKind('ticket')}
         {!tickets.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
       </section>
       <section className={styles.card} aria-label="Pull requests">
-        <h3>PR</h3>
+        <h3 className={styles.sectionHead}>PR<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         <PrChips refs={prs} card sessionId={session.sessionId} />
         {pinsOfKind('pr')}
         {/* The room's branch PR, drawn as the same card as PrChips. */}
@@ -141,9 +141,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
         </> : <p className={styles.muted}>No plan attached</p>}
       </section>
       <section className={styles.card} aria-label="Pins">
-        <h3>Pins</h3>
+        <h3 className={styles.sectionHead}>Pins<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         {pinsOfKind('other')}
-        {!sessionPins.some(p => p.kind !== 'ticket' && p.kind !== 'pr') && <PinAdder overlordId={id} />}
       </section>
     </aside>
   );

@@ -341,6 +341,8 @@ type Props = {
   multiline?: boolean;
   /** Session whose title/icon a double-clicked ticket chip sets. */
   adoptSessionId?: string;
+  /** No trailing + (the caller shows its own adder, e.g. in a section heading). */
+  hideAdder?: boolean;
 } & (
   | { overlordId: string; cwd?: undefined }
   | { cwd: string; overlordId?: undefined }
@@ -349,7 +351,7 @@ type Props = {
 /** Links pinned to a room — one wrapping row of chips above the tab bar.
  *  Hidden when empty (the first pin is added via the CLI). The snapshot
  *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, overlordId, cwd }: Props) {
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, hideAdder = false, overlordId, cwd }: Props) {
   const pins = useMemo(() => {
     if (!allPins || !hide) return allPins;
     const hidden = new Set(hide.split('\n'));
@@ -381,7 +383,7 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multilin
             />
           );
         })}
-        <PinAdder overlordId={overlordId} cwd={cwd} />
+        {!hideAdder && <PinAdder overlordId={overlordId} cwd={cwd} />}
       </div>
     </div>
   );
