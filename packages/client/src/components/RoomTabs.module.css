@@ -270,6 +270,21 @@
   white-space: nowrap;
 }
 
+/* A session with a picked colour: its name takes a faint wash of it —
+   mostly white, just enough to tell the hue apart. */
+.tinted .sessionName {
+  color: color-mix(in srgb, var(--tint) 28%, #ececf2);
+}
+
+.tinted:hover .sessionName,
+.tinted:focus-visible .sessionName {
+  color: color-mix(in srgb, var(--tint) 22%, #fff);
+}
+
+.selected.tinted .sessionName {
+  color: inherit;
+}
+
 /* Open session: gold, like the active room chip. */
 .selected,
 .selected:hover {

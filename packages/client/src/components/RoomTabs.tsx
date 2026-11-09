@@ -36,6 +36,8 @@ interface SessionDot {
   status: DotStatus;
   /** Background command, Monitor watch, or scheduled wakeup in flight. */
   background: boolean;
+  /** The session's colour when you picked one — unset for the default orange. */
+  tint?: string;
 }
 
 interface TabInfo {
@@ -45,6 +47,11 @@ interface TabInfo {
   waiting: number;
   sessions: SessionDot[];
 }
+
+/** The default worker orange (hue 30, saturation 75%) at any lightness. */
+const DEFAULT_COLOR_RE = /^hsl\(\s*30(?:\.0+)?\s*,\s*75(?:\.0+)?%/;
+const customTint = (color: string | undefined) =>
+  color && !DEFAULT_COLOR_RE.test(color) ? color : undefined;
 
 const isWaiting = (s: Session) => isAgent(s) && s.state === 'waiting' && s.review == null;
 const dotId = (s: Session) => s.overlordId ?? s.sessionId;
@@ -70,6 +77,7 @@ function sessionDots(sessions: Session[], customNames: Record<string, string>): 
       name: customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? s.sessionId.slice(0, 8),
       status,
       background: hasBackground(s),
+      tint: customTint(s.color),
     });
   }
   return out;
@@ -216,7 +224,9 @@ export const RoomTabs = React.memo(function RoomTabs({
                     styles.session,
                     styles[d.status],
                     selectedSessionId === d.id || selectedSessionId === d.sessionId ? styles.selected : '',
+                    d.tint ? styles.tinted : '',
                   ].filter(Boolean).join(' ')}
+                  style={d.tint ? ({ '--tint': d.tint } as React.CSSProperties) : undefined}
                   title={`${d.name} — ${STATUS_LABEL[d.status]}${d.background ? ' · background task running' : ''}`}
                   draggable={false}
                   onClick={(e) => { e.stopPropagation(); openSession(t.id, d.sessionId); }}
