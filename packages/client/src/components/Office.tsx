@@ -209,7 +209,6 @@ function formatUpdatedAt(updatedAt: string): string {
   }
 }
 
-const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
 export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, onOpenRoom, selectedRoomId, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onFastSession, onOpenAdvancedSearch, platform = 'darwin', headerExtra, archiveCounts, contextPanel }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
@@ -279,16 +278,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       })
       .catch((err: Error) => settle({ error: err.message || 'request failed' }));
   }, []);
-  const [activeOnly, setActiveOnly] = useState<boolean>(() => {
-    try { return localStorage.getItem(ACTIVE_ONLY_STORAGE_KEY) === '1'; } catch { return false; }
-  });
-  const toggleActiveOnly = useCallback(() => {
-    setActiveOnly(prev => {
-      const next = !prev;
-      try { localStorage.setItem(ACTIVE_ONLY_STORAGE_KEY, next ? '1' : '0'); } catch { /* ignore */ }
-      return next;
-    });
-  }, []);
 
   const jiraMeta = snapshot?.jiraMeta;
   const sessionMatches = useCallback((s: Session, q: string): boolean => {
@@ -323,14 +312,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     if (!q) {
       filtered = filtered.filter(room => !hiddenMap[room.id]);
     }
-    if (activeOnly) {
-      // Closed sessions leave; the room itself stays (unless hidden), even
-      // when nothing in it is active.
-      filtered = filtered.map(room => {
-        if (!room.sessions.some(s => s.state === 'closed')) return room;
-        return { ...room, sessions: room.sessions.filter(s => s.state !== 'closed') };
-      });
-    }
     if (q) {
       filtered = filtered
         .map(room => {
@@ -348,7 +329,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
         .filter((r): r is NonNullable<typeof r> => r !== null);
     }
     return sortRooms(filtered);
-  }, [rooms, sortRooms, filterQuery, sessionMatches, activeOnly, hiddenMap]));
+  }, [rooms, sortRooms, filterQuery, sessionMatches, hiddenMap]));
 
   // `hiddenRooms` drives the pill list (session-less rooms have nothing to show).
   // `allHiddenRooms` is what "Show all" must operate on: unhideAll only clears the
@@ -568,18 +549,6 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
           onUnhide={unhide}
           onUnhideAll={() => unhideAll(allHiddenRooms)}
         />
-        <button
-          className={`${styles.advSearchBtn} ${activeOnly ? styles.headerToggleOn : ''}`}
-          onClick={toggleActiveOnly}
-          aria-pressed={activeOnly}
-          title={activeOnly ? 'Active sessions only — click to show all sessions' : 'Show active sessions only'}
-          aria-label="Active sessions only"
-        >
-          <svg viewBox="0 0 16 16" fill="none" width="14" height="14">
-            <circle cx="8" cy="8" r="2.6" fill="currentColor" />
-            <circle cx="8" cy="8" r="5.6" stroke="currentColor" strokeWidth="1.4" strokeOpacity={activeOnly ? 1 : 0.55} />
-          </svg>
-        </button>
         {onFastSession && (
           <button
             className={styles.advSearchBtn}
