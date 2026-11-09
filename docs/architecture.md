@@ -270,7 +270,7 @@ MCP servers that most sessions never call — `chrome-devtools-mcp` was ~100 MB
 per idle session.
 
 ```
-claude ──stdio──▶ overlord-lazy-mcp ──(first tools/call)──▶ chrome-devtools-mcp ──CDP──▶ Chrome :9222
+claude ──stdio──▶ overlord-lazy-mcp ──(first tools/call)──▶ chrome-devtools-mcp ──CDP──▶ Chrome :9223
                   answers initialize + tools/list               one per session        shared, started on demand
                   from <name>.cache.json
 ```
@@ -293,8 +293,10 @@ claude ──stdio──▶ overlord-lazy-mcp ──(first tools/call)──▶ 
 - **Browser modes** (per server): `shared` → `--browserUrl` + shim launches
   Chrome detached on `sharedBrowser.port` / `userDataDir` (default
   `~/.cache/overlord-chrome`) if nothing answers; it survives sessions and
-  Overlord restarts, logins are shared. `isolated` → `--isolated`. `none` →
-  args as-is.
+  Overlord restarts, logins are shared. Default port 9223, not 9222: a normal
+  Chrome with remote debugging on (chrome://inspect) holds 9222 and 404s
+  `/json/version`; the shim reports such a port as taken instead of launching.
+  `isolated` → `--isolated`. `none` → args as-is.
 - **Status.** `GET /api/lazy-mcp` — one `ps` per request, never on a timer:
   shim count, how many started the real server, cache presence, same-named
   entries in `~/.claude.json`.

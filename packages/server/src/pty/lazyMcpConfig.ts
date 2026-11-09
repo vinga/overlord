@@ -39,7 +39,8 @@ export interface LazyMcpStored {
 }
 
 const DEFAULT_SHARED_BROWSER: LazyMcpSharedBrowser = {
-  port: 9222,
+  // Not 9222: a normal Chrome with remote debugging switched on takes that one.
+  port: 9223,
   userDataDir: '~/.cache/overlord-chrome',
   chromePath: process.platform === 'darwin'
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'

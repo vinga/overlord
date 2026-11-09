@@ -92,7 +92,7 @@ export function LazyMcpSettings({ settings, onUpdate }: Props) {
       )}
 
       {status && Object.entries(status.servers).map(([name, s]) => {
-        const sharedPort = String(stored.servers?.[name]?.sharedBrowser?.port ?? 9222);
+        const sharedPort = String(stored.servers?.[name]?.sharedBrowser?.port ?? 9223);
         const portDraft = ports[name] ?? sharedPort;
         const commitPort = () => {
           const n = Number(portDraft);
@@ -152,7 +152,7 @@ export function LazyMcpSettings({ settings, onUpdate }: Props) {
                   Remote debugging port. If a debuggable Chrome already answers there, it is used as is.
                 </span>
                 <input
-                  className={styles.input}
+                  className={`${styles.input} ${styles.inputNarrow}`}
                   type="number"
                   min={1024}
                   max={65535}

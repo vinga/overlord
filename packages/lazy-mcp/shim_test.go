@@ -244,3 +244,14 @@ func TestEnsureChromeSkipsWhenPortAnswers(t *testing.T) {
 		t.Fatal("dead port with bogus chrome must fail")
 	}
 }
+
+func TestEnsureChromeRefusesTakenPort(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	go http.Serve(ln, http.NotFoundHandler())
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	err := ensureChrome(chromeSpec{Port: port, UserDataDir: t.TempDir(), Path: "/nonexistent/chrome"}, t.Logf)
+	if err == nil || !strings.Contains(err.Error(), "not a debuggable Chrome") {
+		t.Fatalf("want taken-port error, got %v", err)
+	}
+}

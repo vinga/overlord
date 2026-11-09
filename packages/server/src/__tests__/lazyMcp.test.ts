@@ -93,9 +93,9 @@ describe('buildMcpConfig', () => {
     const sep = entry.args.indexOf('--');
     const shimArgs = entry.args.slice(0, sep);
     const realArgs = entry.args.slice(sep + 2);
-    expect(shimArgs).toEqual(expect.arrayContaining(['--name', 'chrome-devtools', '--chrome-port', '9222', '--cache', '/d/chrome-devtools.cache.json']));
+    expect(shimArgs).toEqual(expect.arrayContaining(['--name', 'chrome-devtools', '--chrome-port', '9223', '--cache', '/d/chrome-devtools.cache.json']));
     expect(shimArgs[shimArgs.indexOf('--chrome-user-data-dir') + 1]).toBe(path.join(tmp, '.cache/overlord-chrome'));
-    expect(realArgs).toEqual(['--no-usage-statistics', '--browserUrl', 'http://127.0.0.1:9222']);
+    expect(realArgs).toEqual(['--no-usage-statistics', '--browserUrl', 'http://127.0.0.1:9223']);
   });
 
   it('isolated mode adds --isolated and no Chrome launch', () => {

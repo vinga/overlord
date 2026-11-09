@@ -14,23 +14,42 @@ type chromeSpec struct {
 	Path        string
 }
 
-func chromeUp(port int) bool {
+type portState int
+
+const (
+	portFree portState = iota
+	portChrome
+	// portTaken: something answers but not with the DevTools HTTP endpoint —
+	// e.g. a normal Chrome with remote debugging switched on in
+	// chrome://inspect, which serves only a WebSocket and 404s /json/version.
+	portTaken
+)
+
+func probePort(port int) portState {
 	client := http.Client{Timeout: 700 * time.Millisecond}
 	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/json/version", port))
 	if err != nil {
-		return false
+		return portFree
 	}
 	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode == http.StatusOK {
+		return portChrome
+	}
+	return portTaken
 }
+
+func chromeUp(port int) bool { return probePort(port) == portChrome }
 
 // ensureChrome makes sure a debuggable Chrome answers on spec.Port, launching
 // one on spec.UserDataDir if nothing does. The browser is started in its own
 // session so it outlives this shim and the Claude session that triggered it:
 // every session pointed at the same port shares it, including its logins.
 func ensureChrome(spec chromeSpec, logf func(string, ...any)) error {
-	if chromeUp(spec.Port) {
+	switch probePort(spec.Port) {
+	case portChrome:
 		return nil
+	case portTaken:
+		return fmt.Errorf("port %d is used by another process that is not a debuggable Chrome (your own Chrome with remote debugging on?); pick another port", spec.Port)
 	}
 	if err := os.MkdirAll(spec.UserDataDir, 0o755); err != nil {
 		return fmt.Errorf("user data dir: %w", err)

@@ -485,6 +485,10 @@
   box-sizing: border-box;
 }
 
+.inputNarrow {
+  max-width: 140px;
+}
+
 .input:focus {
   border-color: rgba(212, 175, 55, 0.55);
   background: rgba(255, 255, 255, 0.07);
