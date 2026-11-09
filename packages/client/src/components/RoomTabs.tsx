@@ -8,6 +8,9 @@ import styles from './RoomTabs.module.css';
 
 interface RoomTabsProps {
   rooms: Room[];
+  archiveCounts?: Record<string, number>;
+  sessionCounts?: Record<string, number>;
+  onHide?: (roomId: string, cwd: string) => void;
   /** The scrolling grid container — tabs scroll it and track which room is on top. */
   scrollRef: React.RefObject<HTMLDivElement>;
   /** Drag-to-reorder: moves `draggedId` in front of `targetId` (shared room order). */
@@ -97,7 +100,7 @@ function roomEl(container: HTMLElement, id: string): HTMLElement | null {
 const NO_NAMES: Record<string, string> = {};
 
 export const RoomTabs = React.memo(function RoomTabs({
-  rooms, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false,
+  rooms, archiveCounts, sessionCounts, onHide, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false,
 }: RoomTabsProps) {
   // Session dots follow the desk order inside each room (drag order, then oldest first).
   const { getOrder } = useRoomOrder();
@@ -159,7 +162,7 @@ export const RoomTabs = React.memo(function RoomTabs({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const endDrag = () => { setDraggedId(null); setDropTargetId(null); };
 
-  if (tabs.length < 2) return null;
+  if (tabs.length === 0) return null;
 
   const jump = (id: string) => {
     const container = scrollRef.current;
@@ -211,9 +214,17 @@ export const RoomTabs = React.memo(function RoomTabs({
           onDragEnd={endDrag}
         >
           {/* The badge is an overlay, so state changes never shift tab widths. */}
-          <button type="button" className={styles.tabBtn} title={`${t.cwd}\nDrag to reorder`}>
+          <button type="button" className={styles.tabBtn} title={`${t.cwd}\n${(sessionCounts?.[t.id] ?? rooms.find(r => r.id === t.id)?.sessions.length ?? 0) + (archiveCounts?.[t.id] ?? 0)} sessions total\nDrag to reorder`}>
             <span className={styles.name}>{t.name}</span>
           </button>
+          {onHide && <button type="button" className={styles.hideBtn}
+            title="Hide room" aria-label={`Hide room ${t.name}`} draggable={false}
+            onClick={e => { e.stopPropagation(); onHide(t.id, t.cwd); }}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z" />
+              <path d="m2 2 12 12" />
+            </svg>
+          </button>}
           {showSessions && t.sessions.length > 0 && (
             <span className={styles.sessions}>
               {t.sessions.map(d => (

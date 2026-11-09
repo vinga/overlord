@@ -27,3 +27,6 @@ export const ROOM_PREFIX_ENABLED =
 export const LIGHT_ANIMATIONS_ENABLED =
   import.meta.env.VITE_OVERLORD_LIGHT_ANIMATIONS !== '0' &&
   import.meta.env.VITE_OVERLORD_LIGHT_ANIMATIONS !== 'false';
+
+/** Legacy multi-room grid. Hidden while navigation moves to room chips. */
+export const ROOM_GRID_ENABLED = import.meta.env.VITE_OVERLORD_ROOM_GRID === '1';

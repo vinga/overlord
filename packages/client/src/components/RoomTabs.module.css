@@ -299,3 +299,24 @@
   color: color-mix(in srgb, var(--tint) 60%, #fff);
   font-weight: 700;
 }
+
+.hideBtn {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: #15141a;
+  color: #aaa;
+  cursor: pointer;
+  opacity: 0;
+}
+.tab:hover .hideBtn, .tab:focus-within .hideBtn { opacity: 1; }
+.hideBtn:hover, .hideBtn:focus-visible { color: #f2dc8c; background: #302b20; }
+.tab:has(.hideBtn) .tabBtn { padding-right: 24px; }

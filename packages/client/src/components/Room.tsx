@@ -169,6 +169,12 @@ interface RoomProps {
   platform?: string;
   /** True when this room is hidden but rendered because it matches an active search. */
   searchRevealed?: boolean;
+  /** Inside the room panel: no card frame, no title (the panel shows both) —
+   *  only the spawn actions stay, right-aligned above the desks. */
+  bare?: boolean;
+  /** With `bare`: 'archive' shows only the archive list (the panel's Archive
+   *  tab); 'desks' only the live sessions. */
+  view?: 'desks' | 'archive';
 }
 
 function SpawningDesk({ name }: { name: string }) {
@@ -332,7 +338,7 @@ function SpawnMenu({ cwd, onSpawnEmbedded, onSpawnTerminal, platform = 'darwin' 
 
 // memo: snapshots reuse unchanged room objects (shareSnapshot), so an idle room
 // skips the per-tick re-render. Its own 30s tick keeps the age labels fresh.
-export const Room = memo(function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', searchRevealed = false }: RoomProps) {
+export const Room = memo(function Room({ room, onSelectSession, customNames, onSpawnSession, onSpawnDirect, selectedSessionId, onRoomClick, isSpawning, onSpawnNameChange, onSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, onNewTerminalSession, terminalSpawnCwd, onTerminalSpawnCommit, isPtySession, pendingSpawns, platform = 'darwin', searchRevealed = false, bare = false, view = 'desks' }: RoomProps) {
   const [, setTick] = useState(0);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -481,8 +487,9 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   }, {});
 
   return (
-    <div ref={roomRef} className={`${styles.room} ${collapsed ? styles.roomCollapsed : ''}`}>
-      <div className={styles.titleBar}>
+    <div ref={roomRef} className={`${styles.room} ${collapsed && !bare ? styles.roomCollapsed : ''} ${bare ? styles.roomBare : ''}`}>
+      {!(bare && view === 'archive') && <div className={styles.titleBar}>
+        {!bare && <>
         <button
           className={styles.collapseBtn}
           onClick={() => toggle(room.id)}
@@ -562,8 +569,9 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             })}
           </div>
         )}
+        </>}
         <div className={styles.titleSpacer} />
-        {room.gitBranch && (
+        {!bare && room.gitBranch && (
           <GitBranchBadge
             branch={room.gitBranch}
             cwd={room.cwd}
@@ -627,7 +635,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             onNewShell={() => onSpawnDirect(room.cwd, namePrefix + getNextName(''), 'raw', 'claude')}
           />
         )}
-      </div>
+      </div>}
       {showSpawnPanel && onSpawnDirect && (
         <SpawnDialog
           open
@@ -671,7 +679,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onDone={() => setClearToast(null)}
         />
       )}
-      {!collapsed && <div className={styles.desks} ref={deskResize.desksRef}>
+      {(bare ? view === 'desks' : !collapsed) && <div className={styles.desks} ref={deskResize.desksRef}>
         {sortedSessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;
           const sessionOrderKey = orderKey(session);
@@ -798,9 +806,12 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           <SpawningDesk key={p.id} name={p.fullName} />
         ))}
       </div>}
-      {!collapsed && archiveEntries.length > 0 && (
+      {bare && view === 'archive' && archiveEntries.length === 0 && (
+        <div className={styles.archiveEmpty}>No archived sessions</div>
+      )}
+      {(bare ? view === 'archive' : !collapsed) && archiveEntries.length > 0 && (
         <div className={styles.archiveFooter}>
-          <button
+          {!bare && <button
             type="button"
             className={styles.archivePill}
             onClick={() => setArchiveExpanded(v => !v)}
@@ -812,8 +823,8 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             </svg>
             <span>Archive</span>
             <span className={styles.archiveCount}>{archiveEntries.length}</span>
-          </button>
-          {archiveExpanded && (
+          </button>}
+          {(archiveExpanded || bare) && (
             <ul className={styles.archiveList}>
               {groupArchiveByTime(archiveEntries).flatMap(group => [
                 <li key={`__group__${group.label}`} className={styles.archiveGroupLabel}>{group.label}</li>,

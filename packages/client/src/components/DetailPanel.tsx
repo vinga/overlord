@@ -38,6 +38,7 @@ import { SkillChips } from './SkillChips';
 import { JiraChips } from './JiraChips';
 import { ActiveTicket } from './ActiveTicket';
 import { PrChips } from './PrChips';
+import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
@@ -468,6 +469,8 @@ interface DetailPanelProps {
   onPanelSizeChange?: (size: number) => void;
   bridgePath?: string;
   platform?: string;
+  /** Session context (ticket, PR, plan, pins) — a column right of the tabs. */
+  contextPanel?: React.ReactNode;
   /** Timestamp of an ActivityItem to scroll to (from search) */
   scrollTarget?: string;
   /** Query that was searched — used to highlight matching text within the target item */
@@ -811,7 +814,13 @@ function StateBadge({ state, activeSubagentCount, review, parkReason, onSetRevie
 
   const isParked = review === 'parked';
   const isReadWaiting = state === 'waiting' && review === 'read';
-  const color = isParked ? '#64748b' : isReadWaiting ? '#94a3b8' : STATE_COLORS[state];
+  // Same language as the room list's status dots: green = working, violet =
+  // waiting and not read yet, amber ring = waiting and already read.
+  const badgeStyle: React.CSSProperties = isParked ? { background: '#64748b', color: '#1a1a2e' }
+    : isReadWaiting ? { background: 'transparent', color: '#f59e0b', boxShadow: 'inset 0 0 0 1.5px rgba(245, 158, 11, 0.7)' }
+    : state === 'working' || state === 'thinking' ? { background: '#4ade80', color: '#0f2417' }
+    : state === 'waiting' ? { background: '#a78bfa', color: '#1a1a2e' }
+    : { background: STATE_COLORS[state], color: '#1a1a2e' };
   const label = isParked ? 'parked' : isReadWaiting ? 'read' : state;
 
   const canReview = state !== 'closed' && !!onSetReview;
@@ -828,7 +837,7 @@ function StateBadge({ state, activeSubagentCount, review, parkReason, onSetRevie
       <div style={{ position: 'relative', display: 'inline-block' }}>
         <span
           className={styles.stateBadge}
-          style={{ background: color, color: '#1a1a2e', cursor: canReview ? 'pointer' : undefined }}
+          style={{ ...badgeStyle, cursor: canReview ? 'pointer' : undefined }}
           onClick={canReview ? () => setMenuOpen(v => !v) : undefined}
           title={isParked && parkReason ? `Parked · ${parkReason}` : undefined}
         >
@@ -1999,6 +2008,7 @@ export function DetailPanel({
   onPanelSizeChange,
   bridgePath,
   platform = 'darwin',
+  contextPanel,
   scrollTarget,
   scrollQuery,
   onScrollTargetConsumed,
@@ -3014,20 +3024,24 @@ const currentDisplayName =
     : selectedSession?.state === 'thinking' ? styles.stateBarThinking
     : styles.stateBarActive;
 
+  // No room grid to share the office with: the panel takes the whole area
+  // under the header, right of the room chips.
+  const fillsOffice = !ROOM_GRID_ENABLED && dock !== 'bottom';
+
   return (
     <>
       {/* Panel */}
       <div
-        className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : ''} ${styles.panelOpen}`}
+        className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : fillsOffice ? styles.panelFill : ''} ${styles.panelOpen}`}
         role="dialog"
         aria-modal="true"
         aria-label="Session details"
-        style={dock === 'bottom' ? { height: panelSize } : { width: panelSize }}
+        style={dock === 'bottom' ? { height: panelSize } : fillsOffice ? undefined : { width: panelSize }}
       >
-        <div
+        {!fillsOffice && <div
           className={`${styles.resizeHandle} ${dock === 'bottom' ? styles.resizeHandleTop : ''}`}
           onMouseDown={onResizeMouseDown}
-        />
+        />}
         {!selectedSession && !isPendingPty && (
           <div className={styles.emptyPanel}>
             <div className={styles.emptyPanelIcon}>👁</div>
@@ -3455,69 +3469,6 @@ const currentDisplayName =
                         });
                       }}
                     />
-                    {voiceInput?.enabled && (
-                      <VoiceOverrideBadge
-                        sessionId={selectedSession.sessionId}
-                        global={voiceInput}
-                        override={selectedSession.voiceOverride}
-                      />
-                    )}
-                    {(() => {
-                      const l = getLaunchInfo(selectedSession, isPty);
-                      const canFocus = !!(selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge);
-                      if (canFocus) {
-                        return (
-                          <button
-                            className={`${styles.launchBadge} ${styles.launchBadgeFocusable}`}
-                            data-category={l.category}
-                            data-tooltip="Click to bring terminal window to front"
-                            onClick={() => onFocusBridge!(selectedSession.sessionId)}
-                          >
-                            {l.name} ↗
-                          </button>
-                        );
-                      }
-                      return (
-                        <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
-                      );
-                    })()}
-                    {selectedSession.permissionMode && (() => {
-                      const mode = selectedSession.permissionMode;
-                      const known = mode === 'bypassPermissions' || mode === 'acceptEdits' || mode === 'plan' || mode === 'default';
-                      const label =
-                        mode === 'bypassPermissions' ? 'bypass' :
-                        mode === 'acceptEdits' ? 'accept-edits' :
-                        mode === 'plan' ? 'plan' :
-                        mode === 'default' ? 'ask' :
-                        mode;
-                      const tooltip =
-                        mode === 'bypassPermissions' ? 'Bypass all permissions — click to change' :
-                        mode === 'acceptEdits' ? 'Auto-accept edits — click to change' :
-                        mode === 'plan' ? 'Plan mode only — click to change' :
-                        mode === 'default' ? 'Ask for permissions (default) — click to change' :
-                        `Mode: ${mode} — click to change`;
-                      return (
-                        <button
-                          type="button"
-                          className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
-                          data-mode={known ? mode : 'custom'}
-                          data-tooltip={tooltip}
-                          onMouseDown={(e) => { e.preventDefault(); }}
-                          onClick={async (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.currentTarget.blur();
-                            try {
-                              await fetch(`/api/sessions/${selectedSession.sessionId}/cycle-permission-mode`, {
-                                method: 'POST',
-                              });
-                            } catch { /* ignore */ }
-                          }}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })()}
                     </>)}
                     <span
                       className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
@@ -3525,10 +3476,10 @@ const currentDisplayName =
                     >
                       {assistantDisplayName(selectedSession.provider)}
                     </span>
-                    <span className={`${styles.summaryMeta} ${styles.summaryMetaAgo}`} data-tooltip={`Last activity: ${new Date(selectedSession.lastActivity).toLocaleString()}`}>{formatRelativeTime(selectedSession.lastActivity)}</span>
                     {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
-                  {selectedSession.jiraKeys?.[0] && (
+                  {/* Tickets, PRs and pins live in the context column when it is shown. */}
+                  {!contextPanel && selectedSession.jiraKeys?.[0] && (
                     <ActiveTicket
                       ticketKey={selectedSession.jiraKeys[0]}
                       baseUrl={jiraBaseUrl}
@@ -3536,6 +3487,7 @@ const currentDisplayName =
                       onRename={(name) => onRename(selectedSession.sessionId, name)}
                     />
                   )}
+                  {!contextPanel && (
                   <WorkBar
                     prRefs={selectedSession.prRefs}
                     prRefsAuthored={selectedSession.prRefsAuthored}
@@ -3547,10 +3499,13 @@ const currentDisplayName =
                     sessionId={selectedSession.sessionId}
                     overlordId={selectedSession.overlordId}
                   />
+                  )}
                   </div>{/* headerMain */}
                   </div>{/* headerWithAvatar */}
                 </div>
 
+                <div className={styles.tabsWithContext}>
+                <div className={styles.tabsColumn}>
                 {/* Tab bar */}
                 <div className={styles.tabBar}>
                   <button
@@ -4269,6 +4224,81 @@ const currentDisplayName =
                 {/* Tab: Details */}
                 {activeTab === 'details' && (
                   <div className={styles.scrollArea}>
+                    {/* Launch, permissions and voice — moved out of the header, which keeps
+                        only state, assistant and model. */}
+                    <section className={styles.section}>
+                      {!selectedSession.isArchived && (
+                        <div className={styles.detailsBadges}>
+                          {voiceInput?.enabled && (
+                            <VoiceOverrideBadge
+                              sessionId={selectedSession.sessionId}
+                              global={voiceInput}
+                              override={selectedSession.voiceOverride}
+                            />
+                          )}
+                          {(() => {
+                            const l = getLaunchInfo(selectedSession, isPty);
+                            const canFocus = !!(selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge);
+                            if (canFocus) {
+                              return (
+                                <button
+                                  className={`${styles.launchBadge} ${styles.launchBadgeFocusable}`}
+                                  data-category={l.category}
+                                  data-tooltip="Click to bring terminal window to front"
+                                  onClick={() => onFocusBridge!(selectedSession.sessionId)}
+                                >
+                                  {l.name} ↗
+                                </button>
+                              );
+                            }
+                            return (
+                              <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
+                            );
+                          })()}
+                          {selectedSession.permissionMode && (() => {
+                            const mode = selectedSession.permissionMode;
+                            const known = mode === 'bypassPermissions' || mode === 'acceptEdits' || mode === 'plan' || mode === 'default';
+                            const label =
+                              mode === 'bypassPermissions' ? 'bypass' :
+                              mode === 'acceptEdits' ? 'accept-edits' :
+                              mode === 'plan' ? 'plan' :
+                              mode === 'default' ? 'ask' :
+                              mode;
+                            const tooltip =
+                              mode === 'bypassPermissions' ? 'Bypass all permissions — click to change' :
+                              mode === 'acceptEdits' ? 'Auto-accept edits — click to change' :
+                              mode === 'plan' ? 'Plan mode only — click to change' :
+                              mode === 'default' ? 'Ask for permissions (default) — click to change' :
+                              `Mode: ${mode} — click to change`;
+                            return (
+                              <button
+                                type="button"
+                                className={`${styles.permissionModeBadge} ${styles.permissionModeBadgeClickable}`}
+                                data-mode={known ? mode : 'custom'}
+                                data-tooltip={tooltip}
+                                onMouseDown={(e) => { e.preventDefault(); }}
+                                onClick={async (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.currentTarget.blur();
+                                  try {
+                                    await fetch(`/api/sessions/${selectedSession.sessionId}/cycle-permission-mode`, {
+                                      method: 'POST',
+                                    });
+                                  } catch { /* ignore */ }
+                                }}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      <div className={styles.field}>
+                        <span className={styles.fieldLabel}>Last activity</span>
+                        <span className={styles.fieldValue}>{new Date(selectedSession.lastActivity).toLocaleString()} · {formatRelativeTime(selectedSession.lastActivity)}</span>
+                      </div>
+                    </section>
                     {selectedSession.scheduledWakeupAt != null && (
                       <section className={styles.section}>
                         <ScheduledWakeupsStats
@@ -4677,6 +4707,9 @@ const currentDisplayName =
                     </section>
                   </div>
                 )}
+                </div>{/* tabsColumn */}
+                {contextPanel && <aside className={styles.contextColumn}>{contextPanel}</aside>}
+                </div>{/* tabsWithContext */}
 
               </>
             )}

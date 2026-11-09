@@ -1265,3 +1265,24 @@
   0%, 100% { opacity: 0; }
   50% { opacity: 1; }
 }
+
+/* Room panel's Room tab: the panel already frames and titles the room. */
+.roomBare,
+.roomBare:hover {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 8px 16px 16px;
+}
+
+.roomBare .titleBar {
+  min-height: 0;
+  padding: 0;
+}
+
+.archiveEmpty {
+  padding: 16px 4px;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.35);
+}

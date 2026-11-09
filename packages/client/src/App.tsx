@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useArchiveCounts } from './hooks/useArchiveCounts';
 import { useOfficeData } from './hooks/useOfficeData';
 import { useTerminal } from './hooks/useTerminal';
 import { useCustomNames } from './hooks/useCustomNames';
@@ -24,6 +25,8 @@ import { DetailPanel, setJiraProjects } from './components/DetailPanel';
 import { PtyTerminalPanel } from './components/PtyTerminalPanel';
 import { NotePanel } from './components/NotePanel';
 import { RoomPanel } from './components/RoomPanel';
+import { SessionContextPanel } from './components/SessionContextPanel';
+import { ROOM_GRID_ENABLED } from './config/featureFlags';
 import { Room as RoomCard } from './components/Room';
 import { LogsPage } from './components/LogsPage';
 import { SpawnDialog } from './components/SpawnDialog';
@@ -61,6 +64,8 @@ function StatsModal({ onClose }: { onClose: () => void }) {
 }
 
 export function App() {
+  const archiveCounts = useArchiveCounts();
+  const [spawnKind, setSpawnKind] = useState<'session' | 'note' | 'raw'>('session');
   const [view, setView] = useState<'office' | 'logs'>(() => {
     return window.location.hash.startsWith('#logs') ? 'logs' : 'office';
   });
@@ -886,6 +891,7 @@ export function App() {
       )}
       <Office
         snapshot={snapshot}
+        archiveCounts={archiveCounts}
         connected={connected}
         connecting={connecting}
         onSelectSession={handleSelectSession}
@@ -902,7 +908,7 @@ export function App() {
 
         selectedSessionId={selectedSessionId}
         selectionNonce={selectionNonce}
-        rightOffset={dock === 'right' ? panelWidth : 0}
+        rightOffset={dock === 'right' && ROOM_GRID_ENABLED ? panelWidth : 0}
         topOffset={dock === 'bottom' ? panelHeight : 0}
         onRoomClick={handleRoomClick}
         onOpenRoom={handleOpenRoom}
@@ -922,7 +928,8 @@ export function App() {
         isPtySession={terminal.isPtySession}
         pendingSpawns={pendingSpawns}
         platform={snapshot?.platform ?? 'darwin'}
-        onOpenDirectoryPicker={() => {
+        onOpenDirectoryPicker={(kind = 'session') => {
+          setSpawnKind(kind);
           const usedNames = new Set(
             (snapshot?.rooms.flatMap(r => r.sessions.map(s => s.proposedName)).filter(Boolean) ?? []) as string[]
           );
@@ -930,7 +937,7 @@ export function App() {
           const name = available.length > 0
             ? available[Math.floor(Math.random() * available.length)]
             : 'Session';
-          setDirPickerSuggestedName(name);
+          setDirPickerSuggestedName(kind === 'note' ? 'Note' : kind === 'raw' ? 'Shell' : name);
           setShowDirectoryPicker(true);
         }}
       />
@@ -961,9 +968,10 @@ export function App() {
       )}
       <SpawnDialog
         open={showDirectoryPicker}
+        kind={spawnKind}
         onClose={() => setShowDirectoryPicker(false)}
         onSpawn={handleNewFolderSpawn}
-        defaultPath={snapshot?.rooms[0]?.cwd}
+        defaultPath={selectedSessionRoom?.cwd ?? selectedRoom?.cwd ?? snapshot?.rooms[0]?.cwd}
         suggestedName={dirPickerSuggestedName}
         bridgePath={snapshot?.bridgePath}
       />
@@ -1011,6 +1019,7 @@ export function App() {
         <RoomPanel
           key={selectedRoom.id}
           room={selectedRoom}
+          archivedCount={archiveCounts[selectedRoom.id]}
           customNames={displayNames}
           onClose={handleRoomDetailClose}
           dock={dock}
@@ -1040,11 +1049,18 @@ export function App() {
               isPtySession={terminal.isPtySession}
               pendingSpawns={roomPendingSpawns}
               platform={snapshot?.platform ?? 'darwin'}
+              bare
             />
           }
         />
       ) : <DetailPanel
         selectedSession={selectedSession}
+        contextPanel={selectedSession && <SessionContextPanel
+          key={selectedSession.overlordId ?? selectedSession.sessionId}
+          session={selectedSession} room={selectedSessionRoom ?? null}
+          name={displayNames[selectedSession.sessionId]}
+          jiraBaseUrl={snapshot?.settings?.jiraBaseUrl}
+        />}
         selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}
         showStickyUserMessage={snapshot?.settings?.showStickyUserMessage !== false}

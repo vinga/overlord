@@ -1,0 +1,20 @@
+.panel { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.header { padding: 0 2px 4px; }
+.eyebrow { color: #8a8a96; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; }
+.header h2 { color: #e8e8e8; font-size: 18px; margin: 6px 0 0; overflow-wrap: anywhere; }
+.card { min-width: 0; }
+.card h3 { margin: 0 0 6px; color: #8a8a96; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.muted, .empty { color: #858590; font-size: 13px; }
+.muted { margin: 8px 0 0; }
+.empty { margin: auto; text-align: center; }
+.reserved { flex: 1; min-height: 120px; }
+.prLink { display: flex; flex-direction: column; gap: 5px; color: #d8d8e0; text-decoration: none; font-size: 13px; padding: 8px 0; }
+.prLink span { color: #a78bfa; font-size: 11px; }
+.prLink:hover strong { text-decoration: underline; }
+.markdown { color: #d8d8e0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; margin-top: 12px; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown a { color: #d4af37; }
+.markdown pre { padding: 12px; background: #07070d; border-radius: 6px; overflow: auto; }
+.markdown img { max-width: 100%; }
+.markdown table { display: block; overflow-x: auto; }

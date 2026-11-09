@@ -4,12 +4,12 @@ import type { SessionProvider, TerminalSpawnMode } from '../types';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 import styles from './SpawnDialog.module.css';
 
-/** Session providers only. Notes and plain shells are created from the room's
- *  ▾ menu so they never become the room's remembered last spawn type. */
+/** Session providers only. Notes and shells have separate creation actions. */
 type UiProvider = 'claude' | 'opencode' | 'codex';
 
 interface Props {
   open: boolean;
+  kind?: 'session' | 'note' | 'raw';
   onClose: () => void;
   /** `name` arrives with the room prefix already applied; `prefix` is passed
    *  separately so the room caller can persist it to /api/room-config. */
@@ -101,7 +101,7 @@ const MODE_TOOLTIPS: Record<string, string> = {
  * - room (`fixedCwd` set): directory collapsed to the room path (expandable),
  *   with the room-scoped name prefix input.
  */
-export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose, quickDefault, onQuickDefaultSaved }: Props) {
+export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose, quickDefault, onQuickDefaultSaved }: Props) {
   const isRoom = fixedCwd != null;
   // Room prefix is behind VITE_OVERLORD_ROOM_PREFIX — off by default, so the
   // input is hidden, nothing is saved, and no prefix reaches the spawned name.
@@ -138,6 +138,10 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
       setDirExpanded(false);
       setPrefix(initialPrefix || '');
       prefixSavedRef.current = initialPrefix || '';
+    } else {
+      setCurrentPath(defaultPath || '');
+      setPathInput(defaultPath || '');
+      setDirExpanded(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -258,7 +262,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
   const effBridgePath = bridgePath ?? fetchedBridgePath;
   const bridgeBin = effBridgePath ? `"${effBridgePath}"` : 'overlord-bridge';
   const marker = markerRef.current;
-  const effectiveMode = availableModes.includes(mode) ? mode : 'embedded';
+  const effectiveMode = kind === 'session' ? (availableModes.includes(mode) ? mode : 'embedded') : kind;
 
   const selectedProvider: SessionProvider =
     uiProvider === 'opencode' ? 'opencode' : uiProvider === 'codex' ? 'codex' : 'claude';
@@ -297,7 +301,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
     <div className={styles.backdrop} onClick={onClose}>
       <div className={styles.dialog} onClick={e => e.stopPropagation()}>
         <div className={styles.header}>
-          <h2 className={styles.title}>New Session</h2>
+          <h2 className={styles.title}>{kind === 'note' ? 'New Note' : kind === 'raw' ? 'New Shell' : 'New Session'}</h2>
           <button className={styles.closeBtn} onClick={onClose}>&times;</button>
         </div>
 
@@ -392,6 +396,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
           </div>
         </div>
 
+        {kind === 'session' && <>
         {/* Provider row */}
         <div className={styles.config} style={{ paddingBottom: 0, paddingTop: 10 }}>
           <div className={styles.configRow}>
@@ -436,6 +441,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
           })}
         </div>
 
+        </>}
         {/* Actions */}
         <div className={styles.actions}>
           {isRoom && quickDefault && (
@@ -459,7 +465,7 @@ export function SpawnDialog({ open, onClose, onSpawn, fixedCwd, defaultPath, sug
             className={styles.spawnBtn}
             onClick={handleSpawn}
             disabled={!currentPath || !sessionName.trim()}
-          >Spawn</button>
+          >{kind === 'session' ? 'Spawn' : 'Create'}</button>
         </div>
       </div>
     </div>,

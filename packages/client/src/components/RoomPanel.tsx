@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { cloneElement, isValidElement, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Room } from '../types';
 import panelStyles from './PtyTerminalPanel.module.css';
 import styles from './RoomPanel.module.css';
@@ -9,6 +9,7 @@ import { PinBar, hiddenPinRefs } from './PinBar';
 import { RoomGitInfo } from './RoomGitInfo';
 import { RoomFilesPanel } from './RoomFilesPanel';
 import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
+import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 
 // Same sizing and storage keys as DetailPanel / NotePanel so panel size
 // persists across panel types.
@@ -21,7 +22,8 @@ const MIN_HEIGHT = 240;
 type Tab = RoomPanelTab;
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'room', label: 'Room' },
+  { id: 'room', label: 'Sessions' },
+  { id: 'archive', label: 'Archive' },
   { id: 'files', label: 'Files' },
   { id: 'details', label: 'Notes' },
   { id: 'plans', label: 'Plans' },
@@ -30,6 +32,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 interface RoomPanelProps {
   room: Room;
+  archivedCount?: number;
   customNames: Record<string, string>;
   onClose: () => void;
   dock?: 'right' | 'bottom';
@@ -41,7 +44,7 @@ interface RoomPanelProps {
 
 /** Room details docked in the session panel's slot — shown when a room is
  *  selected and no session is open. */
-export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange, roomView }: RoomPanelProps) {
+export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange, roomView }: RoomPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'room');
   const horizontal = dock !== 'bottom';
 
@@ -93,17 +96,21 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [horizontal, onPanelSizeChange]);
 
+  // No room grid: fill the office under its header, like the session panel,
+  // with a context column on the right of the tabs.
+  const fillsOffice = !ROOM_GRID_ENABLED && horizontal;
+
   return (
     // Opens without the slide-in: it swaps in place of the session panel.
     <div
-      className={`${panelStyles.panel} ${dock === 'bottom' ? panelStyles.panelBottom : ''} ${panelStyles.panelOpen}`}
-      style={dock === 'bottom' ? { height: panelSize } : { width: panelSize }}
+      className={`${panelStyles.panel} ${dock === 'bottom' ? panelStyles.panelBottom : fillsOffice ? styles.panelFill : ''} ${panelStyles.panelOpen}`}
+      style={dock === 'bottom' ? { height: panelSize } : fillsOffice ? undefined : { width: panelSize }}
       aria-label={`Room ${room.name}`}
     >
-      <div
+      {!fillsOffice && <div
         className={`${panelStyles.resizeHandle} ${dock === 'bottom' ? panelStyles.resizeHandleTop : ''}`}
         onMouseDown={onResizeStart}
-      />
+      />}
 
       {/* Room identity header */}
       <div className={styles.panelHeader}>
@@ -121,20 +128,26 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
           <div className={styles.headerMain}>
             <h2 className={styles.roomTitle}>{room.name}</h2>
             <span className={styles.roomPath}>{room.cwd}</span>
+            {!fillsOffice && <span className={styles.sessionCounts}>
+              {room.sessions.filter(s => s.state !== 'closed').length} active · {archivedCount ?? 0} archived
+            </span>}
           </div>
         </div>
-        <button className={styles.closeBtn} onClick={onClose} title="Close room details" aria-label="Close room details">✕</button>
+        {/* Filling the office there is nothing behind the panel to go back to. */}
+        {!fillsOffice && <button className={styles.closeBtn} onClick={onClose} title="Close room details" aria-label="Close room details">✕</button>}
       </div>
 
-      <RoomGitInfo
+      {!fillsOffice && <RoomGitInfo
         branch={room.gitBranch}
         gitAhead={room.gitAhead}
         pullRequest={room.pullRequest}
         gitWarning={room.gitWarning}
-      />
+      />}
 
-      <PinBar pins={room.pins} cwd={room.cwd} hide={hiddenPinRefs(undefined, undefined, room.pullRequest?.url)} />
+      {!fillsOffice && <PinBar pins={room.pins} cwd={room.cwd} hide={hiddenPinRefs(undefined, undefined, room.pullRequest?.url)} />}
 
+      <div className={fillsOffice ? styles.tabsWithContext : styles.tabsPlain}>
+      <div className={styles.tabsColumn}>
       {/* Tab bar */}
       <div className={styles.tabBar}>
         {TABS.map(t => (
@@ -144,6 +157,12 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
             onClick={() => setActiveTab(t.id)}
           >
             {t.label}
+            {t.id === 'room' && (
+              <span className={styles.tabCount} title="Active / all sessions">
+                {room.sessions.filter(s => s.state !== 'closed').length}/{room.sessions.length}
+              </span>
+            )}
+            {t.id === 'archive' && !!archivedCount && <span className={styles.tabCount}>{archivedCount}</span>}
           </button>
         ))}
       </div>
@@ -153,13 +172,42 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
         {activeTab === 'brain' && <BrainTab cwd={room.cwd} />}
         {activeTab === 'details' && <RoomDetailsTab cwd={room.cwd} />}
         {activeTab === 'room' && <div className={styles.roomView}>{roomView}</div>}
+        {/* Same Room element, archive list only (Room's `view` prop). */}
+        {activeTab === 'archive' && (
+          <div className={styles.roomView}>
+            {isValidElement<{ view?: 'desks' | 'archive' }>(roomView) ? cloneElement(roomView, { view: 'archive' }) : null}
+          </div>
+        )}
         {activeTab === 'files' && (
-          <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} stacked={horizontal && panelSize < 640} />
+          <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} stacked={horizontal && !fillsOffice && panelSize < 640} />
         )}
         {activeTab === 'plans' && (
           <RoomPlansTab cwd={room.cwd} sessions={room.sessions} customNames={customNames} />
         )}
       </div>
+      </div>{/* tabsColumn */}
+      {fillsOffice && (
+        // Room context: branch and PR, then the room's pins.
+        <aside className={styles.contextColumn} aria-label="Room context">
+          <div className={styles.contextField}>
+            <span className={styles.contextFieldLabel}>Sessions</span>
+            <span>{room.sessions.filter(s => s.state !== 'closed').length} active · {archivedCount ?? 0} archived</span>
+          </div>
+          <div className={styles.contextGit}>
+            <RoomGitInfo
+              branch={room.gitBranch}
+              gitAhead={room.gitAhead}
+              pullRequest={room.pullRequest}
+              gitWarning={room.gitWarning}
+            />
+          </div>
+          {!!room.pins?.length && <>
+            <h3 className={styles.contextLabel}>Pins</h3>
+            <PinBar pins={room.pins} cwd={room.cwd} multiline hide={hiddenPinRefs(undefined, undefined, room.pullRequest?.url)} />
+          </>}
+        </aside>
+      )}
+      </div>{/* tabsWithContext */}
     </div>
   );
 }

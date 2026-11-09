@@ -5,6 +5,8 @@ import { usePrMeta } from '../hooks/usePrMeta';
 interface Props {
   refs: string[];
   sessionId?: string;
+  /** Full-width cards: #number + state on the first line, repo and title below. */
+  card?: boolean;
 }
 
 const VISIBLE = 3;
@@ -31,7 +33,7 @@ function PrGlyph() {
   );
 }
 
-export function PrChips({ refs, sessionId }: Props) {
+export function PrChips({ refs, sessionId, card = false }: Props) {
   const meta = usePrMeta();
   const [expanded, setExpanded] = useState(false);
   // Optimistic removal — the chip vanishes on click and comes back if the
@@ -73,7 +75,7 @@ export function PrChips({ refs, sessionId }: Props) {
   };
 
   return (
-    <div className={styles.row} onClick={stop}>
+    <div className={`${styles.row} ${card ? styles.card : ''}`} onClick={stop}>
       {visible.map((ref) => {
         const m = meta?.[ref];
         const { repo, label } = splitRef(ref);

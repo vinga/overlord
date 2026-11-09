@@ -156,3 +156,32 @@
   color: rgba(255, 255, 255, 0.85);
   border-color: rgba(255, 255, 255, 0.25);
 }
+
+/* Card variant (session context): one full-width card per PR —
+ * #number … state on the first line, repo then title below. */
+.card .chipWrap,
+.card .chip {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.card .chip {
+  row-gap: 2px;
+}
+
+.card .state {
+  margin-left: auto;
+}
+
+.card .chipRepo {
+  order: 1;
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card .chipTitle {
+  order: 2;
+  flex-basis: 100%;
+}

@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffe
 import ReactDOM from 'react-dom';
 import type { OfficeSnapshot, Room as RoomType, Session, SessionProvider } from '../types';
 import { Room } from './Room';
+import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 import { OverlordLogo } from './OverlordLogo';
 import { ScratchpadPopup } from './ScratchpadPopup';
 import { useRoomsListOrder } from '../hooks/useRoomsListOrder';
@@ -56,7 +57,8 @@ interface OfficeProps {
   onCloneSession?: (sessionId: string) => void;
   isPtySession?: (sessionId: string) => boolean;
   pendingSpawns?: Array<{ id: string; cwd: string; fullName: string; startedAt: number }>;
-  onOpenDirectoryPicker?: () => void;
+  onOpenDirectoryPicker?: (kind?: 'session' | 'note' | 'raw') => void;
+  archiveCounts?: Record<string, number>;
   onLogsClick?: () => void;
   onSettingsClick?: () => void;
   onStatsClick?: () => void;
@@ -67,9 +69,10 @@ interface OfficeProps {
   /** Header content after the search box (the voice chip). Memoize it in the
    *  parent: Office is memo'd and a fresh element re-renders the whole grid. */
   headerExtra?: React.ReactNode;
+  contextPanel?: React.ReactNode;
 }
 
-function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSession?: () => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void }) {
+function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSession?: (kind?: 'session' | 'note' | 'raw') => void; onLogs?: () => void; onSettings?: () => void; onStats?: () => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -132,6 +135,14 @@ function HeaderMenu({ onNewSession, onLogs, onSettings, onStats }: { onNewSessio
               <span className={styles.headerMenuItemHint}>Pick a directory</span>
             </button>
           )}
+          {onNewSession && (['note', 'raw'] as const).map(kind => (
+            <button key={kind} className={styles.headerMenuItem} role="menuitem"
+              onClick={() => { setOpen(false); onNewSession(kind); }}>
+              <span className={styles.headerMenuItemIcon}>{kind === 'note' ? '▤' : '>_'}</span>
+              <span className={styles.headerMenuItemLabel}>{kind === 'note' ? 'New note' : 'New shell'}</span>
+              <span className={styles.headerMenuItemHint}>Pick a directory</span>
+            </button>
+          ))}
           {onLogs && (
             <button
               className={styles.headerMenuItem}
@@ -200,7 +211,7 @@ function formatUpdatedAt(updatedAt: string): string {
 
 const ACTIVE_ONLY_STORAGE_KEY = 'overlord:activeOnly';
 
-export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, onOpenRoom, selectedRoomId, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onFastSession, onOpenAdvancedSearch, platform = 'darwin', headerExtra }: OfficeProps) {
+export const Office = React.memo(function Office({ snapshot, connected, connecting = false, onSelectSession, customNames, onSpawnSession, onSpawnDirect, onNewTerminalSession, selectedSessionId, selectionNonce = 0, rightOffset = 0, topOffset = 0, onRoomClick, onOpenRoom, selectedRoomId, spawnCwd, onSpawnNameChange, onSpawnCommit, terminalSpawnCwd, onTerminalSpawnCommit, onDeleteSession, onCloseSession, onArchiveSession, onOpenArchive, onDeleteArchive, onRenameSession, onCloneSession, isPtySession, pendingSpawns, onOpenDirectoryPicker, onLogsClick, onSettingsClick, onStatsClick, onFastSession, onOpenAdvancedSearch, platform = 'darwin', headerExtra, archiveCounts, contextPanel }: OfficeProps) {
   const rooms = snapshot?.rooms ?? [];
   // Room of the session open in the panel — where "Fast session" spawns.
   // Falls back to the selected room, so a room whose sessions are all closed
@@ -295,7 +306,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     return fields.some(f => typeof f === 'string' && f.toLowerCase().includes(q));
   }, [customNames, notesSummaries, jiraMeta]);
 
-  const { map: hiddenMap, unhide, unhideAll } = useRoomHidden();
+  const { map: hiddenMap, hide, unhide, unhideAll } = useRoomHidden();
 
   // Merge server-persisted hidden rooms into the local store (once per page
   // load) so hidden state survives fresh browsers and cleared localStorage.
@@ -365,7 +376,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   roomsRef.current = rooms;
   const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!ROOM_GRID_ENABLED || !selectedSessionId) return;
     const GAP = 12;
     // Content-space top/bottom of an element inside the scroll container.
     const span = (container: HTMLElement, el: Element) => {
@@ -414,6 +425,9 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   const roomTabs = hasRooms && (
     <RoomTabs
       rooms={visibleRooms}
+      archiveCounts={archiveCounts}
+      sessionCounts={Object.fromEntries(rooms.map(r => [r.id, r.sessions.length]))}
+      onHide={hide}
       scrollRef={contentRef}
       onMove={moveRoom}
       showSessions={snapshot?.settings?.showRoomTabSessions !== false}
@@ -478,7 +492,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
     </div>
   );
 
-  const docked = topOffset > 0;
+  const docked = ROOM_GRID_ENABLED && topOffset > 0;
   const sideTabs = (filterBar || roomTabs) && (
     <div className={styles.sideTabs} style={{ width: sideTabsWidth }}>
       {filterBar}
@@ -495,7 +509,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   );
   // The bottom-docked session panel is position:fixed outside this tree; it
   // reads the chip column's width to sit right of it.
-  const sideTabsBesidePanel = docked && !!sideTabs;
+  const sideTabsBesidePanel = (docked || !ROOM_GRID_ENABLED) && !!sideTabs;
   useEffect(() => {
     const root = document.documentElement.style;
     if (sideTabsBesidePanel) root.setProperty('--side-tabs-width', `${sideTabsWidth}px`);
@@ -605,14 +619,17 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       {/* Vertical dock: the session panel is pinned under the header with the
           room chips on its left (the panel reads --side-tabs-width); rooms
           below at full width. */}
-      <div className={styles.panelSpacer} style={{ height: topOffset }}>
+      <div className={styles.panelSpacer} style={{ height: ROOM_GRID_ENABLED ? topOffset : 0 }}>
         {docked && sideTabs}
       </div>
       {/* Horizontal layout: the room chips are a column left of the rooms. */}
       <div className={styles.body}>
-      {!docked && sideTabs}
-      <div ref={contentRef} className={styles.content}>
-        {!hasRooms ? (
+      {(!ROOM_GRID_ENABLED || !docked) && sideTabs}
+      <div ref={contentRef} className={styles.content}
+        style={!ROOM_GRID_ENABLED && topOffset > 0 ? { marginTop: topOffset } : undefined}>
+        {!ROOM_GRID_ENABLED ? (
+          contextPanel
+        ) : !hasRooms ? (
           <div className={styles.empty}>
             {connecting ? (
               <>

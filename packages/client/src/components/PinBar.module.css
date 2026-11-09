@@ -200,3 +200,35 @@
   overflow: visible;
   overflow-wrap: anywhere;
 }
+
+/* Ticket: a full-width card — key + status lozenge on the first line, the
+ *  summary below. × sits in the top-right corner instead of pushing the text. */
+.multiline .chipJira {
+  width: 100%;
+}
+
+.multiline .chipJira .link {
+  flex: 1;
+}
+
+.multiline .chipJira .link,
+.multiline .chipJira:hover .link,
+.multiline .chipJira:focus-within .link {
+  /* A fixed slot for ×, so hovering never reflows the card. */
+  padding-right: 20px;
+}
+
+/* Status lozenge (last child; the summary is reordered below) hugs the right. */
+.multiline .chipJira .link > :last-child {
+  margin-left: auto;
+}
+
+.multiline .chipJira .remove {
+  top: 4px;
+  transform: none;
+}
+
+.multiline .summary {
+  order: 1;
+  flex-basis: 100%;
+}
