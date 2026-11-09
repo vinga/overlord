@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyPinUrl, validatePinInput, upsertPin, removePin, sanitizePins, MAX_PINS } from '../session/pins.js';
+import { classifyPinUrl, validatePinInput, upsertPin, removePin, sanitizePins, jiraKeyOfPin, MAX_PINS } from '../session/pins.js';
 import type { Pin } from '../types.js';
 
 describe('classifyPinUrl', () => {
@@ -91,5 +91,17 @@ describe('sanitizePins', () => {
     expect(sanitizePins([good, { id: 'x' }, null, { ...good, kind: 'bad' }])).toEqual([good]);
     expect(sanitizePins('nope')).toBeUndefined();
     expect(sanitizePins([])).toBeUndefined();
+  });
+});
+
+describe('jiraKeyOfPin', () => {
+  const pin = (url: string, kind: Pin['kind'] = 'ticket'): Pin => ({ id: 'p', url, title: 't', kind, createdAt: 1 });
+  it('reads the key from /browse and selectedIssue', () => {
+    expect(jiraKeyOfPin(pin('https://x.atlassian.net/browse/BACKEND-12'))).toBe('BACKEND-12');
+    expect(jiraKeyOfPin(pin('https://x.atlassian.net/jira/boards/1?selectedIssue=AB-3'))).toBe('AB-3');
+  });
+  it('ignores non-ticket pins and GitHub issues', () => {
+    expect(jiraKeyOfPin(pin('https://x.atlassian.net/browse/BACKEND-12', 'link'))).toBeUndefined();
+    expect(jiraKeyOfPin(pin('https://github.com/o/r/issues/5'))).toBeUndefined();
   });
 });

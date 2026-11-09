@@ -40,7 +40,7 @@ import { ActiveTicket } from './ActiveTicket';
 import { PrChips } from './PrChips';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
 import { ArtifactsTab } from './ArtifactsTab';
-import { PinBar } from './PinBar';
+import { PinBar, hiddenPinRefs } from './PinBar';
 import { QuestionPrompt } from './QuestionPrompt';
 import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
@@ -2412,6 +2412,12 @@ const currentDisplayName =
     () => new Set((selectedSession?.prRefs ?? []).map((r) => r.toLowerCase())),
     [selectedSession?.prRefs],
   );
+  // Pins already on screen in the header (active ticket, WorkBar PRs, the
+  // room's PR badge) are left out of the PinBar. A string, so PinBar's memo holds.
+  const pinsShownElsewhere = useMemo(
+    () => hiddenPinRefs(selectedSession?.jiraKeys?.[0], selectedSession?.prRefs, room?.pullRequest?.url),
+    [selectedSession?.jiraKeys, selectedSession?.prRefs, room?.pullRequest?.url],
+  );
   useEffect(() => {
     const root = transcriptRef.current;
     if (!root) return;
@@ -3548,7 +3554,7 @@ const currentDisplayName =
                 </div>
 
                 {selectedSession.overlordId && (
-                  <PinBar pins={selectedSession.pins} overlordId={selectedSession.overlordId} />
+                  <PinBar pins={selectedSession.pins} overlordId={selectedSession.overlordId} hide={pinsShownElsewhere} />
                 )}
 
                 {/* Tab bar */}

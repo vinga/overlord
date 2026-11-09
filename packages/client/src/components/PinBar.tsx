@@ -1,13 +1,62 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Pin, PinKind } from '../types';
 import styles from './PinBar.module.css';
+import jiraStyles from './JiraChips.module.css';
+import { JiraTypeIcon } from './JiraTypeIcon';
+import { useJiraMeta } from '../hooks/useJiraMeta';
+
+/** Jira key of a ticket pin — mirrors server `jiraKeyOfPin`. */
+function jiraKeyOf(pin: Pin): string | undefined {
+  if (pin.kind !== 'ticket') return undefined;
+  try {
+    const u = new URL(pin.url);
+    const m = u.pathname.match(/\/browse\/([A-Z][A-Z0-9_]*-\d+)/);
+    if (m) return m[1];
+    const sel = u.searchParams.get('selectedIssue');
+    return sel && /^[A-Z][A-Z0-9_]*-\d+$/.test(sel) ? sel : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** `https://github.com/o/r/pull/N…` → `o/r#n` (lowercased; GitHub refs are case-insensitive). */
+function prRefOfUrl(url: string | undefined): string | undefined {
+  const m = url?.match(/^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/i);
+  return m ? `${m[1]}#${m[2]}`.toLowerCase() : undefined;
+}
+
+/** Identity used to drop pins already shown elsewhere: `jira:KEY` or `pr:o/r#n`. */
+function pinRef(pin: Pin): string | undefined {
+  const key = jiraKeyOf(pin);
+  if (key) return `jira:${key}`;
+  if (pin.kind === 'pr') {
+    const ref = prRefOfUrl(pin.url);
+    return ref ? `pr:${ref}` : undefined;
+  }
+  return undefined;
+}
+
+/** The refs a PinBar should leave out, joined into one string so it is a
+ *  primitive prop. `prRefs` are `owner/repo#N`; `prUrl` a GitHub PR URL. */
+export function hiddenPinRefs(jiraKey?: string, prRefs?: string[], prUrl?: string): string {
+  const out: string[] = [];
+  if (jiraKey) out.push(`jira:${jiraKey}`);
+  for (const r of prRefs ?? []) out.push(`pr:${r.toLowerCase()}`);
+  const fromUrl = prRefOfUrl(prUrl);
+  if (fromUrl) out.push(`pr:${fromUrl}`);
+  return out.join('\n');
+}
 
 /** Who the pins belong to — a session (by overlordId) or a room (by cwd). */
 type PinTarget = { overlordId: string } | { cwd: string };
 
 /** Exactly one of overlordId / cwd. Primitives, not a target object, so the
  *  React.memo shallow compare holds across WebSocket ticks. */
-type Props = { pins: Pin[] | undefined } & (
+type Props = {
+  pins: Pin[] | undefined;
+  /** From `hiddenPinRefs` — pins already shown elsewhere on screen. */
+  hide?: string;
+} & (
   | { overlordId: string; cwd?: undefined }
   | { cwd: string; overlordId?: undefined }
 );
@@ -59,12 +108,19 @@ function KindIcon({ kind }: { kind: PinKind }) {
 /** Links pinned to a session or a room — one row of chips above the tab bar.
  *  Hidden when empty (the first pin is added via the CLI). The snapshot
  *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins, overlordId, cwd }: Props) {
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, overlordId, cwd }: Props) {
+  const pins = useMemo(() => {
+    if (!allPins || !hide) return allPins;
+    const hidden = new Set(hide.split('\n'));
+    if (!allPins.some((p) => { const r = pinRef(p); return r !== undefined && hidden.has(r); })) return allPins;
+    return allPins.filter((p) => { const r = pinRef(p); return r === undefined || !hidden.has(r); });
+  }, [allPins, hide]);
   const [adding, setAdding] = useState(false);
   const [url, setUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const jiraMeta = useJiraMeta();
   const target: PinTarget = overlordId !== undefined ? { overlordId } : { cwd: cwd as string };
   const targetKey = overlordId ?? cwd;
 
@@ -120,17 +176,39 @@ export const PinBar = React.memo(function PinBar({ pins, overlordId, cwd }: Prop
   return (
     <div className={styles.bar}>
       <div className={styles.row}>
-        {pins.map((pin) => (
-          <span key={pin.id} className={styles.chip} data-kind={pin.kind}>
+        {pins.map((pin) => {
+          const key = jiraKeyOf(pin);
+          const m = key ? jiraMeta[key] : undefined;
+          // A custom pin title wins over the Jira summary; the default title is the bare key.
+          const summary = key && pin.title && pin.title !== key ? pin.title : m?.title;
+          const tip = [key && [m?.type, m?.status].filter(Boolean).join(' · '), summary, pin.url]
+            .filter(Boolean).join('\n');
+          return (
+          <span key={pin.id} className={`${styles.chip} ${key ? styles.chipJira : ''}`} data-kind={pin.kind}>
             <a
               className={styles.link}
               href={pin.url}
               target="_blank"
               rel="noopener noreferrer"
-              title={pin.url}
+              title={tip}
             >
-              <KindIcon kind={pin.kind} />
-              <span className={styles.label}>{pin.title || pin.url}</span>
+              {key ? (
+                <>
+                  <JiraTypeIcon type={m?.type} />
+                  <span className={styles.key}>{key}</span>
+                  {summary && <span className={`${styles.label} ${styles.summary}`}>{summary}</span>}
+                  {m?.status && (
+                    <span className={jiraStyles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>
+                      {m.status}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <KindIcon kind={pin.kind} />
+                  <span className={styles.label}>{pin.title || pin.url}</span>
+                </>
+              )}
             </a>
             <button
               type="button"
@@ -142,7 +220,8 @@ export const PinBar = React.memo(function PinBar({ pins, overlordId, cwd }: Prop
               ×
             </button>
           </span>
-        ))}
+          );
+        })}
         {adding ? (
           <input
             ref={inputRef}

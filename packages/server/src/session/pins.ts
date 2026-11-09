@@ -31,6 +31,17 @@ export function classifyPinUrl(raw: string): { kind: PinKind; title: string } {
   return { kind: 'link', title: `${u.hostname.replace(/^www\./, '')}${path}`.slice(0, MAX_TITLE) };
 }
 
+/** Jira issue key a ticket pin points at (`/browse/KEY-N` or `?selectedIssue=`), else undefined. */
+export function jiraKeyOfPin(pin: Pin): string | undefined {
+  if (pin.kind !== 'ticket') return undefined;
+  let u: URL;
+  try { u = new URL(pin.url); } catch { return undefined; }
+  const m = u.pathname.match(/\/browse\/([A-Z][A-Z0-9_]*-\d+)/);
+  if (m) return m[1];
+  const sel = u.searchParams.get('selectedIssue');
+  return sel && /^[A-Z][A-Z0-9_]*-\d+$/.test(sel) ? sel : undefined;
+}
+
 export interface PinInput { url: unknown; title?: unknown; kind?: unknown }
 
 /** Validate raw input; returns the normalized fields or an error string. */

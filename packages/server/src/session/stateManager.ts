@@ -19,6 +19,7 @@ import { migratePendingResumes } from './migratePendingResumes.js';
 import { migrateDeletedSessions } from './migrateDeletedSessions.js';
 import { globalSettingsStore, type VoiceInputConfig } from './globalSettingsStore.js';
 import { getCachedJiraMeta, invalidateJiraKeys } from './jiraTitleCache.js';
+import { jiraKeyOfPin } from './pins.js';
 import { ClearLifecycleManager } from './clearLifecycleManager.js';
 import { PtyResumeTracker } from './ptyResumeTracker.js';
 import { OvrIdReservation } from './ovrIdReservation.js';
@@ -3053,12 +3054,17 @@ export class StateManager {
     // Value = "hot": at least one live (non-closed) session references the key.
     // Hot keys with a still-moving status refresh on a 5m TTL instead of 1h.
     const allKeys = new Map<string, boolean>();
+    const addKey = (k: string, live: boolean) => allKeys.set(k, (allKeys.get(k) ?? false) || live);
     for (const room of rooms) {
+      let roomLive = false;
       for (const s of room.sessions) {
-        if (!s.jiraKeys) continue;
         const live = s.state !== 'closed';
-        for (const k of s.jiraKeys) allKeys.set(k, (allKeys.get(k) ?? false) || live);
+        roomLive ||= live;
+        if (s.jiraKeys) for (const k of s.jiraKeys) addKey(k, live);
+        // Ticket pins get the same title/type/status as the session's Jira chips.
+        if (s.pins) for (const p of s.pins) { const k = jiraKeyOfPin(p); if (k) addKey(k, live); }
       }
+      if (room.pins) for (const p of room.pins) { const k = jiraKeyOfPin(p); if (k) addKey(k, roomLive); }
     }
     let jiraMeta: Record<string, JiraIssueMeta> | undefined;
     if (allKeys.size > 0) {

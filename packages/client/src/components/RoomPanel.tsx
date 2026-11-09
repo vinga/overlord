@@ -5,7 +5,7 @@ import styles from './RoomPanel.module.css';
 import { BrainTab } from './BrainTab';
 import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
-import { PinBar } from './PinBar';
+import { PinBar, hiddenPinRefs } from './PinBar';
 import { RoomGitInfo } from './RoomGitInfo';
 import { RoomFilesPanel } from './RoomFilesPanel';
 import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
@@ -133,7 +133,7 @@ export function RoomPanel({ room, customNames, onClose, dock = 'right', panelSiz
         gitWarning={room.gitWarning}
       />
 
-      <PinBar pins={room.pins} cwd={room.cwd} />
+      <PinBar pins={room.pins} cwd={room.cwd} hide={hiddenPinRefs(undefined, undefined, room.pullRequest?.url)} />
 
       {/* Tab bar */}
       <div className={styles.tabBar}>
