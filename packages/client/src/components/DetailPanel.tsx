@@ -4271,25 +4271,6 @@ const currentDisplayName =
                               override={selectedSession.voiceOverride}
                             />
                           )}
-                          {(() => {
-                            const l = getLaunchInfo(selectedSession, isPty);
-                            const canFocus = !!(selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge);
-                            if (canFocus) {
-                              return (
-                                <button
-                                  className={`${styles.launchBadge} ${styles.launchBadgeFocusable}`}
-                                  data-category={l.category}
-                                  data-tooltip="Click to bring terminal window to front"
-                                  onClick={() => onFocusBridge!(selectedSession.sessionId)}
-                                >
-                                  {l.name} ↗
-                                </button>
-                              );
-                            }
-                            return (
-                              <span className={styles.launchBadge} data-category={l.category} data-tooltip={`Launch: ${l.name}`}>{l.name}</span>
-                            );
-                          })()}
                           {selectedSession.permissionMode && (() => {
                             const mode = selectedSession.permissionMode;
                             const known = mode === 'bypassPermissions' || mode === 'acceptEdits' || mode === 'plan' || mode === 'default';
@@ -4339,6 +4320,15 @@ const currentDisplayName =
                                 <span className={`${styles.statusDot} ${isPty ? styles.statusDotActive : styles.statusDotEnded}`} />
                                 Overlord {isPty ? '(active)' : '(ended)'}
                               </span>
+                            ) : selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge ? (
+                              <button
+                                className={`${styles.launchBadge} ${styles.launchBadgeFocusable}`}
+                                data-category={launch.category}
+                                data-tooltip="Click to bring terminal window to front"
+                                onClick={() => onFocusBridge(selectedSession.sessionId)}
+                              >
+                                {launch.name} ↗
+                              </button>
                             ) : (
                               <span className={styles.fieldValue}>{launch.name}</span>
                             )}
