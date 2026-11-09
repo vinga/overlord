@@ -4550,7 +4550,7 @@ const currentDisplayName =
                     )}
                       {selectedSession.skillsUsed && selectedSession.skillsUsed.length > 0 && (
                       <section className={styles.detailsCard}>
-                        <h4 className={styles.detailsCardTitle}>Skills</h4>
+                        <h4 className={styles.detailsCardTitle}>Loaded skills</h4>
                         <div className={styles.field}>
                           <span className={styles.fieldValue}>
                             <SkillChips
