@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { mergeLazyMcp, sanitizeLazyMcp, type LazyMcpStored } from '../pty/lazyMcpConfig.js';
 
 /** Hands-free voice control. Two configurable words drive the whole flow: the
  *  start word opens capture, the stop word commits. Nothing commits on silence —
@@ -101,6 +102,9 @@ export interface GlobalSettings {
    *  VOICE_DEFAULTS. PATCHing it merges key-by-key, so the settings UI can send
    *  one field without clearing the rest. */
   voiceInput?: Partial<VoiceInputConfig>;
+  /** Lazy MCP shim for Overlord-spawned claude sessions. Stored as a partial —
+   *  resolve with resolveLazyMcp(). PATCH merges key by key, per server. */
+  lazyMcp?: LazyMcpStored;
 }
 
 const DEFAULTS: GlobalSettings = {
@@ -145,6 +149,7 @@ class GlobalSettingsStore {
     // voiceInput is the one nested field — a shallow spread would replace the
     // whole object and drop every key the caller did not send.
     if (clean.voiceInput) clean.voiceInput = mergeVoice(prev.voiceInput, clean.voiceInput);
+    if (clean.lazyMcp) clean.lazyMcp = mergeLazyMcp(prev.lazyMcp, clean.lazyMcp);
     const next: GlobalSettings = { ...prev, ...clean };
     if (shallowEqual(prev, next)) return prev;
     this.cache = next;
@@ -197,6 +202,8 @@ function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   if (input.voiceInput && typeof input.voiceInput === 'object') {
     out.voiceInput = sanitizeVoice(input.voiceInput);
   }
+  const lazyMcp = sanitizeLazyMcp(input.lazyMcp);
+  if (lazyMcp) out.lazyMcp = lazyMcp;
   return out;
 }
 
@@ -342,7 +349,8 @@ function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
     && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
     && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')
     && (a.jiraApiToken ?? '') === (b.jiraApiToken ?? '')
-    && voiceEqual(a.voiceInput, b.voiceInput);
+    && voiceEqual(a.voiceInput, b.voiceInput)
+    && JSON.stringify(a.lazyMcp ?? {}) === JSON.stringify(b.lazyMcp ?? {});
 }
 
 function voiceEqual(a: Partial<VoiceInputConfig> | undefined, b: Partial<VoiceInputConfig> | undefined): boolean {

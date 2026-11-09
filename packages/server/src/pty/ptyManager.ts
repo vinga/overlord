@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { killProcessTree } from './processTree.js';
 import { ensureFolderTrusted, isAutoTrustEnabled } from './folderTrust.js';
+import { withLazyMcpConfig } from './lazyMcp.js';
 
 let pty: typeof import('node-pty') | null = null;
 try {
@@ -100,7 +101,7 @@ export class PtyManager extends EventEmitter {
         console.warn('[PtyManager] auto-trust failed:', (err as Error).message);
       }
     }
-    const ptyProcess = pty.spawn(bin, executable === undefined ? withDefaultPermissionMode(args) : args, {
+    const ptyProcess = pty.spawn(bin, executable === undefined ? withLazyMcpConfig(withDefaultPermissionMode(args)) : args, {
       name: 'xterm-color',
       cols,
       rows,

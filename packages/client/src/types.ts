@@ -335,6 +335,23 @@ interface GlobalSettings {
   /** Hands-free voice control. Absent keys read as VOICE_DEFAULTS; see
    *  `lib/voiceConfig.ts`. */
   voiceInput?: Partial<VoiceInputConfig>;
+  /** Lazy MCP stand-in for spawned sessions; partial, see LazyMcpSettings. */
+  lazyMcp?: LazyMcpStored;
+}
+
+export type LazyMcpBrowser = 'shared' | 'isolated' | 'none';
+
+/** Stored partial of the server's LazyMcpConfig (pty/lazyMcpConfig.ts). A PATCH
+ *  merges per server; null removes a custom server. */
+export interface LazyMcpStored {
+  enabled?: boolean;
+  servers?: Record<string, {
+    enabled?: boolean;
+    command?: string;
+    args?: string[];
+    browser?: LazyMcpBrowser;
+    sharedBrowser?: { port?: number; userDataDir?: string; chromePath?: string };
+  } | null>;
 }
 
 /** Resolved metadata for a single Jira issue key. All fields optional. */

@@ -27,6 +27,7 @@ import { findTranscriptPathAnywhere, findTranscriptPath, readActivityBefore, rea
 import { runClaudeQuery, NO_TOOLS_ARGS } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { globalSettingsStore, sanitizeVoiceOverride } from '../session/globalSettingsStore.js';
+import { getLazyMcpStatus } from '../pty/lazyMcp.js';
 import { scratchpadStore } from '../session/scratchpadStore.js';
 import { noteStore, isNoteId, notePreview } from '../session/noteStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
@@ -120,6 +121,10 @@ export function registerApiRoutes(
     res.json({ bridgePath: getBridgePath(), platform: process.platform });
   });
 
+  app.get('/api/lazy-mcp', async (_req, res) => {
+    res.json(await getLazyMcpStatus());
+  });
+
   app.get('/api/stats', (_req, res) => {
     res.json(stateManager.getStats());
   });
@@ -164,6 +169,10 @@ export function registerApiRoutes(
     // patch() merges it key-by-key so a single-field PATCH keeps the rest.
     if (body.voiceInput && typeof body.voiceInput === 'object' && !Array.isArray(body.voiceInput)) {
       partial.voiceInput = body.voiceInput;
+    }
+    // Nested; validated by sanitizeLazyMcp and merged per server in patch().
+    if (body.lazyMcp && typeof body.lazyMcp === 'object' && !Array.isArray(body.lazyMcp)) {
+      partial.lazyMcp = body.lazyMcp;
     }
     const next = globalSettingsStore.patch(partial);
     res.json({

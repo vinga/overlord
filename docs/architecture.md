@@ -261,3 +261,41 @@ bin/ovr pin add|ls|rm ─► GET|POST /api/pins, DELETE /api/pins/:id
   `/api/resolve?ptyId=` exists for this — it does not need `~/.claude/sessions/{pid}.json`.
 - Agents learn about `ovr pin` from the default agent rules and the `overlord-pins` skill
   (`skill-templates/overlord-pins`, linked by `bin/install-agent-defaults --apply`).
+
+## Lazy MCP
+
+Opt-in (`settings.json` → `lazyMcp.enabled`, Settings → Integrations → MCP
+Servers; `OVERLORD_LAZY_MCP=0` forces off). Cuts the per-session cost of stdio
+MCP servers that most sessions never call — `chrome-devtools-mcp` was ~100 MB
+per idle session.
+
+```
+claude ──stdio──▶ overlord-lazy-mcp ──(first tools/call)──▶ chrome-devtools-mcp ──CDP──▶ Chrome :9222
+                  answers initialize + tools/list               one per session        shared, started on demand
+                  from <name>.cache.json
+```
+
+- **Spawn hook.** `ptyManager.spawn` → `withLazyMcpConfig()` (`pty/lazyMcp.ts`)
+  appends `--mcp-config ~/.claude/overlord/lazy-mcp/mcp-config.json` to every
+  claude spawn (new, resume, fork, auto-resume). A server in that file replaces
+  the same-named entry from `~/.claude.json` for that session — verified, only
+  the shim starts — so the global entry can stay for sessions started outside
+  Overlord. Missing binary or any error → args unchanged; a spawn is never blocked.
+- **Shim** (`packages/lazy-mcp`, Go). Cache hit → handshake and lists served
+  locally, no child. First other request → ensure Chrome (shared mode), spawn
+  the real server, replay the client's `initialize` under an internal id, send
+  `notifications/initialized`, then pipe lines both ways. Cache miss → same
+  activation at `initialize`, then fetch the announced lists and write the
+  cache. Cache key = resolved executable path + size + mtime + args, so an npm
+  upgrade or a browser-mode change rebuilds it. Real server exit → in-flight
+  calls get a JSON-RPC error, next call respawns. stdin EOF → kill the child's
+  process group (chrome-devtools-mcp starts a watchdog).
+- **Browser modes** (per server): `shared` → `--browserUrl` + shim launches
+  Chrome detached on `sharedBrowser.port` / `userDataDir` (default
+  `~/.cache/overlord-chrome`) if nothing answers; it survives sessions and
+  Overlord restarts, logins are shared. `isolated` → `--isolated`. `none` →
+  args as-is.
+- **Status.** `GET /api/lazy-mcp` — one `ps` per request, never on a timer:
+  shim count, how many started the real server, cache presence, same-named
+  entries in `~/.claude.json`.
+- **Logs.** `~/.claude/overlord/lazy-mcp/<name>.log`, truncated past 1 MiB.

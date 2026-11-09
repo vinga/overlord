@@ -52,6 +52,10 @@ After any Go change:
 cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../bridge/overlord-bridge
 ```
 
+## Lazy MCP Shim
+
+Source: `packages/lazy-mcp/` (Go). Binary: `packages/lazy-mcp/overlord-lazy-mcp` (gitignored), resolved by `getLazyMcpBinaryPath()` in `packages/server/src/pty/lazyMcp.ts`. After any Go change: `cd packages/lazy-mcp && go test ./... && go build -o overlord-lazy-mcp .` See `docs/architecture.md#lazy-mcp`.
+
 ## Session Matching Rules
 
 **NEVER use CWD-based matching** — multiple sessions share the same CWD. Instead:
@@ -99,6 +103,8 @@ Delegate to subagents whenever independent work parallelizes. Prefer parallel to
 - `OVERLORD_PROGRESS_NOTIFY` (default: Codex sessions only; `1`/`true` all providers, `0`/`false` none): when a pushed progress card (`ovr-watch` over `POST /api/progress`) ends, inject one `[ovr-watch] …` line into its session once it is idle — Codex's stand-in for Claude's task-notification. See `session/progressNotify.ts`.
 
 - `OVERLORD_AUTO_TRUST_FOLDERS` (default OFF; set `1`/`true` to enable): before each claude PTY spawn, sets `projects[cwd].hasTrustDialogAccepted` in `~/.claude.json` so a new folder skips the trust dialog. Best-effort — a racing write from a running claude can drop it. See `pty/folderTrust.ts`.
+
+- `lazyMcp` setting (default OFF; Settings → Integrations → MCP Servers; `OVERLORD_LAZY_MCP=0` forces off): claude spawns get `--mcp-config` pointing stdio MCP servers (default `chrome-devtools`) at the lazy shim — real server starts on first tool call. No timer; `/api/lazy-mcp` runs one `ps` per request. See `docs/architecture.md#lazy-mcp`.
 
 ## Client Feature Flags (Vite env)
 

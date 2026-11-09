@@ -4,6 +4,7 @@ import { useDockMode, type DockMode } from '../hooks/useOrientation';
 import { resolveVoiceConfig, type VoiceInputConfig } from '../lib/voiceConfig';
 import { KOKORO_VOICES, kokoro, type KokoroState } from '../lib/kokoroVoice';
 import { ReplyVoice } from '../lib/speechOutput';
+import { LazyMcpSettings } from './LazyMcpSettings';
 import styles from './SettingsModal.module.css';
 
 interface Props {
@@ -23,7 +24,8 @@ export type PageId =
   | 'ai'
   | 'ai.intent'
   | 'integrations'
-  | 'integrations.jira';
+  | 'integrations.jira'
+  | 'integrations.mcp';
 
 interface TreeNode {
   id: PageId;
@@ -59,6 +61,7 @@ const TREE: TreeNode[] = [
     keywords: 'integrations external services',
     children: [
       { id: 'integrations.jira', label: 'JIRA', keywords: 'jira atlassian ticket chip issue api token email base url project keys' },
+      { id: 'integrations.mcp', label: 'MCP Servers', keywords: 'mcp lazy server chrome devtools memory ram on demand first use browser shared isolated port' },
     ],
   },
 ];
@@ -570,6 +573,9 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
             </div>
           </>
         );
+
+      case 'integrations.mcp':
+        return <LazyMcpSettings settings={settings} onUpdate={onUpdate} />;
 
       default:
         return null;
