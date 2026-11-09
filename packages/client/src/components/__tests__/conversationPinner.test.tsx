@@ -104,3 +104,15 @@ describe('PinChip text pin', () => {
     expect(onRemove).toHaveBeenCalled();
   });
 });
+
+describe('PinChip text pin links', () => {
+  it('turns URLs in the text into links that open in a new tab', () => {
+    act(() => root.render(
+      <PinChip href="" kind="text" text="See https://github.com/o/r/pull/7, then ship." label="See" multiline onRemove={() => {}} removeLabel="Unpin" />,
+    ));
+    const a = host.querySelector('a')!;
+    expect(a.getAttribute('href')).toBe('https://github.com/o/r/pull/7');
+    expect(a.getAttribute('target')).toBe('_blank');
+    expect(host.textContent).toContain(', then ship.');
+  });
+});

@@ -112,6 +112,25 @@ interface ChipProps {
   multiline?: boolean;
 }
 
+const URL_RE = /https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g;
+
+/** Text with its http(s) URLs as links that open in a new tab. */
+function linkify(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    const i = m.index ?? 0;
+    if (i > last) out.push(text.slice(last, i));
+    out.push(
+      <a key={i} className={styles.quoteLink} href={m[0]} target="_blank" rel="noopener noreferrer"
+        onClick={e => e.stopPropagation()}>{m[0]}</a>,
+    );
+    last = i + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
 /** A pinned piece of text: a quote card in the context column (4 lines,
  *  click to expand, copy + ×), a one-line chip elsewhere. */
 function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: string; label?: string; onRemove: () => void; removeLabel: string; multiline?: boolean }) {
@@ -124,10 +143,17 @@ function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: 
   return (
     <span className={`${styles.chip} ${styles.chipText} ${multiline ? styles.chipTextCard : ''}`} data-kind="text">
       {multiline ? (
-        <button type="button" className={`${styles.quote} ${expanded ? styles.quoteOpen : ''}`}
-          onClick={() => setExpanded(v => !v)} title={expanded ? 'Collapse' : 'Expand'}>
-          {text}
-        </button>
+        // A div, not a button: it holds real links. Click toggles; a link click opens.
+        <div
+          role="button"
+          tabIndex={0}
+          className={`${styles.quote} ${expanded ? styles.quoteOpen : ''}`}
+          onClick={() => setExpanded(v => !v)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
+          title={expanded ? 'Collapse' : 'Expand'}
+        >
+          {linkify(text)}
+        </div>
       ) : (
         <span className={styles.link} title={text}>
           <KindIcon kind="text" />

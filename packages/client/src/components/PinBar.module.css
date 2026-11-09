@@ -297,3 +297,15 @@
   top: 4px;
   transform: none;
 }
+
+.quoteLink {
+  color: #6ba8f5;
+  text-decoration: underline;
+  text-decoration-color: rgba(107, 168, 245, 0.4);
+  text-underline-offset: 2px;
+}
+
+.quoteLink:hover {
+  color: #93c0f8;
+  text-decoration-color: currentColor;
+}
