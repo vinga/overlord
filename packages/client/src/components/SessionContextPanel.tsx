@@ -124,6 +124,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
         <h3>Plan</h3>
         {plan ? <>
           {/* A small card like the ticket ones; the full plan opens in a dialog. */}
+          <div className={styles.planWrap}>
           <button type="button" className={styles.planCard} onClick={() => setPlanOpen(true)} title="Open plan">
             <span className={styles.planCardTop}>
               <svg className={styles.planIcon} width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -136,6 +137,22 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
               <span className={styles.planStatus} data-status={plan.status}>{plan.status}</span>
             </span>
           </button>
+          {/* × archives the plan (status 'archived'): it leaves the column but
+              stays in the room's Plans tab, so nothing is lost. */}
+          <button
+            type="button"
+            className={styles.planRemove}
+            aria-label={`Archive plan ${plan.title}`}
+            title="Archive plan — hides it here; still in the room's Plans tab"
+            onClick={() => {
+              void fetch(`/api/artifacts/${encodeURIComponent(plan.artifactId)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'archived' }),
+              });
+            }}
+          >×</button>
+          </div>
           {error && <button className={styles.retry} onClick={() => setRetry(n => n + 1)}>Retry</button>}
           {planOpen && <PlanDialog title={plan.title} status={plan.status} body={body} onClose={() => setPlanOpen(false)} />}
         </> : <p className={styles.muted}>No plan attached</p>}

@@ -43,7 +43,6 @@ import { ActiveTicket } from './ActiveTicket';
 import { PrChips } from './PrChips';
 import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 import { useJiraBaseUrl } from '../hooks/useJiraBaseUrl';
-import { ArtifactsTab } from './ArtifactsTab';
 import { QuestionPrompt } from './QuestionPrompt';
 import { ScheduledWakeupsStats } from './ScheduledWakeupsStats';
 import { useTranscriptScroll } from '../hooks/useTranscriptScroll';
@@ -2218,7 +2217,7 @@ export function DetailPanel({
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts' | 'files'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'files'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   const [notesContent, setNotesContent] = useState('');
@@ -3563,14 +3562,6 @@ const currentDisplayName =
                       Files
                     </button>
                   )}
-                  {!selectedSession.isArchived && (
-                    <button
-                      className={`${styles.tab} ${activeTab === 'artifacts' ? styles.tabActive : ''}`}
-                      onClick={() => setActiveTab('artifacts')}
-                    >
-                      Artifacts
-                    </button>
-                  )}
                   {!selectedSession.isArchived && hasSubagents && (
                     <button
                       className={`${styles.tab} ${activeTab === 'subagents' ? styles.tabActive : ''}`}
@@ -4690,10 +4681,6 @@ const currentDisplayName =
                 )}
 
                 {/* Tab: Artifacts */}
-                {activeTab === 'artifacts' && (
-                  <ArtifactsTab overlordId={selectedSession.overlordId ?? effectiveOvrId ?? undefined} />
-                )}
-
                 {/* Tab: Subagents */}
                 {activeTab === 'subagents' && hasSubagents && (
                   <div className={styles.scrollArea}>
