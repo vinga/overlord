@@ -871,10 +871,14 @@
   border-radius: 5px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  /* Same width for every state, so the chips after it don't jump on a state change. */
+  /* Fixed width for every state (THINKING is the longest), so the chips
+     after it never move on a state change. */
   display: inline-block;
   box-sizing: border-box;
-  min-width: 70px;
+  width: 84px;
+  vertical-align: middle;
+  overflow: hidden;
+  white-space: nowrap;
   text-align: center;
 }
 
@@ -4640,7 +4644,7 @@
   font-weight: 500;
 }
 
-/* Top of the context column: branch block left, session menu right. */
+/* Top of the context column: the branch block. */
 .contextTop {
   display: flex;
   align-items: flex-start;
@@ -4651,10 +4655,6 @@
 
 .contextTop:empty {
   display: none;
-}
-
-.contextTop > :last-child {
-  margin-left: auto;
 }
 
 .contextBranch {
@@ -4678,4 +4678,21 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+/* Session menu (⋯) at the right end of the tab bar, after the search box. */
+.tabBarMenu {
+  display: flex;
+  align-items: center;
+  margin-left: 8px;
+}
+
+/* State / assistant / model chips at the very top of the context column. */
+.contextChips {
+  margin-bottom: 14px;
+}
+
+.contextChips > * {
+  margin: 0;
+  padding: 0;
 }

@@ -3065,13 +3065,108 @@ const currentDisplayName =
                         } : undefined}
                         onClose={onCloseSession && selectedSession.state !== 'closed' ? () => onCloseSession(selectedSession.sessionId) : undefined}
                         onArchive={onArchiveSession ? () => { onArchiveSession(selectedSession.sessionId); onClose(); } : undefined}
-                        onNewSession={onFastSession && room ? () => onFastSession(room) : undefined}
+                        // "New session here" lives in the header toolbar (Fast session), not here.
+                        onNewSession={!contextPanel && onFastSession && room ? () => onFastSession(room) : undefined}
                         getConversationText={() => conversationText(mergedFeed)}
                       />
                     )}
     </>
   ) : null;
   const headerActions = <>{branchBadge}{sessionMenu}</>;
+  const summaryRow = selectedSession ? (
+                  <div className={styles.summaryRow}>
+                    {selectedSession.isArchived ? (
+                      <>
+                        <span
+                          className={styles.stateBadge}
+                          style={{ background: '#6b7280', color: '#0b0b14', letterSpacing: '0.08em' }}
+                          title={selectedSession.archivedAt ? `Archived ${new Date(selectedSession.archivedAt).toLocaleString()}` : 'Archived'}
+                        >
+                          ARCHIVED
+                        </span>
+                        {selectedSession.archivedGitBranch && (
+                          <span className={styles.launchBadge} data-category="terminal" title={`Branch at archive time: ${selectedSession.archivedGitBranch}`}>
+                            {selectedSession.archivedGitBranch}
+                          </span>
+                        )}
+                        {selectedSession.archivedPullRequest && (
+                          <a
+                            href={selectedSession.archivedPullRequest.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={styles.launchBadge}
+                            data-category="terminal"
+                            title={selectedSession.archivedPullRequest.title}
+                            style={{ textDecoration: 'none' }}
+                          >
+                            #{selectedSession.archivedPullRequest.number}
+                          </a>
+                        )}
+                        {onResumeArchived && (
+                          <button
+                            className={styles.resumeBtn}
+                            onClick={() => onResumeArchived(selectedSession.sessionId, selectedSession.cwd)}
+                            title="Unarchive and resume this session in place"
+                          >
+                            Resume this
+                          </button>
+                        )}
+                        {onCloneArchived && (
+                          <button
+                            className={styles.resumeBtn}
+                            style={{ marginLeft: 6, background: 'rgba(99, 102, 241, 0.1)', borderColor: 'rgba(99, 102, 241, 0.35)', color: '#818cf8' }}
+                            onClick={() => onCloneArchived(selectedSession.sessionId, selectedSession.cwd)}
+                            title="Spawn a new session branched from this archived transcript"
+                          >
+                            Resume as clone
+                          </button>
+                        )}
+                        {onDeleteArchived && (confirmDeleteArchive ? (
+                          <>
+                            <span className={styles.deleteConfirmInline} style={{ marginLeft: 6 }}>Delete permanently?</span>
+                            <button
+                              className={styles.deleteConfirmBtn}
+                              onClick={() => { setConfirmDeleteArchive(false); onDeleteArchived(selectedSession.sessionId); }}
+                            >
+                              Yes
+                            </button>
+                            <button className={styles.deleteCancelBtn} onClick={() => setConfirmDeleteArchive(false)}>No</button>
+                          </>
+                        ) : (
+                          <button
+                            className={styles.resumeBtn}
+                            style={{ marginLeft: 6, background: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.35)', color: '#f87171' }}
+                            onClick={() => setConfirmDeleteArchive(true)}
+                            title="Permanently delete this archived session and its transcripts. Cannot be undone."
+                          >
+                            Delete
+                          </button>
+                        ))}
+                      </>
+                    ) : (<>
+                    <StateBadge
+                      state={selectedSession.state}
+                      activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
+                      review={selectedSession.review}
+                      parkReason={selectedSession.parkReason}
+                      onSetReview={(review, reason) => {
+                        void fetch(`/api/sessions/${selectedSession.sessionId}/review`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ review, reason }),
+                        });
+                      }}
+                    />
+                    </>)}
+                    <span
+                      className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
+                      data-tooltip={`Assistant: ${assistantDisplayName(selectedSession.provider)}`}
+                    >
+                      {assistantDisplayName(selectedSession.provider)}
+                    </span>
+                    {selectedSession.model && <span className={styles.modelChip} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
+                  </div>
+  ) : null;
 
   // No room grid to share the office with: the panel takes the whole area
   // under the header, right of the room chips.
@@ -3406,98 +3501,9 @@ const currentDisplayName =
                     );
                   })())}
 
-                  <div className={styles.summaryRow}>
-                    {selectedSession.isArchived ? (
-                      <>
-                        <span
-                          className={styles.stateBadge}
-                          style={{ background: '#6b7280', color: '#0b0b14', letterSpacing: '0.08em' }}
-                          title={selectedSession.archivedAt ? `Archived ${new Date(selectedSession.archivedAt).toLocaleString()}` : 'Archived'}
-                        >
-                          ARCHIVED
-                        </span>
-                        {selectedSession.archivedGitBranch && (
-                          <span className={styles.launchBadge} data-category="terminal" title={`Branch at archive time: ${selectedSession.archivedGitBranch}`}>
-                            {selectedSession.archivedGitBranch}
-                          </span>
-                        )}
-                        {selectedSession.archivedPullRequest && (
-                          <a
-                            href={selectedSession.archivedPullRequest.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className={styles.launchBadge}
-                            data-category="terminal"
-                            title={selectedSession.archivedPullRequest.title}
-                            style={{ textDecoration: 'none' }}
-                          >
-                            #{selectedSession.archivedPullRequest.number}
-                          </a>
-                        )}
-                        {onResumeArchived && (
-                          <button
-                            className={styles.resumeBtn}
-                            onClick={() => onResumeArchived(selectedSession.sessionId, selectedSession.cwd)}
-                            title="Unarchive and resume this session in place"
-                          >
-                            Resume this
-                          </button>
-                        )}
-                        {onCloneArchived && (
-                          <button
-                            className={styles.resumeBtn}
-                            style={{ marginLeft: 6, background: 'rgba(99, 102, 241, 0.1)', borderColor: 'rgba(99, 102, 241, 0.35)', color: '#818cf8' }}
-                            onClick={() => onCloneArchived(selectedSession.sessionId, selectedSession.cwd)}
-                            title="Spawn a new session branched from this archived transcript"
-                          >
-                            Resume as clone
-                          </button>
-                        )}
-                        {onDeleteArchived && (confirmDeleteArchive ? (
-                          <>
-                            <span className={styles.deleteConfirmInline} style={{ marginLeft: 6 }}>Delete permanently?</span>
-                            <button
-                              className={styles.deleteConfirmBtn}
-                              onClick={() => { setConfirmDeleteArchive(false); onDeleteArchived(selectedSession.sessionId); }}
-                            >
-                              Yes
-                            </button>
-                            <button className={styles.deleteCancelBtn} onClick={() => setConfirmDeleteArchive(false)}>No</button>
-                          </>
-                        ) : (
-                          <button
-                            className={styles.resumeBtn}
-                            style={{ marginLeft: 6, background: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.35)', color: '#f87171' }}
-                            onClick={() => setConfirmDeleteArchive(true)}
-                            title="Permanently delete this archived session and its transcripts. Cannot be undone."
-                          >
-                            Delete
-                          </button>
-                        ))}
-                      </>
-                    ) : (<>
-                    <StateBadge
-                      state={selectedSession.state}
-                      activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
-                      review={selectedSession.review}
-                      parkReason={selectedSession.parkReason}
-                      onSetReview={(review, reason) => {
-                        void fetch(`/api/sessions/${selectedSession.sessionId}/review`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ review, reason }),
-                        });
-                      }}
-                    />
-                    </>)}
-                    <span
-                      className={`${styles.assistantPill} ${assistantPillClass(selectedSession.provider, styles)}`}
-                      data-tooltip={`Assistant: ${assistantDisplayName(selectedSession.provider)}`}
-                    >
-                      {assistantDisplayName(selectedSession.provider)}
-                    </span>
-                    {selectedSession.model && <span className={styles.modelChip} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
-                  </div>
+                  {/* State / assistant / model: in the context column when it is shown
+                      (archived sessions keep the row here — it holds Resume). */}
+                  {(!contextPanel || selectedSession.isArchived) && summaryRow}
                   {/* Tickets, PRs and pins live in the context column when it is shown. */}
                   {!contextPanel && selectedSession.jiraKeys?.[0] && (
                     <ActiveTicket
@@ -3610,6 +3616,7 @@ const currentDisplayName =
                       )}
                     </div>
                   </div>
+                  {contextPanel && sessionMenu && <div className={styles.tabBarMenu}>{sessionMenu}</div>}
                   {/* Conversation menu — archived sessions only; live ones use the header burger */}
                   {selectedSession.isArchived && (
                   <div className={styles.convMenuAnchor} ref={convMenuRef}>
@@ -4728,6 +4735,7 @@ const currentDisplayName =
                 </div>{/* tabsColumn */}
                 {contextPanel && (
                   <aside className={styles.contextColumn}>
+                    {!selectedSession?.isArchived && <div className={styles.contextChips}>{summaryRow}</div>}
                     <div className={styles.contextTop}>
                       {room?.gitBranch && (
                         <div className={styles.contextBranch}>
@@ -4738,7 +4746,6 @@ const currentDisplayName =
                           <GitSyncStatus gitAhead={room.gitAhead} gitBehind={room.gitBehind} gitUpstream={room.gitUpstream} gitDirty={room.gitDirty} />
                         </div>
                       )}
-                      {sessionMenu}
                     </div>
                     {contextPanel}
                   </aside>
