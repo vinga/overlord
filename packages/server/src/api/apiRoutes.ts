@@ -14,7 +14,7 @@ import express from 'express';
 import type { Express } from 'express';
 import type { WebSocket } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
-import { resolveTranscriptPath } from '../session/stateManager.js';
+import { resolveTranscriptPath, TICKET_ORDER_MAX } from '../session/stateManager.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
@@ -880,6 +880,21 @@ export function registerApiRoutes(
     const invalid = validateJiraKey(key);
     if (invalid) { res.status(400).json({ error: invalid }); return; }
     const ok = stateManager.pinJiraKey(sessionId, key);
+    if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // Ticket order from the context column's ↑/↓ — keys in the user's order.
+  app.put('/api/sessions/:sessionId/ticket-order', express.json(), (req, res) => {
+    const keys = (req.body as { keys?: unknown } | undefined)?.keys;
+    if (!Array.isArray(keys) || keys.length > TICKET_ORDER_MAX || !keys.every(k => typeof k === 'string')) {
+      res.status(400).json({ error: `keys must be an array of at most ${TICKET_ORDER_MAX} Jira keys` }); return;
+    }
+    for (const k of keys as string[]) {
+      const invalid = validateJiraKey(k);
+      if (invalid) { res.status(400).json({ error: `${invalid}: ${k}` }); return; }
+    }
+    const ok = stateManager.setTicketOrder(req.params.sessionId, keys as string[]);
     if (!ok) { res.status(404).json({ error: 'Session not found' }); return; }
     res.json({ ok: true });
   });

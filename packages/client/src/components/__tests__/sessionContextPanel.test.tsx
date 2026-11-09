@@ -51,4 +51,20 @@ describe('workspace context', () => {
     expect(container.textContent).not.toContain('Old plan');
     expect(container.querySelector('[aria-label="Ticket"]')).toBeNull();
   });
+
+  it('lists tickets in session order and moves one up via the ticket-order API', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => ({ ok: true, json: async () => ({ artifact: { body: '' } }) }));
+    vi.stubGlobal('fetch', fetchMock);
+    const two = { ...session, jiraKeys: ['ABC-12', 'ABC-13'] } as Session;
+    await act(async () => root.render(<SessionContextPanel session={two} room={room} jiraBaseUrl="https://jira.example.com" />));
+    const links = [...container.querySelectorAll('[aria-label="Ticket"] a')].map(a => a.getAttribute('href'));
+    expect(links).toEqual(['https://jira.example.com/browse/ABC-12', 'https://jira.example.com/browse/ABC-13']);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Move ABC-12 up"]')!.disabled).toBe(true);
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Move ABC-13 up"]')!.click(); });
+    const call = fetchMock.mock.calls.find(c => String(c[0]).includes('/ticket-order'))!;
+    expect(call[0]).toBe('/api/sessions/s1/ticket-order');
+    expect(JSON.parse(String(call[1]!.body))).toEqual({ keys: ['ABC-13', 'ABC-12'] });
+    const after = [...container.querySelectorAll('[aria-label="Ticket"] a')].map(a => a.getAttribute('href'));
+    expect(after[0]).toBe('https://jira.example.com/browse/ABC-13');
+  });
 });

@@ -266,9 +266,10 @@
   overflow: hidden;
 }
 
-.quoteOpen {
-  display: block;
-  -webkit-line-clamp: unset;
+/* Full text in the reading dialog. */
+.quoteFull {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .copy {

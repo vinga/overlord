@@ -5,6 +5,7 @@ import jiraStyles from './JiraChips.module.css';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { adoptJiraTicket, JIRA_DBLCLICK_MS } from '../lib/jiraAdopt';
+import { ReadingDialog } from './ReadingDialog';
 
 /** Jira key of a ticket pin — mirrors server `jiraKeyOfPin`. */
 export function jiraKeyOf(pin: Pin): string | undefined {
@@ -134,7 +135,7 @@ function linkify(text: string): React.ReactNode[] {
 /** A pinned piece of text: a quote card in the context column (4 lines,
  *  click to expand, copy + ×), a one-line chip elsewhere. */
 function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: string; label?: string; onRemove: () => void; removeLabel: string; multiline?: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const copy = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -143,14 +144,15 @@ function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: 
   return (
     <span className={`${styles.chip} ${styles.chipText} ${multiline ? styles.chipTextCard : ''}`} data-kind="text">
       {multiline ? (
-        // A div, not a button: it holds real links. Click toggles; a link click opens.
+        // A div, not a button: it holds real links. Click opens the full text in
+        // the reading dialog (same as the plan); a link click just opens the link.
         <div
           role="button"
           tabIndex={0}
-          className={`${styles.quote} ${expanded ? styles.quoteOpen : ''}`}
-          onClick={() => setExpanded(v => !v)}
-          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v); } }}
-          title={expanded ? 'Collapse' : 'Expand'}
+          className={styles.quote}
+          onClick={() => setOpen(true)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true); } }}
+          title="Open"
         >
           {linkify(text)}
         </div>
@@ -174,6 +176,11 @@ function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: 
       >
         ×
       </button>
+      {open && (
+        <ReadingDialog title={label || 'Pinned text'} onClose={() => setOpen(false)}>
+          <div className={styles.quoteFull}>{linkify(text)}</div>
+        </ReadingDialog>
+      )}
     </span>
   );
 }

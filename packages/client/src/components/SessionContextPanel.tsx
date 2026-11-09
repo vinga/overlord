@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
 import { PrChips, PrGlyph } from './PrChips';
@@ -7,6 +6,7 @@ import prStyles from './PrChips.module.css';
 import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
+import { ReadingDialog } from './ReadingDialog';
 
 interface Props {
   session: Session | null;
@@ -15,26 +15,12 @@ interface Props {
   jiraBaseUrl?: string;
 }
 
-/** The full plan in a centred dialog, 70% of the viewport. Esc / backdrop closes. */
+/** The full plan in the shared reading dialog. */
 function PlanDialog({ title, status, body, onClose }: { title: string; status: string; body: string | null; onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  return createPortal(
-    <div className={styles.dialogBackdrop} onMouseDown={onClose}>
-      <div className={styles.dialog} role="dialog" aria-label={`Plan: ${title}`} onMouseDown={e => e.stopPropagation()}>
-        <div className={styles.dialogHeader}>
-          <span className={styles.dialogTitle}>{title}</span>
-          <span className={styles.planStatus} data-status={status}>{status}</span>
-          <button type="button" className={styles.dialogClose} onClick={onClose} aria-label="Close plan">✕</button>
-        </div>
-        <div className={`${styles.markdown} ${styles.dialogBody}`}
-          dangerouslySetInnerHTML={{ __html: body === null ? 'Loading…' : renderMarkdown(body) }} />
-      </div>
-    </div>,
-    document.body,
+  return (
+    <ReadingDialog title={title} onClose={onClose} badge={<span className={styles.planStatus} data-status={status}>{status}</span>}>
+      <div className={styles.markdown} dangerouslySetInnerHTML={{ __html: body === null ? 'Loading…' : renderMarkdown(body) }} />
+    </ReadingDialog>
   );
 }
 
@@ -44,6 +30,10 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   const [planOpen, setPlanOpen] = useState(false);
+  // Optimistic ticket order until the snapshot catches up; dropped once it does.
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null);
+  const serverOrder = session?.jiraKeys?.join('|');
+  useEffect(() => { setLocalOrder(null); }, [serverOrder]);
   useEffect(() => {
     setBody(null);
     setError(false);
@@ -68,9 +58,25 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const sessionPins = session.pins ?? [];
   const roomPins = room?.pins ?? [];
   const allPins = [...sessionPins, ...roomPins];
-  const pinnedTickets = new Set(allPins.map(jiraKeyOf).filter(Boolean));
   const pinnedPrs = new Set(allPins.map(pinRef).filter(Boolean));
-  const tickets = (session.jiraKeys ?? []).filter(k => !pinnedTickets.has(k));
+  // One ordered ticket list (the server applies the user's ↑/↓ order to
+  // jiraKeys): session ticket pins and mentioned tickets mixed, in that order.
+  const orderedKeys = localOrder ?? session.jiraKeys ?? [];
+  const sessionTicketPin = (k: string) => sessionPins.find(p => jiraKeyOf(p) === k);
+  const listedKeys = new Set(orderedKeys);
+  const loneSessionTicketPins = sessionPins.filter(p => p.kind === 'ticket' && !listedKeys.has(jiraKeyOf(p) ?? ''));
+  const moveTicket = (from: number, to: number) => {
+    if (to < 0 || to >= orderedKeys.length) return;
+    const next = [...orderedKeys];
+    const [k] = next.splice(from, 1);
+    next.splice(to, 0, k);
+    setLocalOrder(next);
+    void fetch(`/api/sessions/${encodeURIComponent(session.sessionId)}/ticket-order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keys: next }),
+    }).catch(() => setLocalOrder(null));
+  };
   const prs = (session.prRefs ?? []).filter(r => !pinnedPrs.has(`pr:${r.toLowerCase()}`));
   const id = session.overlordId ?? session.sessionId;
   const pinsOfKind = (kind: 'ticket' | 'pr' | 'other') => {
@@ -92,9 +98,25 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
     <aside className={styles.panel} aria-label="Session context">
       <section className={styles.card} aria-label="Ticket">
         <h3 className={styles.sectionHead}>Ticket<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
-        <JiraChips keys={tickets} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card />
-        {pinsOfKind('ticket')}
-        {!tickets.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
+        {orderedKeys.map((k, i) => {
+          const pin = sessionTicketPin(k);
+          return (
+            <div key={k} className={styles.ticketRow}>
+              {pin
+                ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />
+                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card />}
+              {orderedKeys.length > 1 && (
+                <span className={styles.ticketMove}>
+                  <button type="button" aria-label={`Move ${k} up`} title="Move up" disabled={i === 0} onClick={() => moveTicket(i, i - 1)}>↑</button>
+                  <button type="button" aria-label={`Move ${k} down`} title="Move down" disabled={i === orderedKeys.length - 1} onClick={() => moveTicket(i, i + 1)}>↓</button>
+                </span>
+              )}
+            </div>
+          );
+        })}
+        {loneSessionTicketPins.length > 0 && <PinBar pins={loneSessionTicketPins} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />}
+        {room && <PinBar pins={roomPins.filter(p => p.kind === 'ticket' && !listedKeys.has(jiraKeyOf(p) ?? ''))} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
+        {!orderedKeys.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
       </section>
       <section className={styles.card} aria-label="Pull requests">
         <h3 className={styles.sectionHead}>PR<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>

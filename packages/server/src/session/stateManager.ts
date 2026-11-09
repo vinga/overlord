@@ -11,6 +11,8 @@ import { PrMetaCache } from '../git/prMetaCache.js';
 import { prRefKey, splitPrRef } from '../git/prRef.js';
 import { branchRefKey } from '../git/pushRef.js';
 import { readGitAhead } from '../git/gitStatus.js';
+import { orderJiraKeys, sanitizeTicketOrder } from './ticketOrder.js';
+export { TICKET_ORDER_MAX } from './ticketOrder.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
 import { readRoomConfig, writeRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
 import { sessionStore, scrubReplacedBy } from './sessionStore.js';
@@ -1328,12 +1330,13 @@ export class StateManager {
       scheduledWakeupSetAt: transcript?.scheduledWakeupSetAt,
       scheduledWakeupReason: transcript?.scheduledWakeupReason,
       backgroundTasks: transcript?.backgroundTasks,
-      jiraKeys: mergeJiraKeys(
+      // Selection and cap first (pinned lead), then the user's ↑/↓ order.
+      jiraKeys: orderJiraKeys(mergeJiraKeys(
         existingSession?.jiraKeys ?? sessionStore.getByOverlordId(overlordId)?.jiraKeys,
         transcript?.jiraKeys,
         sessionStore.getByOverlordId(overlordId)?.jiraKeysDismissed,
         pinnedJiraKeys(sessionStore.getByOverlordId(overlordId)),
-      ),
+      ), sanitizeTicketOrder(sessionStore.getByOverlordId(overlordId)?.ticketOrder)),
       prRefsAuthored: mergeWorkRefs(
         existingSession?.prRefsAuthored ?? sessionStore.getByOverlordId(overlordId)?.prRefsAuthored,
         transcript?.prRefsAuthored,
@@ -2085,7 +2088,7 @@ export class StateManager {
       // died with the transcript, but a pin is a statement about the work, not
       // about the conversation, so it survives the clear.
       const clearedRec = session.overlordId ? sessionStore.getByOverlordId(session.overlordId) : undefined;
-      session.jiraKeys = mergeJiraKeys(undefined, undefined, undefined, pinnedJiraKeys(clearedRec));
+      session.jiraKeys = orderJiraKeys(mergeJiraKeys(undefined, undefined, undefined, pinnedJiraKeys(clearedRec)), sanitizeTicketOrder(clearedRec?.ticketOrder));
       session.prRefs = mergePrRefs(undefined, undefined, undefined, pinnedPrRefs(clearedRec));
       session.prRefsAuthored = undefined;
       session.branches = undefined;
@@ -2102,9 +2105,11 @@ export class StateManager {
     // transcript-derived — they survive it.
     const pinnedKeys = pinnedJiraKeys(jiraRec);
     const pinnedRefs = pinnedPrRefs(jiraRec);
-    const mergedJiraKeys = result.transcriptTruncated
+    // The user's ↑/↓ order applies after every merge (merge puts pins first).
+    const ticketOrder = sanitizeTicketOrder(jiraRec?.ticketOrder);
+    const mergedJiraKeys = orderJiraKeys(result.transcriptTruncated
       ? mergeJiraKeys(undefined, result.jiraKeys, dismissedKeys, pinnedKeys)
-      : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys, pinnedKeys);
+      : mergeJiraKeys(session.jiraKeys, result.jiraKeys, dismissedKeys, pinnedKeys), ticketOrder);
     const mergedSkillsUsed = result.transcriptTruncated
       ? (result.skillsUsed && result.skillsUsed.length > 0 ? result.skillsUsed : undefined)
       : mergeSkillsUsed(session.skillsUsed, result.skillsUsed);
@@ -2382,6 +2387,21 @@ export class StateManager {
     return true;
   }
 
+  /** User moved a ticket up/down in the context column: store the order and
+   *  apply it to the live jiraKeys right away. Returns false for unknown sessions. */
+  setTicketOrder(sessionId: string, keys: string[]): boolean {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.overlordId) return false;
+    const rec = sessionStore.getByOverlordId(session.overlordId);
+    if (!rec) return false;
+    const order = sanitizeTicketOrder(keys);
+    const nextKeys = orderJiraKeys(session.jiraKeys, order);
+    session.jiraKeys = nextKeys;
+    sessionStore.patch(session.overlordId, { ticketOrder: order, jiraKeys: nextKeys });
+    this.onChange();
+    return true;
+  }
+
   /** User clicked + (or bring-to-front) on an inline Jira key in the
    *  conversation feed. Pins the key at the front of jiraKeys so it survives
    *  every later transcript scan, and clears any earlier dismissal. Idempotent;
@@ -2403,7 +2423,7 @@ export class StateManager {
       nextLegacy = [key, ...nextLegacy].slice(0, JIRA_KEYS_MAX);
     }
     const pinned = pinnedJiraKeys({ pins: nextPins, jiraKeysPinned: nextLegacy });
-    const nextKeys = mergeJiraKeys(session.jiraKeys, undefined, nextDismissed, pinned);
+    const nextKeys = orderJiraKeys(mergeJiraKeys(session.jiraKeys, undefined, nextDismissed, pinned), sanitizeTicketOrder(rec.ticketOrder));
     session.jiraKeys = nextKeys;
     sessionStore.patch(session.overlordId, {
       jiraKeys: nextKeys,
@@ -3493,7 +3513,7 @@ export class StateManager {
     const live = [...this.sessions.values()].find(s => s.overlordId === ovrId);
     const baseKeys = (live?.jiraKeys ?? prev.jiraKeys)?.filter(k => !removedKeys.has(k));
     const baseRefs = (live?.prRefs ?? prev.prRefs)?.filter(r => !removedRefs.has(prRefKey(r)));
-    const jiraKeys = mergeJiraKeys(baseKeys, undefined, prev.jiraKeysDismissed, pinnedJiraKeys(next));
+    const jiraKeys = orderJiraKeys(mergeJiraKeys(baseKeys, undefined, prev.jiraKeysDismissed, pinnedJiraKeys(next)), sanitizeTicketOrder(prev.ticketOrder));
     const prRefs = mergePrRefs(baseRefs, undefined, prev.prRefsDismissed, pinnedPrRefs(next));
     sessionStore.patch(ovrId, { pins: next.pins, jiraKeys, prRefs });
     if (live) { live.jiraKeys = jiraKeys; live.prRefs = prRefs; }
@@ -3778,7 +3798,7 @@ export class StateManager {
       bridgeMarker: rec.bridgeMarker,
       transcriptPath: transcriptPath ?? undefined,
       intent: rec.intent,
-      jiraKeys: mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, pinnedJiraKeys(rec)),
+      jiraKeys: orderJiraKeys(mergeJiraKeys(rec.jiraKeys, transcriptState?.jiraKeys, rec.jiraKeysDismissed, pinnedJiraKeys(rec)), sanitizeTicketOrder(rec.ticketOrder)),
       prRefsAuthored: mergeWorkRefs(rec.prRefsAuthored, transcriptState?.prRefsAuthored, prRefKey, rec.prRefsDismissed),
       branches: mergeWorkRefs(rec.branches, transcriptState?.branches, branchRefKey),
       prRefs: mergePrRefs(rec.prRefs, transcriptState?.prRefs, rec.prRefsDismissed, pinnedPrRefs(rec), rec.prRefsAuthored),

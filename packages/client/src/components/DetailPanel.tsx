@@ -3539,12 +3539,6 @@ const currentDisplayName =
                   >
                     Conversation
                   </button>
-                  <button
-                    className={`${styles.tab} ${activeTab === 'details' ? styles.tabActive : ''}`}
-                    onClick={() => setActiveTab('details')}
-                  >
-                    Details
-                  </button>
                   {!selectedSession.isArchived && (
                     <button
                       className={`${styles.tab} ${activeTab === 'notes' ? styles.tabActive : ''}`}
@@ -3562,6 +3556,12 @@ const currentDisplayName =
                       Files
                     </button>
                   )}
+                  <button
+                    className={`${styles.tab} ${activeTab === 'details' ? styles.tabActive : ''}`}
+                    onClick={() => setActiveTab('details')}
+                  >
+                    Details
+                  </button>
                   {!selectedSession.isArchived && hasSubagents && (
                     <button
                       className={`${styles.tab} ${activeTab === 'subagents' ? styles.tabActive : ''}`}
@@ -4316,10 +4316,7 @@ const currentDisplayName =
                           <div className={styles.field}>
                             <span className={styles.fieldLabel}>Launched from</span>
                             {launch.category === 'pty' ? (
-                              <span className={isPty ? styles.overlordPill : styles.overlordPillEnded}>
-                                <span className={`${styles.statusDot} ${isPty ? styles.statusDotActive : styles.statusDotEnded}`} />
-                                Overlord {isPty ? '(active)' : '(ended)'}
-                              </span>
+                              <span className={styles.fieldValue}>Overlord</span>
                             ) : selectedSession.bridgeTty && platform === 'darwin' && onFocusBridge ? (
                               <button
                                 className={`${styles.launchBadge} ${styles.launchBadgeFocusable}`}
@@ -4335,7 +4332,6 @@ const currentDisplayName =
                           </div>
                         );
                       })()}
-                      {!contextPanel && (<>
                       {selectedSession.provider && (
                         <div className={styles.field}>
                           <span className={styles.fieldLabel}>Assistant</span>
@@ -4352,7 +4348,6 @@ const currentDisplayName =
                           <span className={styles.fieldValue}>{formatModel(selectedSession.model)}</span>
                         </div>
                       )}
-                      </>)}
                       {selectedSession.inputTokens !== undefined && (() => {
                         const contextWindow = getContextWindow(selectedSession.model, selectedSession.inputTokens);
                         const pct = Math.min(100, (selectedSession.inputTokens / contextWindow) * 100);
@@ -4383,6 +4378,17 @@ const currentDisplayName =
                       </section>
                       <section className={styles.detailsCard}>
                         <h4 className={styles.detailsCardTitle}>Activity</h4>
+                      {/* Whether Overlord's own terminal for this session is still running
+                          (was "(active)/(ended)" next to Launched from). */}
+                      {getLaunchInfo(selectedSession, isPty).category === 'pty' && (
+                        <div className={styles.field}>
+                          <span className={styles.fieldLabel}>Terminal</span>
+                          <span className={styles.fieldValue}>
+                            <span className={`${styles.statusDot} ${isPty ? styles.statusDotActive : styles.statusDotEnded}`} />
+                            {isPty ? 'running in Overlord' : 'ended'}
+                          </span>
+                        </div>
+                      )}
                       <div className={styles.field}>
                         <span className={styles.fieldLabel}>Duration</span>
                         <span className={styles.fieldValue}>{formatDuration(selectedSession.startedAt)}</span>

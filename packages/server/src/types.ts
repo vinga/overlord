@@ -488,6 +488,9 @@ export interface OverlordSession {
    *  them; exempt from jiraKeysDismissed (pinning is the un-dismiss). Wiped on
    *  /clear. Cap 5. */
   jiraKeysPinned?: string[];
+  /** The user's ticket order (↑/↓ in the context column). Keys listed here
+   *  lead jiraKeys in this order; the rest keep their place. Cap 20. */
+  ticketOrder?: string[];
   /** Persisted PR refs (`owner/repo#number`), union across transcript reads.
    *  On /clear this is recomputed down to prRefsPinned — the scanner's history
    *  is gone, but a hand-pinned PR is a statement about the work, not about the
