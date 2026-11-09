@@ -4,6 +4,8 @@ import { XtermTerminal } from './XtermTerminal';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import styles from './PtyTerminalPanel.module.css';
+import { ROOM_GRID_ENABLED } from '../config/featureFlags';
+import { useResizableWidth } from '../hooks/useResizableWidth';
 
 // Match DetailPanel's sizing and storage keys so panel size persists across panel types.
 const WIDTH_KEY = 'overlord:panelWidth';
@@ -66,6 +68,8 @@ interface PtyTerminalPanelProps {
   /** Width when right-docked, height when bottom-docked. */
   panelSize?: number;
   onPanelSizeChange?: (size: number) => void;
+  /** Session context column (right of the content), as in the agent session panel. */
+  contextPanel?: React.ReactNode;
 }
 
 export function PtyTerminalPanel({
@@ -82,6 +86,7 @@ export function PtyTerminalPanel({
   dock = 'right',
   panelSize,
   onPanelSizeChange,
+  contextPanel,
 }: PtyTerminalPanelProps) {
   const [open, setOpen] = useState(false);
   const horizontal = dock !== 'bottom';
@@ -172,15 +177,24 @@ export function PtyTerminalPanel({
     if (e.key === 'Escape') setIsEditing(false);
   }
 
+  // No room grid: fill the office under its header, like the agent session panel.
+  const fillsOffice = !ROOM_GRID_ENABLED && dock !== 'bottom';
+  const contextWidth = useResizableWidth('overlord:contextColumnWidth', 320, 260, 640);
+
   return (
     <div
-      className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : ''} ${open ? styles.panelOpen : ''}`}
-      style={dock === 'bottom' ? { height: size } : { width: size }}
+      className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : fillsOffice ? styles.panelFill : ''} ${open ? styles.panelOpen : ''}`}
+      style={dock === 'bottom' ? { height: size } : fillsOffice ? undefined : { width: size }}
     >
+      {!fillsOffice && (
       <div
         className={`${styles.resizeHandle} ${dock === 'bottom' ? styles.resizeHandleTop : ''}`}
         onMouseDown={onMouseDown}
       />
+      )}
+      {/* Same frame as agent sessions: content left, session context right. */}
+      <div className={styles.ctxRow}>
+      <div className={styles.ctxMain}>
 
       {/* Header */}
       <div className={styles.header}>
@@ -305,6 +319,14 @@ export function PtyTerminalPanel({
           fillHeight
         />
       </div>
+      </div>{/* ctxMain */}
+      {fillsOffice && contextPanel && (
+        <aside className={styles.ctxAside} style={{ flexBasis: contextWidth.width }}>
+          <div className={styles.ctxResize} onPointerDown={contextWidth.onPointerDown} role="separator" aria-orientation="vertical" aria-label="Resize session context" title="Drag to resize" />
+          {contextPanel}
+        </aside>
+      )}
+      </div>{/* ctxRow */}
     </div>
   );
 }

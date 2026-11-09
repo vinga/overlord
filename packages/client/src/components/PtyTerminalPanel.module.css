@@ -260,3 +260,52 @@
   padding: 8px;
   overflow: hidden;
 }
+
+/* Room grid off: fill the office under its header, right of the room chips —
+ * same frame as the agent session panel (DetailPanel .panelFill). */
+.panelFill {
+  top: 56px;
+  bottom: 0;
+  height: auto;
+  left: max(var(--side-tabs-width, 0px), var(--search-panel-width, 0px));
+}
+
+/* Content left, session context column right (shell and note sessions). */
+.ctxRow {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.ctxMain {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ctxAside {
+  position: relative;
+  flex: 0 0 320px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 14px;
+  border-left: 1px solid rgba(255, 255, 255, 0.07);
+  background: #12121c;
+}
+
+.ctxResize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.ctxResize:hover,
+.ctxResize:active {
+  background: rgba(212, 175, 55, 0.35);
+}

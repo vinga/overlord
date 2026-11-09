@@ -5,6 +5,8 @@ import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import { useMarkdownEditor, MarkdownToolbar, MarkdownEditorContent } from './MarkdownEditor';
 import panelStyles from './PtyTerminalPanel.module.css';
 import styles from './NotePanel.module.css';
+import { ROOM_GRID_ENABLED } from '../config/featureFlags';
+import { useResizableWidth } from '../hooks/useResizableWidth';
 
 // Same sizing and storage keys as DetailPanel / PtyTerminalPanel so panel size
 // persists across panel types.
@@ -30,6 +32,8 @@ interface NotePanelProps {
   dock?: 'right' | 'bottom';
   panelSize: number;
   onPanelSizeChange: (size: number) => void;
+  /** Session context column (right of the content), as in the agent session panel. */
+  contextPanel?: React.ReactNode;
 }
 
 function formatEdited(iso: string | undefined): string | null {
@@ -59,6 +63,7 @@ export function NotePanel({
   dock = 'right',
   panelSize,
   onPanelSizeChange,
+  contextPanel,
 }: NotePanelProps) {
   const [open, setOpen] = useState(false);
   const horizontal = dock !== 'bottom';
@@ -193,15 +198,24 @@ export function NotePanel({
     : saveStatus === 'saved' ? 'Saved'
     : formatEdited(session?.lastActivity);
 
+  // No room grid: fill the office under its header, like the agent session panel.
+  const fillsOffice = !ROOM_GRID_ENABLED && dock !== 'bottom';
+  const contextWidth = useResizableWidth('overlord:contextColumnWidth', 320, 260, 640);
+
   return (
     <div
-      className={`${panelStyles.panel} ${dock === 'bottom' ? panelStyles.panelBottom : ''} ${open ? panelStyles.panelOpen : ''}`}
-      style={dock === 'bottom' ? { height: panelSize } : { width: panelSize }}
+      className={`${panelStyles.panel} ${dock === 'bottom' ? panelStyles.panelBottom : fillsOffice ? panelStyles.panelFill : ''} ${open ? panelStyles.panelOpen : ''}`}
+      style={dock === 'bottom' ? { height: panelSize } : fillsOffice ? undefined : { width: panelSize }}
     >
+      {!fillsOffice && (
       <div
         className={`${panelStyles.resizeHandle} ${dock === 'bottom' ? panelStyles.resizeHandleTop : ''}`}
         onMouseDown={onResizeStart}
       />
+      )}
+      {/* Same frame as agent sessions: content left, session context right. */}
+      <div className={panelStyles.ctxRow}>
+      <div className={panelStyles.ctxMain}>
 
       <div className={panelStyles.header}>
         {session && (
@@ -272,7 +286,7 @@ export function NotePanel({
               <path d="M2.5 4h11M6.5 4V2.5h3V4M4 4l.7 9.5h6.6L12 4" />
             </svg>
           </button>
-          {onClose && (
+          {onClose && !fillsOffice && (
             <button className={panelStyles.closeButton} onClick={onClose} title="Close panel">×</button>
           )}
         </div>
@@ -290,6 +304,14 @@ export function NotePanel({
         {!loaded && <div className={styles.loading}>Loading…</div>}
         <MarkdownEditorContent editor={editor} hidden={!loaded} className={styles.editorScroll} />
       </div>
+      </div>{/* ctxMain */}
+      {fillsOffice && contextPanel && (
+        <aside className={panelStyles.ctxAside} style={{ flexBasis: contextWidth.width }}>
+          <div className={panelStyles.ctxResize} onPointerDown={contextWidth.onPointerDown} role="separator" aria-orientation="vertical" aria-label="Resize session context" title="Drag to resize" />
+          {contextPanel}
+        </aside>
+      )}
+      </div>{/* ctxRow */}
     </div>
   );
 }

@@ -884,6 +884,17 @@ export function App() {
     return <LogsPage onBack={() => setView('office')} />;
   }
 
+  // Session context column (ticket, PR, plan, pins) — the same element for
+  // agent, shell and note sessions.
+  const sessionContext = selectedSession ? (
+    <SessionContextPanel
+      key={selectedSession.overlordId ?? selectedSession.sessionId}
+      session={selectedSession} room={selectedSessionRoom ?? null}
+      name={displayNames[selectedSession.sessionId]}
+      jiraBaseUrl={snapshot?.settings?.jiraBaseUrl}
+    />
+  ) : null;
+
   return (
     <>
       {voiceCfg.enabled && (voice.state === 'listening' || voiceNotice) && (
@@ -987,6 +998,7 @@ export function App() {
             handleClose();
           }}
           onCloseNote={handleCloseSession}
+          contextPanel={sessionContext}
           onArchive={(sessionId) => {
             handleArchiveSession(sessionId);
             handleClose();
@@ -1010,6 +1022,7 @@ export function App() {
             handleClose();
           }}
           onRestart={(sessionId) => terminal.restartShell(sessionId)}
+          contextPanel={sessionContext}
           onRename={rename}
           dock={dock}
           panelSize={panelSize}
@@ -1055,12 +1068,7 @@ export function App() {
         />
       ) : <DetailPanel
         selectedSession={selectedSession}
-        contextPanel={selectedSession && <SessionContextPanel
-          key={selectedSession.overlordId ?? selectedSession.sessionId}
-          session={selectedSession} room={selectedSessionRoom ?? null}
-          name={displayNames[selectedSession.sessionId]}
-          jiraBaseUrl={snapshot?.settings?.jiraBaseUrl}
-        />}
+        contextPanel={sessionContext}
         selectedSessionId={selectedSessionId}
         selectedSubagentId={selectedSubagentId}
         showStickyUserMessage={snapshot?.settings?.showStickyUserMessage !== false}
