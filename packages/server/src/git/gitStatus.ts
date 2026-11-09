@@ -36,25 +36,40 @@ async function run(cwd: string, args: string[], timeoutMs = 3000): Promise<strin
  *  no stash, no base resolution. On a 12-room server this is the difference
  *  between ~110 spawns per sweep and 12 — `posix_spawn` on the main thread was
  *  10.9% of server CPU and the dominant source of PTY stalls. */
-export async function readGitAhead(cwd: string): Promise<{ branch: string | null; ahead: number } | null> {
+export interface GitAheadInfo {
+  branch: string | null;
+  ahead: number;
+  /** Commits on the upstream not in HEAD — as of the last fetch (no fetch here). */
+  behind: number;
+  /** Upstream ref (e.g. `origin/main`); null when the branch tracks nothing. */
+  upstream: string | null;
+  /** Tracked files with uncommitted changes (untracked files are not walked). */
+  dirty: number;
+}
+
+export async function readGitAhead(cwd: string): Promise<GitAheadInfo | null> {
   try {
+    // Same single spawn as before: header + tracked changes, no untracked walk.
     const out = await run(cwd, ['status', '--porcelain=v2', '--branch', '--untracked-files=no', '--no-renames'], 3000);
     let branch: string | null = null;
     let ahead = 0;
+    let behind = 0;
+    let upstream: string | null = null;
+    let dirty = 0;
     for (const line of out.split('\n')) {
       if (line.startsWith('# branch.head ')) {
         const h = line.slice('# branch.head '.length).trim();
         branch = h === '(detached)' ? null : h;
+      } else if (line.startsWith('# branch.upstream ')) {
+        upstream = line.slice('# branch.upstream '.length).trim() || null;
       } else if (line.startsWith('# branch.ab ')) {
         const m = line.match(/\+(\d+) -(\d+)/);
-        if (m) ahead = parseInt(m[1], 10);
-      } else if (!line.startsWith('# ')) {
-        // Header block is emitted first; everything after it is file status we
-        // don't need. Stop scanning rather than walking the whole output.
-        break;
+        if (m) { ahead = parseInt(m[1], 10); behind = parseInt(m[2], 10); }
+      } else if (line && !line.startsWith('# ')) {
+        dirty++;
       }
     }
-    return { branch, ahead };
+    return { branch, ahead, behind, upstream, dirty };
   } catch (err) {
     const msg = (err as Error).message ?? '';
     if (/not a git repository/i.test(msg)) return null;

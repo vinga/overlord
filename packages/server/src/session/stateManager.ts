@@ -540,7 +540,7 @@ export class StateManager {
   private prCache: PrCache;
   private prHistoryStore: PrHistoryStore;
   private prMetaCache: PrMetaCache;
-  private gitAheadCache = new Map<string, { ahead: number; cachedAt: number }>();
+  private gitAheadCache = new Map<string, { ahead: number; behind: number; upstream: string | null; dirty: number; cachedAt: number }>();
   private gitAheadTimer: ReturnType<typeof setInterval> | null = null;
   private archivePrTimer: ReturnType<typeof setInterval> | null = null;
   private archivePrBootTimer: ReturnType<typeof setTimeout> | null = null;
@@ -685,7 +685,7 @@ export class StateManager {
           // warm-up that came with readGitStatus costs nothing.
           const status = await readGitAhead(cwd);
           if (status) {
-            this.gitAheadCache.set(cwd, { ahead: status.ahead, cachedAt: Date.now() });
+            this.gitAheadCache.set(cwd, { ahead: status.ahead, behind: status.behind, upstream: status.upstream, dirty: status.dirty, cachedAt: Date.now() });
           }
         } catch {
           // ignore — stale cache entry stays
@@ -3056,7 +3056,13 @@ export class StateManager {
         const prErr = this.prCache.getError(room.cwd, branch);
         if (prErr) room.gitWarning = `PR lookup: ${prErr}`;
         const aheadEntry = this.gitAheadCache.get(room.cwd);
-        if (aheadEntry && aheadEntry.ahead > 0) room.gitAhead = aheadEntry.ahead;
+        if (aheadEntry) {
+          if (aheadEntry.ahead > 0) room.gitAhead = aheadEntry.ahead;
+          if (aheadEntry.behind > 0) room.gitBehind = aheadEntry.behind;
+          if (aheadEntry.dirty > 0) room.gitDirty = aheadEntry.dirty;
+          // null = known to track nothing; absent = not read yet.
+          room.gitUpstream = aheadEntry.upstream;
+        }
       }
       const cfg = readRoomConfig(room.cwd);
       if (cfg.description) room.description = cfg.description;

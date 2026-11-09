@@ -4640,10 +4640,10 @@
   font-weight: 500;
 }
 
-/* Top of the context column: branch badge left, session burger right. */
+/* Top of the context column: branch block left, session menu right. */
 .contextTop {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 16px;
@@ -4655,4 +4655,27 @@
 
 .contextTop > :last-child {
   margin-left: auto;
+}
+
+.contextBranch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.contextBranchRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Same label style as the column's TICKET / PR / PLAN headings. */
+.contextLabel {
+  color: #8a8a96;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }

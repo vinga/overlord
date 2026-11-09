@@ -31,6 +31,7 @@ import { DiffViewer } from './DiffViewer';
 import { SelectionMenu } from './SelectionMenu';
 import { DeskMenu } from './DeskMenu';
 import { GitBranchBadge } from './GitBranchBadge';
+import { GitSyncStatus } from './GitSyncStatus';
 import { WorkBar } from './WorkBar';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
@@ -3032,7 +3033,7 @@ const currentDisplayName =
 
   // Branch badge + session burger: right end of the header's name row, or the
   // top of the context column when that is shown.
-  const headerActions = selectedSession ? (
+  const branchBadge = selectedSession ? (
     <>
                     {room?.gitBranch && (
                       <GitBranchBadge
@@ -3043,6 +3044,10 @@ const currentDisplayName =
                         gitAhead={room.gitAhead}
                       />
                     )}
+    </>
+  ) : null;
+  const sessionMenu = selectedSession ? (
+    <>
                     {!selectedSession.isArchived && onDeleteSession && (
                       <DeskMenu
                         session={selectedSession}
@@ -3066,6 +3071,7 @@ const currentDisplayName =
                     )}
     </>
   ) : null;
+  const headerActions = <>{branchBadge}{sessionMenu}</>;
 
   // No room grid to share the office with: the panel takes the whole area
   // under the header, right of the room chips.
@@ -4722,7 +4728,18 @@ const currentDisplayName =
                 </div>{/* tabsColumn */}
                 {contextPanel && (
                   <aside className={styles.contextColumn}>
-                    <div className={styles.contextTop}>{headerActions}</div>
+                    <div className={styles.contextTop}>
+                      {room?.gitBranch && (
+                        <div className={styles.contextBranch}>
+                          <div className={styles.contextBranchRow}>
+                            <span className={styles.contextLabel}>Branch</span>
+                            {branchBadge}
+                          </div>
+                          <GitSyncStatus gitAhead={room.gitAhead} gitBehind={room.gitBehind} gitUpstream={room.gitUpstream} gitDirty={room.gitDirty} />
+                        </div>
+                      )}
+                      {sessionMenu}
+                    </div>
                     {contextPanel}
                   </aside>
                 )}

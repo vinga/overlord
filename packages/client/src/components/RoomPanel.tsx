@@ -7,6 +7,7 @@ import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
 import { PinBar, hiddenPinRefs } from './PinBar';
 import { RoomGitInfo } from './RoomGitInfo';
+import { GitSyncStatus } from './GitSyncStatus';
 import { RoomFilesPanel } from './RoomFilesPanel';
 import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
 import { ROOM_GRID_ENABLED } from '../config/featureFlags';
@@ -200,6 +201,7 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
               pullRequest={room.pullRequest}
               gitWarning={room.gitWarning}
             />
+            {room.gitBranch && <GitSyncStatus gitAhead={room.gitAhead} gitBehind={room.gitBehind} gitUpstream={room.gitUpstream} gitDirty={room.gitDirty} />}
           </div>
           {!!room.pins?.length && <>
             <h3 className={styles.contextLabel}>Pins</h3>

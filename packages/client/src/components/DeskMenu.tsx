@@ -85,10 +85,11 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
         title="Options"
       >
-        <svg width="12" height="10" viewBox="0 0 12 10" fill="currentColor">
-          <rect y="0" width="12" height="1.5" rx="0.75"/>
-          <rect y="4.25" width="12" height="1.5" rx="0.75"/>
-          <rect y="8.5" width="12" height="1.5" rx="0.75"/>
+        {/* "More" dots, not a burger: the app menu in the header is the burger. */}
+        <svg width="12" height="4" viewBox="0 0 12 4" fill="currentColor">
+          <circle cx="2" cy="2" r="1.3"/>
+          <circle cx="6" cy="2" r="1.3"/>
+          <circle cx="10" cy="2" r="1.3"/>
         </svg>
       </button>
       {open && menuPos && ReactDOM.createPortal(

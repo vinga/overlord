@@ -588,6 +588,12 @@ export interface Room {
   sessions: Session[];
   gitBranch?: string;
   gitAhead?: number;
+  /** Upstream commits not in HEAD, as of the last fetch. */
+  gitBehind?: number;
+  /** Upstream ref (`origin/main`); null = the branch tracks nothing; absent = unknown. */
+  gitUpstream?: string | null;
+  /** Tracked files with uncommitted changes. */
+  gitDirty?: number;
   pullRequest?: {
     number: number;
     url: string;
