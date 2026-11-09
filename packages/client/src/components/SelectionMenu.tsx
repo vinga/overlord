@@ -145,7 +145,7 @@ export function SelectionMenu({ containerRef, onExplain, onPin }: Props): React.
             e.stopPropagation();
             if (!raw || pinFlash) return;
             const err = await onPin(raw);
-            setPinFlash(err ? 'Not pinned' : 'Pinned');
+            setPinFlash(err ? `Not pinned: ${err}` : 'Pinned');
             setTimeout(() => {
               setPos(null);
               if (!err) window.getSelection()?.removeAllRanges();

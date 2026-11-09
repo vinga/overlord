@@ -4696,3 +4696,11 @@
   margin: 0;
   padding: 0;
 }
+
+/* Files tab: the room file browser fills the tab area. */
+.filesTab {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

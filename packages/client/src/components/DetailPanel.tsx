@@ -33,6 +33,7 @@ import { DeskMenu } from './DeskMenu';
 import { GitBranchBadge } from './GitBranchBadge';
 import { GitSyncStatus } from './GitSyncStatus';
 import { ConversationPinner, pinToSession } from './ConversationPinner';
+import { RoomFilesPanel } from './RoomFilesPanel';
 import { WorkBar } from './WorkBar';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
@@ -2217,7 +2218,7 @@ export function DetailPanel({
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts'>('conversation');
+  const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'artifacts' | 'files'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
 
   const [notesContent, setNotesContent] = useState('');
@@ -3553,6 +3554,15 @@ const currentDisplayName =
                       Notes{notesContent.trim() && <span className={styles.tabNotesDot}>✱</span>}
                     </button>
                   )}
+                  {/* The room's file browser, same as the room panel's Files tab. */}
+                  {room && (
+                    <button
+                      className={`${styles.tab} ${activeTab === 'files' ? styles.tabActive : ''}`}
+                      onClick={() => setActiveTab('files')}
+                    >
+                      Files
+                    </button>
+                  )}
                   {!selectedSession.isArchived && (
                     <button
                       className={`${styles.tab} ${activeTab === 'artifacts' ? styles.tabActive : ''}`}
@@ -4225,6 +4235,12 @@ const currentDisplayName =
 
                 {/* Tab: Notes — free-form session description. First line also renders
                     inline in the header and on the worker card. */}
+                {activeTab === 'files' && room && (
+                  <div className={styles.filesTab}>
+                    <RoomFilesPanel cwd={room.cwd} hasPr={!!room.pullRequest} />
+                  </div>
+                )}
+
                 {activeTab === 'notes' && (
                   <div className={styles.notesTab}>
                     <SessionNotesEditor
