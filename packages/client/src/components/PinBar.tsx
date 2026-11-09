@@ -4,6 +4,7 @@ import styles from './PinBar.module.css';
 import jiraStyles from './JiraChips.module.css';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { useJiraMeta } from '../hooks/useJiraMeta';
+import { adoptJiraTicket, JIRA_DBLCLICK_MS } from '../lib/jiraAdopt';
 
 /** Jira key of a ticket pin — mirrors server `jiraKeyOfPin`. */
 export function jiraKeyOf(pin: Pin): string | undefined {
@@ -96,16 +97,37 @@ interface ChipProps {
   label?: string;
   onRemove: () => void;
   removeLabel: string;
+  /** Ticket chips: double click names the session after the ticket (title +
+   *  icon), like JiraChips; single click opens Jira after the dblclick window. */
+  onAdopt?: () => void;
 }
 
 /** One chip: a Jira ticket (rich) or any other link. × calls `onRemove`. */
-export function PinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel }: ChipProps) {
+export function PinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt }: ChipProps) {
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
+  const adoptable = !!(jiraKey && onAdopt);
+  const onClick = adoptable ? (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (clickTimer.current) clearTimeout(clickTimer.current);
+    clickTimer.current = setTimeout(() => {
+      clickTimer.current = null;
+      window.open(href, '_blank', 'noopener,noreferrer');
+    }, JIRA_DBLCLICK_MS);
+  } : undefined;
+  const onDoubleClick = adoptable ? (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
+    onAdopt!();
+  } : undefined;
   const summary = jiraKey && label && label !== jiraKey ? label : m?.title;
   const tip = [jiraKey && [m?.type, m?.status].filter(Boolean).join(' · '), jiraKey ? summary : label, href]
     .filter(Boolean).join('\n');
   return (
     <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''}`} data-kind={jiraKey ? 'ticket' : kind}>
-      <a className={styles.link} href={href} target="_blank" rel="noopener noreferrer" title={tip}>
+      <a className={styles.link} href={href} target="_blank" rel="noopener noreferrer"
+        title={adoptable ? `${tip}\nDouble-click to name this session after the ticket` : tip}
+        onClick={onClick} onDoubleClick={onDoubleClick}>
         {jiraKey ? (
           <>
             <JiraTypeIcon type={m?.type} />
@@ -234,6 +256,8 @@ type Props = {
   /** Chips wrap their title over several lines instead of truncating, and the
    *  bar drops its side padding — for a card, not a header strip. */
   multiline?: boolean;
+  /** Session whose title/icon a double-clicked ticket chip sets. */
+  adoptSessionId?: string;
 } & (
   | { overlordId: string; cwd?: undefined }
   | { cwd: string; overlordId?: undefined }
@@ -242,7 +266,7 @@ type Props = {
 /** Links pinned to a room — one wrapping row of chips above the tab bar.
  *  Hidden when empty (the first pin is added via the CLI). The snapshot
  *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, overlordId, cwd }: Props) {
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, overlordId, cwd }: Props) {
   const pins = useMemo(() => {
     if (!allPins || !hide) return allPins;
     const hidden = new Set(hide.split('\n'));
@@ -268,6 +292,7 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multilin
               label={pin.title}
               onRemove={() => deletePin(pin.id, { overlordId, cwd })}
               removeLabel={`Unpin ${pin.title || pin.url}`}
+              onAdopt={key && adoptSessionId ? () => adoptJiraTicket(adoptSessionId, key, jiraMeta[key]) : undefined}
             />
           );
         })}

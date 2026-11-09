@@ -161,8 +161,8 @@
   box-shadow: 0 0 0 2px #0b0b13;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
-  background: #a78bfa;
-  color: #170f2b;
+  background: #4ade80;
+  color: #0f2417;
   font-size: 10px;
   font-weight: 700;
   line-height: 15px;
@@ -236,15 +236,15 @@
 }
 
 .busy .statusDot {
-  background: #4ade80;
-  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+  background: #a78bfa;
+  box-shadow: 0 0 6px rgba(167, 139, 250, 0.6);
 }
 
-/* Finished while you weren't looking — violet, so it stands out from the
-   orange ring of a reply you have already read. */
+/* Finished while you weren't looking — green, "ready for you", so it stands
+   out from violet work in progress and the orange ring of a read reply. */
 .unseen .statusDot {
-  background: #a78bfa;
-  box-shadow: 0 0 6px rgba(167, 139, 250, 0.7);
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.7);
 }
 
 .seen .statusDot {

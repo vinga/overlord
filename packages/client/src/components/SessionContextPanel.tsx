@@ -52,8 +52,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
     const matches = (p: typeof sessionPins[number]) => kind === 'other'
       ? p.kind !== 'ticket' && p.kind !== 'pr' : p.kind === kind;
     return <>
-      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline />
-      {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline />}
+      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} />
+      {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} />}
     </>;
   };
   const roomPr = room?.pullRequest;

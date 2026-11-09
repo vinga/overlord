@@ -814,12 +814,12 @@ function StateBadge({ state, activeSubagentCount, review, parkReason, onSetRevie
 
   const isParked = review === 'parked';
   const isReadWaiting = state === 'waiting' && review === 'read';
-  // Same language as the room list's status dots: green = working, violet =
-  // waiting and not read yet, amber ring = waiting and already read.
+  // Same language as the room list's status dots: violet = working, green =
+  // waiting and not read yet (ready for you), amber ring = waiting and read.
   const badgeStyle: React.CSSProperties = isParked ? { background: '#64748b', color: '#1a1a2e' }
     : isReadWaiting ? { background: 'transparent', color: '#f59e0b', boxShadow: 'inset 0 0 0 1.5px rgba(245, 158, 11, 0.7)' }
-    : state === 'working' || state === 'thinking' ? { background: '#4ade80', color: '#0f2417' }
-    : state === 'waiting' ? { background: '#a78bfa', color: '#1a1a2e' }
+    : state === 'working' || state === 'thinking' ? { background: '#a78bfa', color: '#1a1a2e' }
+    : state === 'waiting' ? { background: '#4ade80', color: '#0f2417' }
     : { background: STATE_COLORS[state], color: '#1a1a2e' };
   const label = isParked ? 'parked' : isReadWaiting ? 'read' : state;
 
