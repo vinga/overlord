@@ -4604,6 +4604,7 @@
 }
 
 .contextColumn {
+  position: relative;
   flex: 0 0 320px;
   min-height: 0;
   overflow-y: auto;
@@ -4762,4 +4763,20 @@
 /* The connect block brings its own outer margin; the card supplies it now. */
 .detailsCard .resumeSection {
   margin: 0;
+}
+
+/* Left-edge drag handle of the context column. */
+.contextResize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.contextResize:hover,
+.contextResize:active {
+  background: rgba(212, 175, 55, 0.35);
 }

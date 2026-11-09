@@ -34,6 +34,7 @@ import { GitBranchBadge } from './GitBranchBadge';
 import { GitSyncStatus } from './GitSyncStatus';
 import { ConversationPinner, pinToSession } from './ConversationPinner';
 import { RoomFilesPanel } from './RoomFilesPanel';
+import { useResizableWidth } from '../hooks/useResizableWidth';
 import { WorkBar } from './WorkBar';
 import { QUICK_PROMPTS } from './quickPrompts';
 import { SkillPickerPopup } from './SkillPickerPopup';
@@ -3032,6 +3033,8 @@ const currentDisplayName =
     : selectedSession?.state === 'thinking' ? styles.stateBarThinking
     : styles.stateBarActive;
 
+  const contextWidth = useResizableWidth('overlord:contextColumnWidth', 320, 260, 640);
+
   // Branch badge + session burger: right end of the header's name row, or the
   // top of the context column when that is shown.
   const branchBadge = selectedSession ? (
@@ -4752,7 +4755,16 @@ const currentDisplayName =
                 )}
                 </div>{/* tabsColumn */}
                 {contextPanel && (
-                  <aside className={styles.contextColumn}>
+                  <aside className={styles.contextColumn} style={{ flexBasis: contextWidth.width }}>
+                    {/* Drag to resize; the width is remembered. */}
+                    <div
+                      className={styles.contextResize}
+                      onPointerDown={contextWidth.onPointerDown}
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="Resize session context"
+                      title="Drag to resize"
+                    />
                     {!selectedSession?.isArchived && <div className={styles.contextChips}>{summaryRow}</div>}
                     <div className={styles.contextTop}>
                       {room?.gitBranch && (
