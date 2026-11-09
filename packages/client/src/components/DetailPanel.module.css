@@ -4382,25 +4382,6 @@
   padding: 0;
 }
 
-.notesTextarea {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  resize: none;
-  font-family: 'Inter', system-ui, sans-serif;
-  font-size: 13px;
-  line-height: 1.65;
-  color: rgba(255, 255, 255, 0.85);
-  padding: 16px 18px;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.notesTextarea::placeholder {
-  color: rgba(255, 255, 255, 0.25);
-}
-
 .notesFirstLineRow {
   margin-top: 10px;
   padding-bottom: 12px;

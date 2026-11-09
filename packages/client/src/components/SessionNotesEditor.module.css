@@ -1,0 +1,75 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.toolbarRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.modeToggle {
+  margin-left: auto;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.modeBtn {
+  font: 500 11px/1 'Inter', system-ui, sans-serif;
+  color: rgba(255, 255, 255, 0.5);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.modeBtn:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.modeActive,
+.modeActive:hover {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.editorArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editorArea .editorScroll {
+  min-height: 0;
+}
+
+.textarea {
+  flex: 1;
+  min-height: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+
+.textarea::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}

@@ -21,6 +21,7 @@ import { VoiceOverrideBadge } from './VoiceOverrideBadge';
 import type { VoiceInputConfig } from '../lib/voiceConfig';
 import { Worker } from './Worker';
 import { ConsolePreview } from './ConsolePreview';
+import { SessionNotesEditor } from './SessionNotesEditor';
 import styles from './DetailPanel.module.css';
 import { SessionCommands } from './SessionCommands';
 import { searchFeed, BoldExcerpt } from '../lib/search';
@@ -260,6 +261,16 @@ function getFirstLineInfo(content: string): { index: number; text: string } {
     if (lines[i].trim()) return { index: i, text: lines[i] };
   }
   return { index: 0, text: '' };
+}
+
+/** A notes line without its markdown markers (the Notes tab is rich text). */
+function plainNoteLine(line: string): string {
+  return line
+    .replace(/^[\s#>*\-+]+/, '')
+    .replace(/^\[[ xX]\]\s*/, '')
+    .replace(/(\*\*|__|`|~~)/g, '')
+    .replace(/\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '$1 $2')
+    .trim();
 }
 
 function renderWithLinks(text: string, linkClass: string): React.ReactNode[] {
@@ -3361,7 +3372,7 @@ const currentDisplayName =
                               }}
                               title="Click to edit"
                             >
-                              {noteFirst ? renderWithLinks(noteFirst, styles.notesFirstLineLink) : 'Add a note…'}
+                              {noteFirst ? renderWithLinks(plainNoteLine(noteFirst), styles.notesFirstLineLink) : 'Add a note…'}
                               <span className={styles.notesEditIndicator} aria-hidden="true">✎</span>
                             </span>
                           )}
@@ -4250,12 +4261,9 @@ const currentDisplayName =
                     inline in the header and on the worker card. */}
                 {activeTab === 'notes' && (
                   <div className={styles.notesTab}>
-                    <textarea
-                      className={styles.notesTextarea}
+                    <SessionNotesEditor
                       value={notesContent}
-                      placeholder="Describe this session…"
-                      onChange={e => {
-                        const value = e.target.value;
+                      onChange={value => {
                         setNotesContent(value);
                         if (notesSaveTimerRef.current) clearTimeout(notesSaveTimerRef.current);
                         const sessionId = selectedSession.sessionId;
