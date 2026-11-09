@@ -816,11 +816,17 @@ function StateBadge({ state, activeSubagentCount, review, parkReason, onSetRevie
   const isReadWaiting = state === 'waiting' && review === 'read';
   // Same language as the room list's status dots: violet = working, green =
   // waiting and not read yet (ready for you), amber ring = waiting and read.
-  const badgeStyle: React.CSSProperties = isParked ? { background: '#64748b', color: '#1a1a2e' }
-    : isReadWaiting ? { background: 'transparent', color: '#f59e0b', boxShadow: 'inset 0 0 0 1.5px rgba(245, 158, 11, 0.7)' }
-    : state === 'working' || state === 'thinking' ? { background: '#a78bfa', color: '#1a1a2e' }
-    : state === 'waiting' ? { background: '#4ade80', color: '#0f2417' }
-    : { background: STATE_COLORS[state], color: '#1a1a2e' };
+  // Tinted chip (like the assistant pill): colour for text, faint fill, border.
+  const rgb = isParked ? '148, 163, 184'
+    : isReadWaiting ? '245, 158, 11'
+    : state === 'working' || state === 'thinking' ? '167, 139, 250'
+    : state === 'waiting' ? '74, 222, 128'
+    : '107, 114, 128';
+  const badgeStyle: React.CSSProperties = {
+    color: `rgb(${rgb})`,
+    background: isReadWaiting ? 'transparent' : `rgba(${rgb}, 0.14)`,
+    borderColor: `rgba(${rgb}, ${isReadWaiting ? 0.7 : 0.4})`,
+  };
   const label = isParked ? 'parked' : isReadWaiting ? 'read' : state;
 
   const canReview = state !== 'closed' && !!onSetReview;
@@ -3476,7 +3482,7 @@ const currentDisplayName =
                     >
                       {assistantDisplayName(selectedSession.provider)}
                     </span>
-                    {selectedSession.model && <span className={styles.summaryMeta} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
+                    {selectedSession.model && <span className={styles.modelChip} data-tooltip={`Model: ${selectedSession.model}`}>{formatModel(selectedSession.model)}</span>}
                   </div>
                   {/* Tickets, PRs and pins live in the context column when it is shown. */}
                   {!contextPanel && selectedSession.jiraKeys?.[0] && (
