@@ -5,9 +5,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // object is what the promisified call destructures.
 const gh = { title: 'from network', calls: 0, fail: false };
 vi.mock('node:child_process', () => ({
-  execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: null, r: unknown) => void) => {
+  execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: Error | null, r?: unknown) => void) => {
     gh.calls++;
-    if (gh.fail) { (cb as (e: Error) => void)(new Error('timeout')); return; }
+    if (gh.fail) { cb(new Error('timeout')); return; }
     cb(null, {
       stdout: JSON.stringify({
         html_url: 'https://github.com/exampleorg/demo-service/pull/732',
