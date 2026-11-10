@@ -1,12 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // gh must never actually run here. The mock is callback-style on purpose:
 // prMetaCache promisifies execFile, and resolving with a single `{ stdout }`
 // object is what the promisified call destructures.
-const gh = { title: 'from network', calls: 0 };
+const gh = { title: 'from network', calls: 0, fail: false };
 vi.mock('node:child_process', () => ({
   execFile: (_cmd: string, _args: string[], _opts: unknown, cb: (e: null, r: unknown) => void) => {
     gh.calls++;
+    if (gh.fail) { (cb as (e: Error) => void)(new Error('timeout')); return; }
     cb(null, {
       stdout: JSON.stringify({
         html_url: 'https://github.com/exampleorg/demo-service/pull/732',
@@ -40,7 +41,7 @@ function historyStub(title: string): PrHistoryStore {
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 describe('PrMetaCache.invalidate', () => {
-  beforeEach(() => { gh.title = 'from network'; gh.calls = 0; });
+  beforeEach(() => { gh.title = 'from network'; gh.calls = 0; gh.fail = false; });
 
   it('drops the entry and forces a GitHub read past the history shortcut', async () => {
     const cache = new PrMetaCache(() => {}, historyStub('from history'));
@@ -80,5 +81,31 @@ describe('PrMetaCache.invalidate', () => {
     expect(cache.get(REF, CWD)).toBeUndefined();
     await settle();
     expect(gh.calls).toBe(1);
+  });
+});
+
+describe('PrMetaCache failed fetch', () => {
+  beforeEach(() => { gh.title = 'from network'; gh.calls = 0; gh.fail = false; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('retries a ref with nothing known after 2 minutes, not 30', async () => {
+    const cache = new PrMetaCache(() => {});
+    gh.fail = true;
+    expect(cache.get(REF)).toBeUndefined();
+    await settle();
+    expect(gh.calls).toBe(1);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 60_000);
+    cache.get(REF);
+    expect(gh.calls).toBe(1);                 // still backing off
+
+    gh.fail = false;
+    vi.setSystemTime(Date.now() + 90_000);
+    cache.get(REF);
+    vi.useRealTimers();
+    await settle();
+    expect(gh.calls).toBe(2);
+    expect(cache.get(REF)?.title).toBe('from network');
   });
 });

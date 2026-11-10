@@ -9,6 +9,9 @@ const execFileAsync = promisify(execFile);
 const OPEN_TTL_MS = 15 * 60 * 1000;       // an open PR can change title/state
 const TERMINAL_TTL_MS = 24 * 60 * 60 * 1000; // MERGED/CLOSED never change
 const ERROR_TTL_MS = 30 * 60 * 1000;      // back off on failure / rate limit
+/** A failed first fetch leaves the chip bare (no title, no state); a timeout
+ *  while the server is busy is the usual cause, so retry it much sooner. */
+const MISS_RETRY_MS = 2 * 60 * 1000;
 
 interface Entry {
   value: PrRefMeta | undefined;
@@ -51,7 +54,7 @@ export class PrMetaCache {
       return undefined;
     }
     const ttl = entry.error
-      ? ERROR_TTL_MS
+      ? (entry.value ? ERROR_TTL_MS : MISS_RETRY_MS)
       : isTerminal(entry.value?.state) ? TERMINAL_TTL_MS : OPEN_TTL_MS;
     if (Date.now() - entry.fetchedAt > ttl) this.scheduleRefresh(ref, cwdHint);
     return entry.value;
@@ -151,7 +154,7 @@ async function fetchPrMeta(ref: string, cwd?: string): Promise<PrRefMeta | undef
       '-H', 'Accept: application/vnd.github+json',
       `/repos/${parts.owner}/${parts.repo}/pulls/${parts.number}`,
     ],
-    { cwd, timeout: 5000, maxBuffer: 1024 * 1024 }
+    { cwd, timeout: 8000, maxBuffer: 1024 * 1024 }
   );
   const p = JSON.parse(stdout) as RestPull;
   if (!p || typeof p !== 'object') return undefined;
