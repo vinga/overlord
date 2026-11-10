@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { OfficeSnapshot, TerminalMessage } from '../types';
 import { shareSnapshot } from '../lib/shareSnapshot';
+import { settleStates } from '../lib/settleStates';
 
 interface UseOfficeDataOptions {
   onTerminalMessage?: (msg: TerminalMessage) => void;
@@ -34,6 +35,21 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
   // focus rather than whatever it was when the effect first ran.
   const focusRef = useRef(options?.focusOvrId ?? null);
   focusRef.current = options?.focusOvrId ?? null;
+  // WORKING → WAITING display hold (see settleStates): the latest raw snapshot,
+  // when each session was last active, and a timer to re-apply when a hold ends.
+  const rawRef = useRef<OfficeSnapshot | null>(null);
+  const lastActiveRef = useRef(new Map<string, { at: number; state: 'working' | 'thinking' }>());
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const applySnapshot = useCallback(() => {
+    const raw = rawRef.current;
+    if (!raw) return;
+    if (settleTimer.current) { clearTimeout(settleTimer.current); settleTimer.current = null; }
+    const { snapshot: settled, recheckAt } = settleStates(raw, lastActiveRef.current, Date.now());
+    setSnapshot(prev => shareSnapshot(prev, settled));
+    if (recheckAt !== undefined) {
+      settleTimer.current = setTimeout(applySnapshot, Math.max(0, recheckAt - Date.now()) + 20);
+    }
+  }, []);
 
   const sendMessage = useCallback((msg: object): boolean => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -79,7 +95,8 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
           if (data.type === 'snapshot') {
             // New typed message format
             // Reuse unchanged subtrees so memo'd rooms/workers skip the re-render.
-            setSnapshot(prev => shareSnapshot(prev, data as unknown as OfficeSnapshot));
+            rawRef.current = data as unknown as OfficeSnapshot;
+            applySnapshot();
           } else if (data.type && data.type.startsWith('terminal:')) {
             // Terminal message — dispatch to handler
             if (onTerminalMessageRef.current) {
@@ -146,6 +163,7 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
       if (reconnectTimer.current !== null) {
         clearTimeout(reconnectTimer.current);
       }
+      if (settleTimer.current) clearTimeout(settleTimer.current);
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
