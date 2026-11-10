@@ -70,11 +70,14 @@
 .panelSearchWrap {
   display: flex;
   align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .panelSearchInputWrap {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 5px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -102,7 +105,10 @@
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 12px;
   width: 150px;
+  min-width: 40px;
+  flex: 0 1 auto;
   padding: 2px 0;
+  text-overflow: ellipsis;
 }
 
 .panelSearchInput::placeholder {
@@ -392,6 +398,8 @@
   max-width: 45%;
   margin-left: auto;
 }
+/* The session menu (last) never shrinks; the search box gives way instead. */
+.headerActions > :last-child { flex-shrink: 0; }
 
 .currentTaskCard {
   display: flex;
