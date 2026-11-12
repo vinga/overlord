@@ -7,31 +7,15 @@ import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
-import { SessionContextNotes } from './SessionContextNotes';
+import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, SessionContextNotes, useContextView, type ContextTab } from './ContextView';
 
-type ContextView = 'context' | 'notes';
-/** Per-session choice: a map of session id → 'notes'. Absent means the
- *  default Tickets & PRs view, so only sessions switched to Notes take space. */
-const VIEW_KEY = 'overlord.sessionContextViews';
-
-function readViews(): Record<string, ContextView> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(VIEW_KEY) ?? '{}') as unknown;
-    return raw && typeof raw === 'object' ? raw as Record<string, ContextView> : {};
-  } catch { return {}; }
-}
-
-function loadView(id: string | undefined): ContextView {
-  return id && readViews()[id] === 'notes' ? 'notes' : 'context';
-}
-
-function saveView(id: string, view: ContextView): void {
-  try {
-    const views = readViews();
-    if (view === 'notes') views[id] = 'notes'; else delete views[id];
-    localStorage.setItem(VIEW_KEY, JSON.stringify(views));
-  } catch { /* per-viewer convenience only */ }
-}
+const SESSION_TABS: readonly ContextTab[] = [
+  { view: 'context', label: 'Tickets & PRs' },
+  { view: 'notes', label: 'Notes', title: "This session's notes" },
+  { view: 'room', label: 'Room Notes', title: "This room's notes" },
+  { view: 'global', label: 'Global', title: 'Global notes — shared by every room and session' },
+];
+const SESSION_VIEWS = SESSION_TABS.map(t => t.view);
 
 interface Props {
   session: Session | null;
@@ -56,13 +40,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const [retry, setRetry] = useState(0);
   const [planOpen, setPlanOpen] = useState(false);
   // overlordId is stable across /clear and resume; sessionId is the fallback.
-  const viewId = session ? session.overlordId ?? session.sessionId : undefined;
-  const [view, setView] = useState<ContextView>(() => loadView(viewId));
-  useEffect(() => { setView(loadView(viewId)); }, [viewId]);
-  const switchView = (next: ContextView) => {
-    setView(next);
-    if (viewId) saveView(viewId, next);
-  };
+  const [view, switchView] = useContextView('overlord.sessionContextViews', session ? session.overlordId ?? session.sessionId : undefined, SESSION_VIEWS);
   // Optimistic ticket order until the snapshot catches up; dropped once it does.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const serverOrder = session?.jiraKeys?.join('|');
@@ -129,11 +107,11 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
 
   return (
     <aside className={styles.panel} aria-label="Session context">
-      <div className={styles.viewSwitch} role="tablist" aria-label="Context view">
-        <button type="button" role="tab" aria-selected={view === 'context'} className={view === 'context' ? styles.viewActive : ''} onClick={() => switchView('context')}>Tickets &amp; PRs</button>
-        <button type="button" role="tab" aria-selected={view === 'notes'} className={view === 'notes' ? styles.viewActive : ''} onClick={() => switchView('notes')}>Notes</button>
-      </div>
-      {view === 'notes' ? <SessionContextNotes sessionId={session.sessionId} /> : <>
+      <ContextViewSwitch tabs={SESSION_TABS} view={view} onChange={switchView} />
+      {view === 'notes' && <SessionContextNotes sessionId={session.sessionId} />}
+      {view === 'room' && (room ? <RoomContextNotes cwd={room.cwd} /> : <p className={styles.muted}>No room</p>)}
+      {view === 'global' && <GlobalContextNotes />}
+      {view === 'context' && <>
       <section className={styles.card} aria-label="Ticket">
         <h3 className={styles.sectionHead}>Ticket<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         {orderedKeys.map((k, i) => {

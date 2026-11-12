@@ -156,6 +156,10 @@
 }
 
 .contextColumn {
+  /* Column flex so the Notes views fill the remaining height. */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   flex: 0 0 320px;
   min-height: 0;
   overflow-y: auto;
@@ -212,3 +216,6 @@
   text-transform: uppercase;
   color: #8a8a96;
 }
+
+/* The room's cards keep their block layout inside the flex column. */
+.contextCards { min-width: 0; }

@@ -1,0 +1,19 @@
+/* Context-column view switch: cards / session notes / room notes / global notes. */
+.viewSwitch {
+  display: flex; padding: 2px; gap: 2px; flex-shrink: 0;
+  border-radius: 6px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+}
+.viewSwitch button {
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font: 500 11px/1 'Inter', system-ui, sans-serif; color: rgba(255,255,255,.5);
+  background: transparent; border: none; border-radius: 4px; padding: 6px 6px; cursor: pointer;
+}
+.viewSwitch button:hover { color: rgba(255,255,255,.8); }
+.viewSwitch button.viewActive { color: rgba(255,255,255,.92); background: rgba(255,255,255,.1); }
+
+/* Notes fill the rest of the column; the editor scrolls inside. */
+.notesView {
+  flex: 1; min-height: 320px; display: flex; flex-direction: column;
+  margin: 0 -4px; border: 1px solid rgba(255,255,255,.06); border-radius: 6px; overflow: hidden;
+}
+.loading { margin: 8px 0 0; color: #858590; font-size: 13px; }

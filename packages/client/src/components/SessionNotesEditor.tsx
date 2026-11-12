@@ -13,12 +13,13 @@ interface Props {
   /** Markdown source — the stored session notes. */
   value: string;
   onChange: (markdown: string) => void;
+  placeholder?: string;
 }
 
 /** The session's Notes tab: the file editor's rich pane (headings, lists,
  *  quotes, code — same look) by default, raw markdown on request. Both edit
  *  the same markdown string; saving stays with the caller. */
-export function SessionNotesEditor({ value, onChange }: Props) {
+export function SessionNotesEditor({ value, onChange, placeholder }: Props) {
   const [mode, setMode] = useState<Mode>(loadMode);
 
   const switchMode = (next: Mode) => {
@@ -47,14 +48,14 @@ export function SessionNotesEditor({ value, onChange }: Props) {
           <RichMarkdownPane
             content={value}
             onChange={onChange}
-            placeholder="Describe this session… headings, bullets, links"
+            placeholder={placeholder ?? 'Describe this session… headings, bullets, links'}
           />
         </div>
       ) : (
         <textarea
           className={styles.textarea}
           value={value}
-          placeholder="Describe this session…"
+          placeholder={placeholder ?? 'Describe this session…'}
           onChange={e => onChange(e.target.value)}
         />
       )}

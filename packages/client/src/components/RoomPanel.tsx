@@ -9,6 +9,7 @@ import { PinBar, hiddenPinRefs } from './PinBar';
 import { RoomGitInfo } from './RoomGitInfo';
 import { GitSyncStatus } from './GitSyncStatus';
 import { RoomFilesPanel } from './RoomFilesPanel';
+import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, useContextView, type ContextTab } from './ContextView';
 import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
 import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 
@@ -31,6 +32,13 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'brain', label: 'Brain' },
 ];
 
+const ROOM_TABS: readonly ContextTab[] = [
+  { view: 'context', label: 'Room' },
+  { view: 'room', label: 'Room Notes', title: "This room's notes" },
+  { view: 'global', label: 'Global', title: 'Global notes — shared by every room and session' },
+];
+const ROOM_VIEWS = ROOM_TABS.map(t => t.view);
+
 interface RoomPanelProps {
   room: Room;
   archivedCount?: number;
@@ -47,6 +55,7 @@ interface RoomPanelProps {
  *  selected and no session is open. */
 export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange, roomView }: RoomPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'room');
+  const [contextView, setContextView] = useContextView('overlord.roomContextViews', room.cwd, ROOM_VIEWS);
   const horizontal = dock !== 'bottom';
 
   // A request for this room while it is already shown (folder button, "Show in Files").
@@ -190,6 +199,10 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
       {fillsOffice && (
         // Room context: branch and PR, then the room's pins.
         <aside className={styles.contextColumn} aria-label="Room context">
+          <ContextViewSwitch tabs={ROOM_TABS} view={contextView} onChange={setContextView} />
+          {contextView === 'room' && <RoomContextNotes cwd={room.cwd} />}
+          {contextView === 'global' && <GlobalContextNotes />}
+          {contextView === 'context' && <div className={styles.contextCards}>
           <div className={styles.contextField}>
             <span className={styles.contextFieldLabel}>Sessions</span>
             <span>{room.sessions.filter(s => s.state !== 'closed').length} active · {archivedCount ?? 0} archived</span>
@@ -207,6 +220,7 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
             <h3 className={styles.contextLabel}>Pins</h3>
             <PinBar pins={room.pins} cwd={room.cwd} multiline hide={hiddenPinRefs(undefined, undefined, room.pullRequest?.url)} />
           </>}
+          </div>}
         </aside>
       )}
       </div>{/* tabsWithContext */}
