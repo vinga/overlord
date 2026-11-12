@@ -67,6 +67,17 @@ export function writeLivePtyHeartbeat(entries: LivePtyEntry[]): void {
   }
 }
 
+/** Bump the heartbeat's mtime without rewriting it. The 24h age guard reads
+ *  mtime as "when the server was last alive"; a write-on-change file alone
+ *  goes stale while the live set stays the same (an overnight idle office),
+ *  and the next unclean restart then refuses a perfectly current set. */
+export function touchLivePtyHeartbeat(): void {
+  try {
+    const now = new Date();
+    fs.utimesSync(HEARTBEAT_FILE, now, now);
+  } catch { /* ENOENT: next changed tick rewrites it */ }
+}
+
 export function clearLivePtyHeartbeat(): void {
   try { fs.unlinkSync(HEARTBEAT_FILE); } catch { /* ENOENT is the normal case */ }
 }

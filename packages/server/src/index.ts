@@ -27,7 +27,7 @@ import { IntentSummarizer } from './ai/intentSummary.js';
 import { killClaudeWorker } from './ai/claudeQuery.js';
 import { sessionStore } from './session/sessionStore.js';
 import { globalSettingsStore } from './session/globalSettingsStore.js';
-import { writeLiveAtShutdown, consumeLiveAtShutdown, writeLivePtyHeartbeat, clearLivePtyHeartbeat, consumeLivePtyFallback, type LiveAtShutdownEntry, type LivePtyEntry } from './session/liveAtShutdownStore.js';
+import { writeLiveAtShutdown, consumeLiveAtShutdown, writeLivePtyHeartbeat, touchLivePtyHeartbeat, clearLivePtyHeartbeat, consumeLivePtyFallback, type LiveAtShutdownEntry, type LivePtyEntry } from './session/liveAtShutdownStore.js';
 import { reapPreviousInstance } from './session/bootReaper.js';
 import { clearJiraTitleCache } from './session/jiraTitleCache.js';
 import { artifactStore } from './artifacts/artifactStore.js';
@@ -856,13 +856,18 @@ function buildLivePtyEntries(): LivePtyEntry[] {
 
 // Mirror the live PTY set to disk so an unclean death (computer restart, panic,
 // kill -9) still has a record to auto-resume from — shutdown() only runs on
-// SIGTERM/SIGINT/SIGHUP. Write-on-change only: an idle office writes nothing.
+// SIGTERM/SIGINT/SIGHUP. Rewritten on change; otherwise only its mtime is
+// bumped, so the 24h age guard measures time since the server was last alive,
+// not since the live set last changed.
 let lastHeartbeatKey = '';
 setInterval(() => {
   try {
     const entries = buildLivePtyEntries();
     const key = entries.map(e => `${e.ovrId}:${e.sessionId}:${e.pid}`).sort().join('|');
-    if (key === lastHeartbeatKey) return;
+    if (key === lastHeartbeatKey) {
+      if (entries.length > 0) touchLivePtyHeartbeat();
+      return;
+    }
     lastHeartbeatKey = key;
     if (entries.length === 0) clearLivePtyHeartbeat();
     else writeLivePtyHeartbeat(entries);
