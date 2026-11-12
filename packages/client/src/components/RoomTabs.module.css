@@ -252,6 +252,13 @@
   box-shadow: inset 0 0 0 1.5px rgba(245, 158, 11, 0.7);
 }
 
+/* Closed session, listed only while a search is active: hollow grey, dimmed name. */
+.closed .statusDot {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.25);
+}
+.closed .sessionName { opacity: 0.55; }
+
 /* Background command / Monitor / scheduled wakeup in flight. */
 .bgDot {
   width: 5px;

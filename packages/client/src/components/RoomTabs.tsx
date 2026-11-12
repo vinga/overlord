@@ -26,10 +26,14 @@ interface RoomTabsProps {
   onOpenRoom?: (roomId: string) => void;
   /** Docked as a column left of the rooms (horizontal layout) instead of a row. */
   side?: boolean;
+  /** List closed sessions too (dimmed) — on while a search is active, so a
+   *  match in a closed session is reachable from the list. */
+  includeClosed?: boolean;
 }
 
-/** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read/parked). */
-type DotStatus = 'busy' | 'unseen' | 'seen' | 'idle';
+/** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read/parked);
+ *  `closed` = no live process (listed only while searching). */
+type DotStatus = 'busy' | 'unseen' | 'seen' | 'idle' | 'closed';
 
 interface SessionDot {
   /** overlordId when present — stable across /clear. */
@@ -59,15 +63,16 @@ const customTint = (color: string | undefined) =>
 const isWaiting = (s: Session) => isAgent(s) && s.state === 'waiting' && s.review == null;
 const dotId = (s: Session) => s.overlordId ?? s.sessionId;
 
-function sessionDots(sessions: Session[], customNames: Record<string, string>): SessionDot[] {
+function sessionDots(sessions: Session[], customNames: Record<string, string>, includeClosed: boolean): SessionDot[] {
   const seen = new Set<string>();
   const out: SessionDot[] = [];
   for (const s of sessions) {
-    if (s.state === 'closed') continue;
+    if (s.state === 'closed' && !includeClosed) continue;
     const id = dotId(s);
     if (seen.has(id)) continue;
     seen.add(id);
-    const status: DotStatus = s.sessionType === 'note' ? 'seen' // a note is a standing to-do for you
+    const status: DotStatus = s.state === 'closed' ? 'closed'
+      : s.sessionType === 'note' ? 'seen' // a note is a standing to-do for you
       : isBusy(s) ? 'busy'
       // `review` ('read' / 'parked') is set when you open the session — see useMarkSeenOnOpen.
       // A finished turn is unseen even with a wakeup/background task pending,
@@ -91,6 +96,7 @@ const STATUS_LABEL: Record<DotStatus, string> = {
   unseen: 'waiting for input — not seen yet',
   seen: 'waiting for input — seen',
   idle: 'idle',
+  closed: 'closed',
 };
 
 function roomEl(container: HTMLElement, id: string): HTMLElement | null {
@@ -100,7 +106,7 @@ function roomEl(container: HTMLElement, id: string): HTMLElement | null {
 const NO_NAMES: Record<string, string> = {};
 
 export const RoomTabs = React.memo(function RoomTabs({
-  rooms, archiveCounts, sessionCounts, onHide, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false,
+  rooms, archiveCounts, sessionCounts, onHide, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false, includeClosed = false,
 }: RoomTabsProps) {
   // Session dots follow the desk order inside each room (drag order, then oldest first).
   const { getOrder } = useRoomOrder();
@@ -108,7 +114,7 @@ export const RoomTabs = React.memo(function RoomTabs({
   const tabsKey = rooms
     .map(r => {
       const waiting = r.sessions.filter(isWaiting).length;
-      const dots = showSessions ? JSON.stringify(sessionDots(sortRoomSessions(r.sessions, getOrder(r.id)), customNames)) : '[]';
+      const dots = showSessions ? JSON.stringify(sessionDots(sortRoomSessions(r.sessions, getOrder(r.id)), customNames, includeClosed)) : '[]';
       return `${r.id}\u0001${r.name}\u0001${r.cwd}\u0001${waiting}\u0001${dots}`;
     })
     .join('\u0002');

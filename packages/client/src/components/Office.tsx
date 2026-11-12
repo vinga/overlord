@@ -412,6 +412,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       scrollRef={contentRef}
       onMove={moveRoom}
       showSessions={snapshot?.settings?.showRoomTabSessions !== false}
+      includeClosed={filterQuery.trim().length > 0}
       customNames={roomCustomNames}
       selectedSessionId={selectedSessionId}
       onSelectSession={roomOnSelectSession}
