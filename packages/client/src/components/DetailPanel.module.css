@@ -4613,6 +4613,9 @@
 
 .contextColumn {
   position: relative;
+  /* Column flex so the context panel's Notes view can fill the remaining height. */
+  display: flex;
+  flex-direction: column;
   flex: 0 0 320px;
   min-height: 0;
   overflow-y: auto;

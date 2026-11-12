@@ -1,4 +1,4 @@
-.panel { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.panel { display: flex; flex-direction: column; gap: 18px; min-width: 0; flex: 1 0 auto; }
 .header { padding: 0 2px 4px; }
 .eyebrow { color: #8a8a96; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; }
 .header h2 { color: #e8e8e8; font-size: 18px; margin: 6px 0 0; overflow-wrap: anywhere; }
@@ -81,3 +81,21 @@
 }
 .ticketMove button:hover:not(:disabled) { color: #fff; border-color: rgba(96,165,250,.5); background: rgba(96,165,250,.16); }
 .ticketMove button:disabled { opacity: .3; cursor: default; }
+
+/* Context / Notes switch at the top of the column. */
+.viewSwitch {
+  display: flex; padding: 2px; gap: 2px; flex-shrink: 0;
+  border-radius: 6px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+}
+.viewSwitch button {
+  flex: 1; font: 500 11.5px/1 'Inter', system-ui, sans-serif; color: rgba(255,255,255,.5);
+  background: transparent; border: none; border-radius: 4px; padding: 6px 8px; cursor: pointer;
+}
+.viewSwitch button:hover { color: rgba(255,255,255,.8); }
+.viewSwitch button.viewActive { color: rgba(255,255,255,.92); background: rgba(255,255,255,.1); }
+
+/* Notes fill the rest of the column; the editor scrolls inside. */
+.notesView {
+  flex: 1; min-height: 320px; display: flex; flex-direction: column;
+  margin: 0 -4px; border: 1px solid rgba(255,255,255,.06); border-radius: 6px; overflow: hidden;
+}

@@ -7,6 +7,14 @@ import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
+import { SessionContextNotes } from './SessionContextNotes';
+
+type ContextView = 'context' | 'notes';
+const VIEW_KEY = 'overlord.sessionContextView';
+
+function loadView(): ContextView {
+  try { return localStorage.getItem(VIEW_KEY) === 'notes' ? 'notes' : 'context'; } catch { return 'context'; }
+}
 
 interface Props {
   session: Session | null;
@@ -30,6 +38,11 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   const [planOpen, setPlanOpen] = useState(false);
+  const [view, setView] = useState<ContextView>(loadView);
+  const switchView = (next: ContextView) => {
+    setView(next);
+    try { localStorage.setItem(VIEW_KEY, next); } catch { /* per-viewer convenience only */ }
+  };
   // Optimistic ticket order until the snapshot catches up; dropped once it does.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const serverOrder = session?.jiraKeys?.join('|');
@@ -96,6 +109,11 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
 
   return (
     <aside className={styles.panel} aria-label="Session context">
+      <div className={styles.viewSwitch} role="tablist" aria-label="Context view">
+        <button type="button" role="tab" aria-selected={view === 'context'} className={view === 'context' ? styles.viewActive : ''} onClick={() => switchView('context')}>Tickets &amp; PRs</button>
+        <button type="button" role="tab" aria-selected={view === 'notes'} className={view === 'notes' ? styles.viewActive : ''} onClick={() => switchView('notes')}>Notes</button>
+      </div>
+      {view === 'notes' ? <SessionContextNotes sessionId={session.sessionId} /> : <>
       <section className={styles.card} aria-label="Ticket">
         <h3 className={styles.sectionHead}>Ticket<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         {orderedKeys.map((k, i) => {
@@ -183,6 +201,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
         <h3 className={styles.sectionHead}>Pins<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         {pinsOfKind('other')}
       </section>
+      </>}
     </aside>
   );
 }
