@@ -7,7 +7,7 @@ import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
-import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, SessionContextNotes, useContextView, type ContextTab } from './ContextView';
+import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, SessionContextNotes, useContextView, useNotesFilled, type ContextTab } from './ContextView';
 
 const SESSION_TABS: readonly ContextTab[] = [
   { view: 'context', label: 'Tickets & PRs' },
@@ -41,6 +41,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const [planOpen, setPlanOpen] = useState(false);
   // overlordId is stable across /clear and resume; sessionId is the fallback.
   const [view, switchView] = useContextView('overlord.sessionContextViews', session ? session.overlordId ?? session.sessionId : undefined, SESSION_VIEWS);
+  const notesFilled = useNotesFilled({ sessionId: session?.sessionId, cwd: room?.cwd });
   // Optimistic ticket order until the snapshot catches up; dropped once it does.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const serverOrder = session?.jiraKeys?.join('|');
@@ -107,7 +108,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
 
   return (
     <aside className={styles.panel} aria-label="Session context">
-      <ContextViewSwitch tabs={SESSION_TABS} view={view} onChange={switchView} />
+      <ContextViewSwitch tabs={SESSION_TABS} view={view} onChange={switchView} filled={notesFilled} />
       {view === 'notes' && <SessionContextNotes sessionId={session.sessionId} />}
       {view === 'room' && (room ? <RoomContextNotes cwd={room.cwd} /> : <p className={styles.muted}>No room</p>)}
       {view === 'global' && <GlobalContextNotes />}

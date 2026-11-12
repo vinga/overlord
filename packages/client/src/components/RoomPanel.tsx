@@ -9,7 +9,7 @@ import { PinBar, hiddenPinRefs } from './PinBar';
 import { RoomGitInfo } from './RoomGitInfo';
 import { GitSyncStatus } from './GitSyncStatus';
 import { RoomFilesPanel } from './RoomFilesPanel';
-import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, useContextView, type ContextTab } from './ContextView';
+import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, useContextView, useNotesFilled, type ContextTab } from './ContextView';
 import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
 import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 
@@ -56,6 +56,7 @@ interface RoomPanelProps {
 export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'right', panelSize, onPanelSizeChange, roomView }: RoomPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'room');
   const [contextView, setContextView] = useContextView('overlord.roomContextViews', room.cwd, ROOM_VIEWS);
+  const notesFilled = useNotesFilled({ cwd: room.cwd });
   const horizontal = dock !== 'bottom';
 
   // A request for this room while it is already shown (folder button, "Show in Files").
@@ -199,7 +200,7 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
       {fillsOffice && (
         // Room context: branch and PR, then the room's pins.
         <aside className={styles.contextColumn} aria-label="Room context">
-          <ContextViewSwitch tabs={ROOM_TABS} view={contextView} onChange={setContextView} />
+          <ContextViewSwitch tabs={ROOM_TABS} view={contextView} onChange={setContextView} filled={notesFilled} />
           {contextView === 'room' && <RoomContextNotes cwd={room.cwd} />}
           {contextView === 'global' && <GlobalContextNotes />}
           {contextView === 'context' && <div className={styles.contextCards}>
