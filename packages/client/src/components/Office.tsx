@@ -18,7 +18,9 @@ const SIDE_TABS_DEFAULT = 274;
 const clampSideTabsWidth = (w: number) => Math.max(180, Math.min(640, Math.round(w)));
 import { BtwToastStack, type BtwEntry } from './BtwToast';
 import { parseBtwCommand, isBtwDraft } from '../lib/btwCommand';
-import { useNotesSummaries } from '../hooks/useNotesSummaries';
+import { useNotesSummaries, getNoteText } from '../hooks/useNotesSummaries';
+import { useConversationMatches } from '../hooks/useConversationMatches';
+import { metadataSources, mergeSources, type SearchSource } from '../lib/searchSources';
 import { useStableCallback } from '../hooks/useStableCallback';
 import { useSharedValue } from '../hooks/useSharedValue';
 import styles from './Office.module.css';
@@ -280,6 +282,13 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
   }, []);
 
   const jiraMeta = snapshot?.jiraMeta;
+  // Conversation text (you / agent / tool calls) is searched on the server.
+  const conversation = useConversationMatches(filterQuery);
+  /** Where the query matched in this session, in display order. Empty for a
+   *  match on the name or last message only. */
+  const sourcesOf = useCallback((s: Session, room: RoomType, q: string): SearchSource[] =>
+    mergeSources(conversation.sources[s.sessionId] ?? [], metadataSources(s, room, q, { jiraMeta, noteText: getNoteText })),
+  [conversation.sources, jiraMeta]);
   const sessionMatches = useCallback((s: Session, q: string): boolean => {
     const displayName = customNames[s.sessionId] ?? s.proposedName ?? s.slug ?? '';
     const fields: (string | undefined)[] = [
@@ -323,13 +332,27 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             room.pullRequest ? `#${room.pullRequest.number}` : undefined,
           ];
           if (roomFields.some(f => typeof f === 'string' && f.toLowerCase().includes(q))) return room;
-          const sessions = room.sessions.filter(s => sessionMatches(s, q));
+          const sessions = room.sessions.filter(s => sessionMatches(s, q) || sourcesOf(s, room, q).length > 0);
           return sessions.length > 0 ? { ...room, sessions } : null;
         })
         .filter((r): r is NonNullable<typeof r> => r !== null);
     }
     return sortRooms(filtered);
-  }, [rooms, sortRooms, filterQuery, sessionMatches, hiddenMap]));
+  }, [rooms, sortRooms, filterQuery, sessionMatches, sourcesOf, hiddenMap]));
+
+  // Source labels for the room list; null when no search is active.
+  const matchSources = useMemo(() => {
+    const q = filterQuery.trim().toLowerCase();
+    if (!q) return null;
+    const out: Record<string, SearchSource[]> = {};
+    for (const room of visibleRooms) {
+      for (const s of room.sessions) {
+        const src = sourcesOf(s, room, q);
+        if (src.length) out[s.sessionId] = src;
+      }
+    }
+    return out;
+  }, [visibleRooms, filterQuery, sourcesOf]);
 
   // `hiddenRooms` drives the pill list (session-less rooms have nothing to show).
   // `allHiddenRooms` is what "Show all" must operate on: unhideAll only clears the
@@ -413,6 +436,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       onMove={moveRoom}
       showSessions={snapshot?.settings?.showRoomTabSessions !== false}
       includeClosed={filterQuery.trim().length > 0}
+      matchSources={matchSources}
       customNames={roomCustomNames}
       selectedSessionId={selectedSessionId}
       onSelectSession={roomOnSelectSession}
@@ -467,6 +491,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
       <span className={styles.filterBarQuery}>“{filterQuery.trim()}”</span>
       <span className={styles.filterBarCount}>
         {visibleRooms.length} {visibleRooms.length === 1 ? 'room' : 'rooms'} · {matchedAgents} {matchedAgents === 1 ? 'agent' : 'agents'}
+        {conversation.pending && <span className={styles.filterBarPending}> · searching conversations…</span>}
       </span>
       <button type="button" className={styles.filterBarClear} onClick={() => setSearchQuery('')}>
         Clear

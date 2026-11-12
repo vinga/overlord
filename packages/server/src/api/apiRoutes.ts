@@ -15,6 +15,7 @@ import type { Express } from 'express';
 import type { WebSocket } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
 import { resolveTranscriptPath, TICKET_ORDER_MAX } from '../session/stateManager.js';
+import { searchTranscripts, type ConversationSource } from '../search/transcriptIndex.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
 import { injectViaPipe, bridgeManager, getBridgePath } from '../pty/pipeInjector.js';
@@ -1784,6 +1785,44 @@ export function registerApiRoutes(
       }
     }
     res.json({ sessions: out, truncated });
+  });
+
+  /** Which office sessions (live and closed, not archived) mention `q` in
+   *  their conversation, and where: your text, the agent's, or a tool call.
+   *  Backs the source labels of the top search box. Answered by an in-memory
+   *  index in a worker thread — the first call after a restart builds it. */
+  const transcriptPathCache = new Map<string, { path: string | null; at: number }>();
+  const TRANSCRIPT_PATH_TTL_MS = 60_000;
+  app.get('/api/search/sources', async (req, res) => {
+    const q = String(req.query.q ?? '').trim();
+    if (q.length < 2) { res.json({ sources: {} }); return; }
+    const now = Date.now();
+    const byPath = new Map<string, string[]>();
+    for (const sid of stateManager.getAllSessionIds()) {
+      const session = stateManager.getSession(sid);
+      if (!session || archiveManager.isArchived(sid)) continue;
+      // Resolution can walk project dirs; a minute-old answer is fine per keystroke.
+      let cached = transcriptPathCache.get(sid);
+      if (!cached || now - cached.at > TRANSCRIPT_PATH_TTL_MS) {
+        cached = { path: resolveTranscriptPath(session), at: now };
+        transcriptPathCache.set(sid, cached);
+      }
+      if (!cached.path) continue;
+      const list = byPath.get(cached.path) ?? [];
+      list.push(sid);
+      byPath.set(cached.path, list);
+    }
+    try {
+      const result = await searchTranscripts(q, [...byPath.keys()]);
+      if (result === null) { res.json({ sources: {}, superseded: true }); return; }
+      const sources: Record<string, ConversationSource[]> = {};
+      for (const [p, hits] of Object.entries(result)) {
+        for (const sid of byPath.get(p) ?? []) sources[sid] = hits;
+      }
+      res.json({ sources });
+    } catch (err) {
+      res.status(503).json({ error: (err as Error).message });
+    }
   });
 
   app.get('/api/archive/search', (req, res) => {

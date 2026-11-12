@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 
 let notesMap: Map<string, string> = new Map();
+/** Full notes text per session — search matches anywhere in it, not only the first line. */
+const notesText: Map<string, string> = new Map();
 let fetched = false;
 let listeners: Set<() => void> = new Set();
 
@@ -14,7 +16,13 @@ function extractFirstLine(content: string): string {
   return raw.replace(/^[#>*\-_`~\s]+/, '').trim();
 }
 
+/** The session's full notes, as last fetched or saved in this tab. */
+export function getNoteText(sessionId: string): string | undefined {
+  return notesText.get(sessionId);
+}
+
 export function updateNoteFirstLine(sessionId: string, content: string): void {
+  if (content.trim()) notesText.set(sessionId, content); else notesText.delete(sessionId);
   const firstLine = extractFirstLine(content);
   if (firstLine) {
     notesMap.set(sessionId, firstLine);
@@ -37,6 +45,7 @@ export function useNotesSummaries(): Map<string, string> {
         .then(r => r.json())
         .then((data: Record<string, string>) => {
           for (const [id, content] of Object.entries(data)) {
+            if (content.trim()) notesText.set(id, content);
             const firstLine = extractFirstLine(content);
             if (firstLine) notesMap.set(id, firstLine);
           }

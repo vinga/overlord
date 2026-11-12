@@ -4,6 +4,7 @@ import { expandRoom } from '../hooks/useRoomCollapsed';
 import { useRoomOrder } from '../hooks/useRoomOrder';
 import { sortRoomSessions } from '../lib/roomSessionOrder';
 import { hasBackground, isAgent, isBusy, turnEnded } from '../lib/sessionAttention';
+import { SOURCE_LABEL, type SearchSource } from '../lib/searchSources';
 import styles from './RoomTabs.module.css';
 
 interface RoomTabsProps {
@@ -29,6 +30,8 @@ interface RoomTabsProps {
   /** List closed sessions too (dimmed) — on while a search is active, so a
    *  match in a closed session is reachable from the list. */
   includeClosed?: boolean;
+  /** While searching: where the query matched per sessionId (labels under the name). */
+  matchSources?: Record<string, SearchSource[]> | null;
 }
 
 /** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read/parked);
@@ -45,6 +48,8 @@ interface SessionDot {
   background: boolean;
   /** The session's colour when you picked one — unset for the default orange. */
   tint?: string;
+  /** While searching: where the query matched. */
+  sources?: SearchSource[];
 }
 
 interface TabInfo {
@@ -63,7 +68,7 @@ const customTint = (color: string | undefined) =>
 const isWaiting = (s: Session) => isAgent(s) && s.state === 'waiting' && s.review == null;
 const dotId = (s: Session) => s.overlordId ?? s.sessionId;
 
-function sessionDots(sessions: Session[], customNames: Record<string, string>, includeClosed: boolean): SessionDot[] {
+function sessionDots(sessions: Session[], customNames: Record<string, string>, includeClosed: boolean, matchSources?: Record<string, SearchSource[]> | null): SessionDot[] {
   const seen = new Set<string>();
   const out: SessionDot[] = [];
   for (const s of sessions) {
@@ -86,6 +91,7 @@ function sessionDots(sessions: Session[], customNames: Record<string, string>, i
       status,
       background: hasBackground(s),
       tint: customTint(s.color),
+      ...(matchSources?.[s.sessionId]?.length ? { sources: matchSources[s.sessionId] } : {}),
     });
   }
   return out;
@@ -106,7 +112,7 @@ function roomEl(container: HTMLElement, id: string): HTMLElement | null {
 const NO_NAMES: Record<string, string> = {};
 
 export const RoomTabs = React.memo(function RoomTabs({
-  rooms, archiveCounts, sessionCounts, onHide, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false, includeClosed = false,
+  rooms, archiveCounts, sessionCounts, onHide, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false, includeClosed = false, matchSources,
 }: RoomTabsProps) {
   // Session dots follow the desk order inside each room (drag order, then oldest first).
   const { getOrder } = useRoomOrder();
@@ -114,7 +120,7 @@ export const RoomTabs = React.memo(function RoomTabs({
   const tabsKey = rooms
     .map(r => {
       const waiting = r.sessions.filter(isWaiting).length;
-      const dots = showSessions ? JSON.stringify(sessionDots(sortRoomSessions(r.sessions, getOrder(r.id)), customNames, includeClosed)) : '[]';
+      const dots = showSessions ? JSON.stringify(sessionDots(sortRoomSessions(r.sessions, getOrder(r.id)), customNames, includeClosed, matchSources)) : '[]';
       return `${r.id}\u0001${r.name}\u0001${r.cwd}\u0001${waiting}\u0001${dots}`;
     })
     .join('\u0002');
@@ -234,8 +240,8 @@ export const RoomTabs = React.memo(function RoomTabs({
           {showSessions && t.sessions.length > 0 && (
             <span className={styles.sessions}>
               {t.sessions.map(d => (
+                <React.Fragment key={d.id}>
                 <button
-                  key={d.id}
                   type="button"
                   className={[
                     styles.session,
@@ -252,6 +258,12 @@ export const RoomTabs = React.memo(function RoomTabs({
                   <span className={styles.sessionName}>{d.name}</span>
                   {d.background && <span className={styles.bgDot} aria-hidden="true" />}
                 </button>
+                {d.sources && (
+                  <span className={styles.matchSources} aria-label={`Matched in: ${d.sources.map(x => SOURCE_LABEL[x]).join(', ')}`}>
+                    {d.sources.map(x => <span key={x} className={styles.matchSource} data-source={x}>{SOURCE_LABEL[x]}</span>)}
+                  </span>
+                )}
+                </React.Fragment>
               ))}
             </span>
           )}

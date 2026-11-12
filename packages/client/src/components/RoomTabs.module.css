@@ -327,3 +327,25 @@
 .tab:hover .hideBtn, .tab:focus-within .hideBtn { opacity: 1; }
 .hideBtn:hover, .hideBtn:focus-visible { color: #f2dc8c; background: #302b20; }
 .tab:has(.hideBtn) .tabBtn { padding-right: 24px; }
+
+/* While searching: where the query matched, on a line under the session name
+   (indented past the status dot). Colours follow the advanced search's roles. */
+.matchSources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 0 0 4px 13px;
+}
+.matchSource {
+  font: 600 9.5px/1 'Inter', system-ui, sans-serif;
+  letter-spacing: 0.02em;
+  padding: 2px 4px;
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.07);
+}
+.matchSource[data-source='you'] { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.matchSource[data-source='agent'] { color: #c4b5fd; background: rgba(167, 139, 250, 0.14); }
+.matchSource[data-source='tool'] { color: #93c5fd; background: rgba(96, 165, 250, 0.12); }
+.matchSource[data-source='ticket'] { color: #6ee7b7; background: rgba(52, 211, 153, 0.12); }
+.matchSource[data-source='pr'] { color: #f0abfc; background: rgba(232, 121, 249, 0.12); }

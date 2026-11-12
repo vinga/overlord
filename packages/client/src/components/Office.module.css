@@ -472,3 +472,6 @@
   opacity: 0.35;
   cursor: not-allowed;
 }
+
+/* While the server searches conversation text (first search after a restart builds its index). */
+.filterBarPending { color: rgba(255, 255, 255, 0.45); font-style: italic; }
