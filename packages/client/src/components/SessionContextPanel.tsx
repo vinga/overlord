@@ -10,10 +10,27 @@ import { ReadingDialog } from './ReadingDialog';
 import { SessionContextNotes } from './SessionContextNotes';
 
 type ContextView = 'context' | 'notes';
-const VIEW_KEY = 'overlord.sessionContextView';
+/** Per-session choice: a map of session id → 'notes'. Absent means the
+ *  default Tickets & PRs view, so only sessions switched to Notes take space. */
+const VIEW_KEY = 'overlord.sessionContextViews';
 
-function loadView(): ContextView {
-  try { return localStorage.getItem(VIEW_KEY) === 'notes' ? 'notes' : 'context'; } catch { return 'context'; }
+function readViews(): Record<string, ContextView> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(VIEW_KEY) ?? '{}') as unknown;
+    return raw && typeof raw === 'object' ? raw as Record<string, ContextView> : {};
+  } catch { return {}; }
+}
+
+function loadView(id: string | undefined): ContextView {
+  return id && readViews()[id] === 'notes' ? 'notes' : 'context';
+}
+
+function saveView(id: string, view: ContextView): void {
+  try {
+    const views = readViews();
+    if (view === 'notes') views[id] = 'notes'; else delete views[id];
+    localStorage.setItem(VIEW_KEY, JSON.stringify(views));
+  } catch { /* per-viewer convenience only */ }
 }
 
 interface Props {
@@ -38,10 +55,13 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   const [planOpen, setPlanOpen] = useState(false);
-  const [view, setView] = useState<ContextView>(loadView);
+  // overlordId is stable across /clear and resume; sessionId is the fallback.
+  const viewId = session ? session.overlordId ?? session.sessionId : undefined;
+  const [view, setView] = useState<ContextView>(() => loadView(viewId));
+  useEffect(() => { setView(loadView(viewId)); }, [viewId]);
   const switchView = (next: ContextView) => {
     setView(next);
-    try { localStorage.setItem(VIEW_KEY, next); } catch { /* per-viewer convenience only */ }
+    if (viewId) saveView(viewId, next);
   };
   // Optimistic ticket order until the snapshot catches up; dropped once it does.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
