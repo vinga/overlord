@@ -4791,3 +4791,9 @@
 .contextResize:active {
   background: rgba(212, 175, 55, 0.35);
 }
+
+/* Conversation: side gutter a third narrower than the other tabs' 24px. */
+.scrollArea.transcriptScroll {
+  padding-left: 16px;
+  padding-right: 16px;
+}

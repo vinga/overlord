@@ -3305,7 +3305,7 @@ const currentDisplayName =
 
                 {subagentActiveTab === 'conversation' ? (
                   <div className={styles.scrollAreaWrap}>
-                    <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleScrollWithSticky}>
+                    <div className={`${styles.scrollArea} ${styles.transcriptScroll}`} ref={transcriptRef} onScroll={handleScrollWithSticky}>
                       <section className={styles.section}>
                         {selectedSubagent.activityFeed?.length ? (
                           <div className={styles.transcript}>
@@ -3723,7 +3723,7 @@ const currentDisplayName =
                   <>
                     {/* Non-PTY: transcript + state bar + send input */}
                       <div className={styles.scrollAreaWrap}>
-                        <div className={styles.scrollArea} ref={transcriptRef} onScroll={handleScrollWithSticky}>
+                        <div className={`${styles.scrollArea} ${styles.transcriptScroll}`} ref={transcriptRef} onScroll={handleScrollWithSticky}>
                           {selectedSession.activeMonitors && selectedSession.activeMonitors.length > 0 && (
                             <div className={styles.watchingSection}>
                               <span className={styles.watchingHeader}>
