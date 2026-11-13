@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import styles from './PrChips.module.css';
 import { usePrMeta } from '../hooks/usePrMeta';
+import { CopyUrl } from './CopyUrl';
 
 interface Props {
   refs: string[];
@@ -121,6 +122,7 @@ export function PrChips({ refs, sessionId, card = false, pinned }: Props) {
             >
               <PrGlyph />
               <span className={styles.chipRef}>{label || ref}</span>
+              <CopyUrl url={href} />
               {isPinned && <PinGlyph />}
               <span className={styles.chipRepo}>{repo}</span>
               {m?.title && <span className={styles.chipTitle}>{m.title}</span>}

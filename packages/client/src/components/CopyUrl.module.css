@@ -1,0 +1,23 @@
+.copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin: -2px 0;
+  border-radius: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+/* Shown while its chip (the parent link) is hovered or focused. */
+*:hover > .copy,
+.copy:focus-visible,
+.copy[data-copied] { opacity: 1; }
+.copy:hover {
+  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.1);
+}
+.copy[data-copied] { color: rgba(74, 222, 128, 0.95); }

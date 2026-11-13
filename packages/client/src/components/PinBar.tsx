@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { JiraIssueMeta, Pin, PinKind } from '../types';
 import styles from './PinBar.module.css';
+import { CopyUrl } from './CopyUrl';
 import jiraStyles from './JiraChips.module.css';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { useJiraMeta } from '../hooks/useJiraMeta';
@@ -222,6 +223,7 @@ function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemov
           <>
             <JiraTypeIcon type={m?.type} />
             <span className={styles.key}>{jiraKey}</span>
+            <CopyUrl url={href} />
             {summary && <span className={`${styles.label} ${styles.summary}`}>{summary}</span>}
             {m?.status && (
               <span className={jiraStyles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>{m.status}</span>
@@ -231,6 +233,7 @@ function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemov
           <>
             <KindIcon kind={kind} />
             <span className={styles.label}>{label || href}</span>
+            {kind === 'pr' && <CopyUrl url={href} />}
           </>
         )}
       </a>

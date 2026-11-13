@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import styles from './JiraChips.module.css';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { JiraTypeIcon } from './JiraTypeIcon';
+import { CopyUrl } from './CopyUrl';
 import { adoptJiraTicket, JIRA_DBLCLICK_MS as DBLCLICK_MS } from '../lib/jiraAdopt';
 
 interface Props {
@@ -89,6 +90,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
           <>
             <JiraTypeIcon type={m?.type} />
             <span className={styles.chipKey}>{key}</span>
+            <CopyUrl url={href} />
             {title && <span className={styles.chipTitle}>{title}</span>}
             {m?.status && (
               <span className={styles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>

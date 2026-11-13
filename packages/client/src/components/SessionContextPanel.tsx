@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
+import { CopyUrl } from './CopyUrl';
 import { PrChips, PrGlyph, prRefFromUrl } from './PrChips';
 import prStyles from './PrChips.module.css';
 import { PinBar, PinAdder, deletePin, jiraKeyOf } from './PinBar';
@@ -162,6 +163,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
                 <a className={prStyles.chip} href={roomPr.url} target="_blank" rel="noopener noreferrer" title={`${repo ?? ''}#${roomPr.number} — ${roomPr.title}`}>
                   <PrGlyph />
                   <span className={prStyles.chipRef}>#{roomPr.number}</span>
+                  <CopyUrl url={roomPr.url} />
                   {repo && <span className={prStyles.chipRepo}>{repo}</span>}
                   <span className={prStyles.chipTitle}>{roomPr.title}</span>
                   <span className={prStyles.state} data-state={state}>{state}</span>
