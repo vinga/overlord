@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { JiraIssueMeta, Pin, PinKind } from '../types';
 import styles from './PinBar.module.css';
 import { CopyUrl } from './CopyUrl';
+import { SetTitleIcon } from './SetTitleIcon';
 import jiraStyles from './JiraChips.module.css';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { useJiraMeta } from '../hooks/useJiraMeta';
-import { adoptJiraTicket, JIRA_DBLCLICK_MS } from '../lib/jiraAdopt';
+import { adoptJiraTicket } from '../lib/jiraAdopt';
 import { ReadingDialog } from './ReadingDialog';
 
 /** Jira key of a ticket pin — mirrors server `jiraKeyOfPin`. */
@@ -105,8 +106,7 @@ interface ChipProps {
   label?: string;
   onRemove: () => void;
   removeLabel: string;
-  /** Ticket chips: double click names the session after the ticket (title +
-   *  icon), like JiraChips; single click opens Jira after the dblclick window. */
+  /** Ticket chips: an icon names the session after the ticket (title + icon). */
   onAdopt?: () => void;
   /** Text pins: the pinned text (rendered as a quote, not a link). */
   text?: string;
@@ -195,35 +195,19 @@ export function PinChip(props: ChipProps) {
 }
 
 function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt }: ChipProps) {
-  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (clickTimer.current) clearTimeout(clickTimer.current); }, []);
-  const adoptable = !!(jiraKey && onAdopt);
-  const onClick = adoptable ? (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (clickTimer.current) clearTimeout(clickTimer.current);
-    clickTimer.current = setTimeout(() => {
-      clickTimer.current = null;
-      window.open(href, '_blank', 'noopener,noreferrer');
-    }, JIRA_DBLCLICK_MS);
-  } : undefined;
-  const onDoubleClick = adoptable ? (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
-    onAdopt!();
-  } : undefined;
   const summary = jiraKey && label && label !== jiraKey ? label : m?.title;
   const tip = [jiraKey && [m?.type, m?.status].filter(Boolean).join(' · '), jiraKey ? summary : label, href]
     .filter(Boolean).join('\n');
   return (
     <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''}`} data-kind={jiraKey ? 'ticket' : kind}>
       <a className={styles.link} href={href} target="_blank" rel="noopener noreferrer"
-        title={adoptable ? `${tip}\nDouble-click to name this session after the ticket` : tip}
-        onClick={onClick} onDoubleClick={onDoubleClick}>
+        title={tip}>
         {jiraKey ? (
           <>
             <JiraTypeIcon type={m?.type} />
             <span className={styles.key}>{jiraKey}</span>
             <CopyUrl url={href} />
+            {onAdopt && <SetTitleIcon ticketKey={jiraKey} onSet={onAdopt} />}
             {summary && <span className={`${styles.label} ${styles.summary}`}>{summary}</span>}
             {m?.status && (
               <span className={jiraStyles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>{m.status}</span>
@@ -349,7 +333,7 @@ type Props = {
   /** Chips wrap their title over several lines instead of truncating, and the
    *  bar drops its side padding — for a card, not a header strip. */
   multiline?: boolean;
-  /** Session whose title/icon a double-clicked ticket chip sets. */
+  /** Session whose title/icon a ticket chip's set-title icon sets. */
   adoptSessionId?: string;
   /** No trailing + (the caller shows its own adder, e.g. in a section heading). */
   hideAdder?: boolean;

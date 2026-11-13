@@ -27,7 +27,7 @@
   cursor: pointer;
 }
 
-/* Brief flash after a double click adopted the ticket. */
+/* Brief flash after the set-title icon adopted the ticket. */
 .adopted,
 .adopted:hover {
   border-color: rgba(96, 165, 250, 0.85);

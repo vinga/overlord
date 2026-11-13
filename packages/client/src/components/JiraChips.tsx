@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import styles from './JiraChips.module.css';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { CopyUrl } from './CopyUrl';
-import { adoptJiraTicket, JIRA_DBLCLICK_MS as DBLCLICK_MS } from '../lib/jiraAdopt';
+import { SetTitleIcon } from './SetTitleIcon';
+import { adoptJiraTicket } from '../lib/jiraAdopt';
 
 interface Props {
   keys: string[];
@@ -23,13 +24,6 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
   const [expanded, setExpanded] = useState(false);
   const [dismissing, setDismissing] = useState<Set<string>>(() => new Set());
   const [adopted, setAdopted] = useState<string | null>(null);
-  // Pending single-click navigation, cancelled when a second click lands.
-  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (clickTimer.current) clearTimeout(clickTimer.current);
-  }, []);
-
   if (!keys || keys.length === 0) return null;
 
   const shown = keys.filter(k => !dismissing.has(k));
@@ -78,9 +72,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
         const href = trimmedBase ? `${trimmedBase}/browse/${encodeURIComponent(key)}` : undefined;
         // Status tooltip (e.g. "Bug · In Progress"); omitted when nothing resolved.
         const status = [m?.type, m?.status].filter(Boolean).join(' · ');
-        const tip = sessionId
-          ? [status, 'Double-click to name this session after the ticket'].filter(Boolean).join(' — ')
-          : status || undefined;
+        const tip = status || undefined;
         const chipClass = [
           styles.chip,
           sessionId ? styles.chipHasDismiss : '',
@@ -91,6 +83,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
             <JiraTypeIcon type={m?.type} />
             <span className={styles.chipKey}>{key}</span>
             <CopyUrl url={href} />
+            {sessionId && <SetTitleIcon ticketKey={key} onSet={() => adopt(key)} />}
             {title && <span className={styles.chipTitle}>{title}</span>}
             {m?.status && (
               <span className={styles.chipStatus} data-cat={m.statusCategory ?? 'unknown'}>
@@ -109,28 +102,6 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
             ×
           </button>
         ) : null;
-        // Defer the single-click action past the double-click window, otherwise
-        // adopting a ticket also fires the click action (opening a JIRA tab, or
-        // popping the "configure me" alert — which would block the dblclick).
-        const deferSingleClick = (e: React.MouseEvent, action: () => void) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (!sessionId) { action(); return; }
-          if (clickTimer.current) clearTimeout(clickTimer.current);
-          clickTimer.current = setTimeout(() => {
-            clickTimer.current = null;
-            action();
-          }, DBLCLICK_MS);
-        };
-        const onChipDoubleClick = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (clickTimer.current) {
-            clearTimeout(clickTimer.current);
-            clickTimer.current = null;
-          }
-          adopt(key);
-        };
         return isLink ? (
           <span key={key} className={styles.chipWrap}>
             <a
@@ -138,8 +109,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              onClick={(e) => deferSingleClick(e, () => window.open(href!, '_blank', 'noopener,noreferrer'))}
-              onDoubleClick={onChipDoubleClick}
+              onClick={stop}
               title={tip}
             >
               {content}
@@ -152,10 +122,10 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
               type="button"
               className={`${chipClass} ${styles.chipUnconfigured}`}
               title={tip}
-              onClick={(e) => deferSingleClick(e, () => {
+              onClick={(e) => {
+                e.stopPropagation();
                 alert('Set the JIRA Base URL in Settings (gear icon) to make these chips clickable.\n\nExample: https://exampleorg.atlassian.net');
-              })}
-              onDoubleClick={onChipDoubleClick}
+              }}
             >
               {content}
               {dismissBtn}

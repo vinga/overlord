@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useJiraMeta } from '../hooks/useJiraMeta';
-import { adoptJiraTicket, JIRA_DBLCLICK_MS } from '../lib/jiraAdopt';
+import { adoptJiraTicket } from '../lib/jiraAdopt';
+import { SetTitleIcon } from './SetTitleIcon';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import styles from './ActiveTicket.module.css';
 
@@ -25,31 +26,17 @@ function dismissTicket(sessionId: string, key: string): void {
 export function ActiveTicket({ ticketKey, baseUrl, sessionId, onRename }: Props) {
   const m = useJiraMeta()[ticketKey];
   const [adopted, setAdopted] = useState(false);
-  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
-    if (clickTimer.current) clearTimeout(clickTimer.current);
     if (flashTimer.current) clearTimeout(flashTimer.current);
   }, []);
 
   const base = baseUrl?.replace(/\/+$/, '');
   const href = base ? `${base}/browse/${encodeURIComponent(ticketKey)}` : undefined;
   const status = [m?.type, ticketKey, m?.status].filter(Boolean).join(' · ');
-  const tip = `${status} — double-click to name this session after the ticket`;
+  const tip = status;
 
-  // Single click waits out the double-click window, so adopting never also opens a tab.
-  const onClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (!href) return;
-    if (clickTimer.current) clearTimeout(clickTimer.current);
-    clickTimer.current = setTimeout(() => {
-      clickTimer.current = null;
-      window.open(href, '_blank', 'noopener,noreferrer');
-    }, JIRA_DBLCLICK_MS);
-  };
-  const onDoubleClick = (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (clickTimer.current) { clearTimeout(clickTimer.current); clickTimer.current = null; }
+  const adopt = () => {
     adoptJiraTicket(sessionId, ticketKey, m, onRename);
     setAdopted(true);
     if (flashTimer.current) clearTimeout(flashTimer.current);
@@ -62,6 +49,7 @@ export function ActiveTicket({ ticketKey, baseUrl, sessionId, onRename }: Props)
       <JiraTypeIcon type={m?.type} />
       {m?.type && <span className={styles.type}>{m.type}</span>}
       <span className={styles.key}>{ticketKey}</span>
+      <SetTitleIcon ticketKey={ticketKey} onSet={adopt} />
       {m?.title && <span className={styles.title}>{m.title}</span>}
       {m?.status && (
         <span className={styles.status} data-cat={m.statusCategory ?? 'unknown'}>{m.status}</span>
@@ -70,7 +58,6 @@ export function ActiveTicket({ ticketKey, baseUrl, sessionId, onRename }: Props)
         type="button"
         className={styles.dismiss}
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissTicket(sessionId, ticketKey); }}
-        onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
         aria-label={`Unpin ${ticketKey}`}
         title={`Unpin ${ticketKey}`}
       >
@@ -80,6 +67,6 @@ export function ActiveTicket({ ticketKey, baseUrl, sessionId, onRename }: Props)
   );
 
   return href
-    ? <a className={className} href={href} target="_blank" rel="noopener noreferrer" title={tip} onClick={onClick} onDoubleClick={onDoubleClick}>{body}</a>
-    : <div className={className} title={tip} onDoubleClick={onDoubleClick}>{body}</div>;
+    ? <a className={className} href={href} target="_blank" rel="noopener noreferrer" title={tip}>{body}</a>
+    : <div className={className} title={tip}>{body}</div>;
 }

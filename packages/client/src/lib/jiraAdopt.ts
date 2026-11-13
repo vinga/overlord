@@ -2,10 +2,6 @@ import type { JiraIssueMeta } from '../types';
 import { jiraSessionTitle, jiraTypeToWorkerIcon } from './jiraIcon';
 import { ICON_COLORS } from '../components/iconColors';
 
-/** Single click opens Jira, double click adopts the ticket. Navigation is held
- *  for this long so a double click never also opens a tab. */
-export const JIRA_DBLCLICK_MS = 260;
-
 function put(sessionId: string, path: string, body: unknown): Promise<void> {
   return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/${path}`, {
     method: 'PUT',
