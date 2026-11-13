@@ -5,7 +5,8 @@ import styles from './RoomPanel.module.css';
 import { BrainTab } from './BrainTab';
 import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
-import { PinBar, hiddenPinRefs } from './PinBar';
+import { PinBar, deletePin, hiddenPinRefs } from './PinBar';
+import { PrChips, prRefFromUrl } from './PrChips';
 import { RoomGitInfo } from './RoomGitInfo';
 import { GitSyncStatus } from './GitSyncStatus';
 import { RoomFilesPanel } from './RoomFilesPanel';
@@ -217,10 +218,25 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
             />
             {room.gitBranch && <GitSyncStatus gitAhead={room.gitAhead} gitBehind={room.gitBehind} gitUpstream={room.gitUpstream} gitDirty={room.gitDirty} />}
           </div>
-          {!!room.pins?.length && <>
-            <h3 className={styles.contextLabel}>Pins</h3>
-            <PinBar pins={room.pins} cwd={room.cwd} multiline hide={hiddenPinRefs(undefined, undefined, room.pullRequest?.url)} />
-          </>}
+          {!!room.pins?.length && (() => {
+            // GitHub PR pins are drawn as PR cards (× unpins); the branch PR is already shown above.
+            const prPinned = new Map<string, () => void>();
+            const prRefs: string[] = [];
+            const branchPr = room.pullRequest?.url && prRefFromUrl(room.pullRequest.url)?.toLowerCase();
+            for (const p of room.pins) {
+              const ref = p.kind === 'pr' ? prRefFromUrl(p.url) : undefined;
+              if (!ref || prPinned.has(ref.toLowerCase())) continue;
+              prPinned.set(ref.toLowerCase(), () => deletePin(p.id, { cwd: room.cwd }));
+              if (ref.toLowerCase() !== branchPr) prRefs.push(ref);
+            }
+            const rest = room.pins.filter(p => !(p.kind === 'pr' && prRefFromUrl(p.url)));
+            if (!prRefs.length && !rest.length) return null;
+            return <>
+              <h3 className={styles.contextLabel}>Pins</h3>
+              <PrChips refs={prRefs} card pinned={prPinned} />
+              <PinBar pins={rest} cwd={room.cwd} multiline />
+            </>;
+          })()}
           </div>}
         </aside>
       )}

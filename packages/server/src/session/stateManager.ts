@@ -3130,6 +3130,8 @@ export class StateManager {
         if (!s.prRefs) continue;
         for (const r of s.prRefs) if (!allRefs.has(r)) allRefs.set(r, room.cwd);
       }
+      // Room PR pins are not in any session's prRefs; their cards need meta too.
+      if (room.pins) for (const p of room.pins) { const r = prRefOfPin(p); if (r && !allRefs.has(r)) allRefs.set(r, room.cwd); }
     }
     let prMeta: Record<string, PrRefMeta> | undefined;
     if (allRefs.size > 0) {

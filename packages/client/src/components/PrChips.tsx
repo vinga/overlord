@@ -7,6 +7,8 @@ interface Props {
   sessionId?: string;
   /** Full-width cards: #number + state on the first line, repo and title below. */
   card?: boolean;
+  /** Pinned refs (lowercased) → unpin. Their × unpins instead of dismissing. */
+  pinned?: ReadonlyMap<string, () => void>;
 }
 
 const VISIBLE = 3;
@@ -16,6 +18,12 @@ function splitRef(ref: string): { repo: string; label: string } {
   const hash = ref.lastIndexOf('#');
   if (hash < 0) return { repo: ref, label: '' };
   return { repo: ref.slice(0, hash), label: ref.slice(hash) };
+}
+
+/** `https://github.com/o/r/pull/12` → `o/r#12`, case kept (prMeta keys keep it). */
+export function prRefFromUrl(url: string | undefined): string | undefined {
+  const m = url?.match(/^https?:\/\/github\.com\/([^/?#]+\/[^/?#]+)\/pull\/(\d+)/i);
+  return m ? `${m[1]}#${m[2]}` : undefined;
 }
 
 function fallbackUrl(ref: string): string {
@@ -33,7 +41,17 @@ export function PrGlyph() {
   );
 }
 
-export function PrChips({ refs, sessionId, card = false }: Props) {
+/** Marks a pinned PR card. */
+function PinGlyph() {
+  return (
+    <svg className={styles.pinGlyph} width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-label="Pinned">
+      <title>Pinned</title>
+      <path d="M4.456.734a1.75 1.75 0 0 1 2.826.504l.613 1.327a3.08 3.08 0 0 0 2.084 1.707l2.454.584c1.332.317 1.8 1.972.832 2.94L11.06 10l3.72 3.72a.75.75 0 1 1-1.06 1.06L10 11.06l-2.204 2.205c-.968.968-2.623.5-2.94-.832l-.584-2.454a3.08 3.08 0 0 0-1.707-2.084l-1.327-.613a1.75 1.75 0 0 1-.504-2.826L4.456.734Z" />
+    </svg>
+  );
+}
+
+export function PrChips({ refs, sessionId, card = false, pinned }: Props) {
   const meta = usePrMeta();
   const [expanded, setExpanded] = useState(false);
   // Optimistic removal — the chip vanishes on click and comes back if the
@@ -52,6 +70,13 @@ export function PrChips({ refs, sessionId, card = false }: Props) {
   const dismiss = (e: React.MouseEvent, ref: string) => {
     e.preventDefault();
     e.stopPropagation();
+    const unpin = pinned?.get(ref.toLowerCase());
+    if (unpin) {
+      // The pin's DELETE drops it from the snapshot; hide it until then.
+      setDismissing((prev) => new Set(prev).add(ref));
+      unpin();
+      return;
+    }
     if (!sessionId) return;
     setDismissing((prev) => new Set(prev).add(ref));
     void fetch(`/api/sessions/${sessionId}/pr-refs`, {
@@ -83,6 +108,7 @@ export function PrChips({ refs, sessionId, card = false }: Props) {
         // reads "DRAFT", never "OPEN DRAFT".
         const state = m?.isDraft && m.state === 'OPEN' ? 'DRAFT' : m?.state;
         const href = m?.url || fallbackUrl(ref);
+        const isPinned = !!pinned?.has(ref.toLowerCase());
         return (
           <span key={ref} className={styles.chipWrap}>
             <a
@@ -95,15 +121,17 @@ export function PrChips({ refs, sessionId, card = false }: Props) {
             >
               <PrGlyph />
               <span className={styles.chipRef}>{label || ref}</span>
+              {isPinned && <PinGlyph />}
               <span className={styles.chipRepo}>{repo}</span>
               {m?.title && <span className={styles.chipTitle}>{m.title}</span>}
               {state && <span className={styles.state} data-state={state}>{state}</span>}
-              {sessionId && (
+              {(sessionId || isPinned) && (
                 <button
                   type="button"
                   className={styles.dismiss}
                   onClick={(e) => dismiss(e, ref)}
-                  aria-label={`Dismiss ${ref}`}
+                  aria-label={isPinned ? `Unpin ${ref}` : `Dismiss ${ref}`}
+                  title={isPinned ? 'Unpin' : 'Dismiss'}
                 >
                   ×
                 </button>

@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
-import { PrChips, PrGlyph } from './PrChips';
+import { PrChips, PrGlyph, prRefFromUrl } from './PrChips';
 import prStyles from './PrChips.module.css';
-import { PinBar, PinAdder, jiraKeyOf, pinRef } from './PinBar';
+import { PinBar, PinAdder, deletePin, jiraKeyOf } from './PinBar';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
@@ -70,7 +70,6 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const sessionPins = session.pins ?? [];
   const roomPins = room?.pins ?? [];
   const allPins = [...sessionPins, ...roomPins];
-  const pinnedPrs = new Set(allPins.map(pinRef).filter(Boolean));
   // One ordered ticket list (the server applies the user's ↑/↓ order to
   // jiraKeys): session ticket pins and mentioned tickets mixed, in that order.
   const orderedKeys = localOrder ?? session.jiraKeys ?? [];
@@ -89,11 +88,25 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
       body: JSON.stringify({ keys: next }),
     }).catch(() => setLocalOrder(null));
   };
-  const prs = (session.prRefs ?? []).filter(r => !pinnedPrs.has(`pr:${r.toLowerCase()}`));
   const id = session.overlordId ?? session.sessionId;
+  // Every PR — pinned (session, then room) and detected — is one card list;
+  // a pinned card's × unpins. A PR pin whose URL is not a GitHub PR stays a chip.
+  const prPinned = new Map<string, () => void>();
+  const prs: string[] = [];
+  const addPr = (ref: string) => { if (!prs.some(r => r.toLowerCase() === ref.toLowerCase())) prs.push(ref); };
+  for (const [pins, target] of [[sessionPins, { overlordId: id }], [roomPins, { cwd: room?.cwd }]] as const) {
+    for (const p of pins) {
+      const ref = p.kind === 'pr' ? prRefFromUrl(p.url) : undefined;
+      if (!ref || prPinned.has(ref.toLowerCase())) continue;
+      prPinned.set(ref.toLowerCase(), () => deletePin(p.id, target));
+      addPr(ref);
+    }
+  }
+  for (const r of session.prRefs ?? []) addPr(r);
+  const isCardPin = (p: typeof sessionPins[number]) => p.kind === 'pr' && !!prRefFromUrl(p.url);
   const pinsOfKind = (kind: 'ticket' | 'pr' | 'other') => {
     const matches = (p: typeof sessionPins[number]) => kind === 'other'
-      ? p.kind !== 'ticket' && p.kind !== 'pr' : p.kind === kind;
+      ? p.kind !== 'ticket' && p.kind !== 'pr' : p.kind === kind && !isCardPin(p);
     return <>
       <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />
       {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
@@ -137,7 +150,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
       </section>
       <section className={styles.card} aria-label="Pull requests">
         <h3 className={styles.sectionHead}>PR<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
-        <PrChips refs={prs} card sessionId={session.sessionId} />
+        <PrChips refs={prs} card sessionId={session.sessionId} pinned={prPinned} />
         {pinsOfKind('pr')}
         {/* The room's branch PR, drawn as the same card as PrChips. */}
         {showRoomPr && (() => {
@@ -157,7 +170,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
             </div>
           );
         })()}
-        {!prs.length && !showRoomPr && !allPins.some(p => p.kind === 'pr') && <p className={styles.muted}>No PR attached</p>}
+        {!prs.length && !showRoomPr && !allPins.some(p => p.kind === 'pr' && !isCardPin(p)) && <p className={styles.muted}>No PR attached</p>}
       </section>
       <section className={styles.card} aria-label="Plan">
         <h3>Plan</h3>

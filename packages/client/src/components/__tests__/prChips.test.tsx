@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { PrChips } from '../PrChips';
+import { PrChips, prRefFromUrl } from '../PrChips';
 import { setPrMeta } from '../../hooks/usePrMeta';
 
 const render = (el: React.ReactElement): string => renderToStaticMarkup(el);
@@ -47,6 +47,20 @@ describe('PrChips', () => {
   it('offers × only when a session owns the list', () => {
     expect(render(<PrChips refs={['o/r#12']} />)).not.toContain('Dismiss');
     expect(render(<PrChips refs={['o/r#12']} sessionId="s1" />)).toContain('Dismiss o/r#12');
+  });
+
+  it('a pinned ref gets the pin mark and an Unpin ×, even without a session', () => {
+    const pinned = new Map([['o/r#12', () => {}]]);
+    const html = render(<PrChips refs={['O/R#12', 'o/r#13']} pinned={pinned} card />);
+    expect(html).toContain('Unpin O/R#12');
+    expect(html).toContain('aria-label="Pinned"');
+    expect(html).not.toContain('Unpin o/r#13');
+    expect(html).not.toContain('Dismiss');
+  });
+
+  it('prRefFromUrl keeps the case and ignores non-PR URLs', () => {
+    expect(prRefFromUrl('https://github.com/Hypatos/Svc/pull/855/files')).toBe('Hypatos/Svc#855');
+    expect(prRefFromUrl('https://github.com/o/r/issues/1')).toBeUndefined();
   });
 
   it('collapses past three refs behind a +N expander', () => {
