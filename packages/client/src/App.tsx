@@ -110,7 +110,9 @@ export function App() {
   // Dock side: preference wins; `auto` follows viewport orientation.
   const orientation = useOrientation();
   const [dockMode] = useDockMode();
-  const dock = dockMode === 'auto' ? (orientation === 'portrait' ? 'bottom' : 'right') : dockMode;
+  // Without the room grid the panel fills the office, so there is nothing to
+  // share the screen with: a bottom dock would only leave empty space below it.
+  const dock = !ROOM_GRID_ENABLED ? 'right' : dockMode === 'auto' ? (orientation === 'portrait' ? 'bottom' : 'right') : dockMode;
   const panelSize = dock === 'bottom' ? panelHeight : panelWidth;
   const setPanelSize = dock === 'bottom' ? setPanelHeight : setPanelWidth;
 
