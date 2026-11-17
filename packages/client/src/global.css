@@ -185,6 +185,33 @@ a.inlinePrRef[data-pr-ref],
   background: rgba(96, 165, 250, 0.18);
 }
 
+/* Copy-link icon: same reveal as the `+`, before it. */
+.inlineCopyBtn {
+  display: inline-flex;
+  width: 0;
+  height: 14px;
+  padding: 0;
+  margin-left: 2px;
+  border: none;
+  border-radius: 3px;
+  background: currentColor;
+  color: rgba(255, 255, 255, 0.5);
+  opacity: 0;
+  cursor: pointer;
+  vertical-align: middle;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.5'/%3E%3Cpath d='M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5'/%3E%3C/svg%3E") center / 11px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.5'/%3E%3Cpath d='M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5'/%3E%3C/svg%3E") center / 11px no-repeat;
+  transition: opacity 0.12s, width 0.12s, color 0.12s;
+}
+.inlineJiraKey:hover .inlineCopyBtn,
+.inlinePrRef:hover .inlineCopyBtn,
+.inlineCopyBtn[data-copied] {
+  width: 14px;
+  opacity: 1;
+}
+.inlineCopyBtn:hover { color: rgba(96, 165, 250, 0.95); }
+.inlineCopyBtn[data-copied] { color: rgba(74, 222, 128, 0.95); }
+
 /* Already in context — nothing to add. */
 .inlineJiraKey.jiraPinned .jiraAddBtn,
 .inlinePrRef.prPinned .prAddBtn {

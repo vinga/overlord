@@ -97,6 +97,17 @@ const makeJiraAddButton = (doc: Document, key: string) =>
 const makePrAddButton = (doc: Document, ref: string) =>
   makeAddButton(doc, 'prAddBtn', `Add ${ref} to this session's pull requests`);
 
+/** Copy-link icon on a ticket or PR token, before its `+`; the delegated click
+ *  handler resolves the URL (a ticket's needs the Jira base URL). */
+function makeCopyButton(doc: Document): HTMLButtonElement {
+  const btn = doc.createElement('button');
+  btn.className = 'inlineCopyBtn';
+  btn.setAttribute('tabindex', '-1');
+  btn.setAttribute('title', 'Copy link');
+  btn.setAttribute('aria-label', 'Copy link');
+  return btn;
+}
+
 /** Exported for tests: turns rendered markdown HTML into the feed's final HTML —
  *  fence action bars, file-path spans, ticket and PR tokens with their `+`. */
 export function linkifyPaths(html: string, wrapFences = true): string {
@@ -152,6 +163,7 @@ export function linkifyPaths(html: string, wrapFences = true): string {
       if (a.querySelector('.prAddBtn')) return;
       a.setAttribute('data-pr-ref', prRef);
       a.className = `${a.className} inlinePrRef`.trim();
+      a.appendChild(makeCopyButton(doc));
       a.appendChild(makePrAddButton(doc, prRef));
       return;
     }
@@ -160,6 +172,7 @@ export function linkifyPaths(html: string, wrapFences = true): string {
     if (!key || a.querySelector('.jiraAddBtn')) return;
     a.setAttribute('data-jira-key', key);
     a.className = `${a.className} inlineJiraKey`.trim();
+    a.appendChild(makeCopyButton(doc));
     a.appendChild(makeJiraAddButton(doc, key));
   });
   // Code contexts are walked too — paths in backticks are the most common
@@ -202,12 +215,14 @@ export function linkifyPaths(html: string, wrapFences = true): string {
         span.setAttribute('data-pr-ref', ref);
         span.className = 'inlinePrRef';
         span.appendChild(doc.createTextNode(match.text));
+        span.appendChild(makeCopyButton(doc));
         span.appendChild(makePrAddButton(doc, ref));
       } else {
         const key = match.key ?? match.text;
         span.setAttribute('data-jira-key', key);
         span.className = 'inlineJiraKey';
         span.appendChild(doc.createTextNode(match.text));
+        span.appendChild(makeCopyButton(doc));
         span.appendChild(makeJiraAddButton(doc, key));
       }
       frag.appendChild(span);
@@ -2101,6 +2116,26 @@ export function DetailPanel({
           if (rendered) rendered.style.display = 'none';
           fenceToggle.setAttribute('data-state', 'source');
           fenceToggle.textContent = 'render';
+        }
+        return;
+      }
+      const linkCopyBtn = (e.target as HTMLElement | null)?.closest('.inlineCopyBtn') as HTMLElement | null;
+      if (linkCopyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const token = linkCopyBtn.closest('[data-pr-ref], [data-jira-key]') as HTMLElement | null;
+        const href = token?.tagName === 'A' ? token.getAttribute('href') : null;
+        const prRef = token?.getAttribute('data-pr-ref');
+        const key = token?.getAttribute('data-jira-key');
+        const prMatch = prRef?.match(/^(.+)#(\d+)$/);
+        const url = href
+          ?? (prMatch ? `https://github.com/${prMatch[1]}/pull/${prMatch[2]}` : null)
+          ?? (key && jiraBaseUrl ? `${jiraBaseUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(key)}` : null);
+        if (url) {
+          void navigator.clipboard?.writeText(url).then(() => {
+            linkCopyBtn.setAttribute('data-copied', '');
+            setTimeout(() => linkCopyBtn.removeAttribute('data-copied'), 1500);
+          }).catch(() => {});
         }
         return;
       }
