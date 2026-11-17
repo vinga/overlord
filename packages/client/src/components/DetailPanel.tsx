@@ -3579,7 +3579,9 @@ const currentDisplayName =
                   >
                     Conversation
                   </button>
-                  {!selectedSession.isArchived && (
+                  {/* With a context column its Notes tab edits the same notes, so this
+                      one would only duplicate it. */}
+                  {!selectedSession.isArchived && !contextPanel && (
                     <button
                       className={`${styles.tab} ${activeTab === 'notes' ? styles.tabActive : ''}`}
                       onClick={() => setActiveTab('notes')}
