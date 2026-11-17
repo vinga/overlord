@@ -488,7 +488,10 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
 
   return (
     <div ref={roomRef} className={`${styles.room} ${collapsed && !bare ? styles.roomCollapsed : ''} ${bare ? styles.roomBare : ''}`}>
-      {!(bare && view === 'archive') && <div className={styles.titleBar}>
+      {/* Bare (room panel): no title bar — new session / quick spawn / note /
+          shell live in the header (⚡ and the global menu, which defaults to
+          the current room). */}
+      {!bare && <div className={styles.titleBar}>
         {!bare && <>
         <button
           className={styles.collapseBtn}
