@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import styles from './PrChips.module.css';
 import { usePrMeta } from '../hooks/usePrMeta';
 import { CopyUrl } from './CopyUrl';
+import { PinUrl } from './PinUrl';
 
 interface Props {
   refs: string[];
@@ -10,6 +11,8 @@ interface Props {
   card?: boolean;
   /** Pinned refs (lowercased) → unpin. Their × unpins instead of dismissing. */
   pinned?: ReadonlyMap<string, () => void>;
+  /** overlordId: unpinned cards get a pin icon that pins them to this session. */
+  pinTo?: string;
 }
 
 const VISIBLE = 3;
@@ -52,7 +55,7 @@ function PinGlyph() {
   );
 }
 
-export function PrChips({ refs, sessionId, card = false, pinned }: Props) {
+export function PrChips({ refs, sessionId, card = false, pinned, pinTo }: Props) {
   const meta = usePrMeta();
   const [expanded, setExpanded] = useState(false);
   // Optimistic removal — the chip vanishes on click and comes back if the
@@ -123,6 +126,7 @@ export function PrChips({ refs, sessionId, card = false, pinned }: Props) {
               <PrGlyph />
               <span className={styles.chipRef}>{label || ref}</span>
               <CopyUrl url={href} />
+              {!isPinned && <PinUrl url={href} overlordId={pinTo} />}
               {isPinned && <PinGlyph />}
               <span className={styles.chipRepo}>{repo}</span>
               {m?.title && <span className={styles.chipTitle}>{m.title}</span>}

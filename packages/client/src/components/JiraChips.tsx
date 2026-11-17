@@ -3,6 +3,7 @@ import styles from './JiraChips.module.css';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { CopyUrl } from './CopyUrl';
+import { PinUrl } from './PinUrl';
 import { SetTitleIcon } from './SetTitleIcon';
 import { adoptJiraTicket } from '../lib/jiraAdopt';
 
@@ -15,11 +16,13 @@ interface Props {
   onRename?: (name: string) => void;
   /** Full-width cards: key + status on the first line, title below. */
   card?: boolean;
+  /** overlordId: each chip gets a pin icon that pins the ticket to this session. */
+  pinTo?: string;
 }
 
 const VISIBLE = 3;
 
-export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: Props) {
+export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pinTo }: Props) {
   const meta = useJiraMeta();
   const [expanded, setExpanded] = useState(false);
   const [dismissing, setDismissing] = useState<Set<string>>(() => new Set());
@@ -83,6 +86,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false }: 
             <JiraTypeIcon type={m?.type} />
             <span className={styles.chipKey}>{key}</span>
             <CopyUrl url={href} />
+            <PinUrl url={href} overlordId={pinTo} />
             {sessionId && <SetTitleIcon ticketKey={key} onSet={() => adopt(key)} />}
             {title && <span className={styles.chipTitle}>{title}</span>}
             {m?.status && (

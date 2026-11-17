@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
 import { CopyUrl } from './CopyUrl';
+import { PinUrl } from './PinUrl';
 import { PrChips, PrGlyph, prRefFromUrl } from './PrChips';
 import prStyles from './PrChips.module.css';
 import { PinBar, PinAdder, deletePin, jiraKeyOf } from './PinBar';
@@ -128,14 +129,15 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
       {view === 'global' && <GlobalContextNotes />}
       {view === 'context' && <>
       <section className={styles.card} aria-label="Ticket">
-        <h3 className={styles.sectionHead}>Ticket<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
+        {/* No "+" here: a detected ticket pins from its own pin icon. */}
+        <h3>Ticket</h3>
         {orderedKeys.map((k, i) => {
           const pin = sessionTicketPin(k);
           return (
             <div key={k} className={styles.ticketRow}>
               {pin
                 ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />
-                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card />}
+                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card pinTo={id} />}
               {orderedKeys.length > 1 && (
                 <span className={styles.ticketMove}>
                   <button type="button" aria-label={`Move ${k} up`} title="Move up" disabled={i === 0} onClick={() => moveTicket(i, i - 1)}>↑</button>
@@ -150,8 +152,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
         {!orderedKeys.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
       </section>
       <section className={styles.card} aria-label="Pull requests">
-        <h3 className={styles.sectionHead}>PR<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
-        <PrChips refs={prs} card sessionId={session.sessionId} pinned={prPinned} />
+        <h3>PR</h3>
+        <PrChips refs={prs} card sessionId={session.sessionId} pinned={prPinned} pinTo={id} />
         {pinsOfKind('pr')}
         {/* The room's branch PR, drawn as the same card as PrChips. */}
         {showRoomPr && (() => {
@@ -164,6 +166,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
                   <PrGlyph />
                   <span className={prStyles.chipRef}>#{roomPr.number}</span>
                   <CopyUrl url={roomPr.url} />
+                  <PinUrl url={roomPr.url} overlordId={id} />
                   {repo && <span className={prStyles.chipRepo}>{repo}</span>}
                   <span className={prStyles.chipTitle}>{roomPr.title}</span>
                   <span className={prStyles.state} data-state={state}>{state}</span>
