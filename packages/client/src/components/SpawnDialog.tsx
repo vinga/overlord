@@ -176,6 +176,11 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
   // Fetch directories only while the browser is expanded.
   useEffect(() => {
     if (!open || !dirExpanded) return;
+    // The open-reset sets currentPath to the room's folder in the same commit
+    // this effect first runs with the previous (often empty) path. Without
+    // the cancel, that stale request — empty path → the server's own cwd —
+    // can land last and overwrite the room's folder.
+    let cancelled = false;
     setLoading(true);
     setError(null);
     const url = currentPath
@@ -184,6 +189,7 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
     fetch(url)
       .then(res => res.json())
       .then(data => {
+        if (cancelled) return;
         if (data.error) {
           setError(data.error);
           setDirs([]);
@@ -199,8 +205,9 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
           }
         }
       })
-      .catch(() => setError('Failed to fetch directories'))
-      .finally(() => setLoading(false));
+      .catch(() => { if (!cancelled) setError('Failed to fetch directories'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPath, open, dirExpanded]);
 
