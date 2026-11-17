@@ -39,4 +39,20 @@ describe('room chip navigation', () => {
       sessionCounts={{ project: 7 }} archiveCounts={{ project: 12 }} />));
     expect(container.querySelector('button')?.title).toContain('19 sessions total');
   });
+
+  it('folds a room\'s session list and remembers it', () => {
+    localStorage.removeItem('overlord:roomTabsCollapsed');
+    const withSession = { ...room, sessions: [{ sessionId: 's1', proposedName: 'Astra', state: 'waiting', cwd: '/project', pid: 1, lastActivity: '' } as unknown as Room['sessions'][number]] };
+    const onOpenRoom = vi.fn();
+    act(() => root.render(<RoomTabs rooms={[withSession]} scrollRef={{ current: null }} onMove={vi.fn()}
+      showSessions onOpenRoom={onOpenRoom} />));
+    expect(container.textContent).toContain('Astra');
+    const fold = container.querySelector<HTMLButtonElement>('[aria-label="Collapse Project"]')!;
+    act(() => fold.click());
+    expect(container.textContent).not.toContain('Astra');
+    expect(onOpenRoom).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem('overlord:roomTabsCollapsed')!)).toEqual(['project']);
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Expand Project"]')!.click());
+    expect(container.textContent).toContain('Astra');
+  });
 });

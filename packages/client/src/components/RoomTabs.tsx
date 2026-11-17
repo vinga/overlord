@@ -111,6 +111,17 @@ function roomEl(container: HTMLElement, id: string): HTMLElement | null {
 
 const NO_NAMES: Record<string, string> = {};
 
+/** Rooms whose session list is folded in the side list; per browser. */
+const COLLAPSED_KEY = 'overlord:roomTabsCollapsed';
+function readCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
 export const RoomTabs = React.memo(function RoomTabs({
   rooms, archiveCounts, sessionCounts, onHide, scrollRef, onMove, showSessions = false, customNames = NO_NAMES, selectedSessionId, onSelectSession, openRoomId, onOpenRoom, side = false, includeClosed = false, matchSources,
 }: RoomTabsProps) {
@@ -141,6 +152,13 @@ export const RoomTabs = React.memo(function RoomTabs({
   };
 
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed);
+  const toggleCollapsed = (id: string) => setCollapsed(prev => {
+    const next = new Set(prev);
+    if (!next.delete(id)) next.add(id);
+    try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch { /* private mode */ }
+    return next;
+  });
 
   // Highlight the room whose top is closest to the scroll container's top edge.
   useEffect(() => {
@@ -192,7 +210,10 @@ export const RoomTabs = React.memo(function RoomTabs({
 
   return (
     <nav className={`${styles.strip} ${side ? styles.side : ''}`} aria-label="Rooms">
-      {tabs.map(t => (
+      {tabs.map(t => {
+        const hasSessions = showSessions && t.sessions.length > 0;
+        const folded = hasSessions && collapsed.has(t.id);
+        return (
         <div
           key={t.id}
           data-room-tab={t.id}
@@ -202,7 +223,7 @@ export const RoomTabs = React.memo(function RoomTabs({
             openRoomId === t.id ? styles.open : '',
             draggedId === t.id ? styles.dragging : '',
             dropTargetId === t.id ? styles.dropTarget : '',
-            showSessions && t.sessions.length > 0 ? styles.withSessions : '',
+            hasSessions && !folded ? styles.withSessions : '',
           ].filter(Boolean).join(' ')}
           onClick={() => { jump(t.id); onOpenRoom?.(t.id); }}
           draggable
@@ -225,9 +246,22 @@ export const RoomTabs = React.memo(function RoomTabs({
           }}
           onDragEnd={endDrag}
         >
+          {hasSessions && (
+            <button type="button" className={styles.foldBtn} draggable={false}
+              aria-expanded={!folded}
+              aria-label={`${folded ? 'Expand' : 'Collapse'} ${t.name}`}
+              title={folded ? 'Show sessions' : 'Hide sessions'}
+              onClick={e => { e.stopPropagation(); toggleCollapsed(t.id); }}>
+              <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+                style={{ transform: folded ? 'rotate(-90deg)' : undefined }}>
+                <polyline points="2 3.5 5 6.5 8 3.5" />
+              </svg>
+            </button>
+          )}
           {/* The badge is an overlay, so state changes never shift tab widths. */}
           <button type="button" className={styles.tabBtn} title={`${t.cwd}\n${(sessionCounts?.[t.id] ?? rooms.find(r => r.id === t.id)?.sessions.length ?? 0) + (archiveCounts?.[t.id] ?? 0)} sessions total\nDrag to reorder`}>
             <span className={styles.name}>{t.name}</span>
+            {folded && <span className={styles.foldCount}>{t.sessions.length}</span>}
           </button>
           {onHide && <button type="button" className={styles.hideBtn}
             title="Hide room" aria-label={`Hide room ${t.name}`} draggable={false}
@@ -237,7 +271,7 @@ export const RoomTabs = React.memo(function RoomTabs({
               <path d="m2 2 12 12" />
             </svg>
           </button>}
-          {showSessions && t.sessions.length > 0 && (
+          {hasSessions && !folded && (
             <span className={styles.sessions}>
               {t.sessions.map(d => (
                 <React.Fragment key={d.id}>
@@ -268,9 +302,10 @@ export const RoomTabs = React.memo(function RoomTabs({
             </span>
           )}
           {/* The session list already shows who's waiting — the count is redundant. */}
-          {t.waiting > 0 && !(showSessions && t.sessions.length > 0) && <span className={styles.badge} title={`${t.waiting} waiting for input`}>{t.waiting > 9 ? '9+' : t.waiting}</span>}
+          {t.waiting > 0 && !(hasSessions && !folded) && <span className={styles.badge} title={`${t.waiting} waiting for input`}>{t.waiting > 9 ? '9+' : t.waiting}</span>}
         </div>
-      ))}
+        );
+      })}
     </nav>
   );
 });

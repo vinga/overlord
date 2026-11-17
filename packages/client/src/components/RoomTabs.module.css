@@ -349,3 +349,34 @@
 .matchSource[data-source='tool'] { color: #93c5fd; background: rgba(96, 165, 250, 0.12); }
 .matchSource[data-source='ticket'] { color: #6ee7b7; background: rgba(52, 211, 153, 0.12); }
 .matchSource[data-source='pr'] { color: #f0abfc; background: rgba(232, 121, 249, 0.12); }
+
+/* Fold chevron: left of the room name; folds the room's session list. */
+.foldBtn {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: rgba(212, 175, 55, 0.55);
+  cursor: pointer;
+}
+.foldBtn svg { transition: transform 0.15s; }
+.foldBtn:hover, .foldBtn:focus-visible { color: #f2dc8c; background: rgba(255, 255, 255, 0.06); outline: none; }
+.tab:has(.foldBtn) .tabBtn { padding-left: 10px; }
+/* Side list: rooms without sessions keep the same name column. */
+.strip.side:has(.foldBtn) .tabBtn { padding-left: 10px; }
+/* A folded room shows how many sessions it hides. */
+.foldCount {
+  flex-shrink: 0;
+  color: #6c6c78;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
