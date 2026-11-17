@@ -2220,6 +2220,17 @@ export function DetailPanel({
 
   const [activeTab, setActiveTab] = useState<'conversation' | 'details' | 'subagents' | 'terminal' | 'notes' | 'files'>('conversation');
   const [subagentActiveTab, setSubagentActiveTab] = useState<'conversation' | 'details'>('conversation');
+  // Presentation mode: the conversation alone fills the window — no app bar,
+  // header, tabs or context column. Esc or the floating × leaves it.
+  const [presenting, setPresenting] = useState(false);
+  useEffect(() => {
+    if (!presenting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) setPresenting(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [presenting]);
 
   const [notesContent, setNotesContent] = useState('');
   const notesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3176,16 +3187,31 @@ const currentDisplayName =
   // under the header, right of the room chips.
   const fillsOffice = !ROOM_GRID_ENABLED && dock !== 'bottom';
 
+  const isPresenting = presenting && !!selectedSession && !selectedSubagent && activeTab === 'conversation';
+
   return (
     <>
       {/* Panel */}
       <div
-        className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : fillsOffice ? styles.panelFill : ''} ${styles.panelOpen}`}
+        className={`${styles.panel} ${dock === 'bottom' ? styles.panelBottom : fillsOffice ? styles.panelFill : ''} ${styles.panelOpen} ${isPresenting ? styles.presenting : ''}`}
         role="dialog"
         aria-modal="true"
         aria-label="Session details"
-        style={dock === 'bottom' ? { height: panelSize } : fillsOffice ? undefined : { width: panelSize }}
+        style={isPresenting ? undefined : dock === 'bottom' ? { height: panelSize } : fillsOffice ? undefined : { width: panelSize }}
       >
+        {isPresenting && (
+          <button
+            className={styles.presentExit}
+            onClick={() => setPresenting(false)}
+            title="Exit presentation (Esc)"
+            aria-label="Exit presentation"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" />
+              <line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+          </button>
+        )}
         {!fillsOffice && <div
           className={`${styles.resizeHandle} ${dock === 'bottom' ? styles.resizeHandleTop : ''}`}
           onMouseDown={onResizeMouseDown}
@@ -3628,6 +3654,17 @@ const currentDisplayName =
                       )}
                     </button>
                   )}
+                  <button
+                    className={styles.presentBtn}
+                    onClick={() => { setActiveTab('conversation'); setPresenting(true); }}
+                    title="Presentation mode — conversation fills the window (Esc to leave)"
+                    aria-label="Presentation mode"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" />
+                      <line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" />
+                    </svg>
+                  </button>
                   {/* Conversation menu — archived sessions only; live ones use the header burger */}
                   {selectedSession.isArchived && (
                   <div className={styles.convMenuAnchor} ref={convMenuRef}>
