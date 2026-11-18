@@ -284,6 +284,8 @@ export interface Session {
   icon?: WorkerIcon;
   /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
   deskSpan?: DeskSpan;
+  /** Group (tag) the session is filed under in the side room list. Unset = ungrouped. */
+  group?: string;
   /** Pinned links, from the OverlordSession record. */
   pins?: Pin[];
   subagents: Subagent[];
@@ -442,6 +444,8 @@ export interface OverlordSession {
   icon?: WorkerIcon;
   /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
   deskSpan?: DeskSpan;
+  /** Group (tag) the session is filed under in the side room list. Unset = ungrouped. */
+  group?: string;
   proposedName?: string;
 
   /** Atomic unit — currentSessionId and history must stay in sync. */

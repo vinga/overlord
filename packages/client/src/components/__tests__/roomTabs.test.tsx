@@ -56,3 +56,35 @@ describe('room chip navigation', () => {
     expect(container.textContent).toContain('Astra');
   });
 });
+
+describe('session groups', () => {
+  const s = (id: string, name: string, group?: string) =>
+    ({ sessionId: id, proposedName: name, state: 'waiting', cwd: '/project', pid: 1, lastActivity: '', ...(group ? { group } : {}) } as unknown as Room['sessions'][number]);
+
+  it('lists ungrouped sessions first, then foldable groups', () => {
+    localStorage.removeItem('overlord:roomTabsGroupsCollapsed');
+    const r = { ...room, sessions: [s('a', 'Astra', 'Infra'), s('b', 'Bolt'), s('c', 'Cora', 'Infra')] };
+    act(() => root.render(<RoomTabs rooms={[r]} scrollRef={{ current: null }} onMove={vi.fn()} showSessions />));
+    const names = [...container.querySelectorAll('[class*="sessionName"]')].map(n => n.textContent);
+    expect(names).toEqual(['Bolt', 'Astra', 'Cora']);
+    const head = container.querySelector<HTMLButtonElement>('[aria-label="Collapse group Infra"]')!;
+    expect(head.textContent).toContain('2');
+    act(() => head.click());
+    expect(container.textContent).not.toContain('Astra');
+    expect(container.textContent).toContain('Bolt');
+    expect(JSON.parse(localStorage.getItem('overlord:roomTabsGroupsCollapsed')!)).toEqual(['project\u0001Infra']);
+  });
+
+  it('files a session under a group from its right-click menu', () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response('{}')));
+    vi.stubGlobal('fetch', fetchMock);
+    const r = { ...room, sessions: [s('a', 'Astra', 'Infra'), s('b', 'Bolt')] };
+    act(() => root.render(<RoomTabs rooms={[r]} scrollRef={{ current: null }} onMove={vi.fn()} showSessions />));
+    const bolt = [...container.querySelectorAll<HTMLButtonElement>('button')].find(b => b.title.startsWith('Bolt'))!;
+    act(() => { bolt.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 10, clientY: 10 })); });
+    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(b => b.textContent === 'Infra')!;
+    act(() => item.click());
+    expect(fetchMock).toHaveBeenCalledWith('/api/sessions/b/group', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ group: 'Infra' }) }));
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+});

@@ -212,6 +212,8 @@ interface Session {
   icon?: WorkerIcon;      // avatar glyph; undefined = 'user'
   /** Desk card size in room grid cells (w 1–3, h 1–4). Unset = 1×1. */
   deskSpan?: DeskSpan;
+  /** Group (tag) the session is filed under in the side room list. Unset = ungrouped. */
+  group?: string;
   subagents: Subagent[];
   model?: string;
   inputTokens?: number;

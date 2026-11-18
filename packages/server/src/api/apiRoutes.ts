@@ -1620,6 +1620,18 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
+  // Group: PUT /api/sessions/:sessionId/group — file the session under a group
+  // in the side room list. `{ group: null }` or an empty name ungroups it.
+  app.put('/api/sessions/:sessionId/group', express.json(), (req, res) => {
+    const raw = req.body?.group;
+    if (raw !== null && typeof raw !== 'string') { res.status(400).json({ error: 'group must be a string or null' }); return; }
+    const group = typeof raw === 'string' ? raw.trim() : '';
+    if (group.length > 40) { res.status(400).json({ error: 'group name max 40 chars' }); return; }
+    const ok = stateManager.setSessionGroup(req.params.sessionId, group || null);
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true });
+  });
+
   // Icon: PUT /api/sessions/:sessionId/icon — set avatar glyph for a session (persisted by ovrId)
   app.put('/api/sessions/:sessionId/icon', express.json(), (req, res) => {
     const { sessionId } = req.params;

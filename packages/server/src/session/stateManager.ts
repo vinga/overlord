@@ -3312,6 +3312,7 @@ export class StateManager {
       out.color = overlord.color ?? session.color;
       out.icon = overlord.icon ?? session.icon;
       out.deskSpan = overlord.deskSpan;
+      out.group = overlord.group;
       out.pins = overlord.pins;
       out.slug = overlord.slug ?? session.slug;
       out.model = overlord.model ?? session.model;
@@ -3496,6 +3497,18 @@ export class StateManager {
     if (!rec) return false;
     const next = span ? { w: span.w, h: span.h } : undefined;
     sessionStore.patch(rec.overlordId, { deskSpan: next });
+    this.onChange();
+    return true;
+  }
+
+  /** File a session under a group in the side room list, or `null` to ungroup.
+   *  Lives on the OverlordSession record, so it survives restart and archive. */
+  setSessionGroup(sessionId: string, group: string | null): boolean {
+    let rec = sessionStore.getBySessionId(sessionId);
+    const live = this.sessions.get(sessionId);
+    if (!rec && live) rec = sessionStore.ensureFromLive(live);
+    if (!rec) return false;
+    sessionStore.patch(rec.overlordId, { group: group ?? undefined });
     this.onChange();
     return true;
   }
