@@ -126,6 +126,9 @@
   white-space: nowrap;
   text-decoration: none;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
+  /* Hover actions overlay to the right (see below) — never widen the chip,
+     or a table cell holding it reflows on every hover. */
+  position: relative;
 }
 
 /* URL form — long, so let it wrap instead of pushing the message wide. */
@@ -156,7 +159,11 @@ a.inlinePrRef[data-pr-ref],
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 0;
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 18px);
+  z-index: 2;
+  width: 14px;
   overflow: hidden;
   height: 14px;
   padding: 0;
@@ -169,14 +176,38 @@ a.inlinePrRef[data-pr-ref],
   font-weight: 500;
   line-height: 1;
   opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
   cursor: pointer;
-  transition: opacity 0.12s, width 0.12s, color 0.12s, background 0.12s;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
 }
 
 .inlineJiraKey:hover .jiraAddBtn,
 .inlinePrRef:hover .prAddBtn {
-  width: 14px;
   opacity: 1;
+  pointer-events: auto;
+}
+
+/* Backdrop behind the overlaid actions, so they stay readable over the text
+   they cover. 18px = copy only; 34px when the `+` / bring-to-front shows. */
+.inlineJiraKey[data-jira-key]:hover::after,
+.inlinePrRef[data-pr-ref]:hover::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  left: 100%;
+  z-index: 1;
+  width: 18px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  background: #1c2433;
+}
+.inlineJiraKey[data-jira-key]:not(.jiraPinned):hover::after,
+.inlineJiraKey[data-jira-key].jiraPinned:not(.jiraFront):hover::after,
+.inlinePrRef[data-pr-ref]:not(.prPinned):hover::after {
+  width: 34px;
 }
 
 .jiraAddBtn:hover,
@@ -188,26 +219,30 @@ a.inlinePrRef[data-pr-ref],
 /* Copy-link icon: same reveal as the `+`, before it. */
 .inlineCopyBtn {
   display: inline-flex;
-  width: 0;
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 2px);
+  z-index: 2;
+  width: 14px;
   height: 14px;
   padding: 0;
-  margin-left: 2px;
   border: none;
   border-radius: 3px;
   background: currentColor;
   color: rgba(255, 255, 255, 0.5);
   opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
   cursor: pointer;
-  vertical-align: middle;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.5'/%3E%3Cpath d='M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5'/%3E%3C/svg%3E") center / 11px no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='5.5' y='5.5' width='8' height='8' rx='1.5'/%3E%3Cpath d='M10.5 3.5v-.5A1.5 1.5 0 0 0 9 1.5H3A1.5 1.5 0 0 0 1.5 3v6A1.5 1.5 0 0 0 3 10.5h.5'/%3E%3C/svg%3E") center / 11px no-repeat;
-  transition: opacity 0.12s, width 0.12s, color 0.12s;
+  transition: opacity 0.12s, color 0.12s;
 }
 .inlineJiraKey:hover .inlineCopyBtn,
 .inlinePrRef:hover .inlineCopyBtn,
 .inlineCopyBtn[data-copied] {
-  width: 14px;
   opacity: 1;
+  pointer-events: auto;
 }
 .inlineCopyBtn:hover { color: rgba(96, 165, 250, 0.95); }
 .inlineCopyBtn[data-copied] { color: rgba(74, 222, 128, 0.95); }
