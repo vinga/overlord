@@ -1463,14 +1463,18 @@
   word-break: break-word;
 }
 
+/* Bubble tools straddle the bubble's top edge, so they never cover the text;
+   opaque, so they read over the border and whatever sits above. */
 .rawToggle {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  top: -10px;
+  right: 10px;
+  z-index: 1;
+  background: #262633;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 4px;
-  color: rgba(255, 255, 255, 0.35);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.65);
   font-family: 'Inter', system-ui, sans-serif;
   font-size: 10px;
   font-weight: 600;
@@ -1488,12 +1492,12 @@
 }
 
 .rawToggle:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.7);
+  background: #33334a;
+  color: #fff;
 }
 
 .copyBubbleBtn {
-  right: 42px;
+  right: 46px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4870,7 +4874,7 @@
 
 /* Star on your messages (Q&A tab). Left of copy; stays visible when on. */
 .starBubbleBtn {
-  right: 66px;
+  right: 72px;
   display: flex;
   align-items: center;
   justify-content: center;
