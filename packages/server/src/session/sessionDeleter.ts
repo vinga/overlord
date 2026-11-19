@@ -4,6 +4,7 @@ import { join } from 'path';
 import { findTranscriptPathAnywhere } from './transcriptReader.js';
 import { killProcessTree } from '../pty/processTree.js';
 import { deleteLog as deleteShellHistoryLog } from '../pty/shellHistoryLog.js';
+import { deleteStars } from './questionStars.js';
 import { noteStore, isNoteId } from './noteStore.js';
 import { sessionStore } from './sessionStore.js';
 import { bridgeManager } from '../pty/pipeInjector.js';
@@ -195,6 +196,7 @@ export function deleteSession(
     const removedOvrIds = sessionStore.removeActiveBySessionIds(sidsToWipe);
     for (const removed of removedOvrIds) {
       if (removed !== ovrId) stateManager.purgeOvrId(removed);
+      deleteStars(removed);   // archived records keep theirs
     }
     if (removedOvrIds.length > 1) {
       console.log(`[deleteSession] removed ${removedOvrIds.length} store records: ${removedOvrIds.join(',')}`);

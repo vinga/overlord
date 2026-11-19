@@ -35,9 +35,11 @@ interface Args {
   extraKey?: unknown;
   viewKey?: string;
   enabled: boolean;
+  /** Which marked messages count: all of yours, or only questions + starred. */
+  selector?: string;
 }
 
-export function useStickyUserMessage({ containerRef, feedKey, extraKey, viewKey, enabled }: Args) {
+export function useStickyUserMessage({ containerRef, feedKey, extraKey, viewKey, enabled, selector = '[data-user-msg]' }: Args) {
   const [sticky, setSticky] = useState<StickyUserMessage | null>(null);
   const rafRef = useRef<number | null>(null);
   // Mirror of `sticky.key` readable from inside the rAF without re-creating the
@@ -50,7 +52,7 @@ export function useStickyUserMessage({ containerRef, feedKey, extraKey, viewKey,
   const scan = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-    const nodes = container.querySelectorAll<HTMLElement>('[data-user-msg]');
+    const nodes = container.querySelectorAll<HTMLElement>(selector);
     if (nodes.length === 0) {
       indexRef.current = -1;
       nextIdxRef.current = -1;
@@ -92,7 +94,7 @@ export function useStickyUserMessage({ containerRef, feedKey, extraKey, viewKey,
     setSticky(key && found
       ? { key, text: found.getAttribute('data-user-text') ?? '', hasNext }
       : null);
-  }, [containerRef]);
+  }, [containerRef, selector]);
 
   /** Scroll the i-th marked user message to just under the top edge. Landing
    *  below the edge (rather than flush) takes it out of "already scrolled past"
@@ -101,14 +103,14 @@ export function useStickyUserMessage({ containerRef, feedKey, extraKey, viewKey,
   const scrollToIndex = useCallback((i: number) => {
     const container = containerRef.current;
     if (!container || i < 0) return;
-    const el = container.querySelectorAll<HTMLElement>('[data-user-msg]')[i];
+    const el = container.querySelectorAll<HTMLElement>(selector)[i];
     if (!el) return;
     const offset = el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const next = Math.max(0, offset - LANDING);
     if (reduceMotion) container.scrollTop = next;
     else container.scrollTo({ top: next, behavior: 'smooth' });
-  }, [containerRef]);
+  }, [containerRef, selector]);
 
   /** Up: jump to the pinned message itself. Down: to the first one still below. */
   const scrollToPrev = useCallback(() => scrollToIndex(indexRef.current), [scrollToIndex]);

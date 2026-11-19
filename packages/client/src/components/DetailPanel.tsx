@@ -56,6 +56,8 @@ import {
   splitPathLine,
 } from '../lib/jiraInline';
 import { useStickyUserMessage, type StickyUserMessage } from '../hooks/useStickyUserMessage';
+import { FeedQuestionTicks } from './FeedQuestionTicks';
+import { useSessionQuestions, setQuestionStar, isQuestionText, JUMP_TO_MESSAGE_EVENT, USER_MSG_SELECTOR, readStickyNavMode, saveStickyNavMode, type JumpToMessageDetail, type StickyNavMode } from '../lib/questions';
 import { marked } from 'marked';
 import { isImagePath, localImageSrc } from '../lib/localImage';
 
@@ -1363,6 +1365,9 @@ interface FeedSegmentsProps {
    *  top-level feeds set this — inline subagent feeds nest inside the same
    *  scroll container and their prompts aren't the user's. */
   markUserMessages?: boolean;
+  /** Main session feed only: your messages get a star toggle (Q&A tab) and
+   *  question / starred markers for the questions-only sticky nav. */
+  starSessionId?: string;
   /** Background-command progress cards by launching toolUseId (top-level feed only). */
   progressCards?: Map<string, BackgroundProgress>;
   progressSessionId?: string;
@@ -1391,7 +1396,7 @@ function isSyntheticUserContent(content: string): boolean {
 
 /** DOM markers for the pinned-message header. Returns undefined for entries
  *  that aren't things the user typed (skill preambles, empty/system content). */
-function userMsgAttrs(item: ActivityItem, segIdx: number, isSkillDef: boolean): Record<string, string> | undefined {
+function userMsgAttrs(item: ActivityItem, segIdx: number, isSkillDef: boolean, starred?: ReadonlySet<string>): Record<string, string> | undefined {
   if (item.role !== 'user' || isSkillDef) return undefined;
   if (!item.content || isSyntheticUserContent(item.content)) return undefined;
   const firstLine = item.content.split('\n').find(l => l.trim().length > 0)?.trim();
@@ -1399,6 +1404,9 @@ function userMsgAttrs(item: ActivityItem, segIdx: number, isSkillDef: boolean): 
   return {
     'data-user-msg': item.timestamp ?? `seg:${segIdx}`,
     'data-user-text': firstLine.length > 300 ? `${firstLine.slice(0, 300)}…` : firstLine,
+    // Questions-only sticky nav and the Q&A tab key off these.
+    ...(isQuestionText(item.content) ? { 'data-user-question': '1' } : {}),
+    ...(item.timestamp && starred?.has(item.timestamp) ? { 'data-user-starred': '1' } : {}),
   };
 }
 
@@ -1410,7 +1418,8 @@ function conversationText(feed: ActivityItem[]): string {
     .join('\n\n---\n\n');
 }
 
-function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, liveQuestion, markUserMessages, progressCards, progressSessionId }: FeedSegmentsProps) {
+function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, cwd, subagents, onSelectSubagent, scrollTargetTs, questionSessionId, questionStageRef, onQuestionDismissedToChat, questionStale, liveQuestion, markUserMessages, starSessionId, progressCards, progressSessionId }: FeedSegmentsProps) {
+  const { starred } = useSessionQuestions(starSessionId);
   const segments = useMemo(() => buildSegments(feed), [feed]);
   const [expandedToolGroups, setExpandedToolGroups] = useState<Set<number>>(new Set());
   // The in-flight group is expanded by default; this records an explicit collapse of it.
@@ -1591,7 +1600,7 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
             <div
               key={segIdx}
               data-ts={seg.item.timestamp}
-              {...(markUserMessages ? userMsgAttrs(seg.item, segIdx, isSkillDef) : undefined)}
+              {...(markUserMessages ? userMsgAttrs(seg.item, segIdx, isSkillDef, starred) : undefined)}
               className={`${styles.transcriptEntry} ${styles[`role_${seg.item.role}`]} ${seg.item.pending ? styles.pendingMessage : ''}`}
             >
               {seg.item.pending && <span className={styles.pendingBadge}>queued</span>}
@@ -1644,6 +1653,22 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
                         message truncated — open the terminal for the full text
                       </div>
                     )}
+                    {starSessionId && seg.item.role === 'user' && seg.item.timestamp && !seg.item.pending && !isSyntheticUserContent(seg.item.content ?? '') && (() => {
+                      const ts = seg.item.timestamp;
+                      const isStarred = starred.has(ts);
+                      return (
+                        <button
+                          className={`${styles.rawToggle} ${styles.starBubbleBtn}`}
+                          data-on={isStarred || undefined}
+                          onClick={() => setQuestionStar(starSessionId, ts, !isStarred)}
+                          title={isStarred ? 'Unstar' : 'Star — keep it in the Q&A list'}
+                          aria-label={isStarred ? 'Unstar message' : 'Star message'}
+                          aria-pressed={isStarred}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8l1.85 3.9 4.25.5-3.15 2.9.85 4.2L8 11.2l-3.8 2.1.85-4.2L1.9 6.2l4.25-.5z" fill={isStarred ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /></svg>
+                        </button>
+                      );
+                    })()}
                     <button
                       className={`${styles.rawToggle} ${styles.copyBubbleBtn}`}
                       onClick={() => {
@@ -1961,14 +1986,18 @@ interface StickyUserHeaderProps {
   onPrev: () => void;
   onNext: () => void;
   styles: Record<string, string>;
+  /** Session feed only: ↑/↓ walk every message, or only questions + starred. */
+  navMode?: StickyNavMode;
+  onToggleNavMode?: () => void;
 }
 
 /** One-line pin of the user message governing the visible stretch of the feed.
  *  Renders nothing while that message is still on screen. The arrows walk the
  *  feed message by message: up lands on the pinned one, down on the one after. */
-function StickyUserHeader({ sticky, label, onPrev, onNext, styles }: StickyUserHeaderProps) {
+function StickyUserHeader({ sticky, label, onPrev, onNext, styles, navMode, onToggleNavMode }: StickyUserHeaderProps) {
   if (!sticky) return null;
   const hasNext = sticky.hasNext;
+  const questionsOnly = navMode === 'questions';
   return (
     <div className={styles.stickyUserHeader}>
       <button
@@ -1981,11 +2010,21 @@ function StickyUserHeader({ sticky, label, onPrev, onNext, styles }: StickyUserH
         <span className={styles.stickyUserHeaderText}>{sticky.text}</span>
       </button>
       <span className={styles.stickyUserHeaderNav}>
+        {onToggleNavMode && (
+          <button
+            type="button"
+            className={`${styles.stickyUserHeaderNavBtn} ${styles.stickyNavModeBtn}`}
+            onClick={onToggleNavMode}
+            aria-pressed={questionsOnly}
+            title={questionsOnly ? 'Arrows: questions and starred only — click for every message' : 'Arrows: every message — click for questions and starred only'}
+            aria-label="Arrows walk questions only"
+          >?</button>
+        )}
         <button
           type="button"
           className={styles.stickyUserHeaderNavBtn}
           onClick={onPrev}
-          title="Previous message"
+          title={questionsOnly ? 'Previous question' : 'Previous message'}
           aria-label="Scroll to previous message"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -1997,7 +2036,7 @@ function StickyUserHeader({ sticky, label, onPrev, onNext, styles }: StickyUserH
           className={styles.stickyUserHeaderNavBtn}
           onClick={onNext}
           disabled={!hasNext}
-          title={hasNext ? 'Next message' : 'No later message'}
+          title={hasNext ? (questionsOnly ? 'Next question' : 'Next message') : (questionsOnly ? 'No later question' : 'No later message')}
           aria-label="Scroll to next message"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -2570,7 +2609,9 @@ const currentDisplayName =
     // Target may be in older history that's been trimmed out of activityFeed,
     // or may live inside a subagent's feed rendered inline — either way we
     // need to fetch earlier messages so the scroll handler can find it.
-    const notInFeed = targetIdx === -1;
+    // A target the Q&A jump already paged into extraFeed needs no fetch — the
+    // fetch below would replace extraFeed and drop it again.
+    const notInFeed = targetIdx === -1 && !extraFeed.some(item => item.timestamp === effectiveScrollTarget);
 
     // Load earlier messages if target is near the top of the trimmed feed
     if ((isNearTop || notInFeed) && feed.length > 0 && feed[0].timestamp) {
@@ -3031,13 +3072,67 @@ const currentDisplayName =
   // Pinned user message atop the Conversation feed. One instance serves the
   // main and subagent feeds — they share `transcriptRef`, and only one is
   // mounted at a time.
+  const [navMode, setNavMode] = useState<StickyNavMode>(readStickyNavMode);
+  const toggleNavMode = useCallback(() => setNavMode(m => {
+    const next: StickyNavMode = m === 'questions' ? 'all' : 'questions';
+    saveStickyNavMode(next);
+    return next;
+  }), []);
+  // Questions mode applies to the session feed; a subagent's feed has no stars.
+  const navSelector = selectedSubagentId ? USER_MSG_SELECTOR.all : USER_MSG_SELECTOR[navMode];
   const { sticky, recomputeSticky, scrollToPrev, scrollToNext } = useStickyUserMessage({
     containerRef: transcriptRef,
     feedKey: mergedFeed.length,
     extraKey: selectedSubagent?.activityFeed?.length,
     viewKey: `${selectedSession?.sessionId ?? ''}/${selectedSubagentId ?? ''}/${activeTab}/${subagentActiveTab}`,
     enabled: showStickyUserMessage,
+    selector: navSelector,
   });
+
+  // Q&A tab → jump to one of your messages. Pages older history in until the
+  // message is loaded (cap JUMP_MAX_PAGES), then hands it to the scroll-target
+  // effect, which scrolls and highlights it.
+  const mergedFeedRef = useRef(mergedFeed);
+  mergedFeedRef.current = mergedFeed;
+  const jumpSessionRef = useRef(selectedSession?.sessionId);
+  jumpSessionRef.current = selectedSession?.sessionId;
+  useEffect(() => {
+    const JUMP_MAX_PAGES = 30;
+    const onJump = (e: Event) => {
+      const d = (e as CustomEvent<JumpToMessageDetail>).detail;
+      const sessionId = jumpSessionRef.current;
+      if (!d || !sessionId || d.sessionId !== sessionId) return;
+      void (async () => {
+        let older: ActivityItem[] = [];
+        let more = true;
+        let oldest = mergedFeedRef.current.find(i => i.timestamp)?.timestamp;
+        const has = (feed: ActivityItem[]) => feed.some(i => i.timestamp === d.id);
+        for (let page = 0; !has(mergedFeedRef.current) && !has(older) && more && oldest && oldest > d.id; page++) {
+          if (page >= JUMP_MAX_PAGES) { console.warn('[jump] message is too far back', d.id); break; }
+          try {
+            const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/activity-before?timestamp=${encodeURIComponent(oldest)}&limit=100`);
+            const data = await r.json() as { items?: ActivityItem[]; hasMore?: boolean };
+            const items = data.items ?? [];
+            if (items.length === 0) break;
+            older = [...items, ...older];
+            more = !!data.hasMore;
+            oldest = items.find(i => i.timestamp)?.timestamp;
+          } catch { break; }
+          if (jumpSessionRef.current !== sessionId) return;
+        }
+        if (jumpSessionRef.current !== sessionId) return;
+        if (older.length > 0) {
+          setExtraFeed(prev => [...older, ...prev]);
+          setHasMore(more);
+          reachedFeedStartRef.current = !more;
+        }
+        setInternalScrollQuery(undefined);
+        setInternalScrollTarget(d.id);
+      })();
+    };
+    window.addEventListener(JUMP_TO_MESSAGE_EVENT, onJump);
+    return () => window.removeEventListener(JUMP_TO_MESSAGE_EVENT, onJump);
+  }, []);
 
   const handleScrollWithSticky = useCallback(() => {
     handleTranscriptScroll();
@@ -3895,6 +3990,7 @@ const currentDisplayName =
                                     questionStale={selectedSession.questionStale}
                                     liveQuestion={liveQuestion}
                                     markUserMessages
+                                    starSessionId={selectedSession.sessionId}
                                     progressCards={progressCards}
                                     progressSessionId={selectedSession.sessionId}
                                   />
@@ -3919,7 +4015,8 @@ const currentDisplayName =
                             </div>
                           ) : null}
                         </div>
-                        <StickyUserHeader sticky={sticky} label="you" onPrev={scrollToPrev} onNext={scrollToNext} styles={styles} />
+                        <StickyUserHeader sticky={sticky} label="you" onPrev={scrollToPrev} onNext={scrollToNext} styles={styles} navMode={navMode} onToggleNavMode={toggleNavMode} />
+                        {showStickyUserMessage && <FeedQuestionTicks containerRef={transcriptRef} feedKey={mergedFeed.length} />}
                         <ScrollJumpNav
                           up={scrollJumpLabels.up}
                           down={scrollJumpLabels.down}

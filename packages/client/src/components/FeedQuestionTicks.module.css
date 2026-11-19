@@ -1,0 +1,27 @@
+/* Rail just left of the scrollbar; only the ticks take pointer events. */
+.rail {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  right: 12px;
+  width: 8px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.tick {
+  position: absolute;
+  right: 0;
+  width: 8px;
+  height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: rgba(96, 165, 250, 0.55);
+  transform: translateY(-50%);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: background 0.12s, width 0.12s;
+}
+.tick:hover { width: 12px; background: rgba(96, 165, 250, 0.95); }
+.tick[data-starred] { background: #d4af37; }

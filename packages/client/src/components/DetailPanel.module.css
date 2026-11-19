@@ -4867,3 +4867,27 @@
   opacity: 1;
   color: rgba(255, 255, 255, 0.9);
 }
+
+/* Star on your messages (Q&A tab). Left of copy; stays visible when on. */
+.starBubbleBtn {
+  right: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+}
+.starBubbleBtn[data-on] {
+  opacity: 1;
+  pointer-events: auto;
+  color: #d4af37;
+  border-color: rgba(212, 175, 55, 0.4);
+}
+
+/* Sticky bar: ↑/↓ walk questions only. */
+.stickyNavModeBtn {
+  font: 600 11px/1 'Inter', system-ui, sans-serif;
+}
+.stickyNavModeBtn[aria-pressed='true'] {
+  color: #d4af37;
+  background: rgba(212, 175, 55, 0.14);
+}

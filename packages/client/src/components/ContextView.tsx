@@ -3,10 +3,10 @@ import { SessionNotesEditor } from './SessionNotesEditor';
 import { updateNoteFirstLine } from '../hooks/useNotesSummaries';
 import styles from './ContextView.module.css';
 
-/** What a context column shows: its usual cards, or one of three notes —
- *  the session's, the room's, or the global scratchpad. */
-export type ContextView = 'context' | 'notes' | 'room' | 'global';
-const VIEWS: readonly ContextView[] = ['context', 'notes', 'room', 'global'];
+/** What a context column shows: its usual cards, the session's questions,
+ *  or one of three notes — the session's, the room's, or the global scratchpad. */
+export type ContextView = 'context' | 'questions' | 'notes' | 'room' | 'global';
+const VIEWS: readonly ContextView[] = ['context', 'questions', 'notes', 'room', 'global'];
 
 // ── Which notes have content ────────────────────────────────────────────────
 // One shared map, so a tab's dot follows edits made in any context column.

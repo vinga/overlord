@@ -34,6 +34,7 @@ import { artifactStore } from './artifacts/artifactStore.js';
 import { ArtifactWatcher } from './artifacts/artifactWatcher.js';
 import { registerApiRoutes } from './api/apiRoutes.js';
 import { registerShellHistoryRoutes } from './api/shellHistoryRoutes.js';
+import { registerQuestionRoutes } from './api/questionRoutes.js';
 import { initOriginGuard, originGuard, verifyWsClient, isLoopbackBind } from './api/originGuard.js';
 import { setRoomCwdProvider } from './api/pathGuard.js';
 import { registerSessionEventHandlers, closeOrRemoveReplaced } from './session/sessionEventHandlers.js';
@@ -984,6 +985,7 @@ registerApiRoutes(
   broadcastRaw,
 );
 registerShellHistoryRoutes(app, { stateManager, ovrToPty, ptyOutputBuffer });
+registerQuestionRoutes(app, { stateManager });
 
 // Start HTTP server
 httpServer.listen(PORT, BIND_HOST, () => {

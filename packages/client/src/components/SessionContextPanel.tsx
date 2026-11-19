@@ -10,12 +10,15 @@ import { TodoList } from './TodoList';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
+import { QuestionList } from './QuestionList';
+import { useSessionQuestions } from '../lib/questions';
 import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, SessionContextNotes, useContextView, useNotesFilled, type ContextTab } from './ContextView';
 
 const SESSION_TABS: readonly ContextTab[] = [
   { view: 'context', label: 'Tickets & PRs' },
+  { view: 'questions', label: 'Q&A', title: 'Your questions in this session, with the answers' },
   { view: 'notes', label: 'Notes', title: "This session's notes" },
-  { view: 'room', label: 'Room Notes', title: "This room's notes" },
+  { view: 'room', label: 'Room', title: "This room's notes" },
   { view: 'global', label: 'Global', title: 'Global notes — shared by every room and session' },
 ];
 const SESSION_VIEWS = SESSION_TABS.map(t => t.view);
@@ -45,6 +48,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   // overlordId is stable across /clear and resume; sessionId is the fallback.
   const [view, switchView] = useContextView('overlord.sessionContextViews', session ? session.overlordId ?? session.sessionId : undefined, SESSION_VIEWS);
   const notesFilled = useNotesFilled({ sessionId: session?.sessionId, cwd: room?.cwd });
+  // Refetch when the last assistant message or the state moves (a turn ended).
+  const questions = useSessionQuestions(session?.sessionId, `${session?.state}|${session?.lastMessage ?? ''}`);
   // Optimistic ticket order until the snapshot catches up; dropped once it does.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const serverOrder = session?.jiraKeys?.join('|');
@@ -125,6 +130,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   return (
     <aside className={styles.panel} aria-label="Session context">
       <ContextViewSwitch tabs={SESSION_TABS} view={view} onChange={switchView} filled={notesFilled} />
+      {view === 'questions' && <QuestionList sessionId={session.sessionId} {...questions} />}
       {view === 'notes' && <SessionContextNotes sessionId={session.sessionId} />}
       {view === 'room' && (room ? <RoomContextNotes cwd={room.cwd} /> : <p className={styles.muted}>No room</p>)}
       {view === 'global' && <GlobalContextNotes />}

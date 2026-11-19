@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { readLinesBefore } from './linesBefore.js';
 import * as path from 'path';
 import * as os from 'os';
 import type { WorkerState, Subagent, ActivityItem, PendingQuestion, PendingQuestionSet, ActiveMonitor, BackgroundTask } from '../types.js';
@@ -2747,40 +2748,17 @@ export function readSubagents(cwd: string, sessionId: string, transcriptPath?: s
  * Used by the search tab to load earlier conversation context when the feed is trimmed.
  */
 export function readActivityBefore(filePath: string, beforeTimestamp: string, limit = 50): { items: ActivityItem[]; hasMore: boolean } {
-  let content: string;
-  try {
-    // Cap read at 32MB to avoid stalling on huge transcripts
-    const stat = fs.statSync(filePath);
-    const MAX_BYTES = 32 * 1024 * 1024;
-    if (stat.size > MAX_BYTES) {
-      const buf = Buffer.alloc(MAX_BYTES);
-      const fd = fs.openSync(filePath, 'r');
-      fs.readSync(fd, buf, 0, MAX_BYTES, 0); // read from start
-      fs.closeSync(fd);
-      content = buf.toString('utf8');
-    } else {
-      content = fs.readFileSync(filePath, 'utf8');
-    }
-  } catch { return { items: [], hasMore: false }; }
-
-  const allLines = content.split('\n').filter(l => l.trim());
-
-  // Collect lines with timestamp < beforeTimestamp (forward scan, stop at first match)
-  const beforeLines: string[] = [];
-  for (const line of allLines) {
-    try {
-      const parsed = JSON.parse(line) as { timestamp?: string };
-      if (parsed.timestamp && parsed.timestamp >= beforeTimestamp) break;
-    } catch { /* keep line, can't parse */ }
-    beforeLines.push(line);
-  }
-
-  if (beforeLines.length === 0) return { items: [], hasMore: false };
-
-  // Parse the tail of beforeLines (reverse scan, same logic as readTranscriptState)
+  // Parse the tail of the lines before the timestamp (reverse scan, same
+  // logic as readTranscriptState). Streamed: no size cap on the transcript.
   const windowSize = limit * 20;
-  const window = beforeLines.slice(-windowSize);
-  const hasMoreBefore = beforeLines.length > windowSize;
+  let window: string[];
+  let hasMoreBefore: boolean;
+  try {
+    const { lines, total } = readLinesBefore(filePath, beforeTimestamp, windowSize);
+    window = lines;
+    hasMoreBefore = total > windowSize;
+  } catch { return { items: [], hasMore: false }; }
+  if (window.length === 0) return { items: [], hasMore: false };
   const MAX_CONTENT = 10000;
   const activityFeed: ActivityItem[] = [];
   let messageCount = 0;
