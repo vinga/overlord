@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import type { Session } from '../types';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
+import { fetchShellHistoryLines, trimShellHistory, SHELL_HISTORY_KEEP_LINES } from '../lib/shellHistory';
 
 /** Session burger menu — shared by the desk card (Room) and the detail panel header. */
 export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNewSession, getConversationText, sessionRef, session, anchorStyle, buttonSize = 22 }: {
@@ -24,6 +25,16 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
   const menuRef = React.useRef<HTMLDivElement>(null);
   const [menuPos, setMenuPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const copiedTimer = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const isRaw = session.sessionType === 'raw';
+  // Shell history length, fetched each time the menu opens (raw sessions only).
+  const [historyLines, setHistoryLines] = useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!open || !isRaw) { setHistoryLines(null); return; }
+    let cancelled = false;
+    void fetchShellHistoryLines(session.sessionId).then(n => { if (!cancelled) setHistoryLines(n); });
+    return () => { cancelled = true; };
+  }, [open, isRaw, session.sessionId]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -121,6 +132,16 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
           {onNewSession && <MenuItem icon={ICONS.newSession} label="New session here" title="Quick spawn in this room and switch to it" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onNewSession)} />}
           {onClone && <MenuItem icon={ICONS.clone} label="Clone" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onClone)} />}
           {onClear && <MenuItem icon={ICONS.clear} label="Clear" hover="#fb923c" hoverBg="rgba(251,146,60,0.1)" onClick={act(onClear)} />}
+          {historyLines !== null && historyLines > SHELL_HISTORY_KEEP_LINES && (
+            <MenuItem
+              icon={ICONS.trim}
+              label={`Trim history to last ${SHELL_HISTORY_KEEP_LINES} lines`}
+              hint={`${historyLines.toLocaleString()} lines`}
+              title="Older output is deleted for good; the shell keeps running"
+              hover="#fb923c" hoverBg="rgba(251,146,60,0.1)"
+              onClick={act(() => { void trimShellHistory(session.sessionId, session.overlordId ?? session.sessionId); })}
+            />
+          )}
           <MenuDivider />
           <MenuItem icon={ICONS.trash} label="Delete" color="#ff6b6b" hover="#ff6b6b" hoverBg="rgba(255,107,107,0.1)" onClick={act(onDelete)} />
         </div>,
@@ -130,7 +151,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
         sessionId={session.sessionId}
         color={session.color}
         icon={session.icon}
-        isRaw={session.sessionType === 'raw'}
+        isRaw={isRaw}
         anchorRef={burgerRef}
         open={appearanceOpen}
         onOpenChange={setAppearanceOpen}
@@ -156,12 +177,13 @@ const ICONS = {
   newSession: svg(<><path d="M7 3v8M3 7h8" /><path d="M16 4l-4 8h5l-3 8" /></>),
   trash: svg(<><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" /></>),
   check: svg(<path d="M5 12l5 5L20 7" />),
+  trim: svg(<><path d="M4 6h16M4 10h16" /><path d="M4 15h10M4 19h6" strokeDasharray="2 3" /></>),
 };
 
 const MENU_TEXT = 'rgba(255,255,255,0.7)';
 
-function MenuItem({ icon, label, title, onClick, done, color = MENU_TEXT, hover = '#cbd5e1', hoverBg = 'rgba(148,163,184,0.15)' }: {
-  icon: React.ReactNode; label: string; title?: string; onClick: (e: React.MouseEvent) => void;
+function MenuItem({ icon, label, hint, title, onClick, done, color = MENU_TEXT, hover = '#cbd5e1', hoverBg = 'rgba(148,163,184,0.15)' }: {
+  icon: React.ReactNode; label: string; hint?: string; title?: string; onClick: (e: React.MouseEvent) => void;
   /** Transient success state (after a copy) — green, no hover recolor. */
   done?: boolean; color?: string; hover?: string; hoverBg?: string;
 }) {
@@ -180,6 +202,7 @@ function MenuItem({ icon, label, title, onClick, done, color = MENU_TEXT, hover 
     >
       <span style={{ display: 'flex', opacity: 0.85, flexShrink: 0 }}>{icon}</span>
       {label}
+      {hint && <span style={{ marginLeft: 'auto', paddingLeft: 16, fontSize: 11, color: 'rgba(255,255,255,0.4)', fontVariantNumeric: 'tabular-nums' }}>{hint}</span>}
     </button>
   );
 }

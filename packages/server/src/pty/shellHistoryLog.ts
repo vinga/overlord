@@ -107,6 +107,53 @@ export function readAll(sessionId: string): Buffer {
   }
 }
 
+/** Lines in a raw byte stream = `\n` bytes (CRLF counts once). */
+export function countLines(buf: Buffer): number {
+  let n = 0;
+  for (let i = buf.indexOf(0x0a); i !== -1; i = buf.indexOf(0x0a, i + 1)) n++;
+  return n;
+}
+
+/** Keep the last `n` lines: cut right after the (n+1)-th newline from the end,
+ *  so no escape sequence is split. A trailing partial line (the live prompt)
+ *  rides along. Returns the input unchanged when it holds ≤ n lines. */
+export function tailLines(buf: Buffer, n: number): Buffer {
+  const keep = Math.max(0, Math.floor(n));
+  let seen = 0;
+  for (let i = buf.lastIndexOf(0x0a); i !== -1; i = i > 0 ? buf.lastIndexOf(0x0a, i - 1) : -1) {
+    if (++seen === keep + 1) return buf.subarray(i + 1);
+  }
+  return buf;
+}
+
+/** Rewrite the disk log with its last `n` lines. Returns the line count left. */
+export function trimLog(sessionId: string, n: number): number {
+  if (!isSafeId(sessionId)) return 0;
+  const p = logPath(sessionId);
+  let buf: Buffer;
+  try { buf = fs.readFileSync(p); } catch { return 0; }
+  const tail = tailLines(buf, n);
+  if (tail.length !== buf.length) {
+    try {
+      fs.writeFileSync(p, tail);
+    } catch (err) {
+      console.warn(`[shellHistoryLog] trimLog failed for ${sessionId}:`, (err as Error).message);
+      return countLines(buf);
+    }
+  }
+  return countLines(tail);
+}
+
+/** Trim an in-memory replay buffer in place (same array ref) to one chunk
+ *  holding its last `n` lines. Synchronous, so no append lands mid-trim. */
+export function trimChunks(chunks: Buffer[], n: number): number {
+  if (chunks.length === 0) return 0;
+  const all = Buffer.concat(chunks);
+  const tail = tailLines(all, n);
+  if (tail.length !== all.length) chunks.splice(0, chunks.length, Buffer.from(tail));
+  return countLines(tail);
+}
+
 export function hasLog(sessionId: string): boolean {
   if (!isSafeId(sessionId)) return false;
   try {

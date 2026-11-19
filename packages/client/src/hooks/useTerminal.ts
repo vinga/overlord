@@ -1,4 +1,5 @@
-import { useRef, useCallback, useState } from 'react';
+import { useRef, useCallback, useState, useEffect } from 'react';
+import { SHELL_HISTORY_TRIMMED_EVENT } from '../lib/shellHistory';
 import type { SessionProvider, TerminalMessage, TerminalSpawnMode } from '../types';
 
 function decodeBase64(b64: string): Uint8Array {
@@ -46,6 +47,10 @@ export function useTerminal(
 
   // Bridge sessions tracked by ovrId
   const bridgeSessionIds = useRef(new Set<string>());
+
+  // Last known xterm size per ovrId — a re-replay (history trim) needs it so the
+  // server renders the disk log at the visible width.
+  const termDims = useRef(new Map<string, { cols: number; rows: number }>());
 
   // FIFO counter of spawn intents originating from THIS client. Each
   // spawn*/resume call increments; the next terminal:spawned consumes one and
@@ -270,6 +275,7 @@ export function useTerminal(
 
   const resizePty = useCallback(
     (ovrId: string, cols: number, rows: number) => {
+      termDims.current.set(ovrId, { cols, rows });
       sendMessage({ type: 'terminal:resize', sessionId: ovrId, cols, rows });
     },
     [sendMessage]
@@ -284,6 +290,7 @@ export function useTerminal(
       // screen repaint, prefixed with \x1bc) wipes them a moment later anyway.
       // Drop them and let the replay below be the single source of the screen.
       outputBuffer.current.delete(ovrId);
+      if (cols && rows) termDims.current.set(ovrId, { cols, rows });
       // Request server-side buffer replay (also subscribes this WS client to
       // the session's terminal:output stream on the server)
       sendMessage({ type: 'terminal:replay', sessionId: ovrId, ...(cols && rows ? { cols, rows } : {}) });
@@ -296,6 +303,23 @@ export function useTerminal(
     },
     [sendMessage]
   );
+
+  // Shell history trimmed (burger menu): wipe the open xterm and replay so it
+  // shows only the kept tail.
+  useEffect(() => {
+    const onTrimmed = (e: Event) => {
+      const ovrId = (e as CustomEvent<{ ovrId?: string }>).detail?.ovrId;
+      if (!ovrId) return;
+      outputBuffer.current.delete(ovrId);
+      const handler = outputHandlers.current.get(ovrId);
+      if (!handler) return;
+      handler(new TextEncoder().encode('\x1bc'));
+      const dims = termDims.current.get(ovrId);
+      sendMessage({ type: 'terminal:replay', sessionId: ovrId, ...(dims ?? {}) });
+    };
+    window.addEventListener(SHELL_HISTORY_TRIMMED_EVENT, onTrimmed);
+    return () => window.removeEventListener(SHELL_HISTORY_TRIMMED_EVENT, onTrimmed);
+  }, [sendMessage]);
 
   const isPtySession = useCallback(
     (ovrId: string) => ptySessionIds.has(ovrId),
