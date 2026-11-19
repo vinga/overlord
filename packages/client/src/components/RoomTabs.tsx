@@ -76,7 +76,8 @@ function sessionDots(sessions: Session[], customNames: Record<string, string>, i
   const seen = new Set<string>();
   const out: SessionDot[] = [];
   for (const s of sessions) {
-    if (s.state === 'closed' && !includeClosed) continue;
+    // A grouped session stays listed (dimmed) once closed, so its group keeps showing.
+    if (s.state === 'closed' && !includeClosed && !s.group) continue;
     const id = dotId(s);
     if (seen.has(id)) continue;
     seen.add(id);

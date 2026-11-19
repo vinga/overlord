@@ -15,6 +15,21 @@ export function groupNames(sessions: ReadonlyArray<{ group?: string }>): string[
   return [...seen];
 }
 
+/** Desk rows in the room view: ungrouped sessions first (always present, `group` null),
+ *  then one section per group in order of its first session. Order inside a section
+ *  follows `sessions`. Without groups the single section reuses the input array. */
+export function splitDeskSections<T extends { group?: string }>(sessions: T[]): { group: string | null; sessions: T[] }[] {
+  if (!sessions.some(s => s.group)) return [{ group: null, sessions }];
+  const loose: T[] = [];
+  const groups = new Map<string, T[]>();
+  for (const s of sessions) {
+    if (!s.group) { loose.push(s); continue; }
+    const g = groups.get(s.group);
+    if (g) g.push(s); else groups.set(s.group, [s]);
+  }
+  return [{ group: null, sessions: loose }, ...[...groups].map(([group, list]) => ({ group, sessions: list }))];
+}
+
 /** Folded groups, keyed `roomId\u0001group`; per browser. */
 export const GROUPS_COLLAPSED_KEY = 'overlord:roomTabsGroupsCollapsed';
 /** Fired on `window` after the folded-groups set changes outside the side list. */

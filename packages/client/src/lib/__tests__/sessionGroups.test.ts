@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GROUPS_COLLAPSED_EVENT, groupKey, groupNames, readCollapsedGroups, renameGroup, writeCollapsedGroups } from '../sessionGroups';
+import { GROUPS_COLLAPSED_EVENT, groupKey, groupNames, readCollapsedGroups, renameGroup, splitDeskSections, writeCollapsedGroups } from '../sessionGroups';
 
 const fetchMock = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(new Response('{}')));
 
@@ -46,5 +46,23 @@ describe('renameGroup', () => {
     expect(renameGroup('r', sessions, 'OV', '   ')).toBe(false);
     expect(renameGroup('r', sessions, 'OV', 'OV')).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('splitDeskSections', () => {
+  it('keeps the input array when no session is grouped', () => {
+    const list = [{ id: 1 }, { id: 2 }] as { id: number; group?: string }[];
+    const out = splitDeskSections(list);
+    expect(out).toHaveLength(1);
+    expect(out[0].sessions).toBe(list);
+  });
+
+  it('puts ungrouped first, then each group as its own row in first-seen order', () => {
+    const out = splitDeskSections(sessions);
+    expect(out.map(s => [s.group, s.sessions.map(x => x.sessionId)])).toEqual([
+      [null, ['b']],
+      ['OV', ['a', 'd']],
+      ['PS', ['c']],
+    ]);
   });
 });

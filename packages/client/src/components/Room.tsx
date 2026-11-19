@@ -15,6 +15,7 @@ import { useRoomHidden } from '../hooks/useRoomHidden';
 import { openRoomTab } from '../lib/roomPanelTab';
 import { REVEAL_ROOM_FILE_EVENT } from './RoomFilesPanel';
 import { orderKey, sortRoomSessions } from '../lib/roomSessionOrder';
+import { putGroup, splitDeskSections } from '../lib/sessionGroups';
 import { GitBranchBadge } from './GitBranchBadge';
 import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
@@ -463,9 +464,17 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
     () => sortRoomSessions(room.sessions, getOrder(roomKey)),
     [room.sessions, getOrder, roomKey],
   );
+  // Each session group is its own desk row; ungrouped desks lead.
+  const deskSections = useMemo(() => splitDeskSections(sortedSessions), [sortedSessions]);
 
   const handleDrop = (targetId: string) => {
     if (!draggedId || draggedId === targetId) return;
+    // Dropping on a desk in another group files the dragged session there.
+    const dragged = sortedSessions.find(x => orderKey(x) === draggedId);
+    const target = sortedSessions.find(x => orderKey(x) === targetId);
+    if (dragged && target && (dragged.group ?? null) !== (target.group ?? null)) {
+      void putGroup(dragged.sessionId, target.group ?? null);
+    }
     const currentOrder = sortedSessions.map(orderKey);
     const fromIdx = currentOrder.indexOf(draggedId);
     const toIdx = currentOrder.indexOf(targetId);
@@ -682,8 +691,17 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onDone={() => setClearToast(null)}
         />
       )}
-      {(bare ? view === 'desks' : !collapsed) && <div className={styles.desks} ref={deskResize.desksRef}>
-        {sortedSessions.map((session) => {
+      {(bare ? view === 'desks' : !collapsed) && <div className={styles.deskSections} ref={deskResize.desksRef}>
+        {deskSections.map(section => (section.group === null && section.sessions.length === 0 && !pendingSpawns?.length) ? null : (
+        <div key={section.group ?? '\u0000'} className={styles.deskSection} data-desk-group={section.group ?? undefined}>
+        {section.group !== null && (
+          <div className={styles.deskGroupHead}>
+            <span className={styles.deskGroupName}>{section.group}</span>
+            <span className={styles.deskGroupCount}>{section.sessions.length}</span>
+          </div>
+        )}
+        <div className={styles.desks}>
+        {section.sessions.map((session) => {
           const isSelected = session.overlordId === selectedSessionId || session.sessionId === selectedSessionId;
           const sessionOrderKey = orderKey(session);
           const isDragging = draggedId === sessionOrderKey;
@@ -807,8 +825,11 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             </div>
           );
         })}
-        {pendingSpawns?.map(p => (
+        {section.group === null && pendingSpawns?.map(p => (
           <SpawningDesk key={p.id} name={p.fullName} />
+        ))}
+        </div>
+        </div>
         ))}
       </div>}
       {bare && view === 'archive' && archiveEntries.length === 0 && (
