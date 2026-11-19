@@ -66,6 +66,12 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
   const elapsed = card.startedAt
     ? formatElapsed(card.startedAt, card.endedAt ?? Date.now())
     : '';
+  // Spelled out, with the start/end clock in the tooltip: a bare "11m" read
+  // as time left as easily as time spent.
+  const elapsedText = elapsed ? (running ? `${elapsed} elapsed` : `took ${elapsed}`) : '';
+  const elapsedTip = card.startedAt
+    ? `${running ? 'Running for' : 'Ran for'} ${elapsed} · started ${clock(Date.parse(card.startedAt))}${card.endedAt ? ` · ended ${clock(card.endedAt)}` : ''}`
+    : undefined;
   const title = card.rows.length === 1 && card.rows[0].label ? card.rows[0].label : (card.description ?? 'Background command');
   if (variant === 'line') {
     const row = card.rows.find(r => !r.final) ?? card.rows[0];
@@ -78,7 +84,7 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
         <span className={styles.title} title={card.command ?? card.description}>{title}</span>
         {!running && <span className={styles.statusChip}>{STATUS_LABEL[card.status]}</span>}
         {summary && <span className={styles.lineSummary}>{summary}</span>}
-        {elapsed && <span className={styles.meta}>{elapsed}</span>}
+        {elapsedText && <span className={styles.meta} title={elapsedTip}>{elapsedText}</span>}
       </div>
     );
   }
@@ -91,7 +97,7 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
         <span className={styles.statusDot} />
         <span className={styles.title} title={card.command ?? card.description}>{title}</span>
         <span className={styles.statusChip}>{STATUS_LABEL[card.status]}</span>
-        {elapsed && <span className={styles.meta}>{elapsed}</span>}
+        {elapsedText && <span className={styles.meta} title={elapsedTip}>{elapsedText}</span>}
       </div>
 
       {card.rows.length > 0 && (
@@ -118,7 +124,7 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
       )}
 
       {card.lastLine && (
-        <div className={styles.lastLine} title={card.lastLine}>{card.lastLine}</div>
+        <div className={styles.lastLine} title={`Latest output line: ${card.lastLine}`}>{card.lastLine}</div>
       )}
       {card.rows.length === 0 && !card.lastLine && (
         card.command
@@ -128,9 +134,10 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
       )}
 
       {card.lineCount > 0 && (
-        <button type="button" className={styles.historyToggle} onClick={toggle}>
-          {open ? 'Hide' : 'Show'} history · {card.lineCount} {card.lineCount === 1 ? 'line' : 'lines'}
-          {card.lastAt ? ` · last ${clock(card.lastAt)}` : ''}
+        <button type="button" className={styles.historyToggle} onClick={toggle}
+          title={`${card.lineCount} output ${card.lineCount === 1 ? 'line' : 'lines'} so far${card.lastAt ? `; the newest arrived at ${clock(card.lastAt)}` : ''}`}>
+          {open ? 'Hide' : 'Show'} history · {card.lineCount} output {card.lineCount === 1 ? 'line' : 'lines'}
+          {card.lastAt ? ` · updated ${clock(card.lastAt)}` : ''}
         </button>
       )}
       {open && (
@@ -139,7 +146,7 @@ export function ProgressCard({ card, sessionId, variant = 'inline' }: Props) {
           {!loading && lines.length === 0 && <div className={styles.empty}>No saved history</div>}
           {lines.map((e, i) => (
             <div key={i} className={styles.historyLine}>
-              <span className={styles.historyTime}>{clock(e.at)}</span>
+              <span className={styles.historyTime} title="When this line arrived">{clock(e.at)}</span>
               {e.row ? (
                 <span className={styles.historyText}>
                   <span className={styles.historyId}>{e.row.label ?? e.row.id}</span>
