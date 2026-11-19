@@ -169,17 +169,17 @@ a.inlinePrRef[data-pr-ref],
   padding: 0;
   border: none;
   border-radius: 3px;
-  background: transparent;
+  /* Pin icon, drawn like the copy icon next to it (and PinUrl in the side panel). */
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg transform='rotate(-20 8 8)'%3E%3Cpath d='M6 1.75h4M7 1.75v4.5L4.5 9h7L9 6.25v-4.5M8 9v5.25'/%3E%3C/g%3E%3C/svg%3E") center / 12px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cg transform='rotate(-20 8 8)'%3E%3Cpath d='M6 1.75h4M7 1.75v4.5L4.5 9h7L9 6.25v-4.5M8 9v5.25'/%3E%3C/g%3E%3C/svg%3E") center / 12px no-repeat;
   color: rgba(255, 255, 255, 0.5);
-  font-family: inherit;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 1;
+  font-size: 0;
   opacity: 0;
   pointer-events: none;
   transform: translateY(-50%);
   cursor: pointer;
-  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  transition: opacity 0.12s, color 0.12s;
 }
 
 .inlineJiraKey:hover .jiraAddBtn,
@@ -188,8 +188,8 @@ a.inlinePrRef[data-pr-ref],
   pointer-events: auto;
 }
 
-/* Backdrop behind the overlaid actions, so they stay readable over the text
-   they cover. 18px = copy only; 34px when the `+` / bring-to-front shows. */
+/* Backdrop behind the overlaid copy + pin icons, so they stay readable over
+   the text they cover. */
 .inlineJiraKey[data-jira-key]:hover::after,
 .inlinePrRef[data-pr-ref]:hover::after {
   content: '';
@@ -198,25 +198,18 @@ a.inlinePrRef[data-pr-ref],
   bottom: -1px;
   left: 100%;
   z-index: 1;
-  width: 18px;
+  width: 34px;
   border: 1px solid rgba(96, 165, 250, 0.45);
   border-left: none;
   border-radius: 0 4px 4px 0;
   background: #1c2433;
 }
-.inlineJiraKey[data-jira-key]:not(.jiraPinned):hover::after,
-.inlineJiraKey[data-jira-key].jiraPinned:not(.jiraFront):hover::after,
-.inlinePrRef[data-pr-ref]:not(.prPinned):hover::after {
-  width: 34px;
-}
-
 .jiraAddBtn:hover,
 .prAddBtn:hover {
   color: rgba(96, 165, 250, 0.95);
-  background: rgba(96, 165, 250, 0.18);
 }
 
-/* Copy-link icon: same reveal as the `+`, before it. */
+/* Copy-link icon: same reveal as the pin, before it. */
 .inlineCopyBtn {
   display: inline-flex;
   position: absolute;
@@ -247,24 +240,15 @@ a.inlinePrRef[data-pr-ref],
 .inlineCopyBtn:hover { color: rgba(96, 165, 250, 0.95); }
 .inlineCopyBtn[data-copied] { color: rgba(74, 222, 128, 0.95); }
 
-/* Already in context — nothing to add. */
+/* Already in this session: the pin stays, lit. A ticket that is not the
+   first chip keeps it clickable (moves it to the top). */
 .inlineJiraKey.jiraPinned .jiraAddBtn,
 .inlinePrRef.prPinned .prAddBtn {
-  display: none;
+  color: rgba(96, 165, 250, 0.95);
 }
-
-/* Attached but not the first chip: the `+` turns into bring-to-front. */
-.inlineJiraKey.jiraPinned:not(.jiraFront) .jiraAddBtn {
-  display: inline-flex;
-  font-size: 0;
-}
-.inlineJiraKey.jiraPinned:not(.jiraFront) .jiraAddBtn::before {
-  content: '';
-  width: 10px;
-  height: 10px;
-  background: currentColor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 2.5h10M8 14V6M4.5 9.5 8 6l3.5 3.5'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 2.5h10M8 14V6M4.5 9.5 8 6l3.5 3.5'/%3E%3C/svg%3E") center / contain no-repeat;
+.inlineJiraKey.jiraPinned.jiraFront .jiraAddBtn,
+.inlinePrRef.prPinned .prAddBtn {
+  cursor: default;
 }
 
 /* Fenced code block: hover action bar (copy, and `render` on markdown fences) */

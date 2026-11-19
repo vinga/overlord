@@ -79,23 +79,22 @@ export function setJiraProjects(raw: string | undefined) {
   if (setJiraProjectAllowlist(raw)) markdownCache.clear();
 }
 
-/** `+` affordance appended to a ticket or PR token; the delegated click handler
- *  in DetailPanel turns it into a POST. */
+/** Pin icon appended to a ticket or PR token (drawn by CSS); the delegated
+ *  click handler in DetailPanel turns it into a POST. */
 function makeAddButton(doc: Document, cls: string, label: string): HTMLButtonElement {
   const add = doc.createElement('button');
   add.className = cls;
   add.setAttribute('tabindex', '-1');
   add.setAttribute('title', label);
   add.setAttribute('aria-label', label);
-  add.textContent = '+';
   return add;
 }
 
 const makeJiraAddButton = (doc: Document, key: string) =>
-  makeAddButton(doc, 'jiraAddBtn', `Add ${key} to this session's tickets`);
+  makeAddButton(doc, 'jiraAddBtn', `Pin ${key} to this session`);
 
 const makePrAddButton = (doc: Document, ref: string) =>
-  makeAddButton(doc, 'prAddBtn', `Add ${ref} to this session's pull requests`);
+  makeAddButton(doc, 'prAddBtn', `Pin ${ref} to this session`);
 
 /** Copy-link icon on a ticket or PR token, before its `+`; the delegated click
  *  handler resolves the URL (a ticket's needs the Jira base URL). */
@@ -2147,7 +2146,7 @@ export function DetailPanel({
         // Every PR token comes from a URL, so the anchor form is the norm — only
         // the `+` needs the navigation suppressed.
         if (addBtn) e.preventDefault();
-        if (addBtn && selectedSession?.sessionId) {
+        if (addBtn && selectedSession?.sessionId && !prToken.classList.contains('prPinned')) {
           // Optimistic: the chip lands on the next snapshot tick, which then
           // owns the class via the sync effect below.
           prToken.classList.add('prPinned');
@@ -2169,7 +2168,7 @@ export function DetailPanel({
         // A tokenized ticket URL is still a real link — only the `+` and the
         // bare-key tokens (which have no href) need the default suppressed.
         if (addBtn || jiraToken.tagName !== 'A') e.preventDefault();
-        if (addBtn && selectedSession?.sessionId) {
+        if (addBtn && selectedSession?.sessionId && !jiraToken.classList.contains('jiraFront')) {
           // Optimistic: the POST pins the key at the front of the chips (adds it,
           // or brings an attached one to the top). The next snapshot tick then
           // owns the classes via the sync effect below.
@@ -2187,6 +2186,7 @@ export function DetailPanel({
             .catch(revert);
           return;
         }
+        if (addBtn) return; // a lit pin: already the first ticket
         if (jiraBaseUrl) {
           window.open(`${jiraBaseUrl.replace(/\/+$/, '')}/browse/${encodeURIComponent(key)}`, '_blank', 'noopener,noreferrer');
         }
@@ -2486,18 +2486,26 @@ const currentDisplayName =
       const front = pinned && key === frontKey;
       el.classList.toggle('jiraPinned', pinned);
       el.classList.toggle('jiraFront', front);
-      // Attached but not first: the `+` becomes bring-to-front (icon via CSS).
+      // Attached but not first: the lit pin moves it to the top.
       const btn = el.querySelector<HTMLElement>('.jiraAddBtn');
       if (btn) {
-        const label = pinned && !front
-          ? `Move ${key} to the top of this session's tickets`
-          : `Add ${key} to this session's tickets`;
+        const label = !pinned ? `Pin ${key} to this session`
+          : front ? `${key} is in this session`
+          : `Move ${key} to the top of this session's tickets`;
         btn.setAttribute('title', label);
         btn.setAttribute('aria-label', label);
       }
     });
     root.querySelectorAll<HTMLElement>('[data-pr-ref]').forEach((el) => {
-      el.classList.toggle('prPinned', prRefSet.has((el.getAttribute('data-pr-ref') ?? '').toLowerCase()));
+      const ref = el.getAttribute('data-pr-ref') ?? '';
+      const pinned = prRefSet.has(ref.toLowerCase());
+      el.classList.toggle('prPinned', pinned);
+      const btn = el.querySelector<HTMLElement>('.prAddBtn');
+      if (btn) {
+        const label = pinned ? `${ref} is in this session` : `Pin ${ref} to this session`;
+        btn.setAttribute('title', label);
+        btn.setAttribute('aria-label', label);
+      }
     });
   }, [jiraKeySet, selectedSession?.jiraKeys, prRefSet, selectedSession?.activityFeed, extraFeed, activeTab, transcriptRef]);
 
