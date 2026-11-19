@@ -27,7 +27,9 @@ For anything that takes minutes (deploy, CI, rollout, waiting for a slot):
 
 ## Pin the links that matter
 
-When you start on a Jira ticket, open a PR, or push a branch, pin its URL: \`ovr pin add <url>\` (add \`--room\` for links every session in the folder needs). Overlord shows pins as chips above the session tabs. \`ovr help\` has the details.`;
+When you start on a Jira ticket, open a PR, or push a branch, pin its URL: \`ovr pin add <url>\` (add \`--room\` for links every session in the folder needs). Overlord shows pins as chips above the session tabs. \`ovr help\` has the details.
+
+The user may give a session a TODO list (\`ovr todo ls\` shows it with ids). When you finish an item on it, check it off: \`ovr todo done <id>\`.`;
 
 function home(): string {
   // $HOME first so tests can stub it (os.homedir() ignores the env on macOS).

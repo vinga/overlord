@@ -347,6 +347,8 @@ type Props = {
  *  rebroadcasts after every change, so there is no local copy of the list. */
 export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, hideAdder = false, overlordId, cwd }: Props) {
   const pins = useMemo(() => {
+    // TODO pins live in their own checklist (TodoList), never as chips.
+    if (allPins?.some(p => p.kind === 'todo')) allPins = allPins.filter(p => p.kind !== 'todo');
     if (!allPins || !hide) return allPins;
     const hidden = new Set(hide.split('\n'));
     if (!allPins.some((p) => { const r = pinRef(p); return r !== undefined && hidden.has(r); })) return allPins;

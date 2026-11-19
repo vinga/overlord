@@ -17,6 +17,11 @@ Commands:
       --room                     Pin to this session's room instead
   pin ls [--room]                List pins (id, kind, title, url)
   pin rm <pinId> [--room]        Remove a pin
+  todo add <text> [--room]       Add a TODO item to this session (or its room)
+  todo ls [--room]               List TODO items (id, [x] done, text)
+  todo done <id> [--room]        Check an item off (marked as done by the agent)
+  todo undo <id> [--room]        Uncheck it
+  todo rm <id> [--room]          Remove it
   help                           Show this help
 
 Target session: \$OVERLORD_PTY_ID (set by Overlord at spawn), else the
@@ -27,6 +32,8 @@ Examples:
   $PROG pin add https://hypatos.atlassian.net/browse/BACKEND-1234
   $PROG pin add https://github.com/hypatos/repo/pull/30 --title "Fix retries"
   $PROG pin add https://github.com/hypatos/repo/tree/feat/x --room
+  $PROG todo add "Update the README"
+  $PROG todo done pin-mabc12-x7k2qd
 EOF
 }
 
@@ -138,9 +145,53 @@ for p in d["pins"]: print("\t".join([p["id"], p["kind"], p["title"], p["url"]]))
   esac
 }
 
+cmd_todo() {
+  local sub=$1; shift || true
+  local room="" text=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --room) room=1 ;;
+      --session) [ $# -ge 2 ] || die "--session needs a value"; SESSION_OVERRIDE=$2; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) text="${text:+$text }$1" ;;
+    esac
+    shift
+  done
+  local t; t=$(target_json) || exit $?
+  [ -n "$room" ] && t=$(merge "$t" '{"room": "1"}')
+
+  case $sub in
+    add)
+      [ -n "$text" ] || die "usage: $PROG todo add <text> [--room]"
+      local body; body=$(python3 -c 'import json,sys; print(json.dumps({"kind": "todo", "url": "", "text": sys.argv[1]}))' "$text")
+      local r; r=$(call POST /api/pins "$(merge "$t" "$body")") || exit $?
+      printf '%s' "$r" | python3 -c 'import json,sys; p=json.load(sys.stdin)["pin"]; print("added %s  %s" % (p["id"], p["text"]))' ;;
+    ls|list)
+      local r; r=$(call GET "/api/pins?$(to_query "$t")") || exit $?
+      printf '%s' "$r" | python3 -c '
+import json,sys
+todos=[p for p in json.load(sys.stdin)["pins"] if p["kind"]=="todo"]
+if not todos: print("no TODOs")
+for p in todos: print("%s\t[%s] %s" % (p["id"], "x" if p.get("done") else " ", p["text"]))' ;;
+    done|undo)
+      [ -n "$text" ] || die "usage: $PROG todo $sub <id> [--room]"
+      local done=true; [ "$sub" = undo ] && done=false
+      call PATCH "/api/pins/$text?$(to_query "$t")" "{\"done\": $done, \"by\": \"agent\"}" >/dev/null || exit $?
+      [ "$sub" = done ] && echo "checked $text" || echo "unchecked $text" ;;
+    rm|remove)
+      [ -n "$text" ] || die "usage: $PROG todo rm <id> [--room]"
+      call DELETE "/api/pins/$text?$(to_query "$t")" >/dev/null || exit $?
+      echo "removed $text" ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown todo command: $sub (add|ls|done|undo|rm)" ;;
+  esac
+}
+
 case ${1:-help} in
   whoami) shift; while [ $# -gt 0 ]; do case $1 in --session) SESSION_OVERRIDE=$2; shift ;; esac; shift; done; cmd_whoami ;;
   pin) shift; cmd_pin "$@" ;;
+  todo) shift; cmd_todo "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;
 esac

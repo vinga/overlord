@@ -36,7 +36,7 @@ import { ArchivePrState } from '../archive/archivePrState.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
-import { validatePinInput, upsertPin, removePin } from '../session/pins.js';
+import { validatePinInput, upsertPin, removePin, setPinDone } from '../session/pins.js';
 import type { Pin } from '../types.js';
 import { PARK_REASON_MAX } from '../ai/taskStorage.js';
 import { log } from '../logger.js';
@@ -387,6 +387,19 @@ export function registerApiRoutes(
     if ('error' in result) { res.status(400).json({ error: result.error }); return; }
     savePins(t, result.pins);
     res.json({ target: t.kind === 'room' ? { room: t.cwd } : { overlordId: t.ovrId }, pin: result.pin });
+  });
+
+  // Check off a TODO pin: PATCH /api/pins/:pinId { done, by? } (same target query/body as POST).
+  app.patch('/api/pins/:pinId', express.json(), (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const t = resolvePinTarget({ ...(req.query as Record<string, unknown>), ...body });
+    if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
+    if (typeof body.done !== 'boolean') { res.status(400).json({ error: 'done must be a boolean' }); return; }
+    const by = body.by === 'agent' ? 'agent' : 'user';
+    const result = setPinDone(t.pins, req.params.pinId, body.done, by);
+    if (!result) { res.status(404).json({ error: 'todo not found' }); return; }
+    savePins(t, result.pins);
+    res.json({ pin: result.pin });
   });
 
   app.delete('/api/pins/:pinId', (req, res) => {

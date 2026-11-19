@@ -6,6 +6,7 @@ import { BrainTab } from './BrainTab';
 import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
 import { PinBar, deletePin, hiddenPinRefs } from './PinBar';
+import { TodoList } from './TodoList';
 import { PrChips, prRefFromUrl } from './PrChips';
 import { RoomGitInfo } from './RoomGitInfo';
 import { GitSyncStatus } from './GitSyncStatus';
@@ -229,7 +230,7 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
               prPinned.set(ref.toLowerCase(), () => deletePin(p.id, { cwd: room.cwd }));
               if (ref.toLowerCase() !== branchPr) prRefs.push(ref);
             }
-            const rest = room.pins.filter(p => !(p.kind === 'pr' && prRefFromUrl(p.url)));
+            const rest = room.pins.filter(p => p.kind !== 'todo' && !(p.kind === 'pr' && prRefFromUrl(p.url)));
             if (!prRefs.length && !rest.length) return null;
             return <>
               <h3 className={styles.contextLabel}>Pins</h3>
@@ -237,6 +238,7 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
               <PinBar pins={rest} cwd={room.cwd} multiline />
             </>;
           })()}
+          <TodoList pins={room.pins} cwd={room.cwd} headClassName={styles.contextLabel} />
           </div>}
         </aside>
       )}

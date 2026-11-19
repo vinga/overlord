@@ -272,6 +272,13 @@ bin/ovr pin add|ls|rm ─► GET|POST /api/pins, DELETE /api/pins/:id
 - Agents learn about `ovr pin` from the default agent rules and the `overlord-pins` skill
   (`skill-templates/overlord-pins`, linked by `bin/install-agent-defaults --apply`).
 
+**TODO pins** (`kind: 'todo'`, text in `text`, `url: ''`) are a checklist, not chips:
+`TodoList` in the session context panel and the room panel; `PinBar` skips them. They
+dedupe by text, have their own cap (50, apart from the 30 link pins), and carry
+`done` / `doneAt` / `doneBy: 'user' | 'agent'`. `PATCH /api/pins/:id {done, by}` checks
+one off; `ovr todo add|ls|done|undo|rm` is the agent side (`done` sends `by: 'agent'`,
+shown as an "agent" tag). The default agent rules tell agents to check items off.
+
 ## Lazy MCP
 
 Opt-in (`settings.json` → `lazyMcp.enabled`, Settings → Integrations → MCP

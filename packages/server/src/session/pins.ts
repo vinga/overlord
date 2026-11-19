@@ -1,7 +1,10 @@
 import type { Pin, PinKind } from '../types.js';
 
-export const PIN_KINDS: readonly PinKind[] = ['ticket', 'pr', 'branch', 'link', 'text'];
+export const PIN_KINDS: readonly PinKind[] = ['ticket', 'pr', 'branch', 'link', 'text', 'todo'];
 export const MAX_PINS = 30;
+/** TODO pins have their own cap, apart from links. */
+export const MAX_TODOS = 50;
+export const MAX_TODO_TEXT = 300;
 export const MAX_TEXT = 2000;
 const MAX_URL = 2048;
 const MAX_TITLE = 120;
@@ -101,6 +104,13 @@ export interface PinInput { url: unknown; title?: unknown; kind?: unknown; text?
  *  `kind: 'text'` pins a piece of text instead of a URL (url becomes ''). */
 export function validatePinInput(input: PinInput): { url: string; title: string; kind: PinKind; text?: string } | { error: string } {
   const { url, title, kind, text } = input;
+  if (kind === 'todo') {
+    if (typeof text !== 'string' || !text.trim()) return { error: 'text required' };
+    const t = text.trim().replace(/\s*\n\s*/g, ' ');
+    if (t.length > MAX_TODO_TEXT) return { error: `text longer than ${MAX_TODO_TEXT}` };
+    if (t.includes('\0')) return { error: 'text must not contain NUL' };
+    return { url: '', title: t.slice(0, MAX_TITLE), kind: 'todo', text: t };
+  }
   if (kind === 'text') {
     if (typeof text !== 'string' || !text.trim()) return { error: 'text required' };
     const t = text.trim();
@@ -133,19 +143,40 @@ export function upsertPin(
   now = Date.now(),
 ): { pins: Pin[]; pin: Pin } | { error: string } {
   const pins = [...(list ?? [])];
-  // Text pins are the same pin when the text matches; link pins when the url does.
-  const i = input.kind === 'text'
-    ? pins.findIndex(p => p.kind === 'text' && p.text === input.text)
-    : pins.findIndex(p => p.kind !== 'text' && p.url === input.url);
+  // Text and TODO pins are the same pin when kind and text match; link pins when the url does.
+  const byText = input.kind === 'text' || input.kind === 'todo';
+  const i = byText
+    ? pins.findIndex(p => p.kind === input.kind && p.text === input.text)
+    : pins.findIndex(p => p.kind !== 'text' && p.kind !== 'todo' && p.url === input.url);
   if (i >= 0) {
     const pin = { ...pins[i], title: input.title, kind: input.kind };
     pins[i] = pin;
     return { pins, pin };
   }
-  if (pins.length >= MAX_PINS) return { error: `at most ${MAX_PINS} pins` };
+  const isTodo = (p: { kind: PinKind }) => p.kind === 'todo';
+  if (isTodo(input)) {
+    if (pins.filter(isTodo).length >= MAX_TODOS) return { error: `at most ${MAX_TODOS} TODOs` };
+  } else if (pins.filter(p => !isTodo(p)).length >= MAX_PINS) return { error: `at most ${MAX_PINS} pins` };
   const pin: Pin = { id: newPinId(now), url: input.url, title: input.title, kind: input.kind, createdAt: now };
-  if (input.kind === 'text') pin.text = input.text;
+  if (byText) pin.text = input.text;
   pins.push(pin);
+  return { pins, pin };
+}
+
+/** Check or uncheck a TODO pin. undefined when no TODO has that id. */
+export function setPinDone(
+  list: readonly Pin[] | undefined,
+  pinId: string,
+  done: boolean,
+  by: 'user' | 'agent' = 'user',
+  now = Date.now(),
+): { pins: Pin[]; pin: Pin } | undefined {
+  const pins = [...(list ?? [])];
+  const i = pins.findIndex(p => p.id === pinId && p.kind === 'todo');
+  if (i < 0) return undefined;
+  const { done: _d, doneAt: _a, doneBy: _b, ...rest } = pins[i];
+  const pin: Pin = done ? { ...rest, done: true, doneAt: now, doneBy: by } : rest;
+  pins[i] = pin;
   return { pins, pin };
 }
 
@@ -163,6 +194,6 @@ export function sanitizePins(v: unknown): Pin[] | undefined {
     && typeof (p as Pin).id === 'string' && typeof (p as Pin).url === 'string'
     && typeof (p as Pin).title === 'string' && isPinKind((p as Pin).kind)
     && typeof (p as Pin).createdAt === 'number'
-    && ((p as Pin).kind !== 'text' || typeof (p as Pin).text === 'string'));
+    && (((p as Pin).kind !== 'text' && (p as Pin).kind !== 'todo') || typeof (p as Pin).text === 'string'));
   return out.length ? out : undefined;
 }

@@ -4,15 +4,19 @@ import type { VoiceInputConfig } from './session/globalSettingsStore.js';
 
 export interface DeskSpan { w: number; h: number }
 
-export type PinKind = 'ticket' | 'pr' | 'branch' | 'link' | 'text';
+export type PinKind = 'ticket' | 'pr' | 'branch' | 'link' | 'text' | 'todo';
 /** A link pinned to a session or a room. */
 export interface Pin {
   id: string;
   url: string;
   title: string;
   kind: PinKind;
-  /** Text pins only (`kind: 'text'`, session pins): the pinned text; `url` is ''. */
+  /** Text and TODO pins: the pinned text; `url` is ''. */
   text?: string;
+  /** TODO pins: checked off, when, and by whom. */
+  done?: boolean;
+  doneAt?: number;
+  doneBy?: 'user' | 'agent';
   createdAt: number;
 }
 export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;

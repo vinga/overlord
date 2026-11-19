@@ -6,6 +6,7 @@ import { PinUrl } from './PinUrl';
 import { PrChips, PrGlyph, prRefFromUrl } from './PrChips';
 import prStyles from './PrChips.module.css';
 import { PinBar, PinAdder, deletePin, jiraKeyOf } from './PinBar';
+import { TodoList } from './TodoList';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
@@ -217,6 +218,9 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
       <section className={styles.card} aria-label="Pins">
         <h3 className={styles.sectionHead}>Pins<span className={styles.headAdder}><PinAdder overlordId={id} /></span></h3>
         {pinsOfKind('other')}
+      </section>
+      <section className={styles.card} aria-label="TODO">
+        <TodoList pins={sessionPins} overlordId={id} headClassName={styles.sectionHead} />
       </section>
       </>}
     </aside>
