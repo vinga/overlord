@@ -6,6 +6,7 @@ import { useRoomOrder } from '../hooks/useRoomOrder';
 import { sortRoomSessions } from '../lib/roomSessionOrder';
 import { hasBackground, isAgent, isBusy, turnEnded } from '../lib/sessionAttention';
 import { SOURCE_LABEL, type SearchSource } from '../lib/searchSources';
+import { GROUPS_COLLAPSED_EVENT, groupKey, putGroup, readCollapsedGroups, renameGroup, writeCollapsedGroups } from '../lib/sessionGroups';
 import styles from './RoomTabs.module.css';
 
 interface RoomTabsProps {
@@ -127,19 +128,7 @@ export function splitGroups(dots: SessionDot[]): { loose: SessionDot[]; groups: 
   return { loose, groups: [...groups] };
 }
 
-export function putGroup(sessionId: string, group: string | null): Promise<Response> {
-  return fetch(`/api/sessions/${encodeURIComponent(sessionId)}/group`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ group }),
-  });
-}
-
-/** Folded groups, keyed `roomId\u0001group`; per browser. */
-const GROUPS_COLLAPSED_KEY = 'overlord:roomTabsGroupsCollapsed';
-const groupKey = (roomId: string, group: string) => `${roomId}\u0001${group}`;
-
-interface GroupMenuState { x: number; y: number; roomId: string; sessionId: string; current?: string; naming?: boolean }
+interface GroupMenuState { x: number; y: number; roomId: string; sessionId: string; current?: string; naming?: 'new' | 'rename' }
 
 /** Rooms whose session list is folded in the side list; per browser. */
 const COLLAPSED_KEY = 'overlord:roomTabsCollapsed';
@@ -189,13 +178,19 @@ export const RoomTabs = React.memo(function RoomTabs({
     try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next])); } catch { /* private mode */ }
     return next;
   });
-  const [groupsCollapsed, setGroupsCollapsed] = useState<Set<string>>(() => readCollapsed(GROUPS_COLLAPSED_KEY));
+  const [groupsCollapsed, setGroupsCollapsed] = useState<Set<string>>(readCollapsedGroups);
   const toggleGroup = (key: string) => setGroupsCollapsed(prev => {
     const next = new Set(prev);
     if (!next.delete(key)) next.add(key);
-    try { localStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...next])); } catch { /* private mode */ }
+    writeCollapsedGroups(next);
     return next;
   });
+  // A rename from the session menu moves the folded state in storage.
+  useEffect(() => {
+    const sync = () => setGroupsCollapsed(readCollapsedGroups());
+    window.addEventListener(GROUPS_COLLAPSED_EVENT, sync);
+    return () => window.removeEventListener(GROUPS_COLLAPSED_EVENT, sync);
+  }, []);
 
   // Right-click on a session row: file it under a group.
   const [menu, setMenu] = useState<GroupMenuState | null>(null);
@@ -212,20 +207,10 @@ export const RoomTabs = React.memo(function RoomTabs({
 
   // Double-click on a group head renames it — every session in it moves along.
   const [renaming, setRenaming] = useState<string | null>(null);
-  const renameGroup = (roomId: string, dots: SessionDot[], from: string, to: string) => {
+  const renameGroupAt = (roomId: string, dots: SessionDot[], from: string, to: string) => {
     setRenaming(null);
-    const name = to.trim();
-    if (!name || name === from) return;
-    for (const d of dots) void putGroup(d.sessionId, name);
-    // A folded group stays folded under its new name.
-    setGroupsCollapsed(prev => {
-      if (!prev.has(groupKey(roomId, from))) return prev;
-      const next = new Set(prev);
-      next.delete(groupKey(roomId, from));
-      next.add(groupKey(roomId, name));
-      try { localStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...next])); } catch { /* private mode */ }
-      return next;
-    });
+    setMenu(null);
+    if (renameGroup(roomId, dots, from, to)) setGroupsCollapsed(readCollapsedGroups());
   };
 
   // Highlight the room whose top is closest to the scroll container's top edge.
@@ -386,10 +371,10 @@ export const RoomTabs = React.memo(function RoomTabs({
                         aria-label={`Rename group ${g}`}
                         onClick={e => e.stopPropagation()}
                         onKeyDown={e => {
-                          if (e.key === 'Enter') renameGroup(t.id, dots, g, e.currentTarget.value);
+                          if (e.key === 'Enter') renameGroupAt(t.id, dots, g, e.currentTarget.value);
                           else if (e.key === 'Escape') setRenaming(null);
                         }}
-                        onBlur={e => renameGroup(t.id, dots, g, e.currentTarget.value)} />
+                        onBlur={e => renameGroupAt(t.id, dots, g, e.currentTarget.value)} />
                     ) : (
                       <button type="button" className={styles.groupHead} draggable={false}
                         aria-expanded={!gFolded}
@@ -429,7 +414,7 @@ export const RoomTabs = React.memo(function RoomTabs({
                 onClick={() => fileUnder(menu.sessionId, g)}>{g}</button>
             ));
           })()}
-          {menu.naming ? (
+          {menu.naming === 'new' ? (
             <input className={styles.groupMenuInput} autoFocus maxLength={40} placeholder="Group name"
               aria-label="New group name"
               onKeyDown={e => {
@@ -437,8 +422,21 @@ export const RoomTabs = React.memo(function RoomTabs({
               }} />
           ) : (
             <button type="button" role="menuitem" className={styles.groupMenuItem}
-              onClick={() => setMenu({ ...menu, naming: true })}>New group…</button>
+              onClick={() => setMenu({ ...menu, naming: 'new' })}>New group…</button>
           )}
+          {menu.current && (menu.naming === 'rename' ? (
+            <input className={styles.groupMenuInput} autoFocus maxLength={40} defaultValue={menu.current}
+              aria-label={`Rename group ${menu.current}`}
+              onFocus={e => e.currentTarget.select()}
+              onKeyDown={e => {
+                if (e.key !== 'Enter' || !menu.current) return;
+                const room = tabs.find(x => x.id === menu.roomId);
+                renameGroupAt(menu.roomId, room?.sessions ?? [], menu.current, e.currentTarget.value);
+              }} />
+          ) : (
+            <button type="button" role="menuitem" className={styles.groupMenuItem}
+              onClick={() => setMenu({ ...menu, naming: 'rename' })}>Rename “{menu.current}”…</button>
+          ))}
           {menu.current && (
             <button type="button" role="menuitem" className={`${styles.groupMenuItem} ${styles.groupMenuMuted}`}
               onClick={() => fileUnder(menu.sessionId, null)}>Remove from group</button>

@@ -3204,6 +3204,8 @@ const currentDisplayName =
                     {!selectedSession.isArchived && onDeleteSession && (
                       <DeskMenu
                         session={selectedSession}
+                        roomId={room?.id}
+                        roomSessions={room?.sessions}
                         sessionRef={formatSessionRef({ name: currentDisplayName, sessionId: selectedSession.sessionId, overlordId: selectedSession.overlordId })}
                         anchorStyle={{ position: 'relative' }}
                         buttonSize={28}

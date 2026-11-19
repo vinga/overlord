@@ -759,6 +759,8 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
                   onClose={onCloseSession && session.state !== 'closed' ? () => onCloseSession(session.sessionId) : undefined}
                   onArchive={handleArchive ? () => handleArchive(session.sessionId) : undefined}
                   session={session}
+                  roomId={room.id}
+                  roomSessions={room.sessions}
                   sessionRef={formatSessionRef({ name: sessionDisplayName(session, customNames[session.sessionId]), sessionId: session.sessionId, overlordId: session.overlordId })}
                 />
               )}

@@ -4,15 +4,18 @@ import type { Session } from '../types';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
 import { fetchShellHistoryLines, trimShellHistory, SHELL_HISTORY_KEEP_LINES } from '../lib/shellHistory';
+import { groupNames, putGroup, renameGroup } from '../lib/sessionGroups';
 
 /** Session burger menu — shared by the desk card (Room) and the detail panel header. */
-export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNewSession, getConversationText, sessionRef, session, anchorStyle, buttonSize = 22 }: {
+export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNewSession, getConversationText, sessionRef, session, roomId, roomSessions, anchorStyle, buttonSize = 22 }: {
   onDelete: () => void; onClone?: () => void; onClear?: () => void; onArchive?: () => void; onClose?: () => void;
   /** Adds a "New session here" item: quick spawn in the same room (detail panel only). */
   onNewSession?: () => void;
   /** Adds a "Copy conversation" item (detail panel only). */
   getConversationText?: () => string;
   sessionRef: string; session: Session;
+  /** The session's room — enables the "Group" item (file under / rename a group). */
+  roomId?: string; roomSessions?: Session[];
   /** Wrapper position; defaults to the desk card's top-right corner. */
   anchorStyle?: React.CSSProperties;
   buttonSize?: number;
@@ -28,6 +31,10 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
   const isRaw = session.sessionType === 'raw';
   // Shell history length, fetched each time the menu opens (raw sessions only).
   const [historyLines, setHistoryLines] = useState<number | null>(null);
+  // "Group" swaps the menu body for the group picker; null = main items.
+  const [groupView, setGroupView] = useState<null | 'list' | 'new' | 'rename'>(null);
+  React.useEffect(() => { if (!open) setGroupView(null); }, [open]);
+  const fileUnder = (group: string | null) => { setOpen(false); void putGroup(session.sessionId, group); };
 
   React.useEffect(() => {
     if (!open || !isRaw) { setHistoryLines(null); return; }
@@ -109,6 +116,19 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
           border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 4,
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 10000, minWidth: 140,
         }}>
+          {groupView ? (
+            <GroupPicker
+              view={groupView}
+              current={session.group}
+              names={groupNames(roomSessions ?? []).filter(g => g !== session.group)}
+              onView={setGroupView}
+              onFile={fileUnder}
+              onRename={(to) => {
+                if (roomId && session.group) renameGroup(roomId, roomSessions ?? [], session.group, to);
+                setOpen(false);
+              }}
+            />
+          ) : <>
           {/* Most used first: Close and Archive lead the menu. */}
           {onClose && <MenuItem icon={ICONS.close} label="Close" onClick={act(onClose)} />}
           {onArchive && <MenuItem icon={ICONS.archive} label="Archive" onClick={act(onArchive)} />}
@@ -129,6 +149,11 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
             />
           )}
           <MenuItem icon={ICONS.palette} label="Icon & color…" onClick={act(() => setAppearanceOpen(true))} />
+          {roomId && roomSessions && (
+            <MenuItem icon={ICONS.group} label="Group…" hint={session.group}
+              title="File this session under a group in the side room list"
+              onClick={(e) => { e.stopPropagation(); setGroupView('list'); }} />
+          )}
           {onNewSession && <MenuItem icon={ICONS.newSession} label="New session here" title="Quick spawn in this room and switch to it" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onNewSession)} />}
           {onClone && <MenuItem icon={ICONS.clone} label="Clone" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onClone)} />}
           {onClear && <MenuItem icon={ICONS.clear} label="Clear" hover="#fb923c" hoverBg="rgba(251,146,60,0.1)" onClick={act(onClear)} />}
@@ -144,6 +169,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
           )}
           <MenuDivider />
           <MenuItem icon={ICONS.trash} label="Delete" color="#ff6b6b" hover="#ff6b6b" hoverBg="rgba(255,107,107,0.1)" onClick={act(onDelete)} />
+          </>}
         </div>,
         document.body,
       )}
@@ -178,7 +204,59 @@ const ICONS = {
   trash: svg(<><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6" /></>),
   check: svg(<path d="M5 12l5 5L20 7" />),
   trim: svg(<><path d="M4 6h16M4 10h16" /><path d="M4 15h10M4 19h6" strokeDasharray="2 3" /></>),
+  group: svg(<><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>),
+  back: svg(<path d="M15 18l-6-6 6-6" />),
+  plus: svg(<path d="M12 5v14M5 12h14" />),
+  pencil: svg(<path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />),
+  ungroup: svg(<path d="M6 6l12 12M18 6L6 18" />),
 };
+
+/** The "Group" view of the session menu: file under an existing / new group, rename the current one, or ungroup. */
+function GroupPicker({ view, current, names, onView, onFile, onRename }: {
+  view: 'list' | 'new' | 'rename'; current?: string; names: string[];
+  onView: (v: 'list' | 'new' | 'rename' | null) => void;
+  onFile: (group: string | null) => void;
+  onRename: (to: string) => void;
+}) {
+  const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
+  return (
+    <>
+      <MenuItem icon={ICONS.back} label={current ? `Group: ${current}` : 'Move to group'} color="rgba(255,255,255,0.45)" onClick={stop(() => onView(null))} />
+      <MenuDivider />
+      {names.map(g => <MenuItem key={g} icon={ICONS.group} label={g} onClick={stop(() => onFile(g))} />)}
+      {view === 'new'
+        ? <MenuInput label="New group name" placeholder="Group name" onSubmit={v => onFile(v)} onCancel={() => onView('list')} />
+        : <MenuItem icon={ICONS.plus} label="New group…" onClick={stop(() => onView('new'))} />}
+      {current && (view === 'rename'
+        ? <MenuInput label={`Rename group ${current}`} initial={current} onSubmit={onRename} onCancel={() => onView('list')} />
+        : <MenuItem icon={ICONS.pencil} label={`Rename “${current}”…`} title="Renames the group for every session in it" onClick={stop(() => onView('rename'))} />)}
+      {current && <MenuItem icon={ICONS.ungroup} label="Remove from group" color="rgba(255,255,255,0.45)" onClick={stop(() => onFile(null))} />}
+    </>
+  );
+}
+
+function MenuInput({ label, placeholder, initial, onSubmit, onCancel }: {
+  label: string; placeholder?: string; initial?: string;
+  onSubmit: (value: string) => void; onCancel: () => void;
+}) {
+  return (
+    <input
+      autoFocus maxLength={40} aria-label={label} placeholder={placeholder} defaultValue={initial}
+      onFocus={e => e.currentTarget.select()}
+      onClick={e => e.stopPropagation()}
+      onKeyDown={e => {
+        e.stopPropagation();
+        if (e.key === 'Escape') onCancel();
+        else if (e.key === 'Enter' && e.currentTarget.value.trim()) onSubmit(e.currentTarget.value.trim());
+      }}
+      style={{
+        display: 'block', width: 'calc(100% - 8px)', margin: '3px 4px', padding: '5px 8px', boxSizing: 'border-box',
+        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 5,
+        color: '#fff', fontSize: 13, outline: 'none',
+      }}
+    />
+  );
+}
 
 const MENU_TEXT = 'rgba(255,255,255,0.7)';
 
