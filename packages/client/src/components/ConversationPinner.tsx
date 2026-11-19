@@ -53,6 +53,8 @@ export function ConversationPinner({ containerRef, overlordId }: Props) {
     const onOver = (e: MouseEvent) => {
       const a = (e.target as Element | null)?.closest?.('a[href^="http"]') as HTMLAnchorElement | null;
       if (!a || !container.contains(a)) return;
+      // Ticket/PR tokens carry their own copy + pin icons.
+      if (a.matches('[data-pr-ref], [data-jira-key]')) return;
       clearHide();
       const rect = a.getBoundingClientRect();
       setFlash(null);
