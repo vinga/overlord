@@ -5,9 +5,11 @@ import { fileURLToPath } from 'url';
 
 /**
  * Relays the native macOS speech helper (`packages/speech-mac/overlord-speech`)
- * to WebSocket clients. One helper process is shared; it starts on the first
- * subscriber and is killed when the last one leaves, so the microphone is only
- * held while some client is actually listening.
+ * to WebSocket clients. Each subscribed socket gets its OWN helper process:
+ * the helper holds one utterance, and a reset from one browser tab must not
+ * wipe what another tab is capturing. A helper starts on the socket's first
+ * `speech:start` and is killed on its `speech:stop` or disconnect, so the
+ * microphone is only held while some client is actually listening.
  *
  * Helper protocol (JSON lines): see packages/speech-mac/main.swift.
  */
@@ -45,40 +47,52 @@ export interface MacSpeechRelayOptions {
   command?: { cmd: string; args: string[] };
 }
 
+interface HelperSession {
+  proc: ChildProcessWithoutNullStreams;
+  sink: SpeechSink;
+  buf: string;
+}
+
 export class MacSpeechRelay {
-  private proc: ChildProcessWithoutNullStreams | null = null;
-  private readonly subs = new Map<unknown, SpeechSink>();
-  private buf = '';
+  private readonly sessions = new Map<unknown, HelperSession>();
 
   constructor(private readonly opts: MacSpeechRelayOptions = {}) {}
 
-  /** Subscribes `key` and starts (or re-targets) recognition in `lang`. */
+  /** Starts (or re-targets) recognition in `lang` for `key`'s own helper. */
   start(key: unknown, sink: SpeechSink, lang: string): void {
-    this.subs.set(key, sink);
-    if (!this.ensureProc()) return;
-    this.write({ cmd: 'start', lang });
+    let sess = this.sessions.get(key);
+    if (sess) {
+      sess.sink = sink;
+    } else {
+      sess = this.spawnFor(key, sink) ?? undefined;
+      if (!sess) return;
+    }
+    this.write(sess, { cmd: 'start', lang });
   }
 
   stop(key: unknown): void {
-    if (!this.subs.delete(key)) return;
-    if (this.subs.size === 0) this.kill();
+    const sess = this.sessions.get(key);
+    if (!sess) return;
+    this.sessions.delete(key);
+    kill(sess.proc);
   }
 
   reset(key: unknown): void {
-    if (!this.subs.has(key)) return;
-    this.write({ cmd: 'reset' });
+    const sess = this.sessions.get(key);
+    if (sess) this.write(sess, { cmd: 'reset' });
   }
 
-  subscriberCount(): number { return this.subs.size; }
-  isRunning(): boolean { return this.proc !== null; }
+  subscriberCount(): number { return this.sessions.size; }
+  isRunning(key?: unknown): boolean {
+    return key === undefined ? this.sessions.size > 0 : this.sessions.has(key);
+  }
 
   dispose(): void {
-    this.subs.clear();
-    this.kill();
+    for (const sess of this.sessions.values()) kill(sess.proc);
+    this.sessions.clear();
   }
 
-  private ensureProc(): boolean {
-    if (this.proc) return true;
+  private spawnFor(key: unknown, sink: SpeechSink): HelperSession | null {
     let cmd: string;
     let args: string[];
     if (this.opts.command) {
@@ -87,46 +101,45 @@ export class MacSpeechRelay {
       const binary = this.opts.binary ?? getSpeechHelperPath();
       const avail = macSpeechAvailability(binary);
       if (!avail.available) {
-        this.broadcast({ type: 'speech:error', message: avail.reason ?? 'macOS speech unavailable' });
-        return false;
+        safeSend(sink, { type: 'speech:error', message: avail.reason ?? 'macOS speech unavailable' });
+        return null;
       }
       cmd = binary;
       args = [];
     }
 
     const proc = spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    this.proc = proc;
-    this.buf = '';
+    const sess: HelperSession = { proc, sink, buf: '' };
+    this.sessions.set(key, sess);
+    const current = () => this.sessions.get(key) === sess;
     proc.stdout.setEncoding('utf8');
-    proc.stdout.on('data', (chunk: string) => this.onData(chunk));
+    proc.stdout.on('data', (chunk: string) => { if (current()) this.onData(sess, chunk); });
     // The helper's stderr is Apple framework noise ("No Assistant asset…").
     proc.stderr.resume();
     proc.on('error', (err) => {
-      if (this.proc !== proc) return;
-      this.proc = null;
-      this.broadcast({ type: 'speech:error', message: `Speech helper failed: ${err.message}` });
+      if (!current()) return;
+      this.sessions.delete(key);
+      safeSend(sess.sink, { type: 'speech:error', message: `Speech helper failed: ${err.message}` });
     });
     proc.on('exit', (code, signal) => {
-      if (this.proc !== proc) return; // killed on purpose
-      this.proc = null;
-      if (this.subs.size > 0) {
-        this.broadcast({ type: 'speech:error', message: `Speech helper exited (${signal ?? code})` });
-      }
+      if (!current()) return; // killed on purpose
+      this.sessions.delete(key);
+      safeSend(sess.sink, { type: 'speech:error', message: `Speech helper exited (${signal ?? code})` });
     });
-    return true;
+    return sess;
   }
 
-  private onData(chunk: string): void {
-    this.buf += chunk;
+  private onData(sess: HelperSession, chunk: string): void {
+    sess.buf += chunk;
     let nl: number;
-    while ((nl = this.buf.indexOf('\n')) >= 0) {
-      const line = this.buf.slice(0, nl).trim();
-      this.buf = this.buf.slice(nl + 1);
-      if (line) this.onLine(line);
+    while ((nl = sess.buf.indexOf('\n')) >= 0) {
+      const line = sess.buf.slice(0, nl).trim();
+      sess.buf = sess.buf.slice(nl + 1);
+      if (line) this.onLine(sess, line);
     }
   }
 
-  private onLine(line: string): void {
+  private onLine(sess: HelperSession, line: string): void {
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(line) as Record<string, unknown>;
@@ -134,33 +147,28 @@ export class MacSpeechRelay {
       return;
     }
     if (msg.type === 'result' && typeof msg.transcript === 'string') {
-      this.broadcast({ type: 'speech:result', transcript: msg.transcript, isFinal: msg.isFinal === true });
+      safeSend(sess.sink, { type: 'speech:result', transcript: msg.transcript, isFinal: msg.isFinal === true });
     } else if (msg.type === 'error' && typeof msg.message === 'string') {
-      this.broadcast({ type: 'speech:error', message: msg.message });
+      safeSend(sess.sink, { type: 'speech:error', message: msg.message });
     }
   }
 
-  private broadcast(msg: SpeechOut): void {
-    for (const sink of this.subs.values()) {
-      try { sink(msg); } catch { /* a dead socket must not stop the others */ }
-    }
+  private write(sess: HelperSession, obj: object): void {
+    if (!sess.proc.stdin.writable) return;
+    sess.proc.stdin.write(`${JSON.stringify(obj)}\n`);
   }
+}
 
-  private write(obj: object): void {
-    if (!this.proc || !this.proc.stdin.writable) return;
-    this.proc.stdin.write(`${JSON.stringify(obj)}\n`);
-  }
+function safeSend(sink: SpeechSink, msg: SpeechOut): void {
+  try { sink(msg); } catch { /* a dead socket must not throw into the relay */ }
+}
 
-  private kill(): void {
-    const proc = this.proc;
-    this.proc = null;
-    if (!proc) return;
-    // Closing stdin lets the helper stop the audio engine cleanly; SIGTERM backs it up.
-    try { proc.stdin.end(); } catch { /* already closed */ }
-    const t = setTimeout(() => { try { proc.kill('SIGTERM'); } catch { /* gone */ } }, 500);
-    t.unref();
-    proc.once('exit', () => clearTimeout(t));
-  }
+function kill(proc: ChildProcessWithoutNullStreams): void {
+  // Closing stdin lets the helper stop the audio engine cleanly; SIGTERM backs it up.
+  try { proc.stdin.end(); } catch { /* already closed */ }
+  const t = setTimeout(() => { try { proc.kill('SIGTERM'); } catch { /* gone */ } }, 500);
+  t.unref();
+  proc.once('exit', () => clearTimeout(t));
 }
 
 export const macSpeechRelay = new MacSpeechRelay();

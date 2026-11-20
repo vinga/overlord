@@ -51,31 +51,45 @@ describe('MacSpeechRelay', () => {
     ]);
   });
 
-  it('only sends to subscribers and forwards reset', async () => {
+  it('gives each socket its own helper, so a reset in one tab leaves the other alone', async () => {
     r = relay();
     const a = collector();
     const b = collector();
     r.start('a', a.sink, 'en-US');
-    await until(() => a.got.length >= 2);
-    r.reset('b'); // not subscribed: ignored
+    r.start('b', b.sink, 'pl-PL');
+    await until(() => a.got.length >= 2 && b.got.length >= 2);
+    expect(a.got[1]).toEqual({ type: 'speech:result', transcript: 'got start en-US', isFinal: false });
+    expect(b.got[1]).toEqual({ type: 'speech:result', transcript: 'got start pl-PL', isFinal: false });
     r.reset('a');
     await until(() => a.got.length >= 3);
     expect(a.got[2]).toEqual({ type: 'speech:result', transcript: 'got reset', isFinal: true });
-    expect(b.got).toEqual([]);
+    await new Promise(res => setTimeout(res, 50));
+    expect(b.got).toHaveLength(2);
+    r.reset('nobody'); // unknown key: ignored
   });
 
-  it('kills the helper only when the last subscriber stops', async () => {
+  it('stopping one socket kills only its helper', () => {
     r = relay();
     const a = collector();
     const b = collector();
     r.start('a', a.sink, 'en-US');
     r.start('b', b.sink, 'en-US');
+    expect(r.subscriberCount()).toBe(2);
     r.stop('a');
-    expect(r.isRunning()).toBe(true);
-    expect(r.subscriberCount()).toBe(1);
+    expect(r.isRunning('a')).toBe(false);
+    expect(r.isRunning('b')).toBe(true);
     r.stop('b');
     expect(r.isRunning()).toBe(false);
     r.stop('b'); // idempotent
+  });
+
+  it('a second start on the same socket reuses its helper', async () => {
+    r = relay();
+    const a = collector();
+    r.start('a', a.sink, 'en-US');
+    r.start('a', a.sink, 'pl-PL');
+    expect(r.subscriberCount()).toBe(1);
+    await until(() => a.got.some(m => m.type === 'speech:result' && m.transcript === 'got start pl-PL'));
   });
 
   it('reports an unexpected helper exit as an error', async () => {
@@ -83,7 +97,8 @@ describe('MacSpeechRelay', () => {
     const a = collector();
     r.start('a', a.sink, 'en-US');
     await until(() => a.got.length >= 2);
-    (r as unknown as { write(o: object): void }).write({ cmd: 'crash' });
+    const sess = (r as unknown as { sessions: Map<unknown, { proc: { stdin: { write(s: string): void } } }> }).sessions.get('a')!;
+    sess.proc.stdin.write('{"cmd":"crash"}\n');
     await until(() => a.got.some(m => m.type === 'speech:error' && m.message.includes('exited')));
     expect(r.isRunning()).toBe(false);
   });

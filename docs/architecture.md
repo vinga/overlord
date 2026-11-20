@@ -341,7 +341,7 @@ MacSpeechProvider (client) ──speech:start|stop|reset──▶ wsHandler ─�
           └──── window 'overlord:speech' ◀── useOfficeData ◀── speech:result|error ◀──stdout JSON──┘
 ```
 
-- One helper process is shared. It starts on the first subscribed socket and is killed when the last one stops or disconnects, so the mic is held only while a client listens.
+- Each socket (browser tab) gets its own helper process, started on its `speech:start` and killed on its `speech:stop` or disconnect. A shared helper let one tab's `reset` wipe the utterance another tab was capturing.
 - The helper sends the full utterance text on every event, the same contract as `WebSpeechProvider`. Apple ends recognition tasks on its own; the helper restarts them and carries finalized text forward.
 - `requiresOnDeviceRecognition` is always on. A language with no on-device model fails with an error, never a silent cloud fallback. `overlord-speech --selftest <lang>` reports support. On macOS 15, `en-US` is on-device; `pl-PL` is not.
 - macOS permissions (Microphone, Speech Recognition) go to the app that launched the server (Terminal, iTerm, IntelliJ). The Info.plist with the usage strings is embedded in the binary by `build.sh`; without it macOS kills the helper on first mic access.

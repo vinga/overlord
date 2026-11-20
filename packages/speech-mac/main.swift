@@ -42,6 +42,8 @@ final class Recognizer {
     /// Bumped on every task start; callbacks from older tasks are ignored.
     private var generation = 0
     private var consecutiveFailures = 0
+    /// The last result closed a pause-delimited chunk (it had real word timings).
+    private var lastSettled = false
 
     func start(lang: String) {
         if running && lang == self.lang { return }
@@ -61,7 +63,7 @@ final class Recognizer {
             self.recognizer = rec
             self.running = true
             self.carry = ""
-            self.current = ""
+            self.current = ""; lastSettled = false
             do {
                 try self.startAudio()
             } catch {
@@ -86,18 +88,18 @@ final class Recognizer {
         }
         engine.stop()
         carry = ""
-        current = ""
+        current = ""; lastSettled = false
     }
 
     func reset() {
-        guard running else { carry = ""; current = ""; return }
+        guard running else { carry = ""; current = ""; lastSettled = false; return }
         generation += 1
         task?.cancel()
         task = nil
         request?.endAudio()
         request = nil
         carry = ""
-        current = ""
+        current = ""; lastSettled = false
         startTask()
     }
 
@@ -123,12 +125,25 @@ final class Recognizer {
         req.requiresOnDeviceRecognition = true
         if #available(macOS 13, *) { req.addsPunctuation = false }
         request = req
-        current = ""
+        current = ""; lastSettled = false
         task = rec.recognitionTask(with: req) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }
                 if let result {
                     self.consecutiveFailures = 0
+                    // On-device recognition splits speech at pauses WITHOUT ending
+                    // the task: a chunk closes with one result carrying real word
+                    // timestamps, then the next chunk restarts from empty with
+                    // placeholder timestamps (0.00+0.01). Without carrying the closed
+                    // chunk forward, "overlord <pause> say hi" would become just
+                    // "say hi" and the voice agent would lose its start word.
+                    let settled = result.bestTranscription.segments.contains {
+                        $0.timestamp > 0.05 || $0.duration > 0.05
+                    }
+                    if self.lastSettled && !settled && !self.current.isEmpty {
+                        self.carry = self.joined()
+                    }
+                    self.lastSettled = settled
                     self.current = result.bestTranscription.formattedString
                     let text = self.joined()
                     if !text.isEmpty {
@@ -166,7 +181,7 @@ final class Recognizer {
     /// The current task ended: keep its text, start a fresh task.
     private func rollover() {
         carry = joined()
-        current = ""
+        current = ""; lastSettled = false
         task = nil
         request?.endAudio()
         request = nil
