@@ -11,6 +11,66 @@
   letter-spacing: 0;
 }
 
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 4px;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  align-self: flex-start;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: #8a8a96;
+  font: 500 11.5px/1 'Inter', system-ui, sans-serif;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.tab:hover { color: #d8d8e0; }
+.tabOn {
+  background: rgba(255, 255, 255, 0.09);
+  color: #ececf2;
+}
+.tabCount {
+  color: #6c6c78;
+  font-variant-numeric: tabular-nums;
+}
+.tabOn .tabCount { color: #a0a0ac; }
+
+.owner {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: rgba(255, 255, 255, 0.4);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.item:hover .owner,
+.owner:focus-visible { opacity: 1; }
+.owner:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.ownerAgent {
+  opacity: 1;
+  color: #c4b5fd;
+}
+.ownerAgent:hover { color: #ddd6fe; background: rgba(167, 139, 250, 0.14); }
+
 .item {
   display: flex;
   align-items: flex-start;

@@ -279,6 +279,13 @@ dedupe by text, have their own cap (50, apart from the 30 link pins), and carry
 one off; `ovr todo add|ls|done|undo|rm` is the agent side (`done` sends `by: 'agent'`,
 shown as an "agent" tag). The default agent rules tell agents to check items off.
 
+Each TODO has an `owner`: absent = the user's, `'agent'` = the agent's (bot icon in the
+row; click it to hand the item over). Ownership is a label only — anyone checks any item.
+`POST /api/pins {kind:'todo', owner}` sets it (default user, also from the CLI);
+`PATCH /api/pins/:id {owner}` reassigns. `TodoList` has All / User / Agent tabs; a new
+item belongs to the active tab's owner (All → user). Agent side: `ovr todo add --agent`,
+`ovr todo ls --agent|--user`, `ovr todo assign <id> agent|user`.
+
 ## Lazy MCP
 
 Opt-in (`settings.json` → `lazyMcp.enabled`, Settings → Integrations → MCP

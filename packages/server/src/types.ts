@@ -17,6 +17,8 @@ export interface Pin {
   done?: boolean;
   doneAt?: number;
   doneBy?: 'user' | 'agent';
+  /** TODO pins: whose item it is. Absent = the user's. Anyone may check it. */
+  owner?: 'user' | 'agent';
   createdAt: number;
 }
 export const DESK_SPAN_MAX = { w: 3, h: 4 } as const;

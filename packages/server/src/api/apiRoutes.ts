@@ -36,7 +36,7 @@ import { ArchivePrState } from '../archive/archivePrState.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
-import { validatePinInput, upsertPin, removePin, setPinDone } from '../session/pins.js';
+import { validatePinInput, upsertPin, removePin, setPinDone, setPinOwner, isTodoOwner, type TodoOwner } from '../session/pins.js';
 import type { Pin } from '../types.js';
 import { PARK_REASON_MAX } from '../ai/taskStorage.js';
 import { log } from '../logger.js';
@@ -380,7 +380,7 @@ export function registerApiRoutes(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const t = resolvePinTarget(body);
     if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
-    const input = validatePinInput({ url: body.url, title: body.title, kind: body.kind, text: body.text });
+    const input = validatePinInput({ url: body.url, title: body.title, kind: body.kind, text: body.text, owner: body.owner });
     if ('error' in input) { res.status(400).json({ error: input.error }); return; }
     if (input.kind === 'text' && t.kind === 'room') { res.status(400).json({ error: 'text pins are per session' }); return; }
     const result = upsertPin(t.pins, input);
@@ -389,14 +389,20 @@ export function registerApiRoutes(
     res.json({ target: t.kind === 'room' ? { room: t.cwd } : { overlordId: t.ovrId }, pin: result.pin });
   });
 
-  // Check off a TODO pin: PATCH /api/pins/:pinId { done, by? } (same target query/body as POST).
+  // Check off / reassign a TODO pin: PATCH /api/pins/:pinId { done?, by?, owner? }
+  // (same target query/body as POST; at least one of done / owner).
   app.patch('/api/pins/:pinId', express.json(), (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const t = resolvePinTarget({ ...(req.query as Record<string, unknown>), ...body });
     if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
-    if (typeof body.done !== 'boolean') { res.status(400).json({ error: 'done must be a boolean' }); return; }
-    const by = body.by === 'agent' ? 'agent' : 'user';
-    const result = setPinDone(t.pins, req.params.pinId, body.done, by);
+    const hasDone = body.done !== undefined;
+    const hasOwner = body.owner !== undefined;
+    if (!hasDone && !hasOwner) { res.status(400).json({ error: 'done or owner required' }); return; }
+    if (hasDone && typeof body.done !== 'boolean') { res.status(400).json({ error: 'done must be a boolean' }); return; }
+    if (hasOwner && !isTodoOwner(body.owner)) { res.status(400).json({ error: 'owner must be user or agent' }); return; }
+    let result: { pins: Pin[]; pin: Pin } | undefined = { pins: t.pins ?? [], pin: undefined as unknown as Pin };
+    if (hasOwner) result = setPinOwner(result.pins, req.params.pinId, body.owner as TodoOwner);
+    if (result && hasDone) result = setPinDone(result.pins, req.params.pinId, body.done as boolean, body.by === 'agent' ? 'agent' : 'user');
     if (!result) { res.status(404).json({ error: 'todo not found' }); return; }
     savePins(t, result.pins);
     res.json({ pin: result.pin });

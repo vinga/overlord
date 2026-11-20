@@ -98,18 +98,23 @@ export function frontPin(
   return [pin, ...pins].slice(0, MAX_PINS);
 }
 
-export interface PinInput { url: unknown; title?: unknown; kind?: unknown; text?: unknown }
+export interface PinInput { url: unknown; title?: unknown; kind?: unknown; text?: unknown; owner?: unknown }
+export type TodoOwner = 'user' | 'agent';
+export const isTodoOwner = (v: unknown): v is TodoOwner => v === 'user' || v === 'agent';
+
+type ValidPin = { url: string; title: string; kind: PinKind; text?: string; owner?: TodoOwner };
 
 /** Validate raw input; returns the normalized fields or an error string.
  *  `kind: 'text'` pins a piece of text instead of a URL (url becomes ''). */
-export function validatePinInput(input: PinInput): { url: string; title: string; kind: PinKind; text?: string } | { error: string } {
-  const { url, title, kind, text } = input;
+export function validatePinInput(input: PinInput): ValidPin | { error: string } {
+  const { url, title, kind, text, owner } = input;
   if (kind === 'todo') {
     if (typeof text !== 'string' || !text.trim()) return { error: 'text required' };
     const t = text.trim().replace(/\s*\n\s*/g, ' ');
     if (t.length > MAX_TODO_TEXT) return { error: `text longer than ${MAX_TODO_TEXT}` };
     if (t.includes('\0')) return { error: 'text must not contain NUL' };
-    return { url: '', title: t.slice(0, MAX_TITLE), kind: 'todo', text: t };
+    if (owner !== undefined && owner !== null && !isTodoOwner(owner)) return { error: 'owner must be user or agent' };
+    return { url: '', title: t.slice(0, MAX_TITLE), kind: 'todo', text: t, owner: owner === 'agent' ? 'agent' : 'user' };
   }
   if (kind === 'text') {
     if (typeof text !== 'string' || !text.trim()) return { error: 'text required' };
@@ -139,7 +144,7 @@ function newPinId(now: number): string {
 /** Add or update (same url) a pin. Returns the new list and the pin, or an error at the cap. */
 export function upsertPin(
   list: readonly Pin[] | undefined,
-  input: { url: string; title: string; kind: PinKind; text?: string },
+  input: ValidPin,
   now = Date.now(),
 ): { pins: Pin[]; pin: Pin } | { error: string } {
   const pins = [...(list ?? [])];
@@ -159,6 +164,7 @@ export function upsertPin(
   } else if (pins.filter(p => !isTodo(p)).length >= MAX_PINS) return { error: `at most ${MAX_PINS} pins` };
   const pin: Pin = { id: newPinId(now), url: input.url, title: input.title, kind: input.kind, createdAt: now };
   if (byText) pin.text = input.text;
+  if (input.kind === 'todo' && input.owner === 'agent') pin.owner = 'agent';
   pins.push(pin);
   return { pins, pin };
 }
@@ -180,6 +186,21 @@ export function setPinDone(
   return { pins, pin };
 }
 
+/** Hand a TODO pin to the user or the agent. undefined when no TODO has that id. */
+export function setPinOwner(
+  list: readonly Pin[] | undefined,
+  pinId: string,
+  owner: TodoOwner,
+): { pins: Pin[]; pin: Pin } | undefined {
+  const pins = [...(list ?? [])];
+  const i = pins.findIndex(p => p.id === pinId && p.kind === 'todo');
+  if (i < 0) return undefined;
+  const { owner: _o, ...rest } = pins[i];
+  const pin: Pin = owner === 'agent' ? { ...rest, owner } : rest;
+  pins[i] = pin;
+  return { pins, pin };
+}
+
 export function removePin(list: readonly Pin[] | undefined, pinId: string): Pin[] | undefined {
   const pins = list ?? [];
   const next = pins.filter(p => p.id !== pinId);
@@ -194,6 +215,7 @@ export function sanitizePins(v: unknown): Pin[] | undefined {
     && typeof (p as Pin).id === 'string' && typeof (p as Pin).url === 'string'
     && typeof (p as Pin).title === 'string' && isPinKind((p as Pin).kind)
     && typeof (p as Pin).createdAt === 'number'
-    && (((p as Pin).kind !== 'text' && (p as Pin).kind !== 'todo') || typeof (p as Pin).text === 'string'));
+    && (((p as Pin).kind !== 'text' && (p as Pin).kind !== 'todo') || typeof (p as Pin).text === 'string'))
+    .map(p => (p.owner === undefined || p.owner === 'agent' ? p : (({ owner: _o, ...rest }) => rest)(p)));
   return out.length ? out : undefined;
 }

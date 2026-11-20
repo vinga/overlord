@@ -17,8 +17,13 @@ Commands:
       --room                     Pin to this session's room instead
   pin ls [--room]                List pins (id, kind, title, url)
   pin rm <pinId> [--room]        Remove a pin
-  todo add <text> [--room]       Add a TODO item to this session (or its room)
-  todo ls [--room]               List TODO items (id, [x] done, text)
+  todo add <text> [--agent] [--room]
+                                 Add a TODO item to this session (or its room);
+                                 the user's unless --agent (then it is yours)
+  todo ls [--agent|--user] [--room]
+                                 List TODO items (id, [x] done, @owner, text)
+  todo assign <id> agent|user [--room]
+                                 Hand an item to the agent or the user
   todo done <id> [--room]        Check an item off (marked as done by the agent)
   todo undo <id> [--room]        Uncheck it
   todo rm <id> [--room]          Remove it
@@ -33,6 +38,8 @@ Examples:
   $PROG pin add https://github.com/hypatos/repo/pull/30 --title "Fix retries"
   $PROG pin add https://github.com/hypatos/repo/tree/feat/x --room
   $PROG todo add "Update the README"
+  $PROG todo add --agent "Re-run the flaky test"
+  $PROG todo ls --agent
   $PROG todo done pin-mabc12-x7k2qd
 EOF
 }
@@ -147,10 +154,12 @@ for p in d["pins"]: print("\t".join([p["id"], p["kind"], p["title"], p["url"]]))
 
 cmd_todo() {
   local sub=$1; shift || true
-  local room="" text=""
+  local room="" text="" owner=""
   while [ $# -gt 0 ]; do
     case $1 in
       --room) room=1 ;;
+      --agent) owner=agent ;;
+      --user) owner=user ;;
       --session) [ $# -ge 2 ] || die "--session needs a value"; SESSION_OVERRIDE=$2; shift ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown option: $1" ;;
@@ -164,16 +173,23 @@ cmd_todo() {
   case $sub in
     add)
       [ -n "$text" ] || die "usage: $PROG todo add <text> [--room]"
-      local body; body=$(python3 -c 'import json,sys; print(json.dumps({"kind": "todo", "url": "", "text": sys.argv[1]}))' "$text")
+      local body; body=$(python3 -c 'import json,sys; print(json.dumps({"kind": "todo", "url": "", "text": sys.argv[1], "owner": sys.argv[2] or "user"}))' "$text" "$owner")
       local r; r=$(call POST /api/pins "$(merge "$t" "$body")") || exit $?
-      printf '%s' "$r" | python3 -c 'import json,sys; p=json.load(sys.stdin)["pin"]; print("added %s  %s" % (p["id"], p["text"]))' ;;
+      printf '%s' "$r" | python3 -c 'import json,sys; p=json.load(sys.stdin)["pin"]; print("added %s  @%s  %s" % (p["id"], p.get("owner") or "user", p["text"]))' ;;
     ls|list)
       local r; r=$(call GET "/api/pins?$(to_query "$t")") || exit $?
       printf '%s' "$r" | python3 -c '
 import json,sys
-todos=[p for p in json.load(sys.stdin)["pins"] if p["kind"]=="todo"]
+want=sys.argv[1]
+todos=[p for p in json.load(sys.stdin)["pins"] if p["kind"]=="todo" and (not want or (p.get("owner") or "user")==want)]
 if not todos: print("no TODOs")
-for p in todos: print("%s\t[%s] %s" % (p["id"], "x" if p.get("done") else " ", p["text"]))' ;;
+for p in todos: print("%s\t[%s] @%-5s %s" % (p["id"], "x" if p.get("done") else " ", p.get("owner") or "user", p["text"]))' "$owner" ;;
+    assign)
+      local id=${text%% *} who=${text#* }
+      { [ -n "$id" ] && [ "$id" != "$text" ]; } || who=$owner
+      case $who in agent|user) ;; *) die "usage: $PROG todo assign <id> agent|user [--room]" ;; esac
+      call PATCH "/api/pins/$id?$(to_query "$t")" "{\"owner\": \"$who\"}" >/dev/null || exit $?
+      echo "assigned $id to $who" ;;
     done|undo)
       [ -n "$text" ] || die "usage: $PROG todo $sub <id> [--room]"
       local done=true; [ "$sub" = undo ] && done=false
@@ -184,7 +200,7 @@ for p in todos: print("%s\t[%s] %s" % (p["id"], "x" if p.get("done") else " ", p
       call DELETE "/api/pins/$text?$(to_query "$t")" >/dev/null || exit $?
       echo "removed $text" ;;
     ""|-h|--help|help) usage ;;
-    *) die "unknown todo command: $sub (add|ls|done|undo|rm)" ;;
+    *) die "unknown todo command: $sub (add|ls|assign|done|undo|rm)" ;;
   esac
 }
 
