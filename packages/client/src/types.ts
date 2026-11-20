@@ -353,6 +353,10 @@ interface GlobalSettings {
   voiceInput?: Partial<VoiceInputConfig>;
   /** Lazy MCP stand-in for spawned sessions; partial, see LazyMcpSettings. */
   lazyMcp?: LazyMcpStored;
+  /** Default provider for new sessions (quick spawn, spawn dialog). Absent ⇒ claude. */
+  defaultProvider?: 'claude' | 'codex' | 'opencode';
+  /** Default mode for new claude sessions. Absent ⇒ embedded; non-claude is always embedded. */
+  defaultMode?: 'embedded' | 'bridge' | 'plain';
 }
 
 export type LazyMcpBrowser = 'shared' | 'isolated' | 'none';

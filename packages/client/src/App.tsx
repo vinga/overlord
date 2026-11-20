@@ -33,7 +33,7 @@ import { SpawnDialog } from './components/SpawnDialog';
 import { AdvancedSearchPopup } from './components/AdvancedSearchPopup';
 import { SettingsModal, type PageId } from './components/SettingsModal';
 import type { GlobalSettings } from './types';
-import { SESSION_NAMES, pickSessionName, resolveQuickSpawn } from './components/quickSpawn';
+import { SESSION_NAMES, pickSessionName, resolveQuickSpawn, setSpawnDefault } from './components/quickSpawn';
 import type { Room } from './types';
 
 function StatsModal({ onClose }: { onClose: () => void }) {
@@ -150,6 +150,11 @@ export function App() {
   useEffect(() => {
     setJiraProjects(snapshot?.settings?.jiraProjects);
   }, [snapshot?.settings?.jiraProjects]);
+
+  // Global default provider/mode for new sessions — read by quick spawn and SpawnDialog.
+  useEffect(() => {
+    if (snapshot?.settings) setSpawnDefault(snapshot.settings.defaultProvider, snapshot.settings.defaultMode);
+  }, [snapshot?.settings?.defaultProvider, snapshot?.settings?.defaultMode]);
 
   const snapshotBridgeIds = useMemo(() => {
     const ids = new Set<string>();
@@ -750,7 +755,7 @@ export function App() {
 
   // Header "Fast session": the room's quick spawn, then switch the panel to it.
   async function handleFastSession(room: Room) {
-    const { prefix, mode, provider } = await resolveQuickSpawn(room.cwd, { prefix: '', mode: 'embedded', provider: 'claude' });
+    const { prefix, mode, provider } = await resolveQuickSpawn(room.cwd);
     const name = prefix + pickSessionName(room, displayNames);
     setPendingSelect({ cwd: room.cwd, name, startedAt: Date.now() });
     handleNewFolderSpawn(room.cwd, name, mode, provider);

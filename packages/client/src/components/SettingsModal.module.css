@@ -572,6 +572,13 @@
   color: #f0dda0;
 }
 
+.segmentBtn:disabled,
+.segmentBtn:disabled:hover {
+  background: transparent;
+  color: #55555e;
+  cursor: not-allowed;
+}
+
 /* ---------- read-aloud voice ---------- */
 
 .engineControls {

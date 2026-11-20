@@ -21,7 +21,7 @@ import { ArchiveStatsTooltip } from './ArchiveStatsTooltip';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 import { useDeskResize } from '../hooks/useDeskResize';
 import { spanPx, rowsForPx, DESK_CELL_W, DESK_CELL_H } from '../lib/deskGrid';
-import { isSessionMode, pickSessionName, resolveQuickSpawn } from './quickSpawn';
+import { pickSessionName, resolveQuickSpawn, useSpawnDefault } from './quickSpawn';
 
 function lightenHsl(color: string, amount: number): string {
   const m = color.match(/hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)/);
@@ -349,8 +349,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   const [showSpawnPanel, setShowSpawnPanel] = useState(false);
   const [spawnPanelName, setSpawnPanelName] = useState('');
   const [namePrefix, setNamePrefix] = useState('');
-  const [lastMode, setLastMode] = useState<TerminalSpawnMode>('embedded');
-  const [lastProvider, setLastProvider] = useState<SessionProvider>('claude');
+  const spawnDefault = useSpawnDefault();
   const [showCopyToast, setShowCopyToast] = useState(false);
   const [clearToast, setClearToast] = useState<'sent' | 'error' | null>(null);
   const [archiveEntries, setArchiveEntries] = useState<ArchiveEntry[]>([]);
@@ -414,13 +413,9 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/room-config?cwd=${encodeURIComponent(room.cwd)}`)
-      .then(r => r.ok ? r.json() as Promise<{ prefix: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider }> : null)
+      .then(r => r.ok ? r.json() as Promise<{ prefix: string }> : null)
       .then(cfg => {
-        if (!cancelled && cfg) {
-          setNamePrefix(ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '');
-          if (isSessionMode(cfg.lastMode)) setLastMode(cfg.lastMode);
-          setLastProvider(cfg.lastProvider === 'opencode' || cfg.lastProvider === 'codex' ? cfg.lastProvider : 'claude');
-        }
+        if (!cancelled && cfg) setNamePrefix(ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '');
       })
       .catch(() => { /* ignore */ });
     return () => { cancelled = true; };
@@ -623,13 +618,11 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
             onClick={async (e) => {
               e.stopPropagation();
               const baseName = getNextName('');
-              const { prefix, mode, provider } = await resolveQuickSpawn(room.cwd, { prefix: namePrefix, mode: lastMode, provider: lastProvider });
+              const { prefix, mode, provider } = await resolveQuickSpawn(room.cwd, namePrefix);
               setNamePrefix(prefix);
-              setLastMode(mode);
-              setLastProvider(provider);
               onSpawnDirect(room.cwd, prefix + baseName, mode, provider);
             }}
-            data-tooltip={`Quick spawn — room default (${lastProvider}, ${lastMode})`}
+            data-tooltip={`Quick spawn — default (${spawnDefault.provider}, ${spawnDefault.mode === 'embedded' ? 'Overlord' : spawnDefault.mode})`}
             data-tooltip-dir="down"
             data-tooltip-align="right"
             aria-label="Quick spawn"
@@ -654,7 +647,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           fixedCwd={room.cwd}
           suggestedName={spawnPanelName}
           initialPrefix={namePrefix}
-          // Spawning does not touch the quick-spawn default — only the dialog's toggle does.
+          // Spawning does not touch the global default — only the dialog's toggle does.
           onSpawn={(cwd, fullName, mode, provider, prefix) => {
             if (ROOM_PREFIX_ENABLED) {
               fetch('/api/room-config', {
@@ -670,8 +663,6 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
           onClose={() => setShowSpawnPanel(false)}
           onCopyAndClose={() => setShowCopyToast(true)}
           onPrefixSaved={(p) => setNamePrefix(p)}
-          quickDefault={{ mode: lastMode, provider: lastProvider }}
-          onQuickDefaultSaved={(mode, provider) => { setLastMode(mode); setLastProvider(provider); }}
         />
       )}
       {showCopyToast && <CommandCopiedToast onDone={() => setShowCopyToast(false)} />}

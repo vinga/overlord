@@ -202,6 +202,9 @@ export function registerApiRoutes(
       '',
       `Question: ${text}`,
     ].join('\n');
+    // Default provider / mode for new sessions; values validated by sanitize().
+    if (typeof body.defaultProvider === 'string') partial.defaultProvider = body.defaultProvider;
+    if (typeof body.defaultMode === 'string') partial.defaultMode = body.defaultMode;
     try {
       const answer = await runClaudeQuery(prompt, BTW_TIMEOUT_MS, undefined, {
         model: BTW_MODEL,

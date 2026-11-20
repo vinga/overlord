@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react';
 import type { Room, SessionProvider, TerminalSpawnMode } from '../types';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
 
@@ -66,11 +67,6 @@ export const SESSION_NAMES = [
   'Elspeth','Merewyn','Sunniva','Aldwyn','Wulfric','Edwyn','Aelwyn','Briseis','Calynda','Evadne',
 ];
 
-/** Quick spawn replays only real session modes; older room-config files may still hold raw/note. */
-export function isSessionMode(mode: TerminalSpawnMode | undefined): mode is TerminalSpawnMode {
-  return !!mode && mode !== 'raw' && mode !== 'note';
-}
-
 /** A random name from the pool that no session in the room uses yet. */
 export function pickSessionName(room: Room, customNames: Record<string, string>, prefix = '', separator = '+'): string {
   const usedNames = new Set([
@@ -99,21 +95,76 @@ export interface QuickSpawnChoice {
   provider: SessionProvider;
 }
 
-/** What quick spawn uses in a room: the name prefix and the default mode /
- *  provider from room-config (stored as lastMode / lastProvider; set only by the
- *  spawn dialog's quick-spawn default toggle). `fallback` stands in when
- *  room-config can't be read. */
-export async function resolveQuickSpawn(cwd: string, fallback: QuickSpawnChoice): Promise<QuickSpawnChoice> {
-  let { prefix, mode, provider } = fallback;
+export type SpawnProvider = 'claude' | 'codex' | 'opencode';
+
+export interface SpawnDefault {
+  provider: SpawnProvider;
+  mode: TerminalSpawnMode;
+}
+
+/** Normalizes the global default from settings: unknown provider → claude,
+ *  unknown mode → embedded, and non-claude providers always run embedded. */
+export function normalizeSpawnDefault(provider: unknown, mode: unknown): SpawnDefault {
+  const p: SpawnProvider = provider === 'codex' || provider === 'opencode' ? provider : 'claude';
+  const m: TerminalSpawnMode = p === 'claude' && (mode === 'bridge' || mode === 'plain') ? mode : 'embedded';
+  return { provider: p, mode: m };
+}
+
+// Global default provider/mode for new sessions (settings.defaultProvider /
+// defaultMode). App feeds it from the snapshot; Room, SpawnDialog and quick
+// spawn read it here, so no prop drilling through memo'd components.
+let spawnDefault: SpawnDefault = { provider: 'claude', mode: 'embedded' };
+const spawnDefaultListeners = new Set<() => void>();
+
+export function getSpawnDefault(): SpawnDefault {
+  return spawnDefault;
+}
+
+export function setSpawnDefault(provider: unknown, mode: unknown): void {
+  const next = normalizeSpawnDefault(provider, mode);
+  if (next.provider === spawnDefault.provider && next.mode === spawnDefault.mode) return;
+  spawnDefault = next;
+  for (const l of spawnDefaultListeners) l();
+}
+
+export function useSpawnDefault(): SpawnDefault {
+  return useSyncExternalStore(
+    (cb) => { spawnDefaultListeners.add(cb); return () => { spawnDefaultListeners.delete(cb); }; },
+    getSpawnDefault,
+  );
+}
+
+/** Saves the global default. Applied locally at once; the next snapshot confirms. */
+export async function saveSpawnDefault(provider: SpawnProvider, mode: TerminalSpawnMode): Promise<boolean> {
+  const next = normalizeSpawnDefault(provider, mode);
+  const prev = spawnDefault;
+  setSpawnDefault(next.provider, next.mode);
   try {
-    const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(cwd)}`);
-    if (r.ok) {
-      const cfg = await r.json() as { prefix?: string; lastMode?: TerminalSpawnMode; lastProvider?: SessionProvider };
-      prefix = ROOM_PREFIX_ENABLED ? (cfg.prefix ?? '') : '';
-      if (isSessionMode(cfg.lastMode)) mode = cfg.lastMode;
-      provider = cfg.lastProvider === 'opencode' || cfg.lastProvider === 'codex' ? cfg.lastProvider : 'claude';
-    }
-  } catch { /* fall back to cached values */ }
-  if (provider === 'opencode' || provider === 'codex') mode = 'embedded';
+    const r = await fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ defaultProvider: next.provider, defaultMode: next.mode }),
+    });
+    if (r.ok) return true;
+  } catch { /* revert below */ }
+  setSpawnDefault(prev.provider, prev.mode);
+  return false;
+}
+
+/** What quick spawn uses in a room: the room's name prefix (room-config) and
+ *  the global default provider / mode. `fallbackPrefix` stands in when
+ *  room-config can't be read. */
+export async function resolveQuickSpawn(cwd: string, fallbackPrefix = ''): Promise<QuickSpawnChoice> {
+  const { provider, mode } = getSpawnDefault();
+  let prefix = ROOM_PREFIX_ENABLED ? fallbackPrefix : '';
+  if (ROOM_PREFIX_ENABLED) {
+    try {
+      const r = await fetch(`/api/room-config?cwd=${encodeURIComponent(cwd)}`);
+      if (r.ok) {
+        const cfg = await r.json() as { prefix?: string };
+        prefix = cfg.prefix ?? '';
+      }
+    } catch { /* fall back to cached prefix */ }
+  }
   return { prefix, mode, provider };
 }

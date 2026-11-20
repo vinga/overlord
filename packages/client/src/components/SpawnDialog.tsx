@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import type { SessionProvider, TerminalSpawnMode } from '../types';
 import { ROOM_PREFIX_ENABLED } from '../config/featureFlags';
+import { saveSpawnDefault, useSpawnDefault } from './quickSpawn';
 import styles from './SpawnDialog.module.css';
 
 /** Session providers only. Notes and shells have separate creation actions. */
@@ -23,10 +24,6 @@ interface Props {
   onPrefixSaved?: (prefix: string) => void;
   bridgePath?: string;
   onCopyAndClose?: () => void;
-  /** Room variant only — the room's quick-spawn default. The dialog opens on it
-   *  and shows a toggle that saves the current selection as the new default. */
-  quickDefault?: { mode: TerminalSpawnMode; provider: SessionProvider };
-  onQuickDefaultSaved?: (mode: TerminalSpawnMode, provider: SessionProvider) => void;
 }
 
 function InfoTooltip({ text }: { text: string }) {
@@ -101,7 +98,7 @@ const MODE_TOOLTIPS: Record<string, string> = {
  * - room (`fixedCwd` set): directory collapsed to the room path (expandable),
  *   with the room-scoped name prefix input.
  */
-export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose, quickDefault, onQuickDefaultSaved }: Props) {
+export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd, defaultPath, suggestedName, initialPrefix, onPrefixSaved, bridgePath, onCopyAndClose }: Props) {
   const isRoom = fixedCwd != null;
   // Room prefix is behind VITE_OVERLORD_ROOM_PREFIX — off by default, so the
   // input is hidden, nothing is saved, and no prefix reaches the spawned name.
@@ -115,10 +112,10 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
   const [error, setError] = useState<string | null>(null);
   const [sessionName, setSessionName] = useState(suggestedName || '');
   const [prefix, setPrefix] = useState(initialPrefix || '');
-  const [mode, setMode] = useState<TerminalSpawnMode>(quickDefault?.mode ?? 'embedded');
-  const [uiProvider, setUiProvider] = useState<UiProvider>(
-    quickDefault?.provider === 'opencode' || quickDefault?.provider === 'codex' ? quickDefault.provider : 'claude',
-  );
+  // Opens on the global default for new sessions (Settings → New sessions).
+  const spawnDefault = useSpawnDefault();
+  const [mode, setMode] = useState<TerminalSpawnMode>(spawnDefault.mode);
+  const [uiProvider, setUiProvider] = useState<UiProvider>(spawnDefault.provider);
   const [savingDefault, setSavingDefault] = useState(false);
   const [fetchedBridgePath, setFetchedBridgePath] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -132,6 +129,8 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
   useEffect(() => {
     if (!open) return;
     if (suggestedName) setSessionName(suggestedName);
+    setUiProvider(spawnDefault.provider);
+    setMode(spawnDefault.mode);
     if (isRoom) {
       setCurrentPath(fixedCwd!);
       setPathInput(fixedCwd!);
@@ -279,22 +278,13 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
     onSpawn(currentPath, effPrefix + sessionName.trim(), effectiveMode, selectedProvider, effPrefix);
   };
 
-  // Quick-spawn default: on when the selection is the room's default. Turning it
-  // on saves right away — no Spawn needed.
-  const isQuickDefault = !!quickDefault
-    && quickDefault.mode === effectiveMode && quickDefault.provider === selectedProvider;
-  const saveQuickDefault = () => {
-    if (!isRoom || isQuickDefault || savingDefault) return;
-    const mode = effectiveMode;
-    const provider = selectedProvider;
+  // Global default for new sessions: on when the selection matches it. Turning
+  // it on saves right away — no Spawn needed.
+  const isDefault = spawnDefault.mode === effectiveMode && spawnDefault.provider === uiProvider;
+  const saveDefault = () => {
+    if (kind !== 'session' || isDefault || savingDefault) return;
     setSavingDefault(true);
-    fetch('/api/room-config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd: fixedCwd, lastMode: mode, lastProvider: provider }),
-    }).then(r => {
-      if (r.ok) onQuickDefaultSaved?.(mode, provider);
-    }).catch(() => {}).finally(() => setSavingDefault(false));
+    void saveSpawnDefault(uiProvider, effectiveMode).finally(() => setSavingDefault(false));
   };
 
   const modeRows = [
@@ -451,20 +441,20 @@ export function SpawnDialog({ kind = 'session', open, onClose, onSpawn, fixedCwd
         </>}
         {/* Actions */}
         <div className={styles.actions}>
-          {isRoom && quickDefault && (
+          {kind === 'session' && (
             <button
               type="button"
               role="switch"
-              aria-checked={isQuickDefault}
-              className={`${styles.defaultToggle} ${isQuickDefault ? styles.defaultToggleOn : ''}`}
-              onClick={saveQuickDefault}
+              aria-checked={isDefault}
+              className={`${styles.defaultToggle} ${isDefault ? styles.defaultToggleOn : ''}`}
+              onClick={saveDefault}
               disabled={savingDefault}
-              title={isQuickDefault
-                ? 'Quick spawn (+⚡) in this room uses this provider and mode'
-                : 'Make this provider and mode the quick-spawn default for this room — saved immediately'}
+              title={isDefault
+                ? 'New sessions (quick spawn +⚡, Fast session) use this provider and mode — change in Settings → New sessions'
+                : 'Make this provider and mode the default for all new sessions — saved immediately'}
             >
               <span className={styles.defaultTrack}><span className={styles.defaultThumb} /></span>
-              Quick-spawn default
+              Default for new sessions
             </button>
           )}
           <button className={styles.cancelBtn} onClick={onClose}>Cancel</button>

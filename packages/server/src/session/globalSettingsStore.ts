@@ -109,7 +109,15 @@ export interface GlobalSettings {
   /** Lazy MCP shim for Overlord-spawned claude sessions. Stored as a partial —
    *  resolve with resolveLazyMcp(). PATCH merges key by key, per server. */
   lazyMcp?: LazyMcpStored;
+  /** Default provider for new sessions (quick spawn, spawn dialog). Absent ⇒ claude. */
+  defaultProvider?: DefaultProvider;
+  /** Default mode for new claude sessions. Absent ⇒ embedded. Non-claude
+   *  providers always spawn embedded — clients enforce that on read. */
+  defaultMode?: DefaultMode;
 }
+
+export type DefaultProvider = 'claude' | 'codex' | 'opencode';
+export type DefaultMode = 'embedded' | 'bridge' | 'plain';
 
 const DEFAULTS: GlobalSettings = {
   disableBackgroundLLM: false,
@@ -181,7 +189,8 @@ class GlobalSettingsStore {
   }
 }
 
-function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
+/** Field-by-field validation of an untrusted settings patch. Exported for tests. */
+export function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   const out: Partial<GlobalSettings> = {};
   if (typeof input.disableBackgroundLLM === 'boolean') out.disableBackgroundLLM = input.disableBackgroundLLM;
   if (typeof input.autoResumeOnRestart === 'boolean') out.autoResumeOnRestart = input.autoResumeOnRestart;
@@ -208,6 +217,12 @@ function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings> {
   }
   const lazyMcp = sanitizeLazyMcp(input.lazyMcp);
   if (lazyMcp) out.lazyMcp = lazyMcp;
+  if (input.defaultProvider === 'claude' || input.defaultProvider === 'codex' || input.defaultProvider === 'opencode') {
+    out.defaultProvider = input.defaultProvider;
+  }
+  if (input.defaultMode === 'embedded' || input.defaultMode === 'bridge' || input.defaultMode === 'plain') {
+    out.defaultMode = input.defaultMode;
+  }
   return out;
 }
 
@@ -353,6 +368,8 @@ function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
     && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
     && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')
     && (a.jiraApiToken ?? '') === (b.jiraApiToken ?? '')
+    && a.defaultProvider === b.defaultProvider
+    && a.defaultMode === b.defaultMode
     && voiceEqual(a.voiceInput, b.voiceInput)
     && JSON.stringify(a.lazyMcp ?? {}) === JSON.stringify(b.lazyMcp ?? {});
 }

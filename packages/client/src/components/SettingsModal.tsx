@@ -5,6 +5,7 @@ import { resolveVoiceConfig, type VoiceInputConfig } from '../lib/voiceConfig';
 import { KOKORO_VOICES, kokoro, type KokoroState } from '../lib/kokoroVoice';
 import { ReplyVoice } from '../lib/speechOutput';
 import { LazyMcpSettings } from './LazyMcpSettings';
+import { normalizeSpawnDefault, type SpawnProvider } from './quickSpawn';
 import styles from './SettingsModal.module.css';
 
 interface Props {
@@ -18,6 +19,7 @@ interface Props {
 export type PageId =
   | 'general'
   | 'general.startup'
+  | 'general.sessions'
   | 'general.layout'
   | 'general.conversation'
   | 'general.voice'
@@ -42,6 +44,7 @@ const TREE: TreeNode[] = [
     keywords: 'general basics',
     children: [
       { id: 'general.startup', label: 'Startup & Resume', keywords: 'auto resume restart respawn terminal pty boot' },
+      { id: 'general.sessions', label: 'New sessions', keywords: 'default provider claude codex opencode mode quick spawn fast session bridge direct overlord new session' },
       { id: 'general.layout', label: 'Layout', keywords: 'layout dock panel bottom right side portrait landscape vertical monitor orientation split chat rooms tabs chips sessions dots' },
       { id: 'general.conversation', label: 'Conversation', keywords: 'sticky pinned user message feed prompt header detail panel' },
       { id: 'general.voice', label: 'Voice', keywords: 'voice mic microphone dictation speech stt start word stop word wake hands free language' },
@@ -204,6 +207,71 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
             onToggle={() => onUpdate({ autoResumeOnRestart: !settings.autoResumeOnRestart })}
           />
         );
+
+      case 'general.sessions': {
+        const def = normalizeSpawnDefault(settings.defaultProvider, settings.defaultMode);
+        const providers: { value: SpawnProvider; label: string }[] = [
+          { value: 'claude', label: 'Claude' },
+          { value: 'codex', label: 'Codex' },
+          { value: 'opencode', label: 'OpenCode' },
+        ];
+        const modes: { value: 'embedded' | 'bridge' | 'plain'; label: string }[] = [
+          { value: 'embedded', label: 'Overlord' },
+          { value: 'bridge', label: 'Bridge' },
+          { value: 'plain', label: 'Direct' },
+        ];
+        return (
+          <>
+          <div className={styles.row}>
+            <div className={styles.rowText}>
+              <div className={styles.rowLabel}>Default provider</div>
+              <div className={styles.rowHint}>
+                Used by quick spawn (+⚡), Fast session, and preselected in the new-session dialog. Same for every room.
+              </div>
+            </div>
+            <div className={styles.segmented} role="radiogroup" aria-label="Default provider">
+              {providers.map(o => (
+                <button
+                  key={o.value}
+                  className={`${styles.segmentBtn} ${def.provider === o.value ? styles.segmentBtnActive : ''}`}
+                  role="radio"
+                  aria-checked={def.provider === o.value}
+                  onClick={() => onUpdate(o.value === 'claude'
+                    ? { defaultProvider: o.value }
+                    : { defaultProvider: o.value, defaultMode: 'embedded' })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className={styles.row}>
+            <div className={styles.rowText}>
+              <div className={styles.rowLabel}>Default mode</div>
+              <div className={styles.rowHint}>
+                {def.provider === 'claude'
+                  ? 'Overlord runs the session in an embedded terminal. Bridge and Direct are for external terminals.'
+                  : 'Codex and OpenCode always run in Overlord.'}
+              </div>
+            </div>
+            <div className={styles.segmented} role="radiogroup" aria-label="Default mode">
+              {modes.map(o => (
+                <button
+                  key={o.value}
+                  className={`${styles.segmentBtn} ${def.mode === o.value ? styles.segmentBtnActive : ''}`}
+                  role="radio"
+                  aria-checked={def.mode === o.value}
+                  disabled={def.provider !== 'claude' && o.value !== 'embedded'}
+                  onClick={() => onUpdate({ defaultMode: o.value })}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          </>
+        );
+      }
 
       case 'general.layout': {
         const dockOptions: { value: DockMode; label: string }[] = [
