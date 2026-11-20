@@ -29,6 +29,7 @@ import { runClaudeQuery, NO_TOOLS_ARGS } from '../ai/claudeQuery.js';
 import { readGitStatus } from '../git/gitStatus.js';
 import { globalSettingsStore, sanitizeVoiceOverride } from '../session/globalSettingsStore.js';
 import { getLazyMcpStatus } from '../pty/lazyMcp.js';
+import { macSpeechAvailability } from '../speech/macSpeech.js';
 import { scratchpadStore } from '../session/scratchpadStore.js';
 import { noteStore, isNoteId, notePreview } from '../session/noteStore.js';
 import { archiveManager } from '../archive/archiveManager.js';
@@ -124,6 +125,11 @@ export function registerApiRoutes(
 
   app.get('/api/lazy-mcp', async (_req, res) => {
     res.json(await getLazyMcpStatus());
+  });
+
+  // Whether the native macOS speech engine can be offered in Settings.
+  app.get('/api/speech/mac', (_req, res) => {
+    res.json(macSpeechAvailability());
   });
 
   app.get('/api/stats', (_req, res) => {

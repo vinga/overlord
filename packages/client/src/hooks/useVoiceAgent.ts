@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { VoiceAgent, type VoiceCue, type VoiceSnapshot } from '../lib/voiceAgent';
-import { WebSpeechProvider, isSpeechSupported, type SpeechProvider } from '../lib/speechProvider';
+import { MacSpeechProvider, WebSpeechProvider, isSpeechSupported, type SpeechProvider, type WsSend } from '../lib/speechProvider';
 import type { VoiceDispatch, VoiceWorker } from '../lib/resolveVoiceTarget';
 import type { VoiceInputConfig } from '../lib/voiceConfig';
 
@@ -35,8 +35,25 @@ export interface UseVoiceAgentOptions {
   onDispatch: (dispatch: VoiceDispatch) => void;
   /** Audible feedback for capture start / send / cancel. */
   onCue?: (cue: VoiceCue) => void;
-  /** Test seam. Defaults to the Web Speech provider. */
+  /** Office WebSocket sender; required for the 'macos' engine. */
+  sendWs?: WsSend;
+  /** Test seam. Defaults to the provider named by `cfg.provider`. */
   createProvider?: () => SpeechProvider;
+}
+
+/** Whether the server's native macOS speech helper is usable. null = not yet known. */
+function useMacSpeechAvailable(wanted: boolean): boolean | null {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!wanted) return;
+    let alive = true;
+    fetch('/api/speech/mac')
+      .then(r => r.json() as Promise<{ available?: boolean }>)
+      .then(d => { if (alive) setAvailable(d.available === true); })
+      .catch(() => { if (alive) setAvailable(false); });
+    return () => { alive = false; };
+  }, [wanted]);
+  return available;
 }
 
 /** 'unknown' = the Permissions API could not answer; we try anyway. */
@@ -70,9 +87,15 @@ export interface UseVoiceAgentResult extends VoiceSnapshot {
  * new snapshot never tears down recognition mid-utterance.
  */
 export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
-  const { cfg, workers, selectedOvrId, onDispatch, onCue, createProvider } = opts;
+  const { cfg, workers, selectedOvrId, onDispatch, onCue, createProvider, sendWs } = opts;
 
-  const supported = useMemo(() => isSpeechSupported(), []);
+  const engine = cfg.provider;
+  const isMac = engine === 'macos';
+  const webSupported = useMemo(() => isSpeechSupported(), []);
+  const macAvailable = useMacSpeechAvailable(isMac);
+  const supported = isMac ? macAvailable === true : webSupported;
+  const sendWsRef = useRef(sendWs);
+  sendWsRef.current = sendWs;
   const [snapshot, setSnapshot] = useState<VoiceSnapshot>(OFF);
   const [muted, setMuted] = useState<boolean>(readMuted);
   // What the Permissions API reports. Not trusted for 'denied': Chrome can
@@ -80,13 +103,16 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
   // refusal (`refused`) blocks the microphone.
   const [queried, setPermission] = useState<MicPermission>('unknown');
   const [refused, setRefused] = useState(false);
-  const permission: MicPermission = refused ? 'denied' : queried === 'denied' ? 'unknown' : queried;
+  // The macOS engine's microphone belongs to the native helper, not the
+  // browser; its permission problems arrive as engine errors instead.
+  const permission: MicPermission = isMac ? 'unknown'
+    : refused ? 'denied' : queried === 'denied' ? 'unknown' : queried;
 
   // Speech recognition silently produces nothing when the microphone was never
   // granted — no error, no results. Tracking the permission is the only way to
   // tell the user why saying the start word does nothing.
   useEffect(() => {
-    if (!supported) return;
+    if (!supported || isMac) return;
     let status: PermissionStatus | null = null;
     const onChange = () => {
       if (!status) return;
@@ -98,7 +124,7 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
       .then(s => { status = s; setPermission(s.state as MicPermission); s.addEventListener('change', onChange); })
       .catch(() => setPermission('unknown'));
     return () => { status?.removeEventListener('change', onChange); };
-  }, [supported]);
+  }, [supported, isMac]);
 
   // Refs keep the agent's view of the world current without re-creating it.
   const cfgRef = useRef(cfg);
@@ -114,7 +140,9 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
 
   useEffect(() => {
     if (!supported) return;
-    const provider = createProvider ? createProvider() : new WebSpeechProvider();
+    const provider = createProvider ? createProvider()
+      : isMac ? new MacSpeechProvider(msg => sendWsRef.current?.(msg) ?? false)
+      : new WebSpeechProvider();
     const agent = new VoiceAgent({
       provider,
       getConfig: () => cfgRef.current,
@@ -130,8 +158,9 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
       setSnapshot(OFF);
     };
     // createProvider is a stable test seam; the agent must outlive prop changes.
+    // Switching engine is the one change that rebuilds it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [supported]);
+  }, [supported, isMac]);
 
   // Start/stop recognition when enablement, language, mute or permission
   // changes. Starting without a granted microphone would look live but hear
@@ -142,9 +171,11 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
     // Only a real refusal blocks. Chrome reports 'prompt' for a live but
     // session-scoped grant, and sometimes 'denied' for a working one, so
     // trusting the query would silence a microphone that is actually working.
-    agent.setMuted(muted || refused);
+    agent.setMuted(muted || (refused && !isMac));
     agent.sync();
-  }, [muted, refused, cfg.enabled, cfg.lang, cfg.activation]);
+    // supported/isMac: a rebuilt agent (engine switch, macOS availability
+    // resolving after mount) must be started too.
+  }, [muted, refused, cfg.enabled, cfg.lang, cfg.activation, supported, isMac]);
 
   // Chrome refused recognition itself: that is a real block.
   useEffect(() => {
@@ -179,6 +210,8 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
   }, []);
 
   const requestPermission = useCallback(() => {
+    // macOS engine: the helper asks macOS itself on start; just retry.
+    if (isMac) { agentRef.current?.sync(); return; }
     // getUserMedia opens Chrome's prompt reliably; SpeechRecognition on its own
     // can fail to. The stream is released immediately — only the grant matters.
     navigator.mediaDevices?.getUserMedia({ audio: true })
@@ -188,7 +221,7 @@ export function useVoiceAgent(opts: UseVoiceAgentOptions): UseVoiceAgentResult {
         setRefused(false);
       })
       .catch(() => setRefused(true));
-  }, []);
+  }, [isMac]);
 
   const setIdleHold = useCallback((held: boolean) => { agentRef.current?.setIdleHold(held); }, []);
   const yieldForReply = useCallback(() => agentRef.current?.yieldForReply() ?? true, []);

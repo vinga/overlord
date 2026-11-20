@@ -399,6 +399,7 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
                 on={voice.wakeOnWorkerName}
                 onToggle={() => patchVoice({ wakeOnWorkerName: !voice.wakeOnWorkerName })}
               />
+              <SpeechEngineRow engine={voice.provider} onChange={patchVoice} />
               <label className={styles.field}>
                 <span className={styles.fieldLabel}>Language</span>
                 <span className={styles.fieldHint}>
@@ -733,6 +734,56 @@ function kokoroStatusText(s: KokoroState): string {
     case 'ready': return s.device === 'webgpu' ? 'Ready — running on the GPU.' : 'Ready — running on the CPU.';
     case 'error': return `Failed to load — using the Chrome voice. ${s.error ?? ''}`.trim();
   }
+}
+
+/** Speech-to-text engine: Chrome's Web Speech API, or Apple on-device
+ *  recognition through the native helper on the server's Mac. */
+function SpeechEngineRow({ engine, onChange }: {
+  engine: VoiceInputConfig['provider'];
+  onChange: (partial: Partial<VoiceInputConfig>) => void;
+}) {
+  const [mac, setMac] = useState<{ available: boolean; reason?: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/speech/mac')
+      .then(r => r.json() as Promise<{ available: boolean; reason?: string }>)
+      .then(d => { if (alive) setMac(d); })
+      .catch(() => { if (alive) setMac({ available: false, reason: 'Server unreachable' }); });
+    return () => { alive = false; };
+  }, []);
+  const macOff = mac !== null && !mac.available;
+
+  return (
+    <div className={styles.row}>
+      <div className={styles.rowText}>
+        <div className={styles.rowLabel}>Speech engine</div>
+        <div className={`${styles.rowHint} ${engine === 'macos' && macOff ? styles.engineError : ''}`}>
+          {engine === 'macos'
+            ? macOff
+              ? <>macOS engine unavailable: {mac?.reason}</>
+              : <>Apple on-device recognition on this Mac. Audio never leaves the machine. Works in any browser. macOS asks once for Microphone and Speech Recognition access.</>
+            : <>Chrome’s Web Speech API. Audio is sent to Google for transcription. Chrome only.</>}
+        </div>
+      </div>
+      <div className={styles.engineControls}>
+        <div className={styles.segmented} role="radiogroup" aria-label="Speech engine">
+          {([['webspeech', 'Chrome'], ['macos', 'macOS (on-device)']] as const).map(([value, label]) => (
+            <button
+              key={value}
+              className={`${styles.segmentBtn} ${engine === value ? styles.segmentBtnActive : ''}`}
+              role="radio"
+              aria-checked={engine === value}
+              disabled={value === 'macos' && macOff && engine !== 'macos'}
+              title={value === 'macos' && macOff ? mac?.reason : undefined}
+              onClick={() => onChange({ provider: value })}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** Read-aloud engine: Chrome's built-in voice or Kokoro, a neural voice that

@@ -225,3 +225,80 @@ export class WebSpeechProvider implements SpeechProvider {
     }
   }
 }
+
+/** Sends one message over the office WebSocket; false when it is not open. */
+export type WsSend = (msg: object) => boolean;
+
+type MacSpeechMessage =
+  | { type: 'speech:result'; transcript: string; isFinal: boolean }
+  | { type: 'speech:error'; message: string };
+
+/**
+ * Apple on-device recognition, run by the native helper
+ * (`packages/speech-mac/overlord-speech`) on the server's Mac and relayed over
+ * the office WebSocket. Audio never leaves the machine.
+ *
+ * The helper already emits full-utterance transcripts and restarts Apple's
+ * recognition task on its own, so this class is a thin transport: it only
+ * computes `gapMsBefore` from arrival times, the same proxy WebSpeechProvider
+ * uses, and re-subscribes after a WebSocket reconnect.
+ */
+export class MacSpeechProvider implements SpeechProvider {
+  private wantRunning = false;
+  private lang = 'en-US';
+  private lastEventAt = 0;
+  private resultCb: ((e: SpeechEvent) => void) | null = null;
+  private errorCb: ((m: string) => void) | null = null;
+  private readonly onSpeech = (ev: Event) => {
+    if (!this.wantRunning) return;
+    const msg = (ev as CustomEvent<MacSpeechMessage>).detail;
+    if (msg.type === 'speech:error') {
+      this.errorCb?.(msg.message);
+      return;
+    }
+    const now = Date.now();
+    const gap = this.lastEventAt === 0 ? 0 : now - this.lastEventAt;
+    this.lastEventAt = now;
+    const transcript = msg.transcript.replace(/\s+/g, ' ').trim();
+    if (transcript) this.resultCb?.({ transcript, isFinal: msg.isFinal, gapMsBefore: gap });
+  };
+  private readonly onReconnect = () => {
+    if (this.wantRunning) this.send({ type: 'speech:start', lang: this.lang });
+  };
+
+  constructor(private readonly send: WsSend, private readonly target: EventTarget = window) {
+    target.addEventListener('overlord:speech', this.onSpeech);
+    target.addEventListener('overlord:ws-open', this.onReconnect);
+  }
+
+  onResult(cb: (e: SpeechEvent) => void): void { this.resultCb = cb; }
+  onError(cb: (m: string) => void): void { this.errorCb = cb; }
+
+  start(lang: string): void {
+    if (this.wantRunning && lang === this.lang) return;
+    this.lang = lang;
+    this.wantRunning = true;
+    this.lastEventAt = 0;
+    // When the socket is not open yet, onReconnect sends it once it opens.
+    this.send({ type: 'speech:start', lang });
+  }
+
+  stop(): void {
+    if (!this.wantRunning) return;
+    this.wantRunning = false;
+    this.send({ type: 'speech:stop' });
+  }
+
+  reset(): void {
+    this.lastEventAt = 0;
+    if (this.wantRunning) this.send({ type: 'speech:reset' });
+  }
+
+  dispose(): void {
+    this.stop();
+    this.target.removeEventListener('overlord:speech', this.onSpeech);
+    this.target.removeEventListener('overlord:ws-open', this.onReconnect);
+    this.resultCb = null;
+    this.errorCb = null;
+  }
+}

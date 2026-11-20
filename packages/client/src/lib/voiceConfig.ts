@@ -12,9 +12,13 @@ export type VoiceActivation = 'push' | 'wake';
 /** Read-aloud engine: Chrome's speechSynthesis, or Kokoro running locally in the browser. */
 export type TtsEngine = 'chrome' | 'kokoro';
 
+/** Speech-to-text engine: Chrome Web Speech API, or Apple on-device recognition
+ *  via the native helper on the server's Mac. */
+export type SpeechEngine = 'webspeech' | 'macos';
+
 export interface VoiceInputConfig {
   enabled: boolean;
-  provider: 'webspeech';
+  provider: SpeechEngine;
   activation: VoiceActivation;
   lang: string;
   startWord: string;

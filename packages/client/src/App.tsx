@@ -511,6 +511,7 @@ export function App() {
     selectedOvrId: selectedSessionId,
     onDispatch: handleVoiceDispatch,
     onCue: voiceCfg.soundCues ? playCue : undefined,
+    sendWs: sendMessage,
   });
   yieldForReplyRef.current = voice.yieldForReply;
   resumeSessionRef.current = voice.resumeSession;

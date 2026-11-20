@@ -11,12 +11,16 @@ export type VoiceActivation = 'push' | 'wake';
 /** Read-aloud engine: Chrome's speechSynthesis, or Kokoro running locally in the browser. */
 export type TtsEngine = 'chrome' | 'kokoro';
 
+/** Speech-to-text engine. */
+export type SpeechEngine = 'webspeech' | 'macos';
+
 export interface VoiceInputConfig {
   /** Master switch. When false nothing is mounted client-side: no `getUserMedia`,
    *  no mic permission prompt, no HUD pill. */
   enabled: boolean;
-  /** Speech engine. Only 'webspeech' (Chrome Web Speech API) exists today. */
-  provider: 'webspeech';
+  /** Speech engine. 'webspeech': Chrome Web Speech API (audio goes to Google).
+   *  'macos': on-device Apple recognition via packages/speech-mac. */
+  provider: SpeechEngine;
   /** How capture opens. 'push': a shortcut or the composer mic button starts
    *  and sends; recognition runs only while dictating. 'wake': always listening
    *  for the start word. */
@@ -244,7 +248,7 @@ function wordSet(value: string | undefined, fallback: string): Set<string> {
 function sanitizeVoice(input: Partial<VoiceInputConfig>): Partial<VoiceInputConfig> {
   const out: Partial<VoiceInputConfig> = {};
   if (typeof input.enabled === 'boolean') out.enabled = input.enabled;
-  if (input.provider === 'webspeech') out.provider = input.provider;
+  if (input.provider === 'webspeech' || input.provider === 'macos') out.provider = input.provider;
   if (input.activation === 'push' || input.activation === 'wake') out.activation = input.activation;
   if (typeof input.wakeOnWorkerName === 'boolean') out.wakeOnWorkerName = input.wakeOnWorkerName;
   for (const key of ['soundCues', 'speakReplies', 'listenAfterReply', 'stayOnAfterSend'] as const) {

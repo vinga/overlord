@@ -17,6 +17,7 @@ import { isWorkerIcon, type WorkerIcon } from '../types.js';
 import { writeMeta as writeShellHistoryMeta, readAll as readShellHistory, hasLog as hasShellHistory } from '../pty/shellHistoryLog.js';
 import { renderShellHistory } from '../pty/shellHistoryRender.js';
 import { archiveManager } from '../archive/archiveManager.js';
+import { macSpeechRelay } from '../speech/macSpeech.js';
 import { wsVisible, wsSnapshotOptOut, wsTermSubs, wsFocus, subscribeTerminal, clearClientState } from './wsClientState.js';
 import { findTranscriptPath, findTranscriptPathAnywhere, resolveResumableSessionId } from '../session/transcriptReader.js';
 import { buildOpencodeResumeArgs, findLatestOpencodeSessionId } from '../session/opencodeSession.js';
@@ -272,6 +273,22 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
         if (visible && !wasVisible && !wsSnapshotOptOut.has(ws)) {
           sendToClient(ws, { type: 'snapshot', ...stateManager.getSnapshot(wsFocus.get(ws)) });
         }
+        return;
+      }
+
+      // Native macOS speech-to-text (packages/speech-mac). The helper holds the
+      // microphone only while at least one socket is subscribed.
+      if (type === 'speech:start') {
+        const lang = typeof msg.lang === 'string' && msg.lang ? msg.lang : 'en-US';
+        macSpeechRelay.start(ws, m => sendToClient(ws, m), lang);
+        return;
+      }
+      if (type === 'speech:stop') {
+        macSpeechRelay.stop(ws);
+        return;
+      }
+      if (type === 'speech:reset') {
+        macSpeechRelay.reset(ws);
         return;
       }
 
@@ -1181,6 +1198,7 @@ export function setupWebSocketHandler(wss: WebSocketServer, ctx: WsHandlerContex
       // and be reconnectable from other tabs. Only clean up the session map.
       wsSessionMap.delete(ws);
       clearClientState(ws);
+      macSpeechRelay.stop(ws);
       recomputePolling();
     });
   });

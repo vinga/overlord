@@ -38,6 +38,11 @@ describe('sanitizeVoiceOverride', () => {
     expect(sanitizeVoiceOverride({ speakReplies: 'yes' })).toEqual({});
   });
 
+  it('keeps a known speech engine and drops unknown ones', () => {
+    expect(sanitizeVoiceOverride({ provider: 'macos' })).toEqual({ provider: 'macos' });
+    expect(sanitizeVoiceOverride({ provider: 'whisper' })).toEqual({});
+  });
+
   it('keeps a known read-aloud engine and a well-formed Kokoro voice', () => {
     expect(sanitizeVoiceOverride({ ttsEngine: 'kokoro', kokoroVoice: 'bf_emma' }))
       .toEqual({ ttsEngine: 'kokoro', kokoroVoice: 'bf_emma' });

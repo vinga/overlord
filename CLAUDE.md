@@ -56,6 +56,10 @@ cd packages/bridge && go build -o overlord-bridge . && cp overlord-bridge ../../
 
 Source: `packages/lazy-mcp/` (Go). Binary: `packages/lazy-mcp/overlord-lazy-mcp` (gitignored), resolved by `getLazyMcpBinaryPath()` in `packages/server/src/pty/lazyMcp.ts`. After any Go change: `cd packages/lazy-mcp && go test ./... && go build -o overlord-lazy-mcp .` See `docs/architecture.md#lazy-mcp`.
 
+## macOS Speech Helper
+
+Source: `packages/speech-mac/main.swift` (Swift). Binary: `packages/speech-mac/overlord-speech` (gitignored), resolved by `getSpeechHelperPath()` in `packages/server/src/speech/macSpeech.ts`. Build: `packages/speech-mac/build.sh`. Check a language: `overlord-speech --selftest pl-PL`. See `docs/architecture.md#macos-speech`.
+
 ## Session Matching Rules
 
 **NEVER use CWD-based matching** — multiple sessions share the same CWD. Instead:

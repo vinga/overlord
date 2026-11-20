@@ -84,6 +84,8 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
             // detail panel comes back permanently empty.
             ws.send(JSON.stringify({ type: 'snapshot:focus', ovrId: focusRef.current ?? '' }));
           } catch { /* ignore */ }
+          // Server-side subscriptions (macOS speech) die with the old socket.
+          window.dispatchEvent(new CustomEvent('overlord:ws-open'));
         }
       };
 
@@ -117,6 +119,9 @@ export function useOfficeData(onTerminalMessage?: (msg: TerminalMessage) => void
               op: 'create' | 'update' | 'delete';
             };
             window.dispatchEvent(new CustomEvent('artifact:changed', { detail }));
+          } else if (data.type === 'speech:result' || data.type === 'speech:error') {
+            // Native macOS speech engine → MacSpeechProvider.
+            window.dispatchEvent(new CustomEvent('overlord:speech', { detail: data }));
           } else if (data.type === 'session:replaced') {
             // Session replacement (e.g. Claude Code's /clear command)
             const msg = data as unknown as { type: string; oldSessionId: string; newSessionId: string };
