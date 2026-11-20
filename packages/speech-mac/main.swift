@@ -44,6 +44,26 @@ final class Recognizer {
     private var consecutiveFailures = 0
     /// The last result closed a pause-delimited chunk (it had real word timings).
     private var lastSettled = false
+    /// Soft reset: words at the start of the current chunk that belong to the
+    /// discarded utterance. Restarting the task instead would lose the first
+    /// syllables of the next phrase — often the start word itself.
+    private var skipWords = 0
+    private var taskStartedAt = Date()
+    private var lastResultAt = Date()
+    private var watchdog: Timer?
+    private let bufferLock = NSLock()
+    private var lastBufferAtStore = Date()
+    private var lastBufferAt: Date {
+        get { bufferLock.lock(); defer { bufferLock.unlock() }; return lastBufferAtStore }
+        set { bufferLock.lock(); lastBufferAtStore = newValue; bufferLock.unlock() }
+    }
+    private var configObserver: NSObjectProtocol?
+
+    /// A recognition task older than this is replaced at the next quiet moment:
+    /// long-lived on-device tasks go silent without reporting an error.
+    private let taskMaxAge: TimeInterval = 45
+    /// Cap on the text carried while idle (wake mode never resets otherwise).
+    private let carryMaxWords = 1000
 
     func start(lang: String) {
         if running && lang == self.lang { return }
@@ -72,6 +92,7 @@ final class Recognizer {
                 return
             }
             self.startTask()
+            self.startWatchdog()
         }
     }
 
@@ -87,20 +108,23 @@ final class Recognizer {
             tapInstalled = false
         }
         engine.stop()
+        watchdog?.invalidate()
+        watchdog = nil
+        if let obs = configObserver {
+            NotificationCenter.default.removeObserver(obs)
+            configObserver = nil
+        }
         carry = ""
         current = ""; lastSettled = false
+        skipWords = 0
     }
 
+    /// Drops the utterance so far WITHOUT restarting the task: the words already
+    /// in the current chunk are skipped from now on.
     func reset() {
-        guard running else { carry = ""; current = ""; lastSettled = false; return }
-        generation += 1
-        task?.cancel()
-        task = nil
-        request?.endAudio()
-        request = nil
+        skipWords += words(current).count
         carry = ""
-        current = ""; lastSettled = false
-        startTask()
+        current = ""
     }
 
     private func startAudio() throws {
@@ -108,12 +132,62 @@ final class Recognizer {
         let format = input.outputFormat(forBus: 0)
         if !tapInstalled {
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-                self?.request?.append(buffer)
+                guard let self else { return }
+                self.lastBufferAt = Date()
+                self.request?.append(buffer)
             }
             tapInstalled = true
         }
         engine.prepare()
         try engine.start()
+        lastBufferAt = Date()
+        if configObserver == nil {
+            // Input device changed (AirPods, sleep/wake): the engine stops and
+            // the tap's format is stale. Rebuild both.
+            configObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+            ) { [weak self] _ in self?.restartAudio() }
+        }
+    }
+
+    private func restartAudio() {
+        guard running else { return }
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        engine.stop()
+        do {
+            try startAudio()
+        } catch {
+            emitError("Microphone could not restart: \(error.localizedDescription)")
+            return
+        }
+        refreshTask()
+    }
+
+    /// Replaces a stale task at a quiet moment, and revives a dead microphone.
+    private func startWatchdog() {
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            guard let self, self.running else { return }
+            let now = Date()
+            if now.timeIntervalSince(self.lastBufferAt) > 5 {
+                self.restartAudio()
+                return
+            }
+            let quiet = now.timeIntervalSince(self.lastResultAt) > 1.5
+            if quiet && now.timeIntervalSince(self.taskStartedAt) > self.taskMaxAge {
+                self.refreshTask()
+            }
+        }
+    }
+
+    /// Starts a fresh task, keeping the text heard so far.
+    private func refreshTask() {
+        generation += 1
+        task?.cancel()
+        rollover()
     }
 
     private func startTask() {
@@ -126,6 +200,8 @@ final class Recognizer {
         if #available(macOS 13, *) { req.addsPunctuation = false }
         request = req
         current = ""; lastSettled = false
+        skipWords = 0
+        taskStartedAt = Date()
         task = rec.recognitionTask(with: req) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self, gen == self.generation else { return }
@@ -140,11 +216,15 @@ final class Recognizer {
                     let settled = result.bestTranscription.segments.contains {
                         $0.timestamp > 0.05 || $0.duration > 0.05
                     }
-                    if self.lastSettled && !settled && !self.current.isEmpty {
-                        self.carry = self.joined()
+                    if self.lastSettled && !settled {
+                        // A new chunk: the closed one is kept, nothing in the new one is stale.
+                        if !self.current.isEmpty { self.carry = self.joined() }
+                        self.skipWords = 0
                     }
                     self.lastSettled = settled
-                    self.current = result.bestTranscription.formattedString
+                    self.lastResultAt = Date()
+                    let chunk = self.words(result.bestTranscription.formattedString)
+                    self.current = chunk.dropFirst(min(self.skipWords, chunk.count)).joined(separator: " ")
                     let text = self.joined()
                     if !text.isEmpty {
                         emit(["type": "result", "transcript": text, "isFinal": result.isFinal])
@@ -180,12 +260,17 @@ final class Recognizer {
 
     /// The current task ended: keep its text, start a fresh task.
     private func rollover() {
-        carry = joined()
+        let all = words(joined())
+        carry = all.suffix(carryMaxWords).joined(separator: " ")
         current = ""; lastSettled = false
         task = nil
         request?.endAudio()
         request = nil
         if running { startTask() }
+    }
+
+    private func words(_ s: String) -> [String] {
+        return s.split(whereSeparator: { $0.isWhitespace }).map(String.init)
     }
 
     private func joined() -> String {
