@@ -21,3 +21,6 @@
   background: rgba(255, 255, 255, 0.1);
 }
 .copy[data-copied] { color: rgba(74, 222, 128, 0.95); }
+.copy[data-in-room] { color: rgba(96, 165, 250, 0.95); cursor: default; }
+.copy[data-in-room]:hover { background: none; }
+.copy[data-state='done'] { opacity: 1; color: rgba(74, 222, 128, 0.95); }

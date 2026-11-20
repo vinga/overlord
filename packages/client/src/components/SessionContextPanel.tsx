@@ -77,6 +77,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
 
   const sessionPins = session.pins ?? [];
   const roomPins = room?.pins ?? [];
+  const roomTicketKeys = new Set(roomPins.map(jiraKeyOf).filter((k): k is string => !!k));
   const allPins = [...sessionPins, ...roomPins];
   // One ordered ticket list (the server applies the user's ↑/↓ order to
   // jiraKeys): session ticket pins and mentioned tickets mixed, in that order.
@@ -144,7 +145,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
             <div key={k} className={styles.ticketRow}>
               {pin
                 ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />
-                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card pinTo={id} />}
+                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card pinTo={id} pinRoom={room?.cwd} roomKeys={roomTicketKeys} />}
               {orderedKeys.length > 1 && (
                 <span className={styles.ticketMove}>
                   <button type="button" aria-label={`Move ${k} up`} title="Move up" disabled={i === 0} onClick={() => moveTicket(i, i - 1)}>↑</button>
@@ -226,7 +227,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
         {pinsOfKind('other')}
       </section>
       <section className={styles.card} aria-label="TODO">
-        <TodoList pins={sessionPins} overlordId={id} headClassName={styles.sectionHead} />
+        <TodoList pins={sessionPins} overlordId={id} headClassName={styles.sectionHead} roomCwd={room?.cwd} roomPins={roomPins} />
       </section>
       </>}
     </aside>

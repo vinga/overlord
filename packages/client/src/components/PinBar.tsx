@@ -241,30 +241,35 @@ function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemov
 }
 
 /** "Copy to room": a house icon before ×. Lit when the room already has the pin. */
-function ToRoomButton({ onCopy, inRoom }: { onCopy: () => Promise<boolean>; inRoom?: boolean }) {
+export function ToRoomButton({ onCopy, inRoom, className = styles.toRoom }: { onCopy: () => Promise<boolean>; inRoom?: boolean; className?: string }) {
   const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   const label = state === 'error' ? 'Copy to room failed' : inRoom ? 'Already in this room' : 'Copy to room';
+  const go = (e: React.SyntheticEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (inRoom || state === 'busy') return;
+    setState('busy');
+    void onCopy().then((ok) => {
+      setState(ok ? 'done' : 'error');
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setState('idle'), 1500);
+    });
+  };
+  // A span, not a button: ticket chips are links, and a button may not nest in one.
   return (
-    <button
-      type="button"
-      className={styles.toRoom}
+    <span
+      role="button"
+      tabIndex={0}
+      className={className}
       data-in-room={inRoom || undefined}
       data-state={state}
       aria-label={label}
       title={label}
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (inRoom || state === 'busy') return;
-        setState('busy');
-        void onCopy().then((ok) => {
-          setState(ok ? 'done' : 'error');
-          if (timer.current) clearTimeout(timer.current);
-          timer.current = setTimeout(() => setState('idle'), 1500);
-        });
-      }}
+      onClick={go}
+      onMouseDown={e => e.stopPropagation()}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') go(e); }}
     >
       {state === 'done' ? (
         <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M3 8.5 6.5 12 13 4.5" /></svg>
@@ -273,13 +278,15 @@ function ToRoomButton({ onCopy, inRoom }: { onCopy: () => Promise<boolean>; inRo
           <path d="M2 7.5 8 2.5l6 5M3.75 6.25v7.25h8.5V6.25M6.5 13.5v-4h3v4" />
         </svg>
       )}
-    </button>
+    </span>
   );
 }
 
-/** Copies a session pin to a room: same URL (kind, title) or same text. */
+/** Copies a session pin to a room: same URL (kind, title) or same text (text and TODO pins). */
 export async function copyPinToRoom(pin: Pin, cwd: string): Promise<boolean> {
-  const body = pin.kind === 'text'
+  const body = pin.kind === 'todo'
+    ? { cwd, kind: 'todo', url: '', text: pin.text }
+    : pin.kind === 'text'
     ? { cwd, kind: 'text', text: pin.text, ...(pin.title ? { title: pin.title } : {}) }
     : { cwd, url: pin.url, kind: pin.kind, ...(pin.title ? { title: pin.title } : {}) };
   try {
@@ -296,9 +303,9 @@ export async function copyPinToRoom(pin: Pin, cwd: string): Promise<boolean> {
 
 /** The room holds an equal pin: same URL, or the same text for a text pin. */
 export function pinInRoom(pin: Pin, roomPins: Pin[] | undefined): boolean {
-  return !!roomPins?.some(r => pin.kind === 'text'
-    ? r.kind === 'text' && r.text === pin.text
-    : r.kind !== 'text' && r.url === pin.url);
+  return !!roomPins?.some(r => pin.kind === 'text' || pin.kind === 'todo'
+    ? r.kind === pin.kind && r.text === pin.text
+    : r.kind !== 'text' && r.kind !== 'todo' && r.url === pin.url);
 }
 
 /** Unpin by id from a session or room. */

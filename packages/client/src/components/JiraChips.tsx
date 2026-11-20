@@ -4,6 +4,8 @@ import { useJiraMeta } from '../hooks/useJiraMeta';
 import { JiraTypeIcon } from './JiraTypeIcon';
 import { CopyUrl } from './CopyUrl';
 import { PinUrl } from './PinUrl';
+import { ToRoomButton } from './PinBar';
+import copyStyles from './CopyUrl.module.css';
 import { SetTitleIcon } from './SetTitleIcon';
 import { adoptJiraTicket } from '../lib/jiraAdopt';
 
@@ -18,11 +20,15 @@ interface Props {
   card?: boolean;
   /** overlordId: each chip gets a pin icon that pins the ticket to this session. */
   pinTo?: string;
+  /** The session's room: each chip gets a house icon that pins the ticket there. */
+  pinRoom?: string;
+  /** Keys the room already has pinned (house icon lit). */
+  roomKeys?: ReadonlySet<string>;
 }
 
 const VISIBLE = 3;
 
-export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pinTo }: Props) {
+export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pinTo, pinRoom, roomKeys }: Props) {
   const meta = useJiraMeta();
   const [expanded, setExpanded] = useState(false);
   const [dismissing, setDismissing] = useState<Set<string>>(() => new Set());
@@ -87,6 +93,14 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pi
             <span className={styles.chipKey}>{key}</span>
             <CopyUrl url={href} />
             <PinUrl url={href} overlordId={pinTo} />
+            {href && pinRoom !== undefined && (
+              <ToRoomButton className={copyStyles.copy} inRoom={roomKeys?.has(key)}
+                onCopy={() => fetch('/api/pins', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ cwd: pinRoom, url: href, kind: 'ticket' }),
+                }).then(r => r.ok, () => false)} />
+            )}
             {sessionId && <SetTitleIcon ticketKey={key} onSet={() => adopt(key)} />}
             {title && <span className={styles.chipTitle}>{title}</span>}
             {m?.status && (

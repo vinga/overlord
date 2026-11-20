@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type { Pin } from '../types';
-import { deletePin } from './PinBar';
+import { deletePin, copyPinToRoom, pinInRoom, ToRoomButton } from './PinBar';
 import styles from './TodoList.module.css';
 
 interface Props {
@@ -10,6 +10,10 @@ interface Props {
   cwd?: string;
   /** Section heading class from the host panel, so the list sits in its rhythm. */
   headClassName?: string;
+  /** Session lists: the session's room, so each item can be copied there. */
+  roomCwd?: string;
+  /** That room's pins, to light items it already holds. */
+  roomPins?: Pin[];
 }
 
 const target = (overlordId?: string, cwd?: string) =>
@@ -25,7 +29,7 @@ export function setTodoDone(pinId: string, done: boolean, t: { overlordId?: stri
 
 /** TODO pins as a checklist: open items first (oldest on top), checked ones
  *  struck through below. The agent checks items off with `ovr todo done`. */
-export function TodoList({ pins, overlordId, cwd, headClassName }: Props) {
+export function TodoList({ pins, overlordId, cwd, headClassName, roomCwd, roomPins }: Props) {
   const todos = useMemo(() => (pins ?? []).filter(p => p.kind === 'todo'), [pins]);
   // Optimistic ticks until the snapshot carries the change.
   const [pending, setPending] = useState<Record<string, boolean>>({});
@@ -76,6 +80,9 @@ export function TodoList({ pins, overlordId, cwd, headClassName }: Props) {
             </label>
             {done && p.doneBy === 'agent' && pending[p.id] === undefined && (
               <span className={styles.by} title="Checked off by the agent">agent</span>
+            )}
+            {roomCwd !== undefined && overlordId !== undefined && (
+              <ToRoomButton className={styles.toRoom} onCopy={() => copyPinToRoom(p, roomCwd)} inRoom={pinInRoom(p, roomPins)} />
             )}
             <button type="button" className={styles.remove} aria-label={`Remove TODO ${p.text}`} title="Remove"
               onClick={() => deletePin(p.id, t)}>×</button>

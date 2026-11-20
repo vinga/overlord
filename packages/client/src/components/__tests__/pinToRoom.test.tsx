@@ -3,6 +3,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PinBar, copyPinToRoom, pinInRoom } from '../PinBar';
+import { JiraChips } from '../JiraChips';
 import type { Pin } from '../../types';
 
 vi.mock('../../hooks/useJiraMeta', () => ({ useJiraMeta: () => ({}) }));
@@ -43,17 +44,36 @@ describe('copy pin to room', () => {
     expect(pinInRoom(link, undefined)).toBe(false);
   });
 
+  it('copies a TODO as a room TODO and matches it by text', async () => {
+    const todo: Pin = { id: 'd1', url: '', title: 'ship it', kind: 'todo', text: 'ship it', createdAt: 1 };
+    await copyPinToRoom(todo, '/repo');
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({ cwd: '/repo', kind: 'todo', url: '', text: 'ship it' });
+    expect(pinInRoom(todo, [{ ...todo, id: 'r9' }])).toBe(true);
+    expect(pinInRoom(todo, [{ ...text, id: 'r8', text: 'ship it' }])).toBe(false);
+  });
+
   it('session bars get the icon (lit when the room has the pin); room bars do not', async () => {
     act(() => root.render(<>
       <PinBar pins={[link, text]} overlordId="ovr-1" roomCwd="/repo" roomPins={[{ ...link, id: 'r1' }]} hideAdder multiline />
       <PinBar pins={[{ ...link, id: 'r1' }]} cwd="/repo" hideAdder />
     </>));
-    const btns = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label="Copy to room"], button[aria-label="Already in this room"]')];
+    const btns = [...container.querySelectorAll<HTMLElement>('[aria-label="Copy to room"], [aria-label="Already in this room"]')];
     expect(btns.map(b => b.getAttribute('aria-label'))).toEqual(['Already in this room', 'Copy to room']);
     act(() => btns[0].click());
     expect(fetchMock).not.toHaveBeenCalled();
     await act(async () => { btns[1].click(); });
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
     expect(body).toMatchObject({ cwd: '/repo', kind: 'text', text: 'remember this' });
+  });
+
+  it('detected ticket chips get the icon; it posts a room ticket pin, lit when the room has the key', async () => {
+    act(() => root.render(
+      <JiraChips keys={['ABC-1', 'ABC-2']} baseUrl="https://jira.example" pinTo="ovr-1" pinRoom="/repo" roomKeys={new Set(['ABC-2'])} />,
+    ));
+    const btns = [...container.querySelectorAll<HTMLElement>('[aria-label="Copy to room"], [aria-label="Already in this room"]')];
+    expect(btns.map(b => b.getAttribute('aria-label'))).toEqual(['Copy to room', 'Already in this room']);
+    await act(async () => { btns[0].click(); });
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string))
+      .toEqual({ cwd: '/repo', url: 'https://jira.example/browse/ABC-1', kind: 'ticket' });
   });
 });
