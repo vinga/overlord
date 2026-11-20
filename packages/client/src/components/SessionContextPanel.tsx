@@ -116,7 +116,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
     const matches = (p: typeof sessionPins[number]) => kind === 'other'
       ? p.kind !== 'ticket' && p.kind !== 'pr' : p.kind === kind && !isCardPin(p);
     return <>
-      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />
+      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />
       {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
     </>;
   };
@@ -143,7 +143,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
           return (
             <div key={k} className={styles.ticketRow}>
               {pin
-                ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />
+                ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />
                 : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card pinTo={id} />}
               {orderedKeys.length > 1 && (
                 <span className={styles.ticketMove}>
@@ -154,7 +154,7 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
             </div>
           );
         })}
-        {loneSessionTicketPins.length > 0 && <PinBar pins={loneSessionTicketPins} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder />}
+        {loneSessionTicketPins.length > 0 && <PinBar pins={loneSessionTicketPins} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />}
         {room && <PinBar pins={roomPins.filter(p => p.kind === 'ticket' && !listedKeys.has(jiraKeyOf(p) ?? ''))} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
         {!orderedKeys.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
       </section>

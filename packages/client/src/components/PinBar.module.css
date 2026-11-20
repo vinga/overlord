@@ -310,3 +310,41 @@
   color: #93c0f8;
   text-decoration-color: currentColor;
 }
+
+/* "Copy to room" — a house icon left of ×, revealed with it. */
+.toRoom {
+  position: absolute;
+  top: 50%;
+  right: 19px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.chip:hover .toRoom,
+.chip:focus-within .toRoom {
+  opacity: 1;
+  pointer-events: auto;
+}
+.toRoom:hover { color: rgba(96, 165, 250, 0.95); background: rgba(96, 165, 250, 0.14); }
+.toRoom[data-in-room] { color: rgba(96, 165, 250, 0.95); cursor: default; background: transparent; }
+.toRoom[data-state='done'] { color: rgba(74, 222, 128, 0.95); }
+.toRoom[data-state='error'] { color: rgba(248, 113, 113, 0.95); }
+
+.chip.hasRoom:hover .link,
+.chip.hasRoom:focus-within .link,
+.multiline .chipJira.hasRoom .link { padding-right: 36px; }
+.multiline .chipJira .toRoom { top: 4px; transform: none; }
+.chipTextCard .toRoom { top: 4px; right: 37px; transform: none; }
+.chipTextCard.hasRoom .quote { padding-right: 56px; }

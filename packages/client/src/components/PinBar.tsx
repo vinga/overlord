@@ -108,6 +108,10 @@ interface ChipProps {
   removeLabel: string;
   /** Ticket chips: an icon names the session after the ticket (title + icon). */
   onAdopt?: () => void;
+  /** Session pins: copies this pin to the session's room (no button when absent). */
+  onCopyToRoom?: () => Promise<boolean>;
+  /** The room already holds this pin: the room icon stays lit, click does nothing. */
+  inRoom?: boolean;
   /** Text pins: the pinned text (rendered as a quote, not a link). */
   text?: string;
   /** Text pins: full quote card (clamped, expandable) instead of a one-line chip. */
@@ -135,7 +139,7 @@ function linkify(text: string): React.ReactNode[] {
 
 /** A pinned piece of text: a quote card in the context column (4 lines,
  *  click to expand, copy + ×), a one-line chip elsewhere. */
-function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: string; label?: string; onRemove: () => void; removeLabel: string; multiline?: boolean }) {
+function TextPinChip({ text, label, onRemove, removeLabel, multiline, onCopyToRoom, inRoom }: { text: string; label?: string; onRemove: () => void; removeLabel: string; multiline?: boolean; onCopyToRoom?: () => Promise<boolean>; inRoom?: boolean }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const copy = (e: React.MouseEvent) => {
@@ -143,7 +147,7 @@ function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: 
     void navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200); });
   };
   return (
-    <span className={`${styles.chip} ${styles.chipText} ${multiline ? styles.chipTextCard : ''}`} data-kind="text">
+    <span className={`${styles.chip} ${styles.chipText} ${multiline ? styles.chipTextCard : ''} ${onCopyToRoom ? styles.hasRoom : ''}`} data-kind="text">
       {multiline ? (
         // A div, not a button: it holds real links. Click opens the full text in
         // the reading dialog (same as the plan); a link click just opens the link.
@@ -168,6 +172,7 @@ function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: 
           {copied ? '✓' : '⧉'}
         </button>
       )}
+      {onCopyToRoom && <ToRoomButton onCopy={onCopyToRoom} inRoom={inRoom} />}
       <button
         type="button"
         className={styles.remove}
@@ -189,17 +194,17 @@ function TextPinChip({ text, label, onRemove, removeLabel, multiline }: { text: 
 /** One chip: a Jira ticket (rich) or any other link. × calls `onRemove`. */
 export function PinChip(props: ChipProps) {
   if (props.kind === 'text' && props.text !== undefined) {
-    return <TextPinChip text={props.text} label={props.label} onRemove={props.onRemove} removeLabel={props.removeLabel} multiline={props.multiline} />;
+    return <TextPinChip text={props.text} label={props.label} onRemove={props.onRemove} removeLabel={props.removeLabel} multiline={props.multiline} onCopyToRoom={props.onCopyToRoom} inRoom={props.inRoom} />;
   }
   return <LinkPinChip {...props} />;
 }
 
-function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt }: ChipProps) {
+function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt, onCopyToRoom, inRoom }: ChipProps) {
   const summary = jiraKey && label && label !== jiraKey ? label : m?.title;
   const tip = [jiraKey && [m?.type, m?.status].filter(Boolean).join(' · '), jiraKey ? summary : label, href]
     .filter(Boolean).join('\n');
   return (
-    <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''}`} data-kind={jiraKey ? 'ticket' : kind}>
+    <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''} ${onCopyToRoom ? styles.hasRoom : ''}`} data-kind={jiraKey ? 'ticket' : kind}>
       <a className={styles.link} href={href} target="_blank" rel="noopener noreferrer"
         title={tip}>
         {jiraKey ? (
@@ -221,6 +226,7 @@ function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemov
           </>
         )}
       </a>
+      {onCopyToRoom && <ToRoomButton onCopy={onCopyToRoom} inRoom={inRoom} />}
       <button
         type="button"
         className={styles.remove}
@@ -232,6 +238,67 @@ function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemov
       </button>
     </span>
   );
+}
+
+/** "Copy to room": a house icon before ×. Lit when the room already has the pin. */
+function ToRoomButton({ onCopy, inRoom }: { onCopy: () => Promise<boolean>; inRoom?: boolean }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const label = state === 'error' ? 'Copy to room failed' : inRoom ? 'Already in this room' : 'Copy to room';
+  return (
+    <button
+      type="button"
+      className={styles.toRoom}
+      data-in-room={inRoom || undefined}
+      data-state={state}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (inRoom || state === 'busy') return;
+        setState('busy');
+        void onCopy().then((ok) => {
+          setState(ok ? 'done' : 'error');
+          if (timer.current) clearTimeout(timer.current);
+          timer.current = setTimeout(() => setState('idle'), 1500);
+        });
+      }}
+    >
+      {state === 'done' ? (
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M3 8.5 6.5 12 13 4.5" /></svg>
+      ) : (
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 7.5 8 2.5l6 5M3.75 6.25v7.25h8.5V6.25M6.5 13.5v-4h3v4" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+/** Copies a session pin to a room: same URL (kind, title) or same text. */
+export async function copyPinToRoom(pin: Pin, cwd: string): Promise<boolean> {
+  const body = pin.kind === 'text'
+    ? { cwd, kind: 'text', text: pin.text, ...(pin.title ? { title: pin.title } : {}) }
+    : { cwd, url: pin.url, kind: pin.kind, ...(pin.title ? { title: pin.title } : {}) };
+  try {
+    const r = await fetch('/api/pins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** The room holds an equal pin: same URL, or the same text for a text pin. */
+export function pinInRoom(pin: Pin, roomPins: Pin[] | undefined): boolean {
+  return !!roomPins?.some(r => pin.kind === 'text'
+    ? r.kind === 'text' && r.text === pin.text
+    : r.kind !== 'text' && r.url === pin.url);
 }
 
 /** Unpin by id from a session or room. */
@@ -337,6 +404,10 @@ type Props = {
   adoptSessionId?: string;
   /** No trailing + (the caller shows its own adder, e.g. in a section heading). */
   hideAdder?: boolean;
+  /** Session bars: the session's room, so each chip can be copied there. */
+  roomCwd?: string;
+  /** That room's pins, to light the icon of pins it already holds. */
+  roomPins?: Pin[];
 } & (
   | { overlordId: string; cwd?: undefined }
   | { cwd: string; overlordId?: undefined }
@@ -345,7 +416,7 @@ type Props = {
 /** Links pinned to a room — one wrapping row of chips above the tab bar.
  *  Hidden when empty (the first pin is added via the CLI). The snapshot
  *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, hideAdder = false, overlordId, cwd }: Props) {
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, hideAdder = false, overlordId, cwd, roomCwd, roomPins }: Props) {
   const pins = useMemo(() => {
     // TODO pins live in their own checklist (TodoList), never as chips.
     if (allPins?.some(p => p.kind === 'todo')) allPins = allPins.filter(p => p.kind !== 'todo');
@@ -375,6 +446,8 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multilin
               removeLabel={`Unpin ${pin.title || pin.url}`}
               text={pin.text}
               multiline={multiline}
+              onCopyToRoom={roomCwd !== undefined && overlordId !== undefined ? () => copyPinToRoom(pin, roomCwd) : undefined}
+              inRoom={roomCwd !== undefined && pinInRoom(pin, roomPins)}
               onAdopt={key && adoptSessionId ? () => adoptJiraTicket(adoptSessionId, key, jiraMeta[key]) : undefined}
             />
           );
