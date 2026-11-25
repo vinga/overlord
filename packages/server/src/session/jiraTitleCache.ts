@@ -27,7 +27,7 @@ let activeFetches = 0;
 const queue: string[] = [];
 let warnedAuth = false;
 
-function credsReady(): { baseUrl: string; email: string; token: string } | null {
+export function credsReady(): { baseUrl: string; email: string; token: string } | null {
   const s = globalSettingsStore.get();
   const baseUrl = s.jiraBaseUrl?.replace(/\/+$/, '');
   if (!baseUrl || !s.jiraEmail || !s.jiraApiToken) return null;
@@ -196,4 +196,17 @@ export function invalidateJiraKeys(keys: string[]): void {
 export function clearJiraTitleCache(): void {
   cache.clear();
   warnedAuth = false;
+  for (const fn of clearListeners) fn();
+}
+
+const clearListeners = new Set<() => void>();
+/** Other Jira caches (the hover-card detail cache) drop with this one. */
+export function onJiraCacheClear(fn: () => void): void {
+  clearListeners.add(fn);
+}
+
+/** Store meta fetched elsewhere (the detail endpoint) so the chip lozenge
+ *  matches what the hover card just showed. */
+export function primeJiraMeta(key: string, meta: JiraIssueMeta): void {
+  if (meta.title || meta.type || meta.status) cache.set(key, { meta, fetchedAt: Date.now() });
 }

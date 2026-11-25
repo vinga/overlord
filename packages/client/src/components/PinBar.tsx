@@ -5,6 +5,8 @@ import { CopyUrl } from './CopyUrl';
 import { SetTitleIcon } from './SetTitleIcon';
 import jiraStyles from './JiraChips.module.css';
 import { JiraTypeIcon } from './JiraTypeIcon';
+import { JiraPeek } from './JiraHoverCard';
+import { PrPeek } from './PrChips';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { adoptJiraTicket } from '../lib/jiraAdopt';
 import { ReadingDialog } from './ReadingDialog';
@@ -108,6 +110,8 @@ interface ChipProps {
   removeLabel: string;
   /** Ticket chips: an icon names the session after the ticket (title + icon). */
   onAdopt?: () => void;
+  /** A JiraHoverCard covers ticket chips: no native title tooltip. */
+  hoverCard?: boolean;
   /** Session pins: copies this pin to the session's room (no button when absent). */
   onCopyToRoom?: () => Promise<boolean>;
   /** The room already holds this pin: the room icon stays lit, click does nothing. */
@@ -199,18 +203,22 @@ export function PinChip(props: ChipProps) {
   return <LinkPinChip {...props} />;
 }
 
-function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt, onCopyToRoom, inRoom }: ChipProps) {
+function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemove, removeLabel, onAdopt, hoverCard, onCopyToRoom, inRoom }: ChipProps) {
   const summary = jiraKey && label && label !== jiraKey ? label : m?.title;
+  // A PR pin under a PrHoverCard gets the same peek icon as PR cards.
+  const prMatch = hoverCard && kind === 'pr' ? href.match(/\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/(\d+)/) : null;
+  const prRef = prMatch ? `${prMatch[1]}#${prMatch[2]}` : undefined;
   const tip = [jiraKey && [m?.type, m?.status].filter(Boolean).join(' · '), jiraKey ? summary : label, href]
     .filter(Boolean).join('\n');
   return (
-    <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''} ${onCopyToRoom ? styles.hasRoom : ''}`} data-kind={jiraKey ? 'ticket' : kind}>
+    <span className={`${styles.chip} ${jiraKey ? styles.chipJira : ''} ${onCopyToRoom ? styles.hasRoom : ''}`} data-kind={jiraKey ? 'ticket' : kind} data-jira-key={jiraKey} data-pr-ref={prRef}>
       <a className={styles.link} href={href} target="_blank" rel="noopener noreferrer"
-        title={tip}>
+        title={(jiraKey || prRef) && hoverCard ? undefined : tip}>
         {jiraKey ? (
           <>
             <JiraTypeIcon type={m?.type} />
             <span className={styles.key}>{jiraKey}</span>
+            {hoverCard && <JiraPeek />}
             <CopyUrl url={href} />
             {onAdopt && <SetTitleIcon ticketKey={jiraKey} onSet={onAdopt} />}
             {summary && <span className={`${styles.label} ${styles.summary}`}>{summary}</span>}
@@ -222,6 +230,7 @@ function LinkPinChip({ href, jiraKey, jiraMeta: m, kind = 'link', label, onRemov
           <>
             <KindIcon kind={kind} />
             <span className={styles.label}>{label || href}</span>
+            {prRef && <PrPeek />}
             {kind === 'pr' && <CopyUrl url={href} />}
           </>
         )}
@@ -411,6 +420,8 @@ type Props = {
   adoptSessionId?: string;
   /** No trailing + (the caller shows its own adder, e.g. in a section heading). */
   hideAdder?: boolean;
+  /** Ticket chips sit under a JiraHoverCard: drop their native tooltip. */
+  hoverCard?: boolean;
   /** Session bars: the session's room, so each chip can be copied there. */
   roomCwd?: string;
   /** That room's pins, to light the icon of pins it already holds. */
@@ -423,7 +434,7 @@ type Props = {
 /** Links pinned to a room — one wrapping row of chips above the tab bar.
  *  Hidden when empty (the first pin is added via the CLI). The snapshot
  *  rebroadcasts after every change, so there is no local copy of the list. */
-export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, hideAdder = false, overlordId, cwd, roomCwd, roomPins }: Props) {
+export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multiline = false, adoptSessionId, hideAdder = false, hoverCard = false, overlordId, cwd, roomCwd, roomPins }: Props) {
   const pins = useMemo(() => {
     // TODO pins live in their own checklist (TodoList), never as chips.
     if (allPins?.some(p => p.kind === 'todo')) allPins = allPins.filter(p => p.kind !== 'todo');
@@ -453,6 +464,7 @@ export const PinBar = React.memo(function PinBar({ pins: allPins, hide, multilin
               removeLabel={`Unpin ${pin.title || pin.url}`}
               text={pin.text}
               multiline={multiline}
+              hoverCard={hoverCard}
               onCopyToRoom={roomCwd !== undefined && overlordId !== undefined ? () => copyPinToRoom(pin, roomCwd) : undefined}
               inRoom={roomCwd !== undefined && pinInRoom(pin, roomPins)}
               onAdopt={key && adoptSessionId ? () => adoptJiraTicket(adoptSessionId, key, jiraMeta[key]) : undefined}

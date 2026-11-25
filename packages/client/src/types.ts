@@ -382,6 +382,24 @@ export interface JiraIssueMeta {
   statusCategory?: string; // status.statusCategory.key: "new" | "indeterminate" | "done"
 }
 
+/** Atlassian Document Format node, as Jira returns it. */
+export interface AdfNode {
+  type: string;
+  text?: string;
+  attrs?: Record<string, unknown>;
+  marks?: { type: string; attrs?: Record<string, unknown> }[];
+  content?: AdfNode[];
+}
+
+/** `GET /api/jira/:key/detail` — the ticket hover card. */
+export interface JiraIssueDetail {
+  key: string;
+  meta: JiraIssueMeta;
+  description?: AdfNode;
+  lastComment?: { author?: string; created?: string; body?: AdfNode };
+  commentCount: number;
+}
+
 /** Resolved metadata for one `owner/repo#number` ref. All fields optional — the
  *  chip degrades to a bare ref when `gh` can't resolve it. */
 export interface PrRefMeta {
@@ -643,3 +661,52 @@ function getLaunchInfo(
 
 export { getLaunchInfo };
 export type { LaunchCategory, LaunchInfo };
+
+/** One CI check on a PR's head commit (check run or old-style status). */
+export interface PrCheck {
+  name: string;
+  state: 'passed' | 'failed' | 'running' | 'skipped';
+  url?: string;
+}
+
+/** A reviewer's latest decision on a PR. */
+export interface PrReview {
+  user: string;
+  state: 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED';
+  at?: string;
+}
+
+/** Something an open PR is waiting on, for the hover card and the PR card line. */
+export interface PrBlocker {
+  kind: 'draft' | 'conflicts' | 'checks-failed' | 'checks-running' | 'changes-requested' | 'review' | 'behind' | 'blocked' | 'unknown' | 'ready';
+  tone: 'bad' | 'warn' | 'good' | 'muted';
+  text: string;
+}
+
+/** PR hover card payload, `GET /api/pr-detail?ref=owner/repo%23N`. */
+export interface PrDetail {
+  ref: string;
+  url?: string;
+  title?: string;
+  /** OPEN | CLOSED | MERGED. */
+  state?: string;
+  isDraft: boolean;
+  /** Markdown. */
+  body: string;
+  author?: string;
+  headRef?: string;
+  baseRef?: string;
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
+  comments: number;
+  updatedAt?: string;
+  mergedAt?: string;
+  mergedBy?: string;
+  closedAt?: string;
+  reviews: PrReview[];
+  requestedReviewers: string[];
+  checks: PrCheck[];
+  /** Most blocking first; empty unless the PR is open. */
+  waitingOn: PrBlocker[];
+}

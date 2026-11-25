@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import { sessionStore, scrubReplacedBy } from '../session/sessionStore.js';
 import { readGridText, serializeGrid } from '../pty/screenGrid.js';
 import { getCachedJiraTitle, getJiraCacheStats } from '../session/jiraTitleCache.js';
+import { getJiraDetail } from '../session/jiraDetailCache.js';
+import { getPrDetail } from '../git/prDetailCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -136,6 +138,25 @@ export function registerApiRoutes(
     res.json(stateManager.getStats());
   });
 
+  // PR hover card: description, checks, reviews, what it waits on. On demand.
+  app.get('/api/pr-detail', async (req, res) => {
+    const ref = typeof req.query.ref === 'string' ? req.query.ref : '';
+    const r = await getPrDetail(ref);
+    if (r.ok) { res.json(r.detail); return; }
+    const status = r.reason === 'bad-ref' ? 400 : r.reason === 'not-found' ? 404 : 502;
+    res.status(status).json({ error: r.reason });
+  });
+
+  // Ticket hover card: description + last comment, fetched on demand.
+  app.get('/api/jira/:key/detail', async (req, res) => {
+    const key = String(req.params.key ?? '').toUpperCase();
+    if (!/^[A-Z][A-Z0-9_]+-\d+$/.test(key)) { res.status(400).json({ error: 'bad-key' }); return; }
+    const r = await getJiraDetail(key);
+    if (r.ok) { res.json(r.detail); return; }
+    const status = r.reason === 'no-credentials' ? 503 : r.reason === 'not-found' ? 404 : 502;
+    res.status(status).json({ error: r.reason });
+  });
+
   app.get('/api/settings', (_req, res) => {
     const s = globalSettingsStore.get();
     res.json({
@@ -181,6 +202,9 @@ export function registerApiRoutes(
     if (body.lazyMcp && typeof body.lazyMcp === 'object' && !Array.isArray(body.lazyMcp)) {
       partial.lazyMcp = body.lazyMcp;
     }
+    // Default provider / mode for new sessions; values validated by sanitize().
+    if (typeof body.defaultProvider === 'string') partial.defaultProvider = body.defaultProvider;
+    if (typeof body.defaultMode === 'string') partial.defaultMode = body.defaultMode;
     const next = globalSettingsStore.patch(partial);
     res.json({
       ...next,
@@ -202,9 +226,6 @@ export function registerApiRoutes(
       '',
       `Question: ${text}`,
     ].join('\n');
-    // Default provider / mode for new sessions; values validated by sanitize().
-    if (typeof body.defaultProvider === 'string') partial.defaultProvider = body.defaultProvider;
-    if (typeof body.defaultMode === 'string') partial.defaultMode = body.defaultMode;
     try {
       const answer = await runClaudeQuery(prompt, BTW_TIMEOUT_MS, undefined, {
         model: BTW_MODEL,

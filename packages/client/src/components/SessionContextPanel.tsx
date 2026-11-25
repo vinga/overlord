@@ -1,15 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import type { Room, Session } from '../types';
 import { JiraChips } from './JiraChips';
-import { CopyUrl } from './CopyUrl';
-import { PinUrl } from './PinUrl';
-import { PrChips, PrGlyph, prRefFromUrl } from './PrChips';
-import prStyles from './PrChips.module.css';
+import { PrChips, RoomPrCard, prRefFromUrl } from './PrChips';
+import { PrHoverCard } from './PrHoverCard';
 import { PinBar, PinAdder, deletePin, jiraKeyOf } from './PinBar';
 import { TodoList } from './TodoList';
 import { renderMarkdown } from '../lib/renderMarkdown';
 import styles from './SessionContextPanel.module.css';
 import { ReadingDialog } from './ReadingDialog';
+import { JiraHoverCard } from './JiraHoverCard';
 import { QuestionList } from './QuestionList';
 import { useSessionQuestions } from '../lib/questions';
 import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, SessionContextNotes, useContextView, useNotesFilled, type ContextTab } from './ContextView';
@@ -50,6 +49,9 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
   const notesFilled = useNotesFilled({ sessionId: session?.sessionId, cwd: room?.cwd });
   // Refetch when the last assistant message or the state moves (a turn ended).
   const questions = useSessionQuestions(session?.sessionId, `${session?.state}|${session?.lastMessage ?? ''}`);
+  // State, not a ref: the hover card attaches listeners once the section mounts.
+  const [ticketSection, setTicketSection] = useState<HTMLElement | null>(null);
+  const [prSection, setPrSection] = useState<HTMLElement | null>(null);
   // Optimistic ticket order until the snapshot catches up; dropped once it does.
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const serverOrder = session?.jiraKeys?.join('|');
@@ -117,8 +119,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
     const matches = (p: typeof sessionPins[number]) => kind === 'other'
       ? p.kind !== 'ticket' && p.kind !== 'pr' : p.kind === kind && !isCardPin(p);
     return <>
-      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />
-      {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
+      <PinBar pins={sessionPins.filter(matches)} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder hoverCard={kind === 'pr'} roomCwd={room?.cwd} roomPins={roomPins} />
+      {room && <PinBar pins={roomPins.filter(matches)} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder hoverCard={kind === 'pr'} />}
     </>;
   };
   const roomPr = room?.pullRequest;
@@ -136,7 +138,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
       {view === 'room' && (room ? <RoomContextNotes cwd={room.cwd} /> : <p className={styles.muted}>No room</p>)}
       {view === 'global' && <GlobalContextNotes />}
       {view === 'context' && <>
-      <section className={styles.card} aria-label="Ticket">
+      <section ref={setTicketSection} className={styles.card} aria-label="Ticket">
+        <JiraHoverCard container={ticketSection} baseUrl={jiraBaseUrl} />
         {/* No "+" here: a detected ticket pins from its own pin icon. */}
         <h3>Ticket</h3>
         {orderedKeys.map((k, i) => {
@@ -144,8 +147,8 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
           return (
             <div key={k} className={styles.ticketRow}>
               {pin
-                ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />
-                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card pinTo={id} pinRoom={room?.cwd} roomKeys={roomTicketKeys} />}
+                ? <PinBar pins={[pin]} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder hoverCard roomCwd={room?.cwd} roomPins={roomPins} />
+                : <JiraChips keys={[k]} baseUrl={jiraBaseUrl} sessionId={session.sessionId} card hoverCard pinTo={id} pinRoom={room?.cwd} roomKeys={roomTicketKeys} />}
               {orderedKeys.length > 1 && (
                 <span className={styles.ticketMove}>
                   <button type="button" aria-label={`Move ${k} up`} title="Move up" disabled={i === 0} onClick={() => moveTicket(i, i - 1)}>↑</button>
@@ -155,34 +158,17 @@ export function SessionContextPanel({ session, room, name, jiraBaseUrl }: Props)
             </div>
           );
         })}
-        {loneSessionTicketPins.length > 0 && <PinBar pins={loneSessionTicketPins} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder roomCwd={room?.cwd} roomPins={roomPins} />}
-        {room && <PinBar pins={roomPins.filter(p => p.kind === 'ticket' && !listedKeys.has(jiraKeyOf(p) ?? ''))} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder />}
+        {loneSessionTicketPins.length > 0 && <PinBar pins={loneSessionTicketPins} overlordId={id} multiline adoptSessionId={session.sessionId} hideAdder hoverCard roomCwd={room?.cwd} roomPins={roomPins} />}
+        {room && <PinBar pins={roomPins.filter(p => p.kind === 'ticket' && !listedKeys.has(jiraKeyOf(p) ?? ''))} cwd={room.cwd} multiline adoptSessionId={session.sessionId} hideAdder hoverCard />}
         {!orderedKeys.length && !allPins.some(p => p.kind === 'ticket') && <p className={styles.muted}>No ticket attached</p>}
       </section>
-      <section className={styles.card} aria-label="Pull requests">
+      <section ref={setPrSection} className={styles.card} aria-label="Pull requests">
+        <PrHoverCard container={prSection} />
         <h3>PR</h3>
-        <PrChips refs={prs} card sessionId={session.sessionId} pinned={prPinned} pinTo={id} />
+        <PrChips refs={prs} card sessionId={session.sessionId} hoverCard pinned={prPinned} pinTo={id} />
         {pinsOfKind('pr')}
         {/* The room's branch PR, drawn as the same card as PrChips. */}
-        {showRoomPr && (() => {
-          const repo = roomPr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//i)?.[1];
-          const state = roomPr.isDraft && roomPr.state === 'OPEN' ? 'DRAFT' : roomPr.state;
-          return (
-            <div className={`${prStyles.row} ${prStyles.card}`}>
-              <span className={prStyles.chipWrap}>
-                <a className={prStyles.chip} href={roomPr.url} target="_blank" rel="noopener noreferrer" title={`${repo ?? ''}#${roomPr.number} — ${roomPr.title}`}>
-                  <PrGlyph />
-                  <span className={prStyles.chipRef}>#{roomPr.number}</span>
-                  <CopyUrl url={roomPr.url} />
-                  <PinUrl url={roomPr.url} overlordId={id} />
-                  {repo && <span className={prStyles.chipRepo}>{repo}</span>}
-                  <span className={prStyles.chipTitle}>{roomPr.title}</span>
-                  <span className={prStyles.state} data-state={state}>{state}</span>
-                </a>
-              </span>
-            </div>
-          );
-        })()}
+        {showRoomPr && <RoomPrCard pr={roomPr} hoverCard pinTo={id} />}
         {!prs.length && !showRoomPr && !allPins.some(p => p.kind === 'pr' && !isCardPin(p)) && <p className={styles.muted}>No PR attached</p>}
       </section>
       <section className={styles.card} aria-label="Plan">

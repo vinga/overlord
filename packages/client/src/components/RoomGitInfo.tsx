@@ -6,6 +6,8 @@ interface Props {
   branch?: string;
   gitAhead?: number;
   pullRequest?: Room['pullRequest'];
+  /** The PR is drawn elsewhere (room context column card): branch row only. */
+  hidePr?: boolean;
   gitWarning?: string;
 }
 
@@ -32,7 +34,7 @@ function branchUrl(prUrl: string | undefined, branch: string): string | undefine
 }
 
 /** Current branch of the room's checkout and the PR opened from it. */
-export const RoomGitInfo = React.memo(function RoomGitInfo({ branch, gitAhead, pullRequest, gitWarning }: Props) {
+export const RoomGitInfo = React.memo(function RoomGitInfo({ branch, gitAhead, pullRequest, gitWarning, hidePr = false }: Props) {
   if (!branch) return null;
   const href = branchUrl(pullRequest?.url, branch);
   const prState = pullRequest
@@ -56,7 +58,7 @@ export const RoomGitInfo = React.memo(function RoomGitInfo({ branch, gitAhead, p
           )}
         </span>
       </div>
-      <div className={styles.row}>
+      {!hidePr && <div className={styles.row}>
         <span className={styles.label}>PR</span>
         <span className={styles.value}>
           {pullRequest ? (
@@ -70,7 +72,7 @@ export const RoomGitInfo = React.memo(function RoomGitInfo({ branch, gitAhead, p
             <span className={styles.muted} title={gitWarning}>{gitWarning ? 'PR lookup failed' : 'No PR for this branch'}</span>
           )}
         </span>
-      </div>
+      </div>}
     </div>
   );
 });

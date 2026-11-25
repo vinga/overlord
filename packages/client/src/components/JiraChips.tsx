@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import styles from './JiraChips.module.css';
 import { useJiraMeta } from '../hooks/useJiraMeta';
 import { JiraTypeIcon } from './JiraTypeIcon';
+import { JiraPeek } from './JiraHoverCard';
 import { CopyUrl } from './CopyUrl';
 import { PinUrl } from './PinUrl';
 import { ToRoomButton } from './PinBar';
@@ -18,6 +19,8 @@ interface Props {
   onRename?: (name: string) => void;
   /** Full-width cards: key + status on the first line, title below. */
   card?: boolean;
+  /** A JiraHoverCard covers these chips: no native title tooltip. */
+  hoverCard?: boolean;
   /** overlordId: each chip gets a pin icon that pins the ticket to this session. */
   pinTo?: string;
   /** The session's room: each chip gets a house icon that pins the ticket there. */
@@ -28,7 +31,7 @@ interface Props {
 
 const VISIBLE = 3;
 
-export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pinTo, pinRoom, roomKeys }: Props) {
+export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, hoverCard = false, pinTo, pinRoom, roomKeys }: Props) {
   const meta = useJiraMeta();
   const [expanded, setExpanded] = useState(false);
   const [dismissing, setDismissing] = useState<Set<string>>(() => new Set());
@@ -81,7 +84,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pi
         const href = trimmedBase ? `${trimmedBase}/browse/${encodeURIComponent(key)}` : undefined;
         // Status tooltip (e.g. "Bug · In Progress"); omitted when nothing resolved.
         const status = [m?.type, m?.status].filter(Boolean).join(' · ');
-        const tip = status || undefined;
+        const tip = hoverCard ? undefined : status || undefined;
         const chipClass = [
           styles.chip,
           sessionId ? styles.chipHasDismiss : '',
@@ -101,6 +104,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pi
                   body: JSON.stringify({ cwd: pinRoom, url: href, kind: 'ticket' }),
                 }).then(r => r.ok, () => false)} />
             )}
+            {hoverCard && <JiraPeek />}
             {sessionId && <SetTitleIcon ticketKey={key} onSet={() => adopt(key)} />}
             {title && <span className={styles.chipTitle}>{title}</span>}
             {m?.status && (
@@ -121,7 +125,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pi
           </button>
         ) : null;
         return isLink ? (
-          <span key={key} className={styles.chipWrap}>
+          <span key={key} className={styles.chipWrap} data-jira-key={key}>
             <a
               className={chipClass}
               href={href}
@@ -135,7 +139,7 @@ export function JiraChips({ keys, baseUrl, sessionId, onRename, card = false, pi
             </a>
           </span>
         ) : (
-          <span key={key} className={styles.chipWrap}>
+          <span key={key} className={styles.chipWrap} data-jira-key={key}>
             <button
               type="button"
               className={`${chipClass} ${styles.chipUnconfigured}`}

@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import styles from './PrChips.module.css';
 import { usePrMeta } from '../hooks/usePrMeta';
+import { usePrDetail } from '../lib/prDetail';
+import type { Room } from '../types';
+import peekStyles from './JiraHoverCard.module.css';
 import { CopyUrl } from './CopyUrl';
 import { PinUrl } from './PinUrl';
 
@@ -9,6 +12,8 @@ interface Props {
   sessionId?: string;
   /** Full-width cards: #number + state on the first line, repo and title below. */
   card?: boolean;
+  /** A PrHoverCard covers these chips: peek icon, no native tooltip. */
+  hoverCard?: boolean;
   /** Pinned refs (lowercased) → unpin. Their × unpins instead of dismissing. */
   pinned?: ReadonlyMap<string, () => void>;
   /** overlordId: unpinned cards get a pin icon that pins them to this session. */
@@ -55,7 +60,94 @@ function PinGlyph() {
   );
 }
 
-export function PrChips({ refs, sessionId, card = false, pinned, pinTo }: Props) {
+/** The chip's "show details" icon, opening the PrHoverCard; visible on chip hover. */
+export function PrPeek() {
+  return (
+    <span className={peekStyles.peek} data-pr-peek role="button" tabIndex={-1} aria-label="Show PR details" title="Show details">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+        <path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13Zm0 1.5a5 5 0 1 0 0 10A5 5 0 0 0 8 3Zm.75 4v4.25h-1.5V7h1.5ZM8 4.4a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8Z" />
+      </svg>
+    </span>
+  );
+}
+
+/** One line under an open PR's card: what it is waiting on (first blocker). */
+export function PrWaitingLine({ prRef, open }: { prRef: string; open: boolean }) {
+  const detail = usePrDetail(prRef, open);
+  const first = open ? detail?.waitingOn[0] : undefined;
+  if (!first) return null;
+  const more = detail!.waitingOn.length - 1;
+  return (
+    <span className={styles.waiting} data-tone={first.tone} title={detail!.waitingOn.map(b => b.text).join('\n')}>
+      <span className={styles.waitingDot} aria-hidden="true" />
+      <span className={styles.waitingText}>{first.text}</span>
+      {more > 0 && <span className={styles.waitingMore}>+{more}</span>}
+    </span>
+  );
+}
+
+/** Room branch PRs dismissed with ×, keyed `<session overlordId | "room">\u0001<url>`; per browser.
+ *  The room PR comes from git, not the transcript, so there is no server list to drop it from. */
+const ROOM_PR_HIDDEN_KEY = 'overlord:roomPrHidden';
+const ROOM_PR_HIDDEN_EVENT = 'overlord:room-pr-hidden';
+function readRoomPrHidden(): string[] {
+  try { return JSON.parse(localStorage.getItem(ROOM_PR_HIDDEN_KEY) ?? '[]') as string[]; } catch { return []; }
+}
+function hideRoomPr(key: string): void {
+  // Capped: an old entry for a long-gone PR is harmless, an unbounded list is not.
+  const next = [key, ...readRoomPrHidden().filter(k => k !== key)].slice(0, 200);
+  try { localStorage.setItem(ROOM_PR_HIDDEN_KEY, JSON.stringify(next)); } catch { /* private mode */ }
+  window.dispatchEvent(new Event(ROOM_PR_HIDDEN_EVENT));
+}
+function useRoomPrHidden(key: string): boolean {
+  const [hidden, setHidden] = useState(() => readRoomPrHidden().includes(key));
+  React.useEffect(() => {
+    const sync = () => setHidden(readRoomPrHidden().includes(key));
+    sync();
+    window.addEventListener(ROOM_PR_HIDDEN_EVENT, sync);
+    return () => window.removeEventListener(ROOM_PR_HIDDEN_EVENT, sync);
+  }, [key]);
+  return hidden;
+}
+
+/** The room's branch PR, drawn as the same card as PrChips. Its × hides it for
+ *  this session (`pinTo`), or for the room view when there is no session. */
+export function RoomPrCard({ pr, hoverCard = false, pinTo }: { pr: NonNullable<Room['pullRequest']>; hoverCard?: boolean; pinTo?: string }) {
+  const repo = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\//i)?.[1];
+  const state = pr.isDraft && pr.state === 'OPEN' ? 'DRAFT' : pr.state;
+  const ref = repo ? `${repo}#${pr.number}` : undefined;
+  const hideKey = `${pinTo ?? 'room'}\u0001${pr.url}`;
+  const hidden = useRoomPrHidden(hideKey);
+  if (hidden) return null;
+  return (
+    <div className={`${styles.row} ${styles.card}`}>
+      <span className={styles.chipWrap} data-pr-ref={hoverCard ? ref : undefined}>
+        <a className={styles.chip} href={pr.url} target="_blank" rel="noopener noreferrer" title={hoverCard ? undefined : `${repo ?? ''}#${pr.number} — ${pr.title}`}>
+          <PrGlyph />
+          <span className={styles.chipRef}>#{pr.number}</span>
+          <CopyUrl url={pr.url} />
+          <PinUrl url={pr.url} overlordId={pinTo} />
+          {hoverCard && ref && <PrPeek />}
+          {repo && <span className={styles.chipRepo}>{repo}</span>}
+          <span className={styles.chipTitle}>{pr.title}</span>
+          <span className={styles.state} data-state={state}>{state}</span>
+          {ref && <PrWaitingLine prRef={ref} open={pr.state === 'OPEN'} />}
+          <button
+            type="button"
+            className={styles.dismiss}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); hideRoomPr(hideKey); }}
+            aria-label={`Dismiss ${ref ?? `#${pr.number}`}`}
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </a>
+      </span>
+    </div>
+  );
+}
+
+export function PrChips({ refs, sessionId, card = false, hoverCard = false, pinned, pinTo }: Props) {
   const meta = usePrMeta();
   const [expanded, setExpanded] = useState(false);
   // Optimistic removal — the chip vanishes on click and comes back if the
@@ -114,23 +206,25 @@ export function PrChips({ refs, sessionId, card = false, pinned, pinTo }: Props)
         const href = m?.url || fallbackUrl(ref);
         const isPinned = !!pinned?.has(ref.toLowerCase());
         return (
-          <span key={ref} className={styles.chipWrap}>
+          <span key={ref} className={styles.chipWrap} data-pr-ref={hoverCard ? ref : undefined}>
             <a
               className={styles.chip}
               href={href}
               target="_blank"
               rel="noopener noreferrer"
               onClick={stop}
-              title={m?.title ? `${ref} — ${m.title}` : ref}
+              title={hoverCard ? undefined : m?.title ? `${ref} — ${m.title}` : ref}
             >
               <PrGlyph />
               <span className={styles.chipRef}>{label || ref}</span>
+              {isPinned && <PinGlyph />}
               <CopyUrl url={href} />
               {!isPinned && <PinUrl url={href} overlordId={pinTo} />}
-              {isPinned && <PinGlyph />}
+              {hoverCard && <PrPeek />}
               <span className={styles.chipRepo}>{repo}</span>
               {m?.title && <span className={styles.chipTitle}>{m.title}</span>}
               {state && <span className={styles.state} data-state={state}>{state}</span>}
+              {card && <PrWaitingLine prRef={ref} open={m?.state === 'OPEN'} />}
               {(sessionId || isPinned) && (
                 <button
                   type="button"

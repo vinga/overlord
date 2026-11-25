@@ -1,0 +1,93 @@
+/* PR hover card — the shell comes from JiraHoverCard.module.css. */
+
+.glyph { display: inline-flex; color: rgba(255, 255, 255, 0.6); }
+.repo {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8a8a96;
+  font-size: 12px;
+}
+
+.blockers, .checks, .reviews {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.blocker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); }
+.blocker[data-tone='bad'] { color: #f6b4b4; background: rgba(239, 95, 95, 0.08); border-color: rgba(239, 95, 95, 0.22); }
+.blocker[data-tone='bad'] .dot { background: #ef5f5f; }
+.blocker[data-tone='warn'] { color: #eccf8c; background: rgba(229, 169, 58, 0.07); border-color: rgba(229, 169, 58, 0.2); }
+.blocker[data-tone='warn'] .dot { background: #e5a93a; }
+.blocker[data-tone='good'] { color: #9fe0b3; background: rgba(63, 191, 106, 0.07); border-color: rgba(63, 191, 106, 0.22); }
+.blocker[data-tone='good'] .dot { background: #3fbf6a; }
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.8);
+}
+.check a { color: inherit; text-decoration: none; }
+.check a:hover { text-decoration: underline; }
+.checkIcon { width: 14px; text-align: center; font-size: 11px; }
+.check[data-state='failed'] .checkIcon { color: #ef5f5f; }
+.check[data-state='running'] .checkIcon { color: #e5a93a; }
+
+.review {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.reviewer { font-weight: 600; color: rgba(255, 255, 255, 0.88); }
+.reviewState { color: #8a8a96; }
+.review[data-state='APPROVED'] .reviewState { color: #8fd8a6; }
+.review[data-state='CHANGES_REQUESTED'] .reviewState { color: #f4a3a3; }
+.review[data-state='REQUESTED'] .reviewState { color: #e9c77a; }
+.when { color: #6f6f7a; font-size: 11.5px; }
+
+.markdown { font-size: 13px; line-height: 1.6; color: rgba(255, 255, 255, 0.82); overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 8px; }
+.markdown ul, .markdown ol { margin: 0 0 8px; padding-left: 20px; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { font-size: 13.5px; margin: 12px 0 6px; color: rgba(255, 255, 255, 0.95); }
+.markdown a { color: #8ab4f8; text-decoration: none; }
+.markdown a:hover { text-decoration: underline; }
+.markdown code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; padding: 1px 4px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); }
+.markdown pre { padding: 10px; border-radius: 6px; background: #121218; overflow: auto; }
+.markdown pre code { padding: 0; background: none; }
+.markdown img { max-width: 100%; }
+.markdown table { display: block; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
+.markdown th, .markdown td { border: 1px solid rgba(255, 255, 255, 0.1); padding: 4px 8px; }
+.markdown blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid rgba(255, 255, 255, 0.15); color: #a0a0aa; }
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  color: #8a8a96;
+}

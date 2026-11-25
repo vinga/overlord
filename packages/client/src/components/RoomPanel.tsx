@@ -7,9 +7,10 @@ import { RoomDetailsTab } from './RoomDetailsTab';
 import { RoomPlansTab } from './RoomDetailsTab';
 import { PinBar, deletePin, hiddenPinRefs } from './PinBar';
 import { TodoList } from './TodoList';
-import { PrChips, prRefFromUrl } from './PrChips';
 import { RoomGitInfo } from './RoomGitInfo';
 import { GitSyncStatus } from './GitSyncStatus';
+import { PrChips, RoomPrCard, prRefFromUrl } from './PrChips';
+import { PrHoverCard } from './PrHoverCard';
 import { RoomFilesPanel } from './RoomFilesPanel';
 import { ContextViewSwitch, GlobalContextNotes, RoomContextNotes, useContextView, useNotesFilled, type ContextTab } from './ContextView';
 import { OPEN_ROOM_TAB_EVENT, takeRoomTab, type RoomPanelTab } from '../lib/roomPanelTab';
@@ -59,6 +60,7 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
   const [activeTab, setActiveTab] = useState<Tab>(() => takeRoomTab(room.id) ?? 'room');
   const [contextView, setContextView] = useContextView('overlord.roomContextViews', room.cwd, ROOM_VIEWS);
   const notesFilled = useNotesFilled({ cwd: room.cwd });
+  const [prSection, setPrSection] = useState<HTMLElement | null>(null);
   const horizontal = dock !== 'bottom';
 
   // A request for this room while it is already shown (folder button, "Show in Files").
@@ -216,9 +218,19 @@ export function RoomPanel({ room, archivedCount, customNames, onClose, dock = 'r
               gitAhead={room.gitAhead}
               pullRequest={room.pullRequest}
               gitWarning={room.gitWarning}
+              hidePr
             />
             {room.gitBranch && <GitSyncStatus gitAhead={room.gitAhead} gitBehind={room.gitBehind} gitUpstream={room.gitUpstream} gitDirty={room.gitDirty} />}
           </div>
+          {room.gitBranch && (
+            <section ref={setPrSection} aria-label="Pull request">
+              <PrHoverCard container={prSection} />
+              <h3 className={styles.contextLabel}>PR</h3>
+              {room.pullRequest
+                ? <RoomPrCard pr={room.pullRequest} hoverCard />
+                : <span className={styles.contextMuted} title={room.gitWarning}>{room.gitWarning ? 'PR lookup failed' : 'No PR for this branch'}</span>}
+            </section>
+          )}
           {!!room.pins?.length && (() => {
             // GitHub PR pins are drawn as PR cards (× unpins); the branch PR is already shown above.
             const prPinned = new Map<string, () => void>();
