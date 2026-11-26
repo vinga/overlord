@@ -157,7 +157,7 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
           {onNewSession && <MenuItem icon={ICONS.newSession} label="New session here" title="Quick spawn in this room and switch to it" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onNewSession)} />}
           {onClone && <MenuItem icon={ICONS.clone} label="Clone" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onClone)} />}
           {onClear && <MenuItem icon={ICONS.clear} label="Clear" hover="#fb923c" hoverBg="rgba(251,146,60,0.1)" onClick={act(onClear)} />}
-          {historyLines !== null && historyLines > SHELL_HISTORY_KEEP_LINES && (
+          {isRaw && (historyLines !== null && historyLines > SHELL_HISTORY_KEEP_LINES ? (
             <MenuItem
               icon={ICONS.trim}
               label={`Trim history to last ${SHELL_HISTORY_KEEP_LINES} lines`}
@@ -166,7 +166,17 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
               hover="#fb923c" hoverBg="rgba(251,146,60,0.1)"
               onClick={act(() => { void trimShellHistory(session.sessionId, session.overlordId ?? session.sessionId); })}
             />
-          )}
+          ) : (
+            // Always listed for shells, so the option can be found; nothing to cut yet.
+            <MenuItem
+              icon={ICONS.trim}
+              label={`Trim history to last ${SHELL_HISTORY_KEEP_LINES} lines`}
+              hint={historyLines === null ? '…' : `${historyLines.toLocaleString()} lines`}
+              title={`Available once the history is over ${SHELL_HISTORY_KEEP_LINES} lines`}
+              color="rgba(255,255,255,0.35)" hover="rgba(255,255,255,0.35)" hoverBg="transparent"
+              onClick={act(() => {})}
+            />
+          ))}
           <MenuDivider />
           <MenuItem icon={ICONS.trash} label="Delete" color="#ff6b6b" hover="#ff6b6b" hoverBg="rgba(255,107,107,0.1)" onClick={act(onDelete)} />
           </>}

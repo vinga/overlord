@@ -3,7 +3,8 @@ import type { Session, WorkerState } from '../types';
 import { XtermTerminal } from './XtermTerminal';
 import { ColorPicker } from './ColorPicker';
 import { putSessionColor, putSessionIcon } from '../lib/sessionAppearance';
-import { fetchShellHistoryLines, trimShellHistory, SHELL_HISTORY_KEEP_LINES } from '../lib/shellHistory';
+import { DeskMenu } from './DeskMenu';
+import { formatSessionRef } from '../lib/sessionRef';
 import styles from './PtyTerminalPanel.module.css';
 import { ROOM_GRID_ENABLED } from '../config/featureFlags';
 import { useResizableWidth } from '../hooks/useResizableWidth';
@@ -103,23 +104,6 @@ export function PtyTerminalPanel({
     }
   };
   const [detailsOpen, setDetailsOpen] = useState(true);
-  // Shell history length, shown in the details. Fetched when they open and
-  // when the shell goes idle (a command finished) — no timer.
-  const isRawShell = session?.sessionType === 'raw';
-  const [historyLines, setHistoryLines] = useState<number | null>(null);
-  const [trimming, setTrimming] = useState(false);
-  useEffect(() => {
-    if (!detailsOpen || !isRawShell) return;
-    let cancelled = false;
-    void fetchShellHistoryLines(sessionId).then(n => { if (!cancelled) setHistoryLines(n); });
-    return () => { cancelled = true; };
-  }, [detailsOpen, isRawShell, sessionId, session?.state]);
-  const trimHistory = async () => {
-    setTrimming(true);
-    const ok = await trimShellHistory(sessionId, session?.overlordId ?? sessionId);
-    setTrimming(false);
-    if (ok) setHistoryLines(await fetchShellHistoryLines(sessionId));
-  };
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
   const [tick, setTick] = useState(0);
@@ -273,16 +257,27 @@ export function PtyTerminalPanel({
               ↻ Restart shell
             </button>
           )}
-          <button
-            className={styles.iconBtn}
-            onClick={() => onKill(sessionId)}
-            aria-label="Kill session"
-            data-tooltip="Kill shell and remove it from the room"
-            data-tooltip-dir="down"
-            data-tooltip-align="right"
-          >
-            ⏻
-          </button>
+          {/* Same burger menu as agent sessions; Delete kills the shell. */}
+          {session ? (
+            <DeskMenu
+              session={session}
+              sessionRef={formatSessionRef({ name: displayName, sessionId: session.sessionId, overlordId: session.overlordId })}
+              anchorStyle={{ position: 'relative' }}
+              buttonSize={28}
+              onDelete={() => onKill(sessionId)}
+            />
+          ) : (
+            <button
+              className={styles.iconBtn}
+              onClick={() => onKill(sessionId)}
+              aria-label="Kill session"
+              data-tooltip="Kill shell and remove it from the room"
+              data-tooltip-dir="down"
+              data-tooltip-align="right"
+            >
+              ⏻
+            </button>
+          )}
         </div>
       </div>
 
@@ -321,27 +316,6 @@ export function PtyTerminalPanel({
 
             <span className={styles.detailLabel}>Workspace</span>
             <span className={`${styles.detailValue} ${styles.cwd}`}>{session.cwd}</span>
-
-            {isRawShell && historyLines !== null && (
-              <>
-                <span className={styles.detailLabel}>History</span>
-                <span className={styles.detailValue}>
-                  {historyLines.toLocaleString()} lines
-                  {historyLines > SHELL_HISTORY_KEEP_LINES && (
-                    <button
-                      type="button"
-                      className={styles.trimBtn}
-                      disabled={trimming}
-                      onClick={() => void trimHistory()}
-                      data-tooltip="Older output is deleted for good; the shell keeps running"
-                      data-tooltip-dir="down"
-                    >
-                      {trimming ? 'Trimming…' : `Trim to last ${SHELL_HISTORY_KEEP_LINES}`}
-                    </button>
-                  )}
-                </span>
-              </>
-            )}
           </div>
           {isExited && <div className={styles.exitedBanner}>Session exited</div>}
         </div>
