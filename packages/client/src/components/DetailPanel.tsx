@@ -2323,6 +2323,8 @@ export function DetailPanel({
   const [extraFeed, setExtraFeed] = useState<ActivityItem[]>([]);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [internalScrollTarget, setInternalScrollTarget] = useState<string | undefined>();
+  /** The scroll-target effect is still trying to reach its target. */
+  const scrollPendingRef = useRef(false);
   const [internalScrollQuery, setInternalScrollQuery] = useState<string | undefined>();
   const panelSearchRef = useRef<HTMLInputElement>(null);
   // Effective scroll target: internal (panel search) takes priority over external (global search)
@@ -2497,6 +2499,10 @@ const currentDisplayName =
     sendCount: localSent.length,
     hasScrollTarget: !!effectiveScrollTarget,
     onReachedBottomWithTarget: () => {
+      // A feed that is still at the bottom while the jump waits for its
+      // render (cold page, older history being prepended) is not the user
+      // scrolling away — cancelling there dropped every first Q&A jump.
+      if (scrollPendingRef.current) return;
       setInternalScrollTarget(undefined);
       setInternalScrollQuery(undefined);
       onScrollTargetConsumed?.();
@@ -2685,27 +2691,31 @@ const currentDisplayName =
     };
 
     const consumeTarget = () => {
+      scrollPendingRef.current = false;
       setInternalScrollTarget(undefined);
       setInternalScrollQuery(undefined);
       onScrollTargetConsumed?.();
     };
 
-    const tid = setTimeout(() => {
+    // Retry while auto-expand, the older-message fetch and a fresh page's
+    // first feed render settle (a cold Q&A jump needs ~1.5 s), then give up.
+    const RETRY_MS = 200;
+    const MAX_RETRIES = 15;
+    let cancelled = false;
+    scrollPendingRef.current = true;
+    let tid = setTimeout(function tryScroll(attempt = 0) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          if (attemptScroll()) {
+          if (cancelled) return;
+          if (attemptScroll() || attempt >= MAX_RETRIES) {
             consumeTarget();
             return;
           }
-          // Retry after a longer delay to let auto-expand + older-message fetch settle.
-          setTimeout(() => {
-            attemptScroll();
-            consumeTarget();
-          }, 250);
+          tid = setTimeout(() => tryScroll(attempt + 1), RETRY_MS);
         });
       });
     }, 80);
-    return () => clearTimeout(tid);
+    return () => { cancelled = true; scrollPendingRef.current = false; clearTimeout(tid); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveScrollTarget, effectiveScrollQuery]);
 

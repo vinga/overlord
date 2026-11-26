@@ -7,7 +7,7 @@ import {
   type ConversationEntry,
 } from '../session/questionIndex.js';
 import { readStars, setStar, deleteStars } from '../session/questionStars.js';
-import { sessionQuestions } from '../api/questionRoutes.js';
+import { sessionQuestions, answerText } from '../api/questionRoutes.js';
 
 let HOME: string;
 const REAL_HOME = process.env.HOME;
@@ -160,5 +160,24 @@ describe('sessionQuestions', () => {
     expect(out.starred).toEqual(['t1']);
     expect(out.questions.map(q => [q.id, q.isQuestion])).toEqual([['t1', false], ['t3', true]]);
     expect(sessionQuestions(deps, 'nope')).toEqual({ questions: [], starred: [] });
+  });
+});
+
+describe('answerText', () => {
+  it('returns the full assistant text at a timestamp; user text or unknown → null', () => {
+    const f = path.join(HOME, 'a.jsonl');
+    const long = `## Answer\n\n${'word '.repeat(100)}`;
+    fs.writeFileSync(f, [
+      { type: 'user', timestamp: 't1', message: { content: 'why?' } },
+      { type: 'assistant', timestamp: 't2', message: { content: [{ type: 'text', text: long }] } },
+    ].map(o => JSON.stringify(o)).join('\n') + '\n');
+    const deps = {
+      stateManager: { getSession: () => undefined, getActiveClaudeByOvr: () => undefined } as never,
+      transcriptPathFor: (sid: string) => (sid === 's1' ? f : null),
+    };
+    expect(answerText(deps, 's1', 't2')).toBe(long);
+    expect(answerText(deps, 's1', 't1')).toBeNull();
+    expect(answerText(deps, 's1', 'nope')).toBeNull();
+    expect(answerText(deps, 'other', 't2')).toBeNull();
   });
 });

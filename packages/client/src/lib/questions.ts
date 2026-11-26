@@ -69,6 +69,22 @@ export function setQuestionStar(sessionId: string, messageId: string, starred: b
     .catch(e => { console.warn('[questions] star failed', e); void loadQuestions(sessionId); });
 }
 
+/** Full markdown of one answer, cached per session + timestamp (an answer
+ *  never changes once written). */
+const answerCache = new Map<string, Promise<string>>();
+
+export function fetchAnswer(sessionId: string, answerAt: string): Promise<string> {
+  const key = `${sessionId}\n${answerAt}`;
+  const hit = answerCache.get(key);
+  if (hit) return hit;
+  const p = fetch(`/api/sessions/${encodeURIComponent(sessionId)}/questions/answer?at=${encodeURIComponent(answerAt)}`)
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))) as Promise<{ text?: string }>)
+    .then(d => d.text ?? '');
+  p.catch(() => answerCache.delete(key));
+  answerCache.set(key, p);
+  return p;
+}
+
 /** Window event: scroll the session feed to a user message (DetailPanel listens). */
 export const JUMP_TO_MESSAGE_EVENT = 'overlord:jump-to-message';
 export interface JumpToMessageDetail { sessionId: string; id: string }

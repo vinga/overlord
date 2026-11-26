@@ -28,10 +28,34 @@ export function sessionQuestions(deps: QuestionDeps, id: string): { questions: S
   return { questions: extractQuestions(readConversation(transcript), new Set(starred)), starred };
 }
 
+const ANSWER_FULL_MAX = 20_000;
+
+/** The assistant text written at `at` (a question's `answerAt`), or null. */
+export function answerText(deps: QuestionDeps, id: string, at: string): string | null {
+  const { transcript } = lookup(deps, id);
+  if (!transcript) return null;
+  const entry = readConversation(transcript).find(e => e.role === 'assistant' && e.timestamp === at);
+  if (!entry) return null;
+  return entry.text.length > ANSWER_FULL_MAX ? `${entry.text.slice(0, ANSWER_FULL_MAX)}…` : entry.text;
+}
+
 export function registerQuestionRoutes(app: Express, deps: QuestionDeps): void {
   app.get('/api/sessions/:id/questions', (req, res) => {
     try {
       res.json(sessionQuestions(deps, req.params.id));
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Full text of one answer (the list carries only a clipped preview).
+  app.get('/api/sessions/:id/questions/answer', (req, res) => {
+    const at = typeof req.query.at === 'string' ? req.query.at : '';
+    if (!at || at.length > 64) { res.status(400).json({ error: 'at= is required' }); return; }
+    try {
+      const text = answerText(deps, req.params.id, at);
+      if (text === null) { res.status(404).json({ error: 'answer not found' }); return; }
+      res.json({ text });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
     }
