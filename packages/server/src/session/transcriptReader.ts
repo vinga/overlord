@@ -1261,6 +1261,59 @@ function buildToolResults(lines: string[]): Map<string, { content: string; isErr
   return results;
 }
 
+/** Fills a Claude tool_use feed item with what the detail panel expands:
+ *  Edit/Write diff strings, the full input JSON, duration and result. Shared by
+ *  the live tail and the "load older" page so both rows stay clickable. */
+function attachToolDetails(
+  item: ActivityItem,
+  block: { name?: string; input?: unknown; id?: unknown },
+  toolDurations: Map<string, number>,
+  toolResults: Map<string, { content: string; isError: boolean }>,
+  maxContentLength: number,
+): void {
+  if (block.input && typeof block.input === 'object') {
+    const inp = block.input as Record<string, unknown>;
+    if (block.name === 'Edit') {
+      if (typeof inp.old_string === 'string') {
+        item.oldString = inp.old_string.slice(0, maxContentLength);
+        if (inp.old_string.length > maxContentLength) item.oldStringTruncated = true;
+      }
+      if (typeof inp.new_string === 'string') {
+        item.newString = inp.new_string.slice(0, maxContentLength);
+        if (inp.new_string.length > maxContentLength) item.newStringTruncated = true;
+      }
+    } else if (block.name === 'Write') {
+      if (typeof inp.content === 'string') {
+        item.oldString = '';
+        item.newString = inp.content.slice(0, maxContentLength);
+        if (inp.content.length > maxContentLength) item.newStringTruncated = true;
+      }
+    }
+    // Full input JSON. Only a pathological string value (a Write of a
+    // whole file beyond the message cap) is cut — a long Bash command
+    // must stay readable end to end.
+    const trimmed: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(inp)) {
+      if (typeof v === 'string' && v.length > MAX_MESSAGE_LENGTH) {
+        trimmed[k] = v.slice(0, MAX_MESSAGE_LENGTH) + '…';
+      } else {
+        trimmed[k] = v;
+      }
+    }
+    item.inputJson = JSON.stringify(trimmed, null, 2);
+  }
+  const blockId = typeof block.id === 'string' ? block.id : undefined;
+  if (blockId) {
+    const dur = toolDurations.get(blockId);
+    if (dur !== undefined) item.durationMs = dur;
+    const res = toolResults.get(blockId);
+    if (res !== undefined && res.content.length > 0) {
+      item.resultJson = res.content;
+      if (res.isError) item.isError = true;
+    }
+  }
+}
+
 /** One ScheduleWakeup call mined from the transcript tail — for the on-demand
  *  Detail-panel stats endpoint. Not part of the WS snapshot. */
 export interface ScheduledWakeupInfo {
@@ -1739,48 +1792,7 @@ export function readTranscriptState(filePath: string): {
                       }
                     }
                   }
-                  if (block.input && typeof block.input === 'object') {
-                    const inp = block.input as Record<string, unknown>;
-                    if (block.name === 'Edit') {
-                      if (typeof inp.old_string === 'string') {
-                        item.oldString = inp.old_string.slice(0, MAX_CONTENT_LENGTH);
-                        if (inp.old_string.length > MAX_CONTENT_LENGTH) item.oldStringTruncated = true;
-                      }
-                      if (typeof inp.new_string === 'string') {
-                        item.newString = inp.new_string.slice(0, MAX_CONTENT_LENGTH);
-                        if (inp.new_string.length > MAX_CONTENT_LENGTH) item.newStringTruncated = true;
-                      }
-                    } else if (block.name === 'Write') {
-                      if (typeof inp.content === 'string') {
-                        item.oldString = '';
-                        item.newString = inp.content.slice(0, MAX_CONTENT_LENGTH);
-                        if (inp.content.length > MAX_CONTENT_LENGTH) item.newStringTruncated = true;
-                      }
-                    }
-                    // Full input JSON. Only a pathological string value (a Write of a
-                    // whole file beyond the message cap) is cut — a long Bash command
-                    // must stay readable end to end.
-                    const trimmed: Record<string, unknown> = {};
-                    for (const [k, v] of Object.entries(inp)) {
-                      if (typeof v === 'string' && v.length > MAX_MESSAGE_LENGTH) {
-                        trimmed[k] = v.slice(0, MAX_MESSAGE_LENGTH) + '…';
-                      } else {
-                        trimmed[k] = v;
-                      }
-                    }
-                    item.inputJson = JSON.stringify(trimmed, null, 2);
-                  }
-                  // Compute duration and result from pre-pass maps
-                  const blockId = (block as Record<string, unknown>).id as string | undefined;
-                  if (blockId) {
-                    const dur = toolDurations.get(blockId);
-                    if (dur !== undefined) item.durationMs = dur;
-                    const res = toolResults.get(blockId);
-                    if (res !== undefined && res.content.length > 0) {
-                      item.resultJson = res.content;
-                      if (res.isError) item.isError = true;
-                    }
-                  }
+                  attachToolDetails(item, block as { name?: string; input?: unknown; id?: unknown }, toolDurations, toolResults, MAX_CONTENT_LENGTH);
                   if (parsed.timestamp) item.timestamp = parsed.timestamp;
                   activityFeed.unshift(item);
                 }
@@ -2763,6 +2775,11 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
   const activityFeed: ActivityItem[] = [];
   let messageCount = 0;
   let hitLimit = false;
+  // Same pre-pass as the live tail, so older tool rows expand to args/result.
+  // A result past the window's end (already in the loaded feed) is not found —
+  // that row still shows its args.
+  const toolDurations = buildToolDurations(window);
+  const toolResults = buildToolResults(window);
 
   for (let i = window.length - 1; i >= 0; i--) {
     try {
@@ -2821,10 +2838,12 @@ export function readActivityBefore(filePath: string, beforeTimestamp: string, li
             if (block.type === 'tool_use' && block.name) {
               const isBackgroundBash = block.name === 'Bash' && !!block.input && typeof block.input === 'object'
                 && (block.input as Record<string, unknown>).run_in_background === true;
-              activityFeed.unshift({
-                kind: 'tool', toolName: block.name as string, content: block.name as string, timestamp: parsed.timestamp,
+              const item: ActivityItem = {
+                kind: 'tool', toolName: block.name as string, content: describeInput(block.input), timestamp: parsed.timestamp,
                 ...(isBackgroundBash && block.id ? { toolUseId: block.id } : {}),
-              });
+              };
+              attachToolDetails(item, block, toolDurations, toolResults, MAX_CONTENT);
+              activityFeed.unshift(item);
             }
           }
         }
