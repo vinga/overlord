@@ -35,7 +35,8 @@ export type WorkerState = 'working' | 'thinking' | 'waiting' | 'closed';
 // Include 'aider' to support Aider provider sessions (MVP: detection/tracking only, no Overlord spawn).
 export type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 
-export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap';
+/** 'speech': a `say` call swallowed while agents' voice is muted — shown as text. */
+export type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap' | 'speech';
 
 export interface ActivityItem {
   kind: ActivityItemKind;
@@ -268,6 +269,8 @@ export interface Session {
    *  `activityFeed.length > 0` must use this instead. */
   hasActivity?: boolean;
   ptyCompactItems?: ActivityItem[];  // compact items sourced from PTY output, merged into activityFeed
+  /** Muted `say` calls (kind 'speech'), merged into activityFeed. In memory only. */
+  mutedSpeechItems?: ActivityItem[];
   ptyCompactBaseline?: number;  // compactCount at the moment PTY detected "Compacting conversation"; keeps isCompacting sticky until a new boundary lands
   ptyCompactBaselineAt?: number;  // Date.now() of baseline snapshot; used for TTL safety release
   ptyCompactBoundarySeen?: boolean;  // transcript's isCompacting seen true while baseline held — release when it goes back to false

@@ -29,7 +29,11 @@ For anything that takes minutes (deploy, CI, rollout, waiting for a slot):
 
 When you start on a Jira ticket, open a PR, or push a branch, pin its URL: \`ovr pin add <url>\` (add \`--room\` for links every session in the folder needs). Overlord shows pins as chips above the session tabs. \`ovr help\` has the details.
 
-The user may give a session a TODO list (\`ovr todo ls\` shows it with ids). When you finish an item on it, check it off: \`ovr todo done <id>\`. Items owned by the agent are yours to do (\`ovr todo ls --agent\`); add one for yourself with \`ovr todo add --agent <text>\` — without \`--agent\` an item is the user's.`;
+The user may give a session a TODO list (\`ovr todo ls\` shows it with ids). When you finish an item on it, check it off: \`ovr todo done <id>\`. Items owned by the agent are yours to do (\`ovr todo ls --agent\`); add one for yourself with \`ovr todo add --agent <text>\` — without \`--agent\` an item is the user's.
+
+## Speaking aloud
+
+Speak only through \`say\`. The user can mute agents' voice; \`say\` then prints \`🔇 say (muted): …\` and puts the text in the conversation instead. That is expected: do not retry, and do not reach for another way to make sound (\`/usr/bin/say\`, \`afplay\`, \`osascript\`).`;
 
 function home(): string {
   // $HOME first so tests can stub it (os.homedir() ignores the env on macOS).

@@ -326,6 +326,27 @@ claude ──stdio──▶ overlord-lazy-mcp ──(first tools/call)──▶ 
   entries in `~/.claude.json`.
 - **Logs.** `~/.claude/overlord/lazy-mcp/<name>.log`, truncated past 1 MiB.
 
+## Mute agents' voice
+
+Agents and skill scripts speak with macOS `say`. `bin/say` is a shim linked as
+`~/.local/bin/say` by `install-agent-defaults` (that dir must precede `/usr/bin` on
+PATH; the installer warns otherwise). Each call does `GET /api/speech/agent-muted`
+(1 s timeout):
+
+- **not muted / server down** → `exec /usr/bin/say "$@"` (fail-open: an alert is never lost because Overlord is off);
+- **`-o` / `--output-file`** → always the real `say` (renders a file, no audio);
+- **muted** → no sound; prints `🔇 say (muted): <text>` and `POST /api/speech/muted-say`
+  with `ptyId` (`OVERLORD_PTY_ID`) or, failing that, the nearest ancestor pid
+  `/api/resolve` knows. `stateManager.addMutedSpeech` adds an `ActivityItem` of kind
+  `'speech'` to `session.mutedSpeechItems` (in memory, last 50), merged into
+  `activityFeed` by time on every transcript refresh (`mergeByTime`). DetailPanel shows it
+  as a grey "🔇 said" line.
+
+Toggle: `settings.agentSpeechMuted` — header speaker button, Settings → Voice, or
+`ovr mute on|off|status`. The default agent rules tell agents not to work around it.
+Not covered: `/usr/bin/say` by absolute path, and processes whose PATH lacks
+`~/.local/bin` (launchd, cron).
+
 ## macOS speech
 
 Voice input has two speech-to-text engines, picked in Settings → Voice → Speech engine (`voiceInput.provider`):

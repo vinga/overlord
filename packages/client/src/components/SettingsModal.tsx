@@ -47,7 +47,7 @@ const TREE: TreeNode[] = [
       { id: 'general.sessions', label: 'New sessions', keywords: 'default provider claude codex opencode mode quick spawn fast session bridge direct overlord new session' },
       { id: 'general.layout', label: 'Layout', keywords: 'layout dock panel bottom right side portrait landscape vertical monitor orientation split chat rooms tabs chips sessions dots' },
       { id: 'general.conversation', label: 'Conversation', keywords: 'sticky pinned user message feed prompt header detail panel' },
-      { id: 'general.voice', label: 'Voice', keywords: 'voice mic microphone dictation speech stt start word stop word wake hands free language' },
+      { id: 'general.voice', label: 'Voice', keywords: 'voice mic microphone dictation speech stt start word stop word wake hands free language mute say agents speak' },
     ],
   },
   {
@@ -326,6 +326,12 @@ export function SettingsModal({ settings, onUpdate, onClose, initialPage }: Prop
       case 'general.voice':
         return (
           <>
+            <ToggleRow
+              label="Mute agents' voice"
+              hint="Agents and skill scripts that speak with `say` stay silent; the text shows in the session's conversation instead. Same as the speaker button in the header."
+              on={!!settings.agentSpeechMuted}
+              onToggle={() => onUpdate({ agentSpeechMuted: !settings.agentSpeechMuted })}
+            />
             <ToggleRow
               label="Voice control"
               hint="Dictate prompts to the open worker. Recognition runs in Chrome and streams audio to Google while the microphone is on."

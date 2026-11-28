@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# say — shim for macOS /usr/bin/say that honours Overlord's "mute agents' voice".
+# Linked as ~/.local/bin/say (earlier on PATH than /usr/bin) by install-agent-defaults.
+#
+#   not muted, or Overlord unreachable  → exec the real say, unchanged
+#   muted → no sound; prints "🔇 say (muted): <text>" and adds the text to the
+#           session's conversation (OVERLORD_PTY_ID, else the nearest ancestor
+#           process Overlord knows)
+#   -o / --output-file (render to a file, no audio) → always the real say
+# Works on macOS bash 3.2.
+
+REAL=${OVERLORD_REAL_SAY:-/usr/bin/say}
+BASE="${OVERLORD_HOST:-http://localhost:3173}"
+
+for a in "$@"; do
+  case $a in -o|--output-file|--output-file=*|-o?*) exec "$REAL" "$@" ;; esac
+done
+
+muted=$(curl -fsS -m 1 "$BASE/api/speech/agent-muted" 2>/dev/null)
+case $muted in *'"muted":true'*) ;; *) exec "$REAL" "$@" ;; esac
+
+# Text: words after the options, or -f FILE, or stdin.
+text="" file="" rest=0
+while [ $# -gt 0 ]; do
+  if [ $rest = 1 ]; then text="${text:+$text }$1"; shift; continue; fi
+  case $1 in
+    --) rest=1 ;;
+    -f|--input-file) file=$2; shift ;;
+    --input-file=*) file=${1#*=} ;;
+    -v|-r|-a|--voice|--rate|--audio-device|--network-send|--file-format|--data-format|--channels|--bit-rate|--quality) shift ;;
+    -*) ;;
+    *) text="${text:+$text }$1" ;;
+  esac
+  shift
+done
+if [ -z "$text" ]; then
+  if [ -n "$file" ] && [ "$file" != - ]; then text=$(cat "$file" 2>/dev/null)
+  elif [ ! -t 0 ]; then text=$(cat)
+  fi
+fi
+[ -n "$text" ] || exit 0
+
+echo "🔇 say (muted): $text"
+
+# Best effort: the line in the conversation. Never fail the caller.
+post() {
+  python3 -c 'import json,sys; print(json.dumps({sys.argv[1]: sys.argv[2], "text": sys.argv[3]}))' "$1" "$2" "$text" \
+    | curl -fsS -m 2 -X POST "$BASE/api/speech/muted-say" -H 'Content-Type: application/json' --data-binary @- >/dev/null 2>&1
+}
+if [ -n "$OVERLORD_PTY_ID" ] && post ptyId "$OVERLORD_PTY_ID"; then exit 0; fi
+pid=$PPID i=0
+while [ -n "$pid" ] && [ "$pid" -gt 1 ] && [ $i -lt 8 ]; do
+  ovr=$(curl -fsS -m 1 "$BASE/api/resolve?pid=$pid" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["overlordId"])' 2>/dev/null)
+  if [ -n "$ovr" ]; then post overlordId "$ovr"; exit 0; fi
+  pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  i=$((i + 1))
+done
+exit 0

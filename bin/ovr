@@ -27,6 +27,8 @@ Commands:
   todo done <id> [--room]        Check an item off (marked as done by the agent)
   todo undo <id> [--room]        Uncheck it
   todo rm <id> [--room]          Remove it
+  mute on|off|status             Mute agents' voice: \`say\` prints its text to
+                                 the conversation instead of speaking
   help                           Show this help
 
 Target session: \$OVERLORD_PTY_ID (set by Overlord at spawn), else the
@@ -204,10 +206,21 @@ for p in todos: print("%s\t[%s] @%-5s %s" % (p["id"], "x" if p.get("done") else 
   esac
 }
 
+cmd_mute() {
+  local r
+  case ${1:-status} in
+    on|off) r=$(call PATCH /api/settings "{\"agentSpeechMuted\": $([ "$1" = on ] && echo true || echo false)}") || exit $? ;;
+    status) r=$(call GET /api/settings) || exit $? ;;
+    *) die "usage: $PROG mute on|off|status" ;;
+  esac
+  printf '%s' "$r" | python3 -c 'import json,sys; print("agents voice: %s" % ("muted" if json.load(sys.stdin).get("agentSpeechMuted") else "on"))'
+}
+
 case ${1:-help} in
   whoami) shift; while [ $# -gt 0 ]; do case $1 in --session) SESSION_OVERRIDE=$2; shift ;; esac; shift; done; cmd_whoami ;;
   pin) shift; cmd_pin "$@" ;;
   todo) shift; cmd_todo "$@" ;;
+  mute) shift; cmd_mute "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;
 esac

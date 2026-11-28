@@ -23,6 +23,7 @@ import { useConversationMatches } from '../hooks/useConversationMatches';
 import { metadataSources, mergeSources, type SearchSource } from '../lib/searchSources';
 import { useStableCallback } from '../hooks/useStableCallback';
 import { useSharedValue } from '../hooks/useSharedValue';
+import { AgentVoiceToggle } from './AgentVoiceToggle';
 import styles from './Office.module.css';
 
 interface OfficeProps {
@@ -603,6 +604,7 @@ export const Office = React.memo(function Office({ snapshot, connected, connecti
             </svg>
           </button>
         )}
+        <AgentVoiceToggle muted={!!snapshot?.settings?.agentSpeechMuted} className={styles.voiceBtn} />
         <HeaderMenu
           onNewSession={onOpenDirectoryPicker}
           onLogs={onLogsClick}

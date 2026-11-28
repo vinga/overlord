@@ -10,7 +10,7 @@ const todo = (text: string) => {
 
 describe('TODO pins', () => {
   it('validates text, flattens newlines, caps length', () => {
-    expect(todo('  Write  docs\n now ')).toEqual({ url: '', title: 'Write  docs now', kind: 'todo', text: 'Write  docs now' });
+    expect(todo('  Write  docs\n now ')).toEqual({ url: '', title: 'Write  docs now', kind: 'todo', text: 'Write  docs now', owner: 'user' });
     expect(validatePinInput({ url: '', kind: 'todo', text: ' ' })).toHaveProperty('error');
     expect(validatePinInput({ url: '', kind: 'todo', text: 'x'.repeat(301) })).toHaveProperty('error');
   });

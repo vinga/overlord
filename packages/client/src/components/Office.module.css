@@ -343,6 +343,35 @@
   color: #f0c947;
 }
 
+.voiceBtn {
+  margin-right: 8px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(235, 235, 245, 0.6);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.voiceBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ececf2;
+}
+.voiceBtn[data-muted] {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.35);
+  color: #fca5a5;
+}
+.voiceBtn[data-muted]:hover {
+  background: rgba(248, 113, 113, 0.18);
+  color: #fecaca;
+}
+
 .headerMenu {
   position: relative;
   margin-left: 4px;

@@ -90,6 +90,9 @@ export interface GlobalSettings {
   /** When true, each room tab chip lists the room's open sessions as clickable
    *  dots. Absent in older files — read sites treat that as true. */
   showRoomTabSessions: boolean;
+  /** Agents' voice muted: the `say` shim (bin/say) prints the text and posts it
+   *  to the session's conversation instead of speaking. Absent ⇒ off. */
+  agentSpeechMuted?: boolean;
   /** Root URL of the JIRA instance, e.g. "https://exampleorg.atlassian.net".
    *  Used to build chip links: `${jiraBaseUrl}/browse/PROJ-123`. */
   jiraBaseUrl?: string;
@@ -196,6 +199,7 @@ export function sanitize(input: Partial<GlobalSettings>): Partial<GlobalSettings
   if (typeof input.autoResumeOnRestart === 'boolean') out.autoResumeOnRestart = input.autoResumeOnRestart;
   if (typeof input.showStickyUserMessage === 'boolean') out.showStickyUserMessage = input.showStickyUserMessage;
   if (typeof input.showRoomTabSessions === 'boolean') out.showRoomTabSessions = input.showRoomTabSessions;
+  if (typeof input.agentSpeechMuted === 'boolean') out.agentSpeechMuted = input.agentSpeechMuted;
   if (typeof input.jiraBaseUrl === 'string') {
     const trimmed = input.jiraBaseUrl.trim().replace(/\/+$/, '');
     if (trimmed === '' || /^https?:\/\//i.test(trimmed)) {
@@ -364,6 +368,7 @@ function shallowEqual(a: GlobalSettings, b: GlobalSettings): boolean {
     && a.autoResumeOnRestart === b.autoResumeOnRestart
     && a.showStickyUserMessage === b.showStickyUserMessage
     && a.showRoomTabSessions === b.showRoomTabSessions
+    && !!a.agentSpeechMuted === !!b.agentSpeechMuted
     && (a.jiraBaseUrl ?? '') === (b.jiraBaseUrl ?? '')
     && (a.jiraProjects ?? '') === (b.jiraProjects ?? '')
     && (a.jiraEmail ?? '') === (b.jiraEmail ?? '')

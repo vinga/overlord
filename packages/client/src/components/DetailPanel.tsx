@@ -940,6 +940,7 @@ type FeedSegment =
   | { type: 'question'; item: ActivityItem }
   | { type: 'compact'; item: ActivityItem }
   | { type: 'recap'; item: ActivityItem }
+  | { type: 'speech'; item: ActivityItem }
   | { type: 'progress'; toolUseId: string; timestamp?: string };
 
 function buildSegments(feed: ActivityItem[]): FeedSegment[] {
@@ -949,6 +950,8 @@ function buildSegments(feed: ActivityItem[]): FeedSegment[] {
       segments.push({ type: 'compact', item });
     } else if (item.kind === 'recap') {
       segments.push({ type: 'recap', item });
+    } else if (item.kind === 'speech') {
+      segments.push({ type: 'speech', item });
     } else if (item.kind === 'tool' && item.toolName === 'AskUserQuestion') {
       // AskUserQuestion is rendered as its own prominent Q&A block, never grouped
       segments.push({ type: 'question', item });
@@ -1506,6 +1509,17 @@ function FeedSegments({ feed, roleLabel, ideName, sessionState, styles, isPty, c
               <span className={styles.compactDividerLabel}>
                 ✦ Compacted{meta?.trigger === 'manual' ? ' (manual)' : ''}{tokens ? ` · ${tokens} tokens` : ''}{ptyMeta ? ` · ${ptyMeta}` : ''}
               </span>
+            </div>
+          );
+        }
+        if (seg.type === 'speech') {
+          const t = seg.item.timestamp ? new Date(seg.item.timestamp) : null;
+          return (
+            <div key={segIdx} className={styles.speechLine} data-ts={seg.item.timestamp}
+              title="Said with `say` while agents' voice is muted">
+              <span className={styles.speechLabel} aria-label="Muted speech">🔇 said</span>
+              <span className={styles.speechText}>{seg.item.content}</span>
+              {t && <span className={styles.speechTime}>{t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
             </div>
           );
         }

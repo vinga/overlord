@@ -4895,3 +4895,37 @@
   color: #d4af37;
   background: rgba(212, 175, 55, 0.14);
 }
+
+/* A `say` swallowed while agents' voice is muted. */
+.speechLine {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-left: 2px solid rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.06);
+  border-radius: 0 6px 6px 0;
+}
+.speechLabel {
+  flex-shrink: 0;
+  font: 600 10px/1.6 'Inter', system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.85);
+  white-space: nowrap;
+}
+.speechText {
+  flex: 1;
+  min-width: 0;
+  font: 400 12.5px/1.55 'Inter', system-ui, sans-serif;
+  color: var(--text-secondary, rgba(235, 235, 245, 0.7));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.speechTime {
+  flex-shrink: 0;
+  font: 400 11px/1.6 'Inter', system-ui, sans-serif;
+  color: rgba(148, 163, 184, 0.6);
+  font-variant-numeric: tabular-nums;
+}

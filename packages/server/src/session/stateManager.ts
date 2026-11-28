@@ -222,6 +222,30 @@ export function shouldAdoptArchived(
   return true;
 }
 
+/** Muted `say` lines kept per session (in memory). */
+export const MUTED_SPEECH_MAX = 50;
+
+/** `extra` items (oldest first, each with a timestamp) inserted into an
+ *  oldest-first feed before the first item that is newer. Feed order is kept
+ *  as-is, including items without a timestamp. */
+export function mergeByTime<T extends { timestamp?: string }>(feed: readonly T[], extra: readonly T[]): T[] {
+  const out = [...feed];
+  let from = 0;
+  for (const x of extra) {
+    const tx = x.timestamp ? Date.parse(x.timestamp) : NaN;
+    let i = out.length;
+    if (Number.isFinite(tx)) {
+      for (let j = from; j < out.length; j++) {
+        const ts = out[j].timestamp;
+        if (ts && Date.parse(ts) > tx) { i = j; break; }
+      }
+    }
+    out.splice(i, 0, x);
+    from = i + 1;
+  }
+  return out;
+}
+
 /** Tail length for activityFeed in WS snapshots. DetailPanel lazy-loads older
  *  items via REST (`/api/sessions/:id/activity-before`) when the user scrolls
  *  past this boundary.
@@ -2070,6 +2094,7 @@ export class StateManager {
       session.activityFeed = undefined;
       session.lastMessage = undefined;
       session.ptyCompactItems = undefined;
+      session.mutedSpeechItems = undefined;
       session.ptyCompactBaseline = undefined;
       session.ptyCompactBaselineAt = undefined;
       session.ptyCompactBoundarySeen = undefined;
@@ -2197,6 +2222,7 @@ export class StateManager {
           });
         }
       }
+      if (session.mutedSpeechItems?.length) mergedFeed = mergeByTime(mergedFeed, session.mutedSpeechItems);
       session.activityFeed = mergedFeed.length > 0 ? mergedFeed : undefined;
       session.feedTruncated = (result as { feedTruncated?: boolean }).feedTruncated;
       if (session.model !== result.model) {
@@ -2693,6 +2719,19 @@ export class StateManager {
     if (!session || session.isCompacting) return;
     session.isCompacting = true;
     this.onChange();
+  }
+
+  /** A `say` call swallowed while agents' voice is muted: show its text in the
+   *  session's conversation. Returns false when no live session matches. */
+  addMutedSpeech(sessionIdOrOvr: string, text: string, now = Date.now()): boolean {
+    const session = this.sessions.get(sessionIdOrOvr) ?? this.getActiveClaudeByOvr(sessionIdOrOvr);
+    if (!session) return false;
+    const item: import('../types.js').ActivityItem = { kind: 'speech', content: text, timestamp: new Date(now).toISOString() };
+    session.mutedSpeechItems = [...(session.mutedSpeechItems ?? []), item].slice(-MUTED_SPEECH_MAX);
+    // Oldest-first feed; the next transcript refresh re-merges by time.
+    session.activityFeed = [...(session.activityFeed ?? []), item];
+    this.onChange();
+    return true;
   }
 
   addPtyCompact(sessionIdOrOvr: string, text: string): void {

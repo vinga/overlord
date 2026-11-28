@@ -11,13 +11,17 @@ HOOK="$BIN/agent-instructions-hook"
 SETTINGS="$HOME/.claude/settings.json"
 APPLY=0; [ "${1:-}" = "--apply" ] && APPLY=1
 
-# 1. ovr-watch and ovr on PATH
-for TOOL in ovr-watch ovr; do
+# 1. ovr-watch, ovr and the say shim on PATH (~/.local/bin must precede /usr/bin)
+for TOOL in ovr-watch ovr say; do
   LINK="$HOME/.local/bin/$TOOL"
   if [ "$(readlink "$LINK" 2>/dev/null)" = "$BIN/$TOOL" ]; then echo "ok   $TOOL already linked at $LINK"
   elif [ $APPLY = 1 ]; then mkdir -p "$(dirname "$LINK")"; ln -sf "$BIN/$TOOL" "$LINK"; echo "done linked $LINK"
   else echo "todo link $LINK -> $BIN/$TOOL"; fi
 done
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*":/usr/bin:"*) ;;
+  *) echo "warn ~/.local/bin is not before /usr/bin on PATH — the say shim (mute) will be bypassed" ;;
+esac
 
 # 1b. overlord-pins skill
 SKILL_LINK="$HOME/.claude/skills/overlord-pins"

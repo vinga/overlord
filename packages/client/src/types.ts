@@ -6,7 +6,8 @@ type SessionProvider = 'claude' | 'codex' | 'aider' | 'opencode';
 /** How a new terminal session should be spawned */
 type TerminalSpawnMode = 'embedded' | 'bridge' | 'plain' | 'raw' | 'note';
 
-type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap';
+/** 'speech': a `say` call swallowed while agents' voice is muted — shown as text. */
+type ActivityItemKind = 'message' | 'tool' | 'thinking' | 'compact' | 'recap' | 'speech';
 
 interface ActivityItem {
   kind: ActivityItemKind;
@@ -345,6 +346,8 @@ interface GlobalSettings {
   showRoomTabSessions?: boolean;
   jiraBaseUrl?: string;
   jiraProjects?: string;
+  /** Agents' `say` is muted: the text goes to the conversation instead. Absent ⇒ off. */
+  agentSpeechMuted?: boolean;
   jiraEmail?: string;
   /** Masked from the server: "" when unset, "***" when set. */
   jiraApiToken?: string;

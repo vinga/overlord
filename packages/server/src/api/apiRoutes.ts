@@ -16,7 +16,7 @@ import express from 'express';
 import type { Express } from 'express';
 import type { WebSocket } from 'ws';
 import type { StateManager } from '../session/stateManager.js';
-import { resolveTranscriptPath, TICKET_ORDER_MAX } from '../session/stateManager.js';
+import { mergeByTime, resolveTranscriptPath, TICKET_ORDER_MAX } from '../session/stateManager.js';
 import { searchTranscripts, type ConversationSource } from '../search/transcriptIndex.js';
 import type { PtyManager } from '../pty/ptyManager.js';
 import { injectText } from '../pty/consoleInjector.js';
@@ -179,6 +179,9 @@ export function registerApiRoutes(
     }
     if (typeof body.showRoomTabSessions === 'boolean') {
       partial.showRoomTabSessions = body.showRoomTabSessions;
+    }
+    if (typeof body.agentSpeechMuted === 'boolean') {
+      partial.agentSpeechMuted = body.agentSpeechMuted;
     }
     if (typeof body.jiraBaseUrl === 'string') {
       partial.jiraBaseUrl = body.jiraBaseUrl;
@@ -350,6 +353,25 @@ export function registerApiRoutes(
     const { sessionId, toolUseId } = req.params;
     if (!/^[\w-]+$/.test(sessionId) || !/^[\w.:-]+$/.test(toolUseId)) { res.status(400).json({ error: 'bad id' }); return; }
     res.json({ entries: getProgressHistory(sessionId, toolUseId) });
+  });
+
+  // Agents' voice mute, read by the `say` shim (bin/say) before every call.
+  app.get('/api/speech/agent-muted', (_req, res) => {
+    res.json({ muted: !!globalSettingsStore.get().agentSpeechMuted });
+  });
+  // A `say` the shim swallowed while muted: its text joins the session's
+  // conversation. Identity like /api/progress: ptyId, overlordId or sessionId.
+  app.post('/api/speech/muted-say', express.json(), (req, res) => {
+    const { ptyId, overlordId, sessionId, text } = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof text !== 'string' || !text.trim()) { res.status(400).json({ error: 'text required' }); return; }
+    const id = typeof sessionId === 'string' && sessionId ? sessionId
+      : typeof overlordId === 'string' && overlordId ? overlordId
+      : typeof ptyId === 'string' && ptyId ? (ptyToOvr.get(ptyId) ?? ptyId)
+      : undefined;
+    if (!id) { res.status(400).json({ error: 'ptyId, overlordId or sessionId required' }); return; }
+    const ok = stateManager.addMutedSpeech(id, text.trim().slice(0, 4000));
+    if (!ok) { res.status(404).json({ error: 'session not found' }); return; }
+    res.json({ ok: true });
   });
 
   // One `::progress` line pushed by a watcher (bin/ovr-watch). The path for
@@ -2147,6 +2169,13 @@ export function registerApiRoutes(
     }
   });
 
+      // Muted `say` lines live only in memory; add the ones in this page's window.
+      const muted = stateManager.getSession(sessionId)?.mutedSpeechItems;
+      if (muted?.length) {
+        const from = result.hasMore ? result.items.find(i => i.timestamp)?.timestamp : undefined;
+        const inWindow = muted.filter(m => m.timestamp && m.timestamp < timestamp && (!from || m.timestamp >= from));
+        if (inWindow.length) result.items = mergeByTime(result.items, inWindow);
+      }
   // ── Resolve session by PID ───────────────────────────────────────────────
 
   app.get('/api/resolve', (req, res) => {
