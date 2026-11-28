@@ -2778,20 +2778,20 @@ const currentDisplayName =
     setIsEditing(true);
   }
 
-  const roomPrefix = useRoomPrefix(selectedSession?.cwd);
+  // Folder of the room the session is shown in — its own, unless it was moved.
+  const sessionRoomCwd = selectedSession?.roomCwd ?? selectedSession?.cwd;
+  const roomPrefix = useRoomPrefix(sessionRoomCwd);
 
   // Room breadcrumb for the header — the room's basename, same value Room.name
   // carries. Derived, never stored: the session name itself is untouched.
   const roomLabel = useMemo(() => {
-    const cwd = selectedSession?.cwd;
-    if (!cwd) return '';
-    return cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? '';
-  }, [selectedSession?.cwd]);
+    if (!sessionRoomCwd) return '';
+    return sessionRoomCwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() ?? '';
+  }, [sessionRoomCwd]);
 
   // Click opens the room (and scrolls to it).
   const handleCrumbClick = () => {
-    const cwd = selectedSession?.cwd;
-    if (cwd) onNavigateRoom?.(cwd, true);
+    if (sessionRoomCwd) onNavigateRoom?.(sessionRoomCwd, true);
   };
 
   useEffect(() => {
@@ -3542,7 +3542,7 @@ const currentDisplayName =
                         {roomLabel && (
                           <span
                             className={`${styles.roomCrumb} ${onNavigateRoom ? styles.roomCrumbClickable : ''}`}
-                            title={onNavigateRoom ? `${selectedSession.cwd}\n\nClick: open room` : selectedSession.cwd}
+                            title={onNavigateRoom ? `${sessionRoomCwd}\n\nClick: open room` : sessionRoomCwd}
                             role={onNavigateRoom ? 'button' : undefined}
                             tabIndex={onNavigateRoom ? 0 : undefined}
                             onClick={onNavigateRoom ? handleCrumbClick : undefined}
