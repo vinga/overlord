@@ -246,7 +246,7 @@ export function isWorkerIcon(value: unknown): value is WorkerIcon {
 
 /** User-set review marker on a session. There is deliberately no 'done' — a
  *  session is never "finished" from the office's point of view. */
-export type SessionReview = 'read' | 'parked';
+export type SessionReview = 'read';
 
 export interface Session {
   sessionId: string;
@@ -362,13 +362,8 @@ export interface Session {
    *  record so the client can resolve the effective config without a fetch. */
   voiceOverride?: Partial<VoiceInputConfig>;
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
-   *  auto-clears on the next turn; 'parked' is deliberate and sticky — it
-   *  survives new activity and only an explicit un-park clears it. */
+   *  auto-clears on the next turn. */
   review?: SessionReview;
-  /** Optional free text explaining the park. Only meaningful with review==='parked'. */
-  parkReason?: string;
-  /** Epoch ms the session was parked — drives the "parked 4h" label. */
-  parkedAt?: number;
   latestPlan?: PlanSummary;
   /** ISO timestamp of the newest user message in the UNTRIMMED activity feed.
    *  Client uses it to confirm optimistic echoes even when the real message has
@@ -438,7 +433,7 @@ export interface PullRequestSnapshot {
  * Keyed by `overlordId` (stable across /clear and /compact). Each /clear or /compact
  * appends to `lineage.history` and updates `lineage.currentSessionId`.
  *
- * Durable work fields (intent, notes, tasks, review/park) are at the overlord level so
+ * Durable work fields (intent, notes, tasks, review) are at the overlord level so
  * they carry through clears; they never reset when a new sessionId attaches.
  *
  * Archived state is signalled two ways that must agree:
@@ -535,10 +530,8 @@ export interface OverlordSession {
   pendingResume?: { cwd: string; at: number };
   currentTask?: Task;
   completionSummaries?: Task[];
-  /** @see Session.review — persisted so park/read survive a restart. */
+  /** @see Session.review — persisted so 'read' survives a restart. */
   review?: SessionReview;
-  parkReason?: string;
-  parkedAt?: number;
   /** @deprecated Superseded by `review`. Read-only: `readReview()` maps a legacy
    *  `true` to 'read'; every write path drops the field. Never write it again. */
   acknowledged?: boolean;

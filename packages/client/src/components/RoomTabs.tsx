@@ -36,7 +36,7 @@ interface RoomTabsProps {
   matchSources?: Record<string, SearchSource[]> | null;
 }
 
-/** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read/parked);
+/** `unseen` = waiting on you and not opened since; `seen` = waiting, already opened (or marked read);
  *  `closed` = no live process (listed only while searching). */
 type DotStatus = 'busy' | 'unseen' | 'seen' | 'idle' | 'closed';
 
@@ -84,7 +84,7 @@ function sessionDots(sessions: Session[], customNames: Record<string, string>, i
     const status: DotStatus = s.state === 'closed' ? 'closed'
       : s.sessionType === 'note' ? 'seen' // a note is a standing to-do for you
       : isBusy(s) ? 'busy'
-      // `review` ('read' / 'parked') is set when you open the session — see useMarkSeenOnOpen.
+      // `review` ('read') is set when you open the session — see useMarkSeenOnOpen.
       // A finished turn is unseen even with a wakeup/background task pending,
       // and keeps the `seen` ring once read (the blue dot marks the background work).
       : turnEnded(s) ? (s.review == null ? 'unseen' : 'seen')

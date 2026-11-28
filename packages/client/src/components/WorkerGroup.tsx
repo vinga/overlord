@@ -110,7 +110,6 @@ export const WorkerGroup = memo(function WorkerGroup({ session, onSelectSession,
           color={session.color}
           provider={session.provider}
           review={session.review}
-          parkReason={session.parkReason}
           needsPermission={session.needsPermission}
           unknownCommand={session.unknownCommand}
           isCompacting={session.isCompacting}

@@ -23,7 +23,6 @@ interface WorkerProps {
   minimal?: boolean;
   agentType?: string;
   review?: SessionReview;
-  parkReason?: string;
   needsPermission?: boolean;
   unknownCommand?: string;
   isCompacting?: boolean;
@@ -118,7 +117,7 @@ function WaitingIndicator({ isSubagent, review, needsPermission, unknownCommand,
       </span>
     );
   }
-  // Both markers silence the pulsing bubble; parked also paints its own chip.
+  // A read session's bubble stays silent.
   if (review != null) return null;
   return <span className={styles.bubble}>waiting</span>;
 }
@@ -133,7 +132,7 @@ function lightenHsl(color: string, amount: number): string {
 }
 
 
-export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, parkReason, needsPermission, unknownCommand, isCompacting, bridgeDead, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, teammateName, teamLeadName, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
+export const Worker = memo(function Worker({ sessionId, name, state, color, provider, isSubagent, minimal, agentType, review, needsPermission, unknownCommand, isCompacting, bridgeDead, isWorker, isRaw, isNote, notePreview, noteTitle, noteVersion, notePreviewLines = 5, wide, icon, ptyInputPendingSince, scheduledWakeupAt, scheduledWakeupSetAt, backgroundTasks, backgroundProgress, notesSummary, intent, teammateId, teammateName, teamLeadName, activeMonitors, jiraKeys, jiraBaseUrl, onClick, onRename, roomPrefix }: WorkerProps) {
   const displayColor = isSubagent ? lightenHsl(color, 20) : color;
   const highlightColor = lightenHsl(displayColor, 25);
   // An explicitly picked glyph overrides the raw terminal variant.
@@ -248,13 +247,6 @@ export const Worker = memo(function Worker({ sessionId, name, state, color, prov
       )}
       {!minimal && bridgeDead && !isSubagent && (
         <div className={styles.bridgeDeadBadge}>bridge lost</div>
-      )}
-      {/* Parked is sticky across every state, so it gets its own chip rather than
-          riding on the waiting indicator. */}
-      {!minimal && review === 'parked' && !isSubagent && (
-        <div className={styles.parkedBadge} title={parkReason ? `Parked · ${parkReason}` : 'Parked'}>
-          ⏸ parked
-        </div>
       )}
       {!minimal && !isNote && (isCompacting || state === 'working' || state === 'thinking' || state === 'waiting') && !(!isCompacting && state === 'waiting' && review != null && !needsPermission && !unknownCommand && !scheduledWakeupAt && !hasBackgroundTasks) && (
         <div

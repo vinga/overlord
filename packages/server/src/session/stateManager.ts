@@ -135,7 +135,7 @@ import { syncSession as syncProgress, getProgressCards } from './progressStore.j
 import { ensureShadow } from './transcriptShadow.js';
 import { findCodexRolloutBySessionId } from './codexSession.js';
 import type { RawSession } from './sessionWatcher.js';
-import { saveReview, loadReview, readReview, normalizeParkReason, type ReviewState } from '../ai/taskStorage.js';
+import { saveReview, loadReview, readReview, type ReviewState } from '../ai/taskStorage.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 // Safe edge: archiveManager imports only sessionStore + types, never stateManager.
 import { archiveManager } from '../archive/archiveManager.js';
@@ -1272,13 +1272,11 @@ export class StateManager {
     const sessionHistory: Array<{ sessionId: string; attachedAt: number }> =
       existingSession?.sessionHistory ?? [{ sessionId, attachedAt: Date.now() }];
 
-    // Review marker. 'parked' is sticky — it must survive every state, or the
-    // "stays parked when it starts working again" guarantee breaks on the next
-    // tick. 'read' keeps its waiting-only scope (the leave-waiting path below
-    // is what persists the clear).
+    // Review marker. 'read' is waiting-only (the leave-waiting path below is
+    // what persists the clear).
     const reviewState: ReviewState = (() => {
       const carried: ReviewState = existingSession?.review
-        ? { review: existingSession.review, parkReason: existingSession.parkReason, parkedAt: existingSession.parkedAt }
+        ? { review: existingSession.review }
         : (isNew ? loadReview(sessionId) : {});
       if (carried.review === 'read' && state !== 'waiting') {
         // Persist the clear too: the snapshot reads review from sessionStore,
@@ -2103,10 +2101,8 @@ export class StateManager {
       session.needsPermission = undefined;
       session.permissionPromptText = undefined;
       session.isLimitPrompt = undefined;
-      // A cleared session is a fresh start — both read and park go with it.
+      // A cleared session is a fresh start — the read marker goes with it.
       session.review = undefined;
-      session.parkReason = undefined;
-      session.parkedAt = undefined;
       saveReview(sessionId, {});
       session.skillsUsed = undefined;
       // Tickets and PR refs collapse to the pinned ones: the scanner's history
@@ -2178,7 +2174,7 @@ export class StateManager {
       if (prevState === 'waiting' && result.state !== 'waiting') {
         // Leaving waiting = a real turn started; drop any stale unknown-command bubble.
         session.unknownCommand = undefined;
-        // 'read' is a per-turn silencer; 'parked' is deliberate and survives.
+        // 'read' is a per-turn silencer.
         // Check the store too: the snapshot shows its value, and a live copy
         // cleared without persisting left a stale on-disk 'read' behind.
         if (session.review === 'read' || readReview(sessionStore.getBySessionId(sessionId)).review === 'read') {
@@ -2543,46 +2539,25 @@ export class StateManager {
    * Set (or clear, with `undefined`) the user's review marker.
    *
    * 'read' silences the pulsing WAITING bubble and auto-clears on the next turn.
-   * 'parked' is deliberate: it survives new activity and is only cleared here.
-   * `reason` applies to 'parked' only; re-parking an already-parked session
-   * keeps its original `parkedAt` so the "parked 4h" label doesn't reset when
-   * the user just edits the reason.
    *
    * Returns the resulting state, or null when the session is unknown/closed.
    */
-  setReviewByUser(sessionId: string, review: SessionReview | undefined, reason?: string): ReviewState | null {
+  setReviewByUser(sessionId: string, review: SessionReview | undefined): ReviewState | null {
     const session = this.sessions.get(sessionId);
     if (!session || session.state === 'closed') return null;
 
-    let next: ReviewState;
-    if (review === 'parked') {
-      next = {
-        review: 'parked',
-        parkReason: normalizeParkReason(reason),
-        parkedAt: session.review === 'parked' && session.parkedAt ? session.parkedAt : Date.now(),
-      };
-    } else if (review === 'read') {
-      next = { review: 'read' };
-    } else {
-      next = {};
-    }
+    const next: ReviewState = review === 'read' ? { review: 'read' } : {};
 
     session.review = next.review;
-    session.parkReason = next.parkReason;
-    session.parkedAt = next.parkedAt;
     saveReview(sessionId, next);
     this.onChange();
     return next;
   }
 
-  /** Convenience toggle behind the rail's ✓ button — 'read' ⇄ cleared. A parked
-   *  session is left alone: un-parking is an explicit action, never a side effect. */
+  /** Convenience toggle behind the rail's ✓ button — 'read' ⇄ cleared. */
   toggleReadByUser(sessionId: string): ReviewState | null {
     const session = this.sessions.get(sessionId);
     if (!session || session.state === 'closed') return null;
-    if (session.review === 'parked') {
-      return { review: 'parked', parkReason: session.parkReason, parkedAt: session.parkedAt };
-    }
     return this.setReviewByUser(sessionId, session.review === 'read' ? undefined : 'read');
   }
 
@@ -2590,7 +2565,7 @@ export class StateManager {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     let changed = false;
-    // Typing clears 'read' only — a parked session stays parked until un-parked.
+    // Typing clears the 'read' marker.
     if (session.review === 'read') {
       session.review = undefined;
       saveReview(sessionId, {});
@@ -3313,7 +3288,7 @@ export class StateManager {
    *  Persistent fields routed through sessionStore: proposedName, color, slug,
    *  model, intent, sessionType, provider, providerSessionId,
    *  resumedFrom, replacedBy, bridgePipeName, bridgeMarker, historyOnly,
-   *  review/parkReason/parkedAt. (lastActivity / lastMessage stay live —
+   *  review. (lastActivity / lastMessage stay live —
    *  transcript-derived.)
    *
    *  Also folds in latestPlan (per-snapshot memo), PTY-liveness, and trims
@@ -3374,8 +3349,6 @@ export class StateManager {
       const persistedReview = readReview(overlord);
       if (persistedReview.review) {
         out.review = persistedReview.review;
-        out.parkReason = persistedReview.parkReason;
-        out.parkedAt = persistedReview.parkedAt;
       }
       out.jiraKeys = overlord.jiraKeys ?? session.jiraKeys;
       out.prRefs = overlord.prRefs ?? session.prRefs;

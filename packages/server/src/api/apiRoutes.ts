@@ -41,7 +41,6 @@ import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brai
 import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
 import { validatePinInput, upsertPin, removePin, setPinDone, setPinOwner, isTodoOwner, type TodoOwner } from '../session/pins.js';
 import type { Pin } from '../types.js';
-import { PARK_REASON_MAX } from '../ai/taskStorage.js';
 import { log } from '../logger.js';
 import { artifactStore } from '../artifacts/artifactStore.js';
 import type { Artifact, ArtifactChangedEvent, ArtifactKind, ArtifactStatus } from '../artifacts/types.js';
@@ -888,27 +887,18 @@ export function registerApiRoutes(
     res.json({ ok: true });
   });
 
-  // Set the review marker. body: { review: 'read' | 'parked' | null, reason?: string }
-  //   'read'   — silences the pulsing WAITING bubble; auto-clears on the next turn
-  //   'parked' — deliberate, sticky, optional free-text reason (<= PARK_REASON_MAX)
-  //   null     — clears whichever marker is set
+  // Set the review marker. body: { review: 'read' | null }
+  //   'read' — silences the pulsing WAITING bubble; auto-clears on the next turn
+  //   null   — clears the marker
   app.post('/api/sessions/:sessionId/review', express.json(), (req, res) => {
     const { sessionId } = req.params;
-    const raw = (req.body ?? {}) as { review?: unknown; reason?: unknown };
+    const raw = (req.body ?? {}) as { review?: unknown };
     const review = raw.review;
-    if (review != null && review !== 'read' && review !== 'parked') {
-      res.status(400).json({ error: "review must be 'read', 'parked', or null" });
+    if (review != null && review !== 'read') {
+      res.status(400).json({ error: "review must be 'read' or null" });
       return;
     }
-    if (raw.reason != null && typeof raw.reason !== 'string') {
-      res.status(400).json({ error: 'reason must be a string' });
-      return;
-    }
-    if (typeof raw.reason === 'string' && raw.reason.trim().length > PARK_REASON_MAX) {
-      res.status(400).json({ error: `reason exceeds ${PARK_REASON_MAX} characters` });
-      return;
-    }
-    const next = stateManager.setReviewByUser(sessionId, review ?? undefined, raw.reason as string | undefined);
+    const next = stateManager.setReviewByUser(sessionId, review ?? undefined);
     if (next === null) { res.status(404).json({ error: 'session not found or closed' }); return; }
     res.json(next);
   });

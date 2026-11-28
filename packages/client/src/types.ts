@@ -172,7 +172,7 @@ export const WORKER_ICONS = ['user', 'ticket', 'story', 'bug', 'task', 'investig
 export type WorkerIcon = typeof WORKER_ICONS[number];
 
 /** User-set review marker. There is deliberately no 'done'. */
-export type SessionReview = 'read' | 'parked';
+export type SessionReview = 'read';
 
 export type PinKind = 'ticket' | 'pr' | 'branch' | 'link' | 'text' | 'todo';
 /** A link pinned to a session or a room. */
@@ -266,10 +266,8 @@ interface Session {
   branches?: string[];
   skillsUsed?: string[];         // skill/command names invoked in this session, accumulated server-side
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
-   *  auto-clears on the next turn; 'parked' is deliberate and sticky. */
+   *  auto-clears on the next turn. */
   review?: SessionReview;
-  parkReason?: string;     // optional free text; only meaningful with review==='parked'
-  parkedAt?: number;       // epoch ms the session was parked
   /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   lastUserMessageTs?: string;     // newest user-message ts from untrimmed feed; confirms optimistic echoes past the tail

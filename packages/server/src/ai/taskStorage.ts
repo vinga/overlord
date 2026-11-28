@@ -1,49 +1,37 @@
 import { sessionStore } from '../session/sessionStore.js';
 import type { OverlordSession, SessionReview } from '../types.js';
 
-// ── Review marker (read / parked) ────────────────────────────────────────────
-
-/** Max length of a park reason — enforced here and at the REST boundary. */
-export const PARK_REASON_MAX = 280;
+// ── Review marker (read) ─────────────────────────────────────────────────────
 
 export interface ReviewState {
   review?: SessionReview;
-  parkReason?: string;
-  parkedAt?: number;
 }
 
-/** Persist the marker. Reason/timestamp only survive with 'parked'. Every write
- *  drops the legacy `acknowledged` flag — the migration is one-way. */
+/** Fields of the removed "parked" marker. Old records may still carry them;
+ *  every write clears them so they drain out of the store over time. */
+const RETIRED_FIELDS = { parkReason: undefined, parkedAt: undefined } as Partial<OverlordSession>;
+
+/** Persist the marker. Every write drops the legacy `acknowledged` flag and
+ *  the retired park fields — the migration is one-way. */
 export function saveReview(sessionId: string, next: ReviewState): void {
   sessionStore.patchBySessionId(sessionId, {
     review: next.review,
-    parkReason: next.review === 'parked' ? next.parkReason : undefined,
-    parkedAt: next.review === 'parked' ? next.parkedAt : undefined,
     acknowledged: undefined,
+    ...RETIRED_FIELDS,
   });
 }
 
-/** The single migration point: new field wins, legacy `acknowledged: true` reads as 'read'. */
+/** The single migration point: new field wins, legacy `acknowledged: true` reads
+ *  as 'read'. A legacy on-disk `review: 'parked'` reads as no marker. */
 export function readReview(rec?: OverlordSession | null): ReviewState {
   if (!rec) return {};
-  if (rec.review) {
-    return rec.review === 'parked'
-      ? { review: 'parked', parkReason: rec.parkReason, parkedAt: rec.parkedAt }
-      : { review: 'read' };
-  }
+  if (rec.review === 'read') return { review: 'read' };
+  if (rec.review) return {};
   return rec.acknowledged === true ? { review: 'read' } : {};
 }
 
 export function loadReview(sessionId: string): ReviewState {
   return readReview(sessionStore.getBySessionId(sessionId));
-}
-
-/** Trim + cap a user-supplied reason. Empty normalizes to undefined. */
-export function normalizeParkReason(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  if (!trimmed) return undefined;
-  return trimmed.slice(0, PARK_REASON_MAX);
 }
 
 // ── Legacy stub ──────────────────────────────────────────────────────────────

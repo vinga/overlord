@@ -482,7 +482,7 @@ export const Room = memo(function Room({ room, onSelectSession, customNames, onS
   };
 
   // Compute state counts for collapsed summary.
-  // Reviewed waiting sessions are silenced (read or parked) — they don't
+  // Reviewed waiting sessions are silenced (read) — they don't
   // contribute to the waiting chip.
   const stateCounts = room.sessions.reduce<Record<string, number>>((acc, s) => {
     if (s.state === 'waiting' && s.review != null) return acc;

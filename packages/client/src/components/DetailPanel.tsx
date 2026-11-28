@@ -11,7 +11,6 @@ import type { Room, Session, WorkerState, ActivityItem, Subagent, PendingQuestio
 import { useProgressCards } from '../hooks/useProgressCards';
 import { ProgressCard, ProgressDock } from './ProgressCard';
 import { getLaunchInfo } from '../types';
-import { PARK_REASON_MAX } from '../lib/review';
 import { XtermTerminal } from './XtermTerminal';
 import { WorkerAvatar } from './WorkerAvatar';
 import { ColorPicker } from './ColorPicker';
@@ -601,9 +600,9 @@ function formatRelativeTime(isoTimestamp: string): string {
   }
 }
 
-/** "4h ago" for the parked banner. Epoch-ms twin of formatRelativeTime. */
-function formatParkedAge(parkedAt: number): string {
-  const mins = Math.floor((Date.now() - parkedAt) / 60_000);
+/** "4h ago" from an epoch-ms timestamp. Twin of formatRelativeTime. */
+function formatAgeMs(ts: number): string {
+  const mins = Math.floor((Date.now() - ts) / 60_000);
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;
   const hours = Math.floor(mins / 60);
@@ -765,9 +764,8 @@ interface StateBadgeProps {
   state: WorkerState;
   activeSubagentCount?: number;
   review?: SessionReview;
-  parkReason?: string;
   /** Absent ⇒ the badge is read-only (archived session). */
-  onSetReview?: (review: SessionReview | null, reason?: string) => void;
+  onSetReview?: (review: SessionReview | null) => void;
 }
 
 /** Minimum spin time. The POST only invalidates caches — it returns in a few
@@ -815,29 +813,23 @@ function MetaRefreshButton({ sessionId, styles }: { sessionId: string; styles: R
 /**
  * The state pill, doubling as the review menu.
  *
- * 'read' is a waiting-only silencer, so it's offered only while waiting. Park is
- * offered in any non-closed state — setting aside a session that is still
- * grinding is a legitimate "I'm done looking at this for now".
+ * 'read' is a waiting-only silencer, so the menu exists only while waiting.
  */
-function StateBadge({ state, activeSubagentCount, review, parkReason, onSetReview }: StateBadgeProps) {
+function StateBadge({ state, activeSubagentCount, review, onSetReview }: StateBadgeProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [parking, setParking] = useState(false);
-  const [reason, setReason] = useState('');
 
   useEffect(() => {
     if (!menuOpen) return;
-    const close = () => { setMenuOpen(false); setParking(false); };
+    const close = () => setMenuOpen(false);
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, [menuOpen]);
 
-  const isParked = review === 'parked';
   const isReadWaiting = state === 'waiting' && review === 'read';
   // Same language as the room list's status dots: violet = working, green =
   // waiting and not read yet (ready for you), amber ring = waiting and read.
   // Tinted chip (like the assistant pill): colour for text, faint fill, border.
-  const rgb = isParked ? '148, 163, 184'
-    : isReadWaiting ? '245, 158, 11'
+  const rgb = isReadWaiting ? '245, 158, 11'
     : state === 'working' || state === 'thinking' ? '167, 139, 250'
     : state === 'waiting' ? '74, 222, 128'
     : '107, 114, 128';
@@ -846,14 +838,12 @@ function StateBadge({ state, activeSubagentCount, review, parkReason, onSetRevie
     background: isReadWaiting ? 'transparent' : `rgba(${rgb}, 0.14)`,
     borderColor: `rgba(${rgb}, ${isReadWaiting ? 0.7 : 0.4})`,
   };
-  const label = isParked ? 'parked' : isReadWaiting ? 'read' : state;
+  const label = isReadWaiting ? 'read' : state;
 
-  const canReview = state !== 'closed' && !!onSetReview;
-  const canMarkRead = state === 'waiting' && !isParked;
+  const canReview = state === 'waiting' && !!onSetReview;
 
-  const commit = (next: SessionReview | null, why?: string) => {
-    onSetReview?.(next, why);
-    setParking(false);
+  const commit = (next: SessionReview | null) => {
+    onSetReview?.(next);
     setMenuOpen(false);
   };
 
@@ -864,64 +854,17 @@ function StateBadge({ state, activeSubagentCount, review, parkReason, onSetRevie
           className={styles.stateBadge}
           style={{ ...badgeStyle, cursor: canReview ? 'pointer' : undefined }}
           onClick={canReview ? () => setMenuOpen(v => !v) : undefined}
-          title={isParked && parkReason ? `Parked · ${parkReason}` : undefined}
         >
           {label}
         </span>
         {menuOpen && canReview && (
           <div className={styles.badgeReviewMenu} onMouseDown={e => e.stopPropagation()}>
-            {parking ? (
-              <div className={styles.badgeParkForm}>
-                <input
-                  className={styles.badgeParkInput}
-                  autoFocus
-                  maxLength={PARK_REASON_MAX}
-                  placeholder="why parked? (optional)"
-                  value={reason}
-                  onChange={e => setReason(e.target.value)}
-                  onKeyDown={e => {
-                    e.stopPropagation();
-                    if (e.key === 'Enter') { e.preventDefault(); commit('parked', reason); }
-                    if (e.key === 'Escape') { e.preventDefault(); setParking(false); }
-                  }}
-                />
-                <button className={styles.badgeReviewBtn} onClick={() => commit('parked', reason)}>
-                  ⏸ Park
-                </button>
-              </div>
-            ) : (
-              <>
-                {canMarkRead && (
-                  <button
-                    className={styles.badgeReviewBtn}
-                    onClick={() => commit(review === 'read' ? null : 'read')}
-                  >
-                    {review === 'read' ? '↺ Un-read' : '✓ Read'}
-                  </button>
-                )}
-                {!isParked && (
-                  <button
-                    className={styles.badgeReviewBtn}
-                    onClick={() => { setReason(''); setParking(true); }}
-                  >
-                    ⏸ Park…
-                  </button>
-                )}
-                {isParked && (
-                  <>
-                    <button
-                      className={styles.badgeReviewBtn}
-                      onClick={() => { setReason(parkReason ?? ''); setParking(true); }}
-                    >
-                      ✎ Edit reason
-                    </button>
-                    <button className={styles.badgeReviewBtn} onClick={() => commit(null)}>
-                      ↺ Un-park
-                    </button>
-                  </>
-                )}
-              </>
-            )}
+            <button
+              className={styles.badgeReviewBtn}
+              onClick={() => commit(review === 'read' ? null : 'read')}
+            >
+              {review === 'read' ? '↺ Un-read' : '✓ Read'}
+            </button>
           </div>
         )}
       </div>
@@ -3327,12 +3270,11 @@ const currentDisplayName =
                       state={selectedSession.state}
                       activeSubagentCount={selectedSession.subagents.filter(s => s.state === 'working' || s.state === 'thinking').length || undefined}
                       review={selectedSession.review}
-                      parkReason={selectedSession.parkReason}
-                      onSetReview={(review, reason) => {
+                      onSetReview={(review) => {
                         void fetch(`/api/sessions/${selectedSession.sessionId}/review`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ review, reason }),
+                          body: JSON.stringify({ review }),
                         });
                       }}
                     />
@@ -3944,31 +3886,6 @@ const currentDisplayName =
                               </ul>
                             </div>
                           )}
-                          {selectedSession.review === 'parked' && (
-                            <div className={styles.parkedBanner}>
-                              <span>⏸ Parked{selectedSession.parkedAt ? ` ${formatParkedAge(selectedSession.parkedAt)}` : ''}</span>
-                              {selectedSession.parkReason && (
-                                <>
-                                  <span aria-hidden="true">·</span>
-                                  <span className={styles.parkedBannerReason} title={selectedSession.parkReason}>
-                                    {selectedSession.parkReason}
-                                  </span>
-                                </>
-                              )}
-                              <button
-                                className={styles.parkedBannerBtn}
-                                onClick={() => {
-                                  void fetch(`/api/sessions/${selectedSession.sessionId}/review`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ review: null }),
-                                  });
-                                }}
-                              >
-                                Un-park
-                              </button>
-                            </div>
-                          )}
                           {(mergedFeed.length > 0 || selectedSession.lastMessage) ? (
                             <section className={styles.section}>
                               {mergedFeed.length > 0 ? (
@@ -4264,7 +4181,7 @@ const currentDisplayName =
                                     }}
                                   >
                                     <span className={styles.historyItemText}>{entry.text.replace(/\s+/g, ' ').trim()}</span>
-                                    <span className={styles.historyItemTime}>{formatParkedAge(entry.ts)}</span>
+                                    <span className={styles.historyItemTime}>{formatAgeMs(entry.ts)}</span>
                                   </button>
                                 ))}
                               </div>
