@@ -364,6 +364,10 @@ export interface Session {
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
    *  auto-clears on the next turn. */
   review?: SessionReview;
+  /** Folder of the room this session is shown in, when the user (or the agent,
+   *  `ovr room move`) moved it out of its own `cwd` room. The process still
+   *  runs in `cwd`. Mirrored from the OverlordSession record. */
+  roomCwd?: string;
   latestPlan?: PlanSummary;
   /** ISO timestamp of the newest user message in the UNTRIMMED activity feed.
    *  Client uses it to confirm optimistic echoes even when the real message has
@@ -532,6 +536,10 @@ export interface OverlordSession {
   completionSummaries?: Task[];
   /** @see Session.review — persisted so 'read' survives a restart. */
   review?: SessionReview;
+  /** Room override: the session is grouped under this folder's room instead of
+   *  `cwd`. Display only — spawn, resume and transcripts keep using `cwd`.
+   *  Absent = home room. Read it through `sessionRoomCwd()`. */
+  roomCwd?: string;
   /** @deprecated Superseded by `review`. Read-only: `readReview()` maps a legacy
    *  `true` to 'read'; every write path drops the field. Never write it again. */
   acknowledged?: boolean;

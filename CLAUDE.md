@@ -43,6 +43,8 @@ Deep dives: `docs/architecture.md`, `docs/session-lifecycle.md`.
 
 **Pins:** `bin/ovr pin add <url> [--room]` → `/api/pins`. Ticket/PR pins lead the session's `jiraKeys`/`prRefs` (one header bar); room pins in room view. See `docs/architecture.md#pins`.
 
+**Moving sessions between rooms:** `bin/ovr room move <room>` / session menu → `POST /api/sessions/room` sets `OverlordSession.roomCwd` — display only, the process stays in `cwd`. Room-scoped code reads `sessionRoomCwd(rec)`, not `rec.cwd`. See `docs/architecture.md#moving-sessions-between-rooms`.
+
 ## Bridge Binary
 
 Source: `packages/bridge/` (Go). Binary resolved via `getBridgePath()` in `packages/server/src/pty/pipeInjector.ts` → **`bridge/overlord-bridge`** at project root.

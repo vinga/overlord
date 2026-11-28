@@ -35,6 +35,32 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
   const [groupView, setGroupView] = useState<null | 'list' | 'new' | 'rename'>(null);
   React.useEffect(() => { if (!open) setGroupView(null); }, [open]);
   const fileUnder = (group: string | null) => { setOpen(false); void putGroup(session.sessionId, group); };
+  // "Move to room" swaps the menu body the same way. Rooms are fetched when the
+  // picker opens — the menu has no snapshot of its own.
+  const [roomView, setRoomView] = useState(false);
+  const [rooms, setRooms] = useState<RoomOption[] | null>(null);
+  const [roomError, setRoomError] = useState<string | null>(null);
+  React.useEffect(() => { if (!open) { setRoomView(false); setRooms(null); setRoomError(null); } }, [open]);
+  React.useEffect(() => {
+    if (!roomView) return;
+    let cancelled = false;
+    fetch('/api/rooms')
+      .then(r => r.json())
+      .then((d: { rooms?: RoomOption[] }) => { if (!cancelled) setRooms(d.rooms ?? []); })
+      .catch(() => { if (!cancelled) setRoomError('Could not load rooms'); });
+    return () => { cancelled = true; };
+  }, [roomView]);
+  const moveToRoom = (room: string | null) => {
+    void fetch('/api/sessions/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: session.sessionId, room }),
+    }).then(async r => {
+      if (r.ok) { setOpen(false); return; }
+      const d = await r.json().catch(() => ({})) as { error?: string };
+      setRoomError(d.error ?? `Move failed (${r.status})`);
+    }).catch(() => setRoomError('Move failed'));
+  };
 
   React.useEffect(() => {
     if (!open || !isRaw) { setHistoryLines(null); return; }
@@ -116,7 +142,16 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
           border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 4,
           boxShadow: '0 8px 32px rgba(0,0,0,0.4)', zIndex: 10000, minWidth: 140,
         }}>
-          {groupView ? (
+          {roomView ? (
+            <RoomPicker
+              rooms={rooms}
+              error={roomError}
+              currentCwd={session.roomCwd ?? session.cwd}
+              homeCwd={session.cwd}
+              onBack={() => setRoomView(false)}
+              onMove={moveToRoom}
+            />
+          ) : groupView ? (
             <GroupPicker
               view={groupView}
               current={session.group}
@@ -153,6 +188,11 @@ export function DeskMenu({ onDelete, onClone, onClear, onArchive, onClose, onNew
             <MenuItem icon={ICONS.group} label="Group…" hint={session.group}
               title="File this session under a group in the side room list"
               onClick={(e) => { e.stopPropagation(); setGroupView('list'); }} />
+          )}
+          {!session.isArchived && (
+            <MenuItem icon={ICONS.room} label="Move to room…" hint={session.roomCwd ? 'moved' : undefined}
+              title="Show this session in another room. It keeps running in its own folder."
+              onClick={(e) => { e.stopPropagation(); setRoomView(true); }} />
           )}
           {onNewSession && <MenuItem icon={ICONS.newSession} label="New session here" title="Quick spawn in this room and switch to it" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onNewSession)} />}
           {onClone && <MenuItem icon={ICONS.clone} label="Clone" hover="#d4af37" hoverBg="rgba(212,175,55,0.1)" onClick={act(onClone)} />}
@@ -219,7 +259,41 @@ const ICONS = {
   plus: svg(<path d="M12 5v14M5 12h14" />),
   pencil: svg(<path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" />),
   ungroup: svg(<path d="M6 6l12 12M18 6L6 18" />),
+  room: svg(<><path d="M4 21V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v16M2 21h20M15 9h4a1 1 0 0 1 1 1v11" /><path d="M11 13v.01" /></>),
+  home: svg(<path d="M3 11l9-7 9 7M5 10v10h14V10" />),
 };
+
+interface RoomOption { id: string; name: string; cwd: string; sessionCount: number }
+
+/** The "Move to room" view of the session menu. The move is logical: the
+ *  session is shown in the picked room and keeps running in its own folder. */
+function RoomPicker({ rooms, error, currentCwd, homeCwd, onBack, onMove }: {
+  rooms: RoomOption[] | null; error: string | null;
+  currentCwd: string; homeCwd: string;
+  onBack: () => void;
+  onMove: (room: string | null) => void;
+}) {
+  const stop = (fn: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); fn(); };
+  const moved = currentCwd !== homeCwd;
+  const others = (rooms ?? []).filter(r => r.cwd !== currentCwd && r.cwd !== homeCwd);
+  const homeName = homeCwd.split(/[\\/]/).filter(Boolean).pop() ?? homeCwd;
+  const note: React.CSSProperties = { padding: '6px 12px', fontSize: 12, color: 'rgba(255,255,255,0.45)', fontFamily: 'Inter, sans-serif' };
+  return (
+    <>
+      <MenuItem icon={ICONS.back} label="Move to room" color="rgba(255,255,255,0.45)" onClick={stop(onBack)} />
+      <MenuDivider />
+      {moved && <MenuItem icon={ICONS.home} label={`Back to ${homeName}`} title={homeCwd} onClick={stop(() => onMove(null))} />}
+      <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+        {others.map(r => (
+          <MenuItem key={r.cwd} icon={ICONS.room} label={r.name} hint={String(r.sessionCount)} title={r.cwd} onClick={stop(() => onMove(r.cwd))} />
+        ))}
+      </div>
+      {rooms === null && !error && <div style={note}>Loading…</div>}
+      {rooms !== null && others.length === 0 && !moved && <div style={note}>No other rooms</div>}
+      {error && <div style={{ ...note, color: '#ff6b6b' }}>{error}</div>}
+    </>
+  );
+}
 
 /** The "Group" view of the session menu: file under an existing / new group, rename the current one, or ungroup. */
 function GroupPicker({ view, current, names, onView, onFile, onRename }: {

@@ -31,6 +31,10 @@ When you start on a Jira ticket, open a PR, or push a branch, pin its URL: \`ovr
 
 The user may give a session a TODO list (\`ovr todo ls\` shows it with ids). When you finish an item on it, check it off: \`ovr todo done <id>\`. Items owned by the agent are yours to do (\`ovr todo ls --agent\`); add one for yourself with \`ovr todo add --agent <text>\` — without \`--agent\` an item is the user's.
 
+## Rooms
+
+Overlord groups sessions into rooms, one per folder. If the user asks you to move this session to another room: \`ovr room ls\` lists them, \`ovr room move <room>\` moves it, \`ovr room move --home\` puts it back. The move changes only where the session is shown — you keep working in the same folder. Do not move on your own initiative.
+
 ## Speaking aloud
 
 Speak only through \`say\`. The user can mute agents' voice; \`say\` then prints \`🔇 say (muted): …\` and puts the text in the conversation instead. That is expected: do not retry, and do not reach for another way to make sound (\`/usr/bin/say\`, \`afplay\`, \`osascript\`).`;

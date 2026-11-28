@@ -112,7 +112,8 @@ export class ArchiveManager {
       return null;
     }
 
-    const slug = cwdToSlug(params.cwd);
+    // A session moved to another room is archived under that room.
+    const slug = cwdToSlug(rec.roomCwd || params.cwd);
     const destDir = path.join(ARCHIVE_BASE, slug, rec.overlordId);
 
     // Copy each lineage entry's transcript if it exists on disk.

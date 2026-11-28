@@ -369,7 +369,7 @@ export function App() {
 
   // Room of the open session — the detail panel shows its branch/PR badge.
   const selectedSessionRoom = useMemo<Room | null>(
-    () => (selectedSession ? snapshot?.rooms.find(r => r.cwd === selectedSession.cwd) ?? null : null),
+    () => (selectedSession ? snapshot?.rooms.find(r => r.cwd === (selectedSession.roomCwd ?? selectedSession.cwd)) ?? null : null),
     [snapshot?.rooms, selectedSession],
   );
 
@@ -1125,7 +1125,7 @@ export function App() {
         siblingActiveSessions={
           selectedSession && selectedSession.state === 'closed'
             ? (snapshot?.rooms
-                .find(r => r.cwd === selectedSession.cwd)
+                .find(r => r.cwd === (selectedSession.roomCwd ?? selectedSession.cwd))
                 ?.sessions.filter(s => s.resumedFrom === selectedSession.sessionId)
                 .sort((a, b) => b.startedAt - a.startedAt) ?? [])
             : []

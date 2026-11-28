@@ -268,6 +268,9 @@ interface Session {
   /** User-set review marker. 'read' silences the pulsing WAITING bubble and
    *  auto-clears on the next turn. */
   review?: SessionReview;
+  /** Folder of the room the session is shown in, when it was moved out of its
+   *  own `cwd` room. The process still runs in `cwd`. Absent = home room. */
+  roomCwd?: string;
   /** Metadata only — the plan `body` is fetched on demand via GET /api/artifacts/:artifactId. */
   latestPlan?: { artifactId: string; title: string; status: string; claudePlanToolUseId?: string; updatedAt: string; };
   lastUserMessageTs?: string;     // newest user-message ts from untrimmed feed; confirms optimistic echoes past the tail

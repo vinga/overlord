@@ -38,7 +38,7 @@ import { archiveManager } from '../archive/archiveManager.js';
 import { ArchivePrState } from '../archive/archivePrState.js';
 import { computeArchiveStats } from '../archive/archiveStats.js';
 import { getBrainContext, invalidateBrainCache, pruneMemoryIndex } from '../brain/brainContext.js';
-import { readRoomConfig, writeRoomConfig } from '../session/roomConfig.js';
+import { readRoomConfig, writeRoomConfig, sessionRoomCwd } from '../session/roomConfig.js';
 import { validatePinInput, upsertPin, removePin, setPinDone, setPinOwner, isTodoOwner, type TodoOwner } from '../session/pins.js';
 import type { Pin } from '../types.js';
 import { log } from '../logger.js';
@@ -413,7 +413,8 @@ export function registerApiRoutes(
     }
     if (!ovrId && !sessionId) return { status: 400, error: 'cwd, overlordId, ptyId or sessionId required' };
     if (!rec) return { status: 404, error: 'session not found' };
-    if (wantRoom) return { kind: 'room', cwd: rec.cwd, pins: readRoomConfig(rec.cwd).pins };
+    // The room the session is shown in — a moved session pins to its new room.
+    if (wantRoom) { const cwd = sessionRoomCwd(rec); return { kind: 'room', cwd, pins: readRoomConfig(cwd).pins }; }
     return { kind: 'session', ovrId: rec.overlordId, pins: rec.pins };
   };
   const savePins = (t: PinTarget, pins: Pin[]) => {
@@ -421,6 +422,28 @@ export function registerApiRoutes(
     else stateManager.setSessionPins(t.ovrId, pins);
   };
 
+
+  // ── Rooms: list, and move a session between them ─────────────────────────
+  app.get('/api/rooms', (_req, res) => {
+    res.json({ rooms: stateManager.listRooms() });
+  });
+
+  // body: { overlordId | ptyId | sessionId, room: <id | folder | name> | null }
+  // null = back to the room of the folder the session runs in. The move is
+  // logical (see stateManager.moveSessionToRoom) — the process does not move.
+  app.post('/api/sessions/room', express.json(), (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.room !== null && (typeof body.room !== 'string' || !body.room.trim())) {
+      res.status(400).json({ error: 'room must be a room id, folder or name, or null' });
+      return;
+    }
+    const t = resolvePinTarget({ overlordId: body.overlordId, ptyId: body.ptyId, sessionId: body.sessionId });
+    if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
+    if (t.kind !== 'session') { res.status(400).json({ error: 'overlordId, ptyId or sessionId required' }); return; }
+    const result = stateManager.moveSessionToRoom(t.ovrId, body.room as string | null);
+    if (!result.ok) { res.status(result.status).json({ error: result.error, candidates: result.candidates }); return; }
+    res.json(result);
+  });
   app.get('/api/pins', (req, res) => {
     const t = resolvePinTarget(req.query as Record<string, unknown>);
     if ('error' in t) { res.status(t.status).json({ error: t.error }); return; }
@@ -2175,7 +2198,7 @@ export function registerApiRoutes(
     if (typeof ptyRaw === 'string' && ptyRaw) {
       const rec = sessionStore.getByOverlordId(ptyToOvr.get(ptyRaw) ?? ptyRaw);
       if (!rec) { res.status(404).json({ error: `ptyId ${ptyRaw} not tracked by overlord` }); return; }
-      res.json({ overlordId: rec.overlordId, sessionId: rec.lineage.currentSessionId, cwd: rec.cwd });
+      res.json({ overlordId: rec.overlordId, sessionId: rec.lineage.currentSessionId, cwd: rec.cwd, roomCwd: sessionRoomCwd(rec) });
       return;
     }
     const pidRaw = req.query.pid;

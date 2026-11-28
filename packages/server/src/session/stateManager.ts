@@ -14,7 +14,7 @@ import { readGitAhead } from '../git/gitStatus.js';
 import { orderJiraKeys, sanitizeTicketOrder } from './ticketOrder.js';
 export { TICKET_ORDER_MAX } from './ticketOrder.js';
 import { derivePipeNameFromMarker } from '../bridge/bridgeNameUtils.js';
-import { readRoomConfig, writeRoomConfig, listConfiguredRoomSlugs, slugForCwd } from './roomConfig.js';
+import { readRoomConfig, writeRoomConfig, listConfiguredRoomSlugs, slugForCwd, matchRoom, type RoomRef } from './roomConfig.js';
 import { sessionStore, scrubReplacedBy } from './sessionStore.js';
 import { migrateKnownSessions } from './migrateKnownSessions.js';
 import { migratePendingResumes } from './migratePendingResumes.js';
@@ -3012,7 +3012,11 @@ export class StateManager {
     // is a known stale-state pattern (see composeSession :2238) — ignore.
     const liveSidByOvr = new Map<string, string>();
     const replacedOvrIds = new Set<string>();
+    // Sessions moved to another room (`roomCwd` override) — collected in the
+    // same walk, so grouping costs no extra store lookup per session.
+    const roomCwdByOvr = new Map<string, string>();
     for (const rec of sessionStore.listActive()) {
+      if (rec.roomCwd) roomCwdByOvr.set(rec.overlordId, rec.roomCwd);
       if (rec.lineage?.currentSessionId) liveSidByOvr.set(rec.overlordId, rec.lineage.currentSessionId);
       if (rec.replacedBy && rec.replacedBy !== rec.lineage?.currentSessionId) {
         replacedOvrIds.add(rec.overlordId);
@@ -3025,7 +3029,8 @@ export class StateManager {
       if (liveSid && liveSid !== session.sessionId) continue;
       // Color is lineage-scoped; `setSessionColor` updates every live session
       // in the lineage at write time. No re-derivation needed here.
-      const { cwd } = session;
+      // The room is the override when the session was moved, else where it runs.
+      const cwd = (session.overlordId && roomCwdByOvr.get(session.overlordId)) || session.cwd;
       if (!roomMap.has(cwd)) {
         const slug = cwd.replace(/[\\:/]/g, '-').replace(/^-+/, '');
         roomMap.set(cwd, {
@@ -3343,6 +3348,7 @@ export class StateManager {
       out.bridgePipeName = overlord.bridgePipeName ?? session.bridgePipeName;
       out.bridgeMarker = overlord.bridgeMarker ?? session.bridgeMarker;
       out.historyOnly = overlord.historyOnly ?? session.historyOnly;
+      out.roomCwd = overlord.roomCwd && overlord.roomCwd !== session.cwd ? overlord.roomCwd : undefined;
       // Review is read through readReview so legacy `acknowledged: true` records
       // still surface as 'read'. A record with no marker must not resurrect a
       // live one, so fall back only when the record carries nothing.
@@ -3549,6 +3555,43 @@ export class StateManager {
   }
 
   /** Replace a room's pinned links (room-config file). */
+  /** Rooms a session can be moved to — the ones in the office right now. */
+  listRooms(): Array<RoomRef & { sessionCount: number }> {
+    return this.getSnapshot().rooms.map(r => ({ id: r.id, name: r.name, cwd: r.cwd, sessionCount: r.sessions.length }));
+  }
+
+  /**
+   * Show a session in another room (`room`: id, folder or name), or back in its
+   * own (`null`). Logical only: the process keeps running in its `cwd`; only
+   * the `roomCwd` override on the overlord record changes, so it survives
+   * /clear, resume and restart.
+   */
+  moveSessionToRoom(ovrId: string, room: string | null):
+    | { ok: true; overlordId: string; room: RoomRef; home: boolean }
+    | { ok: false; status: 404 | 409; error: string; candidates?: RoomRef[] } {
+    const rec = sessionStore.getByOverlordId(ovrId);
+    if (!rec || rec.archive) return { ok: false, status: 404, error: 'session not found' };
+    const rooms = this.listRooms();
+    const homeRef = (): RoomRef => rooms.find(r => r.cwd === rec.cwd)
+      ?? { id: slugForCwd(rec.cwd), name: path.basename(rec.cwd) || rec.cwd, cwd: rec.cwd };
+    let target: RoomRef;
+    if (room === null) {
+      target = homeRef();
+    } else {
+      const m = matchRoom(rooms, room);
+      if ('candidates' in m) {
+        return m.candidates.length === 0
+          ? { ok: false, status: 404, error: `no room matches "${room}"` }
+          : { ok: false, status: 409, error: `"${room}" matches ${m.candidates.length} rooms — use the id or folder`, candidates: m.candidates };
+      }
+      target = m.room;
+    }
+    const home = target.cwd === rec.cwd;
+    sessionStore.patch(rec.overlordId, { roomCwd: home ? undefined : target.cwd });
+    this.onChange();
+    return { ok: true, overlordId: rec.overlordId, room: { id: target.id, name: target.name, cwd: target.cwd }, home };
+  }
+
   setRoomPins(cwd: string, pins: Pin[]): void {
     writeRoomConfig(cwd, { ...readRoomConfig(cwd), pins: pins.length ? pins : undefined });
     this.onChange();

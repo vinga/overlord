@@ -286,6 +286,29 @@ row; click it to hand the item over). Ownership is a label only — anyone check
 item belongs to the active tab's owner (All → user). Agent side: `ovr todo add --agent`,
 `ovr todo ls --agent|--user`, `ovr todo assign <id> agent|user`.
 
+## Moving sessions between rooms
+
+A room is a folder: sessions are grouped by `cwd`. A session can be shown in another
+room without touching its process — the move is **logical**.
+
+- **Storage:** `OverlordSession.roomCwd` (absent = home room). It lives on the overlord
+  record, so it survives `/clear`, `/compact`, resume and restart.
+- **Grouping:** `getSnapshot` groups by `roomCwd ?? cwd`, reading overrides in its
+  existing `listActive()` walk. `Session.roomCwd` reaches the client only when it
+  differs from `cwd`.
+- **What does not move:** spawn, resume, transcript paths and session matching keep
+  using `cwd`. The room header shows the target room's branch and PR; the detail panel
+  header shows a "runs in `<folder>`" chip on a moved session.
+- **Room-scoped actions follow the shown room:** anything room-scoped must go through
+  `sessionRoomCwd(rec)` (`roomConfig.ts`), not `rec.cwd` — `ovr pin --room`,
+  `ovr todo --room`, and the archive slug.
+- **API:** `GET /api/rooms`; `POST /api/sessions/room` `{ overlordId | ptyId | sessionId,
+  room: <id | folder | name> | null }` (`null` = home). 404 unknown, 409 ambiguous name
+  with `candidates`. Targets are the rooms currently in the office; a move never
+  creates a room.
+- **UI:** session menu → *Move to room…* (`RoomPicker` in `DeskMenu.tsx`).
+- **CLI:** `ovr room ls`, `ovr room move <room>`, `ovr room move --home`.
+
 ## Lazy MCP
 
 Opt-in (`settings.json` → `lazyMcp.enabled`, Settings → Integrations → MCP

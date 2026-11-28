@@ -1125,6 +1125,21 @@
   cursor: default;
 }
 
+/* Session shown in a room other than the folder it runs in. */
+.movedHint {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+}
+
 .roomCrumbClickable {
   cursor: pointer;
   border-radius: 4px;

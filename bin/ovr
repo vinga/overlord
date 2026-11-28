@@ -27,6 +27,12 @@ Commands:
   todo done <id> [--room]        Check an item off (marked as done by the agent)
   todo undo <id> [--room]        Uncheck it
   todo rm <id> [--room]          Remove it
+  room ls                        List rooms (id, name, sessions, folder); * = this
+                                 session's room
+  room move <room>               Show this session in another room. <room> is a
+                                 room id, name or folder. You keep working in
+                                 the same folder — only the grouping changes
+  room move --home               Back to the room of the folder it runs in
   mute on|off|status             Mute agents' voice: \`say\` prints its text to
                                  the conversation instead of speaking
   help                           Show this help
@@ -43,6 +49,8 @@ Examples:
   $PROG todo add --agent "Re-run the flaky test"
   $PROG todo ls --agent
   $PROG todo done pin-mabc12-x7k2qd
+  $PROG room ls
+  $PROG room move knowledge-service
 EOF
 }
 
@@ -206,6 +214,64 @@ for p in todos: print("%s\t[%s] @%-5s %s" % (p["id"], "x" if p.get("done") else 
   esac
 }
 
+cmd_room() {
+  local sub=$1; shift || true
+  local home="" pos=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --home) home=1 ;;
+      --session) [ $# -ge 2 ] || die "--session needs a value"; SESSION_OVERRIDE=$2; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) pos="${pos:+$pos }$1" ;;
+    esac
+    shift
+  done
+
+  case $sub in
+    ls|list)
+      # Best effort: outside a session there is simply no room to mark.
+      local mine="" t
+      if t=$(target_json 2>/dev/null); then
+        mine=$(curl -fsS "$BASE/api/resolve?$(to_query "$t" | sed 's/overlordId=/ptyId=/')" 2>/dev/null \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin).get("roomCwd",""))' 2>/dev/null)
+      fi
+      local r; r=$(call GET /api/rooms) || exit $?
+      printf '%s' "$r" | python3 -c '
+import json,sys
+mine=sys.argv[1]
+rooms=json.load(sys.stdin)["rooms"]
+if not rooms: print("no rooms")
+for r in rooms:
+    print("%s %s\t%s\t%d sessions\t%s" % ("*" if r["cwd"]==mine else " ", r["id"], r["name"], r["sessionCount"], r["cwd"]))' "$mine" ;;
+    move|mv)
+      { [ -n "$home" ] && [ -z "$pos" ]; } || { [ -z "$home" ] && [ -n "$pos" ]; } \
+        || die "usage: $PROG room move <room> | --home"
+      local t; t=$(target_json) || exit $?
+      local body; body=$(python3 -c 'import json,sys; print(json.dumps({"room": None if sys.argv[1] else sys.argv[2]}))' "$home" "$pos")
+      # Not through call(): a 409 carries the candidate rooms, worth printing.
+      local out code
+      out=$(curl -sS -w '\n%{http_code}' -X POST "$BASE/api/sessions/room" -H 'Content-Type: application/json' --data-binary "$(merge "$t" "$body")" 2>&1) \
+        || EXIT=2 die "cannot reach Overlord at $BASE — is the server running?"
+      code=${out##*$'\n'}; out=${out%$'\n'*}
+      printf '%s' "$out" | python3 -c '
+import json,sys
+code=sys.argv[1]
+try: d=json.load(sys.stdin)
+except Exception: d={}
+if code.startswith("2"):
+    r=d["room"]
+    print("%s room %s  (%s)" % ("back in" if d.get("home") else "moved to", r["name"], r["cwd"]))
+    if not d.get("home"): print("still running in the same folder; undo: ovr room move --home")
+    sys.exit(0)
+print("ovr: HTTP %s: %s" % (code, d.get("error","")), file=sys.stderr)
+for c in d.get("candidates") or []: print("  %s\t%s\t%s" % (c["id"], c["name"], c["cwd"]), file=sys.stderr)
+sys.exit(1)' "$code" || exit 1 ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown room command: $sub (ls|move)" ;;
+  esac
+}
+
 cmd_mute() {
   local r
   case ${1:-status} in
@@ -220,6 +286,7 @@ case ${1:-help} in
   whoami) shift; while [ $# -gt 0 ]; do case $1 in --session) SESSION_OVERRIDE=$2; shift ;; esac; shift; done; cmd_whoami ;;
   pin) shift; cmd_pin "$@" ;;
   todo) shift; cmd_todo "$@" ;;
+  room) shift; cmd_room "$@" ;;
   mute) shift; cmd_mute "$@" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 1 ;;

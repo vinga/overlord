@@ -141,3 +141,25 @@ export function listConfiguredRoomSlugs(): string[] {
 }
 
 export function slugForCwd(cwd: string): string { return cwdToRoomSlug(cwd); }
+
+/** Folder of the room a session belongs to: its `roomCwd` override when it was
+ *  moved, else the folder it runs in. Use this, not `cwd`, for anything
+ *  room-scoped (grouping, room pins, archive room). */
+export function sessionRoomCwd(rec: { cwd: string; roomCwd?: string }): string {
+  return rec.roomCwd || rec.cwd;
+}
+
+export interface RoomRef { id: string; name: string; cwd: string }
+
+/** Match a user-typed room (id, folder path, or name — case-insensitive) against
+ *  the known rooms. An exact id or folder wins over a name; several rooms with
+ *  the same name are ambiguous. */
+export function matchRoom(rooms: RoomRef[], query: string): { room: RoomRef } | { candidates: RoomRef[] } {
+  const q = query.trim();
+  const folder = q.length > 1 ? q.replace(/[\\/]+$/, '') : q;
+  const exact = rooms.find(r => r.id === q || r.cwd === q || r.cwd === folder);
+  if (exact) return { room: exact };
+  const lower = q.toLowerCase();
+  const byName = rooms.filter(r => r.name.toLowerCase() === lower || r.id.toLowerCase() === lower);
+  return byName.length === 1 ? { room: byName[0] } : { candidates: byName };
+}
